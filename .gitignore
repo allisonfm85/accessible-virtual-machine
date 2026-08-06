@@ -1,0 +1,14 @@
+# Xcode user state
+xcuserdata/
+*.xcuserstate
+# Build products
+build/
+DerivedData/
+# Binary blobs staged from the UTM sysroot (see README for provenance)
+Frameworks/
+*.fd
+*.rom
+# macOS noise
+.DS_Store
+# Logs
+*.log

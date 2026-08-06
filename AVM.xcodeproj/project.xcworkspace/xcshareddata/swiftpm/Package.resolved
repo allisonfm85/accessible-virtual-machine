@@ -1,0 +1,15 @@
+{
+  "originHash" : "4b1e7fa360a877113fab8b0b9bd9e9214c21438d85dfd27c2f519017ad2ae1c4",
+  "pins" : [
+    {
+      "identity" : "cocoaspice",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/allisonfm85/CocoaSpice",
+      "state" : {
+        "branch" : "avm-initial-fill",
+        "revision" : "8b41a9af91eef3bd5dbc14b85a34470ad3903541"
+      }
+    }
+  ],
+  "version" : 3
+}

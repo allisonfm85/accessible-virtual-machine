@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>AVM needs local network access so Windows inside your virtual machine can connect to the internet.</string>
+	<key>NSUSBDeviceUsageDescription</key>
+	<string>AVM needs USB access to connect peripherals to your Windows virtual machine.</string>
+</dict>
+</plist>
