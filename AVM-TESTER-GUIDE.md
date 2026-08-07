@@ -37,22 +37,98 @@ Microsoft distributes Windows 11 disc images from its own download page. You
 need the **ARM64** image, not the x64 one. AVM cannot use an x64 image, and
 it will tell you so rather than failing quietly.
 
+Downloading the ISO is the one step of the process that happens outside AVM.
+The page is usable with a screen reader, but the controls appear in stages —
+each one you use reveals the next — so it helps to know what is coming.
+
+### The download page
+
+Go to:
+
+    https://www.microsoft.com/software-download/windows11arm64
+
+Work through it in this order:
+
+1. Find the combo box labelled **Select Download** and choose
+   **Windows 11 (multi-edition ISO for Arm64)**. It is the only choice.
+2. Activate the **Download Now** button.
+3. A new section appears, headed "Select the product language". Find the
+   combo box labelled **Choose one** and pick your language — for most
+   testers that is **English (United States)**.
+4. Activate the **Confirm** button.
+5. After a few seconds a link appears reading
+   **Download - Windows 11 Arm64 English** (the language will match what you
+   chose), followed by a second **Download Now** button. Activate that button
+   to start the download.
+
+**A warning about step 5.** At that point there are two buttons on the page
+called "Download Now" — the one you already used in step 2, and the real one
+at the bottom. If you navigate by button, the first one you land on is the
+old one, and activating it again just re-shows the language picker. The one
+you want is the last "Download Now" on the page. Navigating to the end of
+the page and working backwards is the quickest way to land on it.
+
+### What you should end up with
+
+A single `.iso` file of about eight gigabytes — the English 25H2 image is
+7,994,415,104 bytes, so budget more than the "about 5 GB" figure that
+circulates in older write-ups.
+
 The build validated during development was:
 
     Win11_25H2_English_Arm64_v2.iso
     Windows 11, version 25H2, build 26200
 
-Other ARM64 images are expected to work. If yours does not, that is exactly
-the kind of thing to report.
+At the time of writing, the download page serves this same version. Other
+ARM64 images are expected to work. If yours does not, that is exactly the
+kind of thing to report.
 
-A future version of AVM may help you find and verify the ISO. For now,
-downloading it is on you, and it is the one step of the process that happens
-outside AVM.
+Note that this is a *multi-edition* image — it contains Home, Pro and the
+rest, and the edition is settled during installation rather than by which
+file you download. You do not need to hunt for a Pro-specific ISO.
+
+**Checking you got the ARM64 one.** The filename is the first clue: it
+should have `Arm64` in it. If the file has been renamed, or you want to be
+certain before starting an install, open Terminal and run:
+
+    file ~/Downloads/Win11_25H2_English_Arm64_v2.iso
+
+Adjust the path to match yours. The reply includes a volume name. If it
+reads `A64FRE`, you have the ARM64 image. If it reads `X64FRE`, that is the
+x64 one and AVM will refuse it.
+
+### The link expires
+
+The download link Microsoft builds for you is good for **24 hours** from the
+moment you press Confirm. The page states the exact expiry time. If your
+download is interrupted and the link has gone stale, go back to the page and
+walk through the steps again — you will get a fresh link. Nothing is wrong,
+and you have not used anything up.
 
 Put the ISO somewhere you can find it again — your Downloads folder is fine.
 
----
+### If the page gives you trouble
 
+There is a second route. **CrystalFetch** is a free Mac app that builds a
+Windows 11 ARM64 ISO for you, from the same Microsoft sources, without the
+staged web form. It comes from Turing Software, the people behind UTM, and
+lives at:
+
+    https://github.com/TuringSoftware/CrystalFetch
+
+It is a native Mac application rather than a web page, which some testers
+may find easier. We have not tested CrystalFetch with VoiceOver yet, so this
+is an alternative to try rather than a recommendation — and if you use it,
+please report which of the two routes worked better for you. That report
+will decide what this section says in the future.
+
+A future version of AVM may fetch and verify the image for you directly, so
+that none of this is necessary.
+
+*This section was substantially improved by a detailed walkthrough and
+proposed rewrite contributed by Kelly Ford — thank you, Kelly.*
+
+---
 ## 3. Installing AVM
 
 AVM arrives as a disk image. Open it, place AVM in your Applications
