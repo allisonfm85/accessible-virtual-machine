@@ -285,6 +285,41 @@
 //   stream is the available substitute: it names the display AVM attached
 //   the renderer to.
 //
+// VIEWPORT SCALING (2026-08-07, issue #3 — the "extremely small display"
+// fix):
+//   FIELD REPORT (Zach Bennoui, issue #3, first post-release feedback): the
+//   guest picture occupies a small fraction of the AVM window — bad for
+//   sighted testers and equally bad for blind users' OCR and AI image
+//   description workflows.
+//   ROOT CAUSE, MEASURED (2026-08-07): the driverless guest draws at the
+//   firmware framebuffer's 800x600 (confirmed in-guest: empty Display device
+//   class; .NET Screen bounds 800x600), and CSMetalRenderer's DEFAULT
+//   viewportScale of 1.0 blits those pixels ONE-TO-ONE into the Retina
+//   drawable (measured 1800x1264 for a 900x632-point window). The image
+//   lands at 400x300 points — under a fifth of the window area.
+//   THE FIX: aspect-fit. scale = min(drawableWidth/guestWidth,
+//   drawableHeight/guestHeight), applied to the renderer whenever geometry
+//   can change: at every binding decision that touches the slot
+//   (considerForPrimarySlot win/empty/holder paths), and at view
+//   frame/backing changes (SPICEKeyCaptureView overrides below).
+//   viewportOrigin stays (0,0): the fork builds display vertices CENTERED
+//   (quad spans ±width/2 — read in CSDisplay.m rebuildDisplayVertices,
+//   2026-08-07), so origin zero already means centered in the drawable and
+//   aspect-fit needs no origin arithmetic.
+//   THREADING: renderer.viewportScale is set on the APPLE MAIN THREAD only.
+//   The guest size is CAPTURED BY VALUE on the SPICE context — where the
+//   binding code already reads displaySize — and passed into the main hop;
+//   no new cross-context property reads. lastAppliedGuestSize is
+//   MAIN-THREAD-ONLY state, so view-geometry changes can recompute without
+//   touching CSDisplay at all.
+//   Every scale application is announced via avmPublicLog — it is a
+//   configuration choice, and it joins the binding-decision evidence stream.
+//   NOTE FOR ISSUE #4 (pointer input, not yet built): this transform scales
+//   the RENDER only. When mouse handling is written, its view->guest
+//   coordinate conversion MUST derive from the SAME scale + origin — one
+//   source of truth — or render and input drift apart and clicks land
+//   off-target. Grep anchor: applyViewportScale.
+//
 // THE REDACTION TRAP (2026-07-31, cost: one full evening — READ THIS)
 //   Swift's NSLog("...\(x)...") compiles the interpolated result into a SINGLE
 //   %@ object argument, and the unified log redacts %@ as <private>. So EVERY
@@ -540,6 +575,23 @@ final class SPICEKeyCaptureView: MTKView {
         }
     }
 
+    // VIEWPORT SCALING (issue #3 — see the file header section): view
+    // geometry changes must recompute the renderer's aspect-fit scale. Frame
+    // resizes and backing-scale changes (window moved to a different-density
+    // screen) both change drawableSize; MTKView resizes its drawable
+    // automatically (autoResizeDrawable defaults true), and the coordinator's
+    // recompute hops through the main queue precisely so that automatic
+    // resize has settled before drawableSize is read.
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        coordinator?.viewGeometryChanged()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        coordinator?.viewGeometryChanged()
+    }
+
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
         NSLog("AVM: focus — becomeFirstResponder -> \(ok)")
@@ -592,6 +644,13 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     private var lockCancellable: AnyCancellable?
     private var previousModifiers: NSEvent.ModifierFlags = []
     private var capsLockEngaged: Bool = false
+
+    // VIEWPORT SCALING (issue #3): the guest size most recently applied to
+    // the renderer's viewport transform. MAIN-THREAD-ONLY state — written and
+    // read exclusively inside applyViewportScale, which runs on the Apple
+    // main thread. Exists so view-geometry changes can recompute the scale
+    // without a cross-context read of CSDisplay.displaySize.
+    private var lastAppliedGuestSize: CGSize = .zero
 
     // STUCK-KEY FIX: the set of non-modifier scancodes currently pressed in the
     // guest (as far as we've forwarded). Because macOS withholds keyUp while
@@ -945,6 +1004,62 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         previousModifiers = flags
     }
 
+    // MARK: - Viewport scaling (issue #3)
+
+    /// Queue a viewport-scale recomputation on the Apple main thread, with a
+    /// guest size CAPTURED BY VALUE on the caller's context. See VIEWPORT
+    /// SCALING in the file header. Called from the binding decision paths
+    /// with the winner's (or holder's) displaySize — the same value the
+    /// binding decision itself was made on, so the transform and the binding
+    /// can never disagree about the guest's size.
+    private func scheduleViewportScaleUpdate(guestSize: CGSize) {
+        DispatchQueue.main.async { [weak self] in
+            self?.applyViewportScale(guestSize: guestSize)
+        }
+    }
+
+    /// Recompute the scale from the CURRENT drawable size after a view
+    /// geometry change (frame resize, backing-scale change). Uses the last
+    /// applied guest size; a harmless no-op until a display has bound.
+    /// Called by SPICEKeyCaptureView's overrides on the Apple main thread;
+    /// the async hop lets MTKView's automatic drawable resize settle before
+    /// drawableSize is read (a synchronous read inside setFrameSize can see
+    /// the OLD drawable for one cycle).
+    func viewGeometryChanged() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.applyViewportScale(guestSize: self.lastAppliedGuestSize)
+        }
+    }
+
+    /// APPLE MAIN THREAD ONLY. Compute the aspect-fit scale and apply it to
+    /// the renderer. viewportOrigin stays (0,0) — the fork builds its display
+    /// vertices CENTERED (quad spans ±width/2; read in CSDisplay.m
+    /// rebuildDisplayVertices, 2026-08-07), so origin zero already means
+    /// centered in the drawable and no origin arithmetic is needed.
+    /// The fork's own setters are no-ops on unchanged values; the epsilon
+    /// guard here exists only to keep the announcement stream free of
+    /// no-change noise.
+    private func applyViewportScale(guestSize: CGSize) {
+        guard guestSize.width > 0, guestSize.height > 0 else { return }
+        guard let renderer, let mtkView else { return }
+        let drawable = mtkView.drawableSize
+        guard drawable.width > 0, drawable.height > 0 else { return }
+
+        lastAppliedGuestSize = guestSize
+        let scale = min(drawable.width / guestSize.width,
+                        drawable.height / guestSize.height)
+        guard abs(renderer.viewportScale - scale) > 0.0005 else { return }
+        renderer.viewportOrigin = .zero
+        renderer.viewportScale = scale
+        // PUBLIC: a configuration choice, announced — joins the binding
+        // decision lines as part of the display evidence stream.
+        avmPublicLog(String(format: "viewport scale set to %.3f for drawable %dx%d, guest %dx%d (aspect-fit, issue #3).",
+                            scale,
+                            Int(drawable.width), Int(drawable.height),
+                            Int(guestSize.width), Int(guestSize.height)))
+    }
+
     // MARK: - Display binding (the black-window fix)
 
     /// DETERMINISTIC DISPLAY BINDING (2026-08-03 — see the file header section
@@ -981,6 +1096,11 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     /// teardown) as the field-diagnosis stream: they announce a configuration
     /// choice, and display events are rare (a handful per generation), so the
     /// volume is trivial.
+    ///
+    /// VIEWPORT SCALING (2026-08-07, issue #3): the slot-touching paths below
+    /// also schedule the aspect-fit scale update, passing the SAME size the
+    /// decision was made on. The decline path deliberately does not — a
+    /// loser's size is irrelevant to the transform.
     private func considerForPrimarySlot(_ display: CSDisplay, event: String) {
         let pointerText = String(format: "0x%lx", UInt(bitPattern: Unmanaged.passUnretained(display).toOpaque()))
         let size = display.displaySize
@@ -988,9 +1108,12 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
 
         if let holder = primaryDisplay {
             if holder === display {
-                // The holder's own event. Nothing to decide; the resize (if
-                // any) reaches the renderer through CocoaSpice's own rebuild.
+                // The holder's own event. Nothing to decide for the slot; the
+                // resize (if any) reaches the renderer through CocoaSpice's
+                // own rebuild — but the TRANSFORM must track it, so the scale
+                // update runs with the holder's current size (issue #3).
                 avmPublicLog("display binding (\(event)) — display=\(pointerText) mon=\(display.monitorID) size=\(Int(size.width))x\(Int(size.height)) is already the slot holder; no action.")
+                scheduleViewportScaleUpdate(guestSize: size)
                 return
             }
             let holderSize = holder.displaySize
@@ -1006,6 +1129,10 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
 
         let previousHolder = primaryDisplay
         primaryDisplay = display
+
+        // VIEWPORT SCALING (issue #3): a new holder means a new guest size for
+        // the transform. Same size value the decision above was made on.
+        scheduleViewportScaleUpdate(guestSize: size)
 
         // SINGLE-ATTACHMENT RULE (2026-07-29 — see file header): the renderer
         // must be attached to at most ONE display, so winning the slot
