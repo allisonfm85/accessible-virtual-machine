@@ -32,6 +32,31 @@
 //   - firmware/ROM (edk2-aarch64-code.fd, edk2-arm-vars.fd, vgabios-ramfb.bin) now
 //     staged from the sysroot by the Run Script, so a CLEAN build no longer wipes them.
 //
+// MOUSE MODE INVESTIGATION (issue #4 — mechanism narrowed 2026-08-09 by three
+// controlled QMP readings on the diagnostic socket; DO NOT relitigate):
+//   READING 1 (pair, ramfb-first, connected client): absolute tablet
+//     registered AND current per query-mice; TWO SPICE display channels;
+//     mouse-mode SERVER.
+//   READING 2 (single head, ramfb removed, connected client): same tablet
+//     status; ONE display channel; mouse-mode CLIENT. The two-display
+//     mechanism (QEMU #723 family) is EXPERIMENT-CONFIRMED.
+//   READING 3 (pair, ORDER SWAPPED — gpu0 first, connected client): TWO
+//     display channels; mouse-mode SERVER. The console-0/order theory is
+//     FALSIFIED — declaration order does not matter. Screendump also came
+//     back placeholder-sized (921615), so the swapped order may additionally
+//     disturb which head firmware draws through; the swap is disqualified.
+//   LEADING THEORY (fits all three, untested directly): SPICE grants
+//     client-mode mouse without a guest agent only for a SINGLE display
+//     channel; with multiple displays it requires the vdagent in the guest —
+//     and AVM launches with agent-mouse=off and bundles no Windows SPICE
+//     agent. CANDIDATE FIX PATHS (design decisions, not experiments): ship
+//     the SPICE guest agent for Windows and enable agent-mouse, OR keep the
+//     second head out of SPICE's display-channel count. Falsified and closed:
+//     timing/retry, USB suspend, display=gpu0 binding alone, tablet handler
+//     activation, declaration order.
+//   The display=gpu0 / id=gpu0 tokens are KEPT (launch-proven, harmless,
+//   possibly necessary-but-insufficient for whichever fix path ships).
+//
 // INSTALL MEDIA PIPELINE (wired in — the unattended-install integration):
 //   When a configuration has an installISOPath and the VM runtime dir does NOT
 //   yet contain the AVM-built media (install-avm.iso + autounattend.img),
@@ -48,6 +73,10 @@
 //   (NOT the user's original ISO — ConX would ignore the answer file), and the
 //   answer image attaches as removable usb-storage (Setup scans removable media
 //   for autounattend.xml; it was previously nvme, which Setup never scanned).
+//   EDITION RESOLUTION (2026-08-09, issue #6): the pipeline resolves the
+//   effective edition ONCE before validation and HARD-STOPS with a spoken
+//   error when the defaulted edition is absent from the disc (the IoT
+//   Enterprise LTSC silent-hang fix) — see WindowsInstallPipeline.swift.
 //
 //   ANNOUNCEMENTS (2026-07-12): pipeline failure, pipeline completion, and
 //   unexpected QEMU death fire Announcer.shared.announce — sound + system
@@ -127,6 +156,17 @@
 // ramfb impostor) SHIPPED in VMView and is proven across thirteen runs
 // (Handoffs 25–27). The rendered framebuffer flows through CocoaSpice into
 // VMView's MTKView with the CSMetalRenderer as the direct delegate.
+//
+// DIAGNOSTIC QMP SOCKET (PERMANENT — added 2026-08-09, issue #4): a SECOND
+// QMP monitor socket (qmp2.sock) alongside the app's own. The app NEVER
+// connects to it; it exists so Terminal-side diagnostics (nc/socat) can ask
+// QEMU direct questions — query-mice, query-spice, screendump, and anything
+// future support needs — against a LIVE VM without touching the app's
+// serialized QMP socket (poking that one desyncs the protocol; proven
+// failure class). It was decisive in the mouse-mode investigation the day it
+// was added. Same precedent as the firmware serial log. Security posture
+// unchanged: it lives in the VM's own /tmp socket dir next to the main QMP
+// socket, which is equally unauthenticated.
 //
 // STAGE C (2026-08-03, this pass): logging overhaul. Removed the unsanitized
 // ~/Desktop/qemu_stderr.log write (stderr lives in the sanitized diagnostic
@@ -603,7 +643,7 @@ final class VMManager: ObservableObject {
             vmID: configuration.id,
             sourceISOPath: iso,
             runtimeDir: runtimeDir,
-            editionName: "",      // empty -> pipeline's Windows 11 Pro defaults
+            editionName: "",      // empty -> pipeline resolves + validates the default (issue #6)
             productKey: "",       // (edition-picker UI fills these later)
             confirmWarning: { [weak self] reason in
                 // Invoked OFF the main actor (pipeline contract); hop to the
@@ -713,12 +753,14 @@ final class VMManager: ObservableObject {
 
         let spicePath = socketDir.appendingPathComponent("spice.sock").path
         let qmpPath   = socketDir.appendingPathComponent("qmp.sock").path
+        let qmp2Path  = socketDir.appendingPathComponent("qmp2.sock").path
         let tpmPath   = socketDir.appendingPathComponent("tpm.sock").path
         spiceSocketPath = spicePath
         avmLog("startVM: QMP socket path: \(qmpPath)")
+        avmLog("startVM: diagnostic QMP socket path: \(qmp2Path)")
         avmLog("startVM: SPICE socket path: \(spicePath)")
 
-        for path in [spicePath, qmpPath, tpmPath] {
+        for path in [spicePath, qmpPath, qmp2Path, tpmPath] {
             try? FileManager.default.removeItem(atPath: path)
         }
 
@@ -737,6 +779,7 @@ final class VMManager: ObservableObject {
             configuration: configuration,
             spiceSocketPath: spicePath,
             qmpSocketPath: qmpPath,
+            diagnosticQMPSocketPath: qmp2Path,
             tpmArguments: tpmArgs,
             runtimeDir: runtimeDir,
             attachInstallMedia: !installComplete
@@ -863,6 +906,8 @@ final class VMManager: ObservableObject {
     /// practice has been the live virtio-gpu head. A placeholder dump means
     /// EITHER very early boot OR the dump landed on the dead head — correlate
     /// with other evidence before concluding the guest is not drawing.
+    /// (Size discrimination: 921615 bytes = 640x480 placeholder; 1440015 =
+    /// real 800x600 content.)
     @discardableResult
     func captureScreendump() async -> String? {
         guard case .running = state else { return nil }
@@ -1240,6 +1285,7 @@ final class VMManager: ObservableObject {
         configuration: VMConfiguration,
         spiceSocketPath: String,
         qmpSocketPath: String,
+        diagnosticQMPSocketPath: String,
         tpmArguments: [String],
         runtimeDir: URL,
         attachInstallMedia: Bool
@@ -1327,22 +1373,13 @@ final class VMManager: ObservableObject {
         // nothing to deliver the key to), and the optical boot loader times out
         // and fails to boot. usb-tablet is for pointer input. Declared BEFORE the
         // drives so bus=usb.0 resolves.
-        // MOUSE MODE BINDING (2026-08-08, issue #4): display=gpu0 binds the
-        // tablet's absolute coordinates to the virtio-gpu-pci head (the LIVE
-        // head — the one firmware and Windows draw through and the one VMView
-        // renders). STATUS: launch-proven but NOT a cure. Probe 3 (2026-08-08)
-        // FALSIFIED the theory that this binding alone restores absolute
-        // (client-mode) cursor: with these exact args, the SPICE server still
-        // reported RELATIVE (server) mode at every click — positions discarded,
-        // only clicks delivered (guest cursor frozen at 400,300 while the
-        // 3s click-hold registered). The binding is KEPT as possibly
-        // necessary-but-insufficient. The mechanism still under investigation
-        // is the two-display interplay of QEMU issue #723 ("second display
-        // device forces mouse-mode=server"); next step is QMP ground truth
-        // via query-mice / query-spice on a diagnostic monitor socket.
-        // Forward reference to gpu0 (declared below) is ACCEPTED by QEMU
-        // 10.0.2 — bare-Terminal proven 2026-08-08, both declaration orders
-        // launch.
+        // MOUSE MODE (issue #4 — mechanism narrowed 2026-08-09; full three-run
+        // record in the file header): SPICE holds server-mode cursor whenever
+        // TWO display channels exist and grants client mode with ONE — the
+        // multi-display/no-agent theory is the leading explanation (AVM runs
+        // agent-mouse=off and bundles no Windows SPICE agent). display=gpu0
+        // is KEPT: launch-proven, harmless, possibly required by whichever
+        // fix path ships (guest agent, or single-display-channel operation).
         args += ["-device", "qemu-xhci,id=usb"]
         args += ["-device", "usb-kbd,bus=usb.0"]
         args += ["-device", "usb-tablet,bus=usb.0,display=gpu0"]
@@ -1427,26 +1464,36 @@ final class VMManager: ObservableObject {
 
         // DISPLAY: ramfb + virtio-gpu-pci TOGETHER, ramfb FIRST, ALL PHASES.
         // REVERTED to this pair 2026-08-02 after the run-phase single-head
-        // matrix completed with BOTH cells falsified. FULL RECORD — do not
-        // re-run these experiments:
+        // matrix completed with BOTH cells falsified; RE-CONFIRMED as the
+        // shipping order 2026-08-09 after the order-swap experiment (gpu0
+        // first) was run once for mouse-mode and DISQUALIFIED (mouse-mode
+        // still server AND placeholder-sized screendump — see the MOUSE MODE
+        // record in the file header). FULL RECORD — do not re-run:
         //   - PAIR (this config): boots AND draws in every phase. Install:
         //     ramfb-first satisfies the optical boot loader's GOP setup
         //     (virtio-gpu-pci alone STALLS the CD loader before "Press any
         //     key"; bisection-proven, not fixable via romfile=), and
         //     virtio-gpu-pci is what firmware/Windows actually draw through.
         //     Mirrors UTM's "virtio-ramfb" device.
-        //   - virtio-gpu-pci ALONE, run phase (RUN 9, 2026-08-02): FALSIFIED.
-        //     Installed Windows booted fully (JAWS up, guest healthy),
-        //     firmware fills flowed, then fills stopped dead at the Windows
-        //     display-stack handoff; screendump = "Display output is not
-        //     active." Driverless Windows (no viogpudo bundled — payload is
-        //     Balloon + NetKVM only) never activates a virtio-gpu scanout.
+        //   - virtio-gpu-pci ALONE, run phase (RUN 9, 2026-08-02): FALSIFIED
+        //     for real use. Installed Windows booted fully (JAWS up, guest
+        //     healthy), firmware fills flowed, then fills stopped dead at the
+        //     Windows display-stack handoff; screendump = "Display output is
+        //     not active." Driverless Windows (no viogpudo bundled — payload
+        //     is Balloon + NetKVM only) never activates a virtio-gpu scanout.
+        //     (2026-08-09 addendum: the same single-head config read SPICE
+        //     mouse-mode CLIENT with a connected client — the key mouse-mode
+        //     mechanism finding; see the file header.)
         //   - ramfb ALONE, run phase (RUN 10, 2026-08-02): FALSIFIED. Nothing
         //     ever drew — not even firmware. One initial 640x480 fill at
         //     attach, then silence; screendump = "Guest has not initialized
         //     the display (yet)." Matches the install-phase bisection's
         //     "ramfb alone: placeholder forever", now known to be a firmware
         //     property, not a Setup property.
+        //   - ORDER SWAP (gpu0 first, ramfb second; RUN 2026-08-09): tested
+        //     ONCE for mouse-mode; mouse-mode stayed server (order theory
+        //     falsified) and the screendump came back placeholder-sized —
+        //     DISQUALIFIED as a candidate. ramfb-FIRST is the order.
         //   - HEAD IDENTIFICATION (by size, runs 9+10): virtio-gpu is the
         //     800x600 head that carries all real fills; ramfb is the 640x480
         //     head that never initializes. In the pair, ramfb is a permanent
@@ -1465,22 +1512,18 @@ final class VMManager: ObservableObject {
         //   - Run 9 also proved the "second display generation" is host-side
         //     lifecycle (Enter Windows recreating the SPICE view) — it occurs
         //     with a single device and no guest reboot.
-        // MOUSE MODE (2026-08-08, issue #4): virtio-gpu-pci carries id=gpu0 so
-        // the usb-tablet above can reference this head (display=gpu0) — the
-        // LIVE head, same head VMView renders, so tablet coordinates and the
-        // picture would agree once absolute mode works. NOTE: the binding is
-        // launch-proven but did NOT alone restore absolute mode (probe 3,
-        // 2026-08-08) — see the mouse-mode comment at the USB block for
-        // status and evidence.
+        // MOUSE MODE (2026-08-08/09, issue #4): virtio-gpu-pci carries id=gpu0
+        // so the usb-tablet above binds its absolute coordinates to this head
+        // (display=gpu0) — see the USB block and file header for the mechanism.
         // A harmless "vgabios-ramfb.bin not found" warning prints unless that
         // ROM is bundled into Resources (staged by the Run Script). The
         // "Setting device address ... Not a PCI device" note is ramfb (not a
         // PCI device) and is harmless. Do NOT drop ramfb and do NOT drop
-        // virtio-gpu-pci — both single-head configurations are now proven
-        // dead in both phases.
+        // virtio-gpu-pci — both single-head configurations are proven dead
+        // for real use in both phases, and the swapped order is disqualified.
         args += ["-device", "ramfb"]
         args += ["-device", "virtio-gpu-pci,id=gpu0"]
-        avmLog("buildQEMUArguments: display = ramfb + virtio-gpu-pci id=gpu0 (bisected pair, all phases; tablet references gpu0 — issue #4 investigation)")
+        avmLog("buildQEMUArguments: display = ramfb + virtio-gpu-pci id=gpu0 (bisected pair, ramfb first — proven order; issue #4 mechanism record in header)")
 
         args += ["-audiodev", "spice,id=spiceaudio"]
         args += ["-device", "intel-hda"]
@@ -1494,6 +1537,18 @@ final class VMManager: ObservableObject {
 
         args += ["-chardev", "socket,id=char-qmp,path=\(qmpSocketPath),server=on,wait=off"]
         args += ["-qmp", "chardev:char-qmp"]
+
+        // DIAGNOSTIC QMP SOCKET (PERMANENT — 2026-08-09, issue #4; see file
+        // header). A second, independent monitor socket the APP NEVER TOUCHES,
+        // for Terminal-side ground truth (query-mice, query-spice, screendump,
+        // future support diagnostics) against a live VM. The app's own QMP
+        // socket is serialized against its own traffic — poking it externally
+        // desyncs the protocol (proven failure class) — so external questions
+        // get their own socket. server=on,wait=off exactly like the main
+        // socket: QEMU listens, nothing blocks when no client connects.
+        args += ["-chardev", "socket,id=char-qmp2,path=\(diagnosticQMPSocketPath),server=on,wait=off"]
+        args += ["-qmp", "chardev:char-qmp2"]
+        avmLog("buildQEMUArguments: diagnostic QMP socket -> \(diagnosticQMPSocketPath)")
 
         args += tpmArguments
         args += ["-rtc", "base=localtime,clock=host"]
@@ -1889,7 +1944,7 @@ final class VMManager: ObservableObject {
         qmpWaiters.removeAll()
         for w in waiters { w.resume() }
         if let dir = vmSocketDir {
-            for name in ["spice.sock", "qmp.sock", "tpm.sock"] {
+            for name in ["spice.sock", "qmp.sock", "qmp2.sock", "tpm.sock"] {
                 try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
             }
         }
