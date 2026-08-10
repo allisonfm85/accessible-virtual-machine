@@ -314,11 +314,82 @@
 //   touching CSDisplay at all.
 //   Every scale application is announced via avmPublicLog — it is a
 //   configuration choice, and it joins the binding-decision evidence stream.
-//   NOTE FOR ISSUE #4 (pointer input, not yet built): this transform scales
-//   the RENDER only. When mouse handling is written, its view->guest
-//   coordinate conversion MUST derive from the SAME scale + origin — one
-//   source of truth — or render and input drift apart and clicks land
-//   off-target. Grep anchor: applyViewportScale.
+//   NOTE FOR ISSUE #4 (pointer input — BUILT 2026-08-08, see MOUSE INPUT
+//   below): the mouse path's view->guest coordinate conversion derives from
+//   the SAME formula as this transform — Self.aspectFitScale, the shared
+//   single source of truth — so render and input cannot drift apart and
+//   clicks land where the picture shows them. Grep anchor:
+//   applyViewportScale.
+//
+// MOUSE INPUT (2026-08-08, issue #4 — field-reported by Zach Bennoui):
+//   Not a bug fix: AVM had NO pointer path at all (audited 2026-08-07 — zero
+//   mouse handlers, zero position sends anywhere in this file). Built this
+//   session.
+//   THE MODEL: absolute positioning. VMManager already attaches usb-tablet
+//   (the guest's absolute pointing device — its args, ~line 1332), and
+//   spiceInputAvailable has always requested client (absolute) mode via
+//   requestMouseMode(false) — the two halves the fork's sendMousePosition
+//   documentation requires. Events: SPICEKeyCaptureView forwards
+//   move/drag/button/scroll to the coordinator exactly as it forwards keys;
+//   an NSTrackingArea (.mouseMoved, .activeInKeyWindow, .inVisibleRect)
+//   supplies mouseMoved, and .inVisibleRect keeps its rect current across
+//   resizes without manual bookkeeping.
+//   COORDINATES, one source of truth: viewPointToGuestPoint converts
+//   locationInWindow -> view -> backing pixels, flips Y (this view is an
+//   UNFLIPPED NSView — bottom-left origin — while the guest is top-left),
+//   subtracts the centering offset (drawable − guest×scale)/2 per axis —
+//   which is exactly the geometric meaning of the fork's centered quad at
+//   viewportOrigin zero — and divides by Self.aspectFitScale, the SAME
+//   formula the render transform uses. The result is clamped to guest
+//   bounds so edge events never send out-of-range coordinates.
+//   GATING: identical to keys — pointer events forward only while LOCKED.
+//   Gated BUTTON events log like gated keys; gated or unconvertible MOVES
+//   are deliberately silent (they arrive hundreds of times a second — the
+//   same sanctioned-silence class as the F19 repeat suppression, and for
+//   the same reason: volume without meaning).
+//   BUTTONS: pressedMouseButtons (MAIN-THREAD-ONLY, like pressedScancodes)
+//   mirrors the guest's held-button state. The position is sent BEFORE the
+//   button event so the click lands where the pointer is. Held buttons are
+//   flushed on unlock and on teardown exactly like stuck keys — an
+//   interrupted drag must not strand a held button in the guest.
+//   SCROLL: DISCRETE SPICE TICKS for both device classes. The fork's
+//   Up/Down cases are proven (source read 2026-08-08): each is a
+//   press+release of SPICE buttons 4/5 — the wire protocol's only scroll
+//   vocabulary. Mouse wheels (hasPreciseScrollingDeltas == false) deliver
+//   line-unit deltas; trackpads deliver point-unit deltas plus momentum
+//   events. One accumulator, kept in point units at 10 points per tick;
+//   wheel line deltas are converted to point units on entry so both device
+//   classes share it and residue on device switch is sub-tick.
+//   scrollingDeltaY already carries the user's natural-scrolling
+//   preference, so the direction the user configured is the direction the
+//   guest gets (positive delta = scroll up = SPICE button UP).
+//   (kCSInputScrollSmooth was deliberately NOT used: its implementation
+//   body was not captured in the source read — the capture window ended
+//   before it — and the discrete path produces equivalent wire traffic.
+//   Evidence over assumption.)
+//   SILENCE IS A BUG, the pointer edition: if the SPICE server refuses the
+//   absolute-mode request, serverModeCursor stays true and every position
+//   send is silently ignored — invisible by construction. So the state is
+//   CHECKED at every button press and a refusal is announced via
+//   avmPublicLog exactly once per transition (and the recovery announced
+//   likewise).
+//   MODE RETRY (2026-08-08, probe run 1): the first field probe caught the
+//   silent-refusal state LIVE — guest tablet enumerated and healthy
+//   (VID 0627 PID 0001, HID mouse Status OK, verified in-guest), our
+//   client-mode request transmitted (fork source verified: spiceMain is
+//   back-filled for either channel-arrival order, so the request did not
+//   hit the nil early-return), yet the server still reported SERVER mode
+//   13 s into a freshly rebuilt Enter-Windows connection. The one-shot
+//   request at spiceInputAvailable fires within ~20 ms of the channel
+//   appearing — early enough to lose to negotiation timing on a young
+//   connection, and nothing ever asked again. THE FIX:
+//   warnIfRelativeCursorMode RE-REQUESTS client mode every time it detects
+//   server mode at a button press. Self-healing for any transient cause,
+//   idempotent, costs nothing in the healthy state (the request only fires
+//   while the mode is wrong), and the once-per-transition announcements
+//   narrate the recovery. Known limit: the click that triggers a recovery
+//   may itself land nowhere (its position was discarded before the grant);
+//   acceptable, and a tester-doc note if it survives field testing.
 //
 // THE REDACTION TRAP (2026-07-31, cost: one full evening — READ THIS)
 //   Swift's NSLog("...\(x)...") compiles the interpolated result into a SINGLE
@@ -543,13 +614,13 @@ struct SPICEDisplayView: NSViewRepresentable {
     }
 }
 
-// MARK: - Key-capturing MTKView
-/// An MTKView that becomes first responder and forwards keyboard events to the
-/// SPICE guest via the coordinator. The coordinator owns the CSInput channel
-/// and the focus-lock gate. The Control-Command-Escape escape hatch is NOT
-/// handled here — FocusLockManager's global Carbon hotkey owns it.
-/// While locked, FocusLockManager DEFENDS this view's first-responder status
-/// (registration happens in viewDidMoveToWindow below).
+// MARK: - Key- and mouse-capturing MTKView
+/// An MTKView that becomes first responder and forwards keyboard AND mouse
+/// events to the SPICE guest via the coordinator. The coordinator owns the
+/// CSInput channel and the focus-lock gate. The Control-Command-Escape escape
+/// hatch is NOT handled here — FocusLockManager's global Carbon hotkey owns
+/// it. While locked, FocusLockManager DEFENDS this view's first-responder
+/// status (registration happens in viewDidMoveToWindow below).
 final class SPICEKeyCaptureView: MTKView {
     weak var coordinator: SPICECoordinator?
 
@@ -630,6 +701,91 @@ final class SPICEKeyCaptureView: MTKView {
         coordinator.handleKey(event: event, pressed: true)
         return true
     }
+
+    // MARK: Mouse input (issue #4 — see MOUSE INPUT in the file header)
+
+    /// mouseMoved is only delivered inside a tracking area — established
+    /// here. .inVisibleRect keeps the tracked rect current across resizes
+    /// with no manual bookkeeping; .activeInKeyWindow matches the focus
+    /// model (pointer events are only meaningful while this window is key
+    /// and the lock is engaged — the coordinator's gate is still the
+    /// authority). Old areas owned by this view are removed first so window
+    /// moves and resizes never accumulate duplicates.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas where area.owner === self {
+            removeTrackingArea(area)
+        }
+        addTrackingArea(NSTrackingArea(rect: .zero,
+                                       options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+                                       owner: self,
+                                       userInfo: nil))
+    }
+
+    // Trackpads and mice deliver identical NSEvents for movement, drags, and
+    // buttons — the device distinction only exists in scrollWheel (handled in
+    // the coordinator via hasPreciseScrollingDeltas). Drag variants forward
+    // to the same move handler: a drag IS a move with a button held, and the
+    // coordinator's pressedMouseButtons carries the button state.
+    override func mouseMoved(with event: NSEvent) {
+        coordinator?.handleMouseMove(event: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        coordinator?.handleMouseMove(event: event)
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        coordinator?.handleMouseMove(event: event)
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        coordinator?.handleMouseMove(event: event)
+    }
+
+    // Button overrides deliberately do NOT call super: the guest owns the
+    // pointer while this view has it, and AppKit's default handling (e.g.
+    // rightMouseDown popping a context menu) must not run.
+    override func mouseDown(with event: NSEvent) {
+        coordinator?.handleMouseButton(event: event, button: .left, pressed: true)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        coordinator?.handleMouseButton(event: event, button: .left, pressed: false)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        coordinator?.handleMouseButton(event: event, button: .right, pressed: true)
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        coordinator?.handleMouseButton(event: event, button: .right, pressed: false)
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        coordinator?.handleMouseButton(event: event, button: Self.button(for: event), pressed: true)
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        coordinator?.handleMouseButton(event: event, button: Self.button(for: event), pressed: false)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        coordinator?.handleScroll(event: event)
+    }
+
+    /// "Other" buttons: AppKit numbers them 2 (middle), 3, 4, ...; the fork's
+    /// CSInputButton offers middle/side/extra beyond left/right. Buttons past
+    /// 4 fold into .extra — the best available mapping rather than a silent
+    /// drop.
+    private static func button(for event: NSEvent) -> CSInputButton {
+        switch event.buttonNumber {
+        case 2:  return .middle
+        case 3:  return .side
+        case 4:  return .extra
+        default: return .extra
+        }
+    }
 }
 
 // MARK: - Coordinator
@@ -650,6 +806,8 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     // read exclusively inside applyViewportScale, which runs on the Apple
     // main thread. Exists so view-geometry changes can recompute the scale
     // without a cross-context read of CSDisplay.displaySize.
+    // (Issue #4: viewPointToGuestPoint reads it too — also main-thread-only,
+    // called from mouse event handlers.)
     private var lastAppliedGuestSize: CGSize = .zero
 
     // STUCK-KEY FIX: the set of non-modifier scancodes currently pressed in the
@@ -660,6 +818,29 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     // and on the unlock path. Modifier scancodes are NOT tracked here — they are
     // driven directly by flagsChanged.
     private var pressedScancodes = Set<Int32>()
+
+    // MOUSE INPUT (issue #4): the mouse buttons currently held in the guest
+    // (as far as we've forwarded) — the pointer-side sibling of
+    // pressedScancodes, MAIN-THREAD-ONLY for the same reason. Sent as the
+    // mask on every position/button/scroll event, and flushed on unlock and
+    // teardown so an interrupted drag never strands a held button.
+    private var pressedMouseButtons: CSInputButton = []
+
+    // MOUSE INPUT (issue #4): scroll accumulator, in POINT units. Trackpad
+    // precise deltas add directly; wheel line deltas are converted to point
+    // units on entry so both device classes share one accumulator (residue on
+    // a device switch is sub-tick and harmless). Drained in whole ticks of
+    // preciseScrollPointsPerTick; the fractional remainder carries over.
+    private var scrollAccumulatorY: CGFloat = 0
+    private static let preciseScrollPointsPerTick: CGFloat = 10
+
+    // MOUSE INPUT (issue #4): one-shot flag so the server-refused-absolute-
+    // mode announcement fires once per transition, not once per click.
+    private var warnedRelativeCursorMode = false
+
+    /// All fork mouse buttons, for flush iteration (option sets aren't
+    /// natively iterable).
+    private static let allMouseButtons: [CSInputButton] = [.left, .middle, .right, .side, .extra]
 
     init(focusLock: FocusLockManager) {
         self.focusLock = focusLock
@@ -778,6 +959,11 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         let inputToFlush = input
         let codesToRelease = pressedScancodes
         pressedScancodes.removeAll()
+        // MOUSE INPUT (issue #4): held buttons flush on teardown exactly like
+        // stuck keys — same capture-then-queue discipline.
+        let buttonsToRelease = pressedMouseButtons
+        pressedMouseButtons = []
+        scrollAccumulatorY = 0
 
         CSMain.shared.async {
             if let displayToDetach, let rendererToDetach {
@@ -790,6 +976,12 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
                 }
                 for code in codesToRelease {
                     inputToFlush.send(.release, code: code)
+                }
+                if !buttonsToRelease.isEmpty {
+                    NSLog("AVM: teardown — releasing held guest mouse button(s) on the SPICE context.")
+                }
+                for button in Self.allMouseButtons where buttonsToRelease.contains(button) {
+                    inputToFlush.sendMouseButton(button, mask: [], pressed: false)
                 }
                 inputToFlush.releaseKeys()
             }
@@ -819,19 +1011,28 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     /// strong capture keeps CSInput alive until the SPICE context runs the
     /// block. Used by the unlock observer and any path that must not risk a
     /// synchronous call into a possibly-wedged SPICE worker.
+    /// (Issue #4: held mouse buttons flush here too — an unlock mid-drag must
+    /// not strand a held button in the guest, exactly as it must not strand a
+    /// held key.)
     private func flushGuestKeysOnSpiceContext(reason: String) {
         let inputToFlush = input
         let codesToRelease = pressedScancodes
         pressedScancodes.removeAll()
+        let buttonsToRelease = pressedMouseButtons
+        pressedMouseButtons = []
+        scrollAccumulatorY = 0
 
         guard let inputToFlush else {
             NSLog("AVM: guest-key flush (\(reason)) — no input channel; tracking cleared.")
             return
         }
-        NSLog("AVM: guest-key flush (\(reason)) — queued \(codesToRelease.count) tracked key(s) + releaseKeys on the SPICE context.")
+        NSLog("AVM: guest-key flush (\(reason)) — queued \(codesToRelease.count) tracked key(s)\(buttonsToRelease.isEmpty ? "" : " + held mouse button(s)") + releaseKeys on the SPICE context.")
         CSMain.shared.async {
             for code in codesToRelease {
                 inputToFlush.send(.release, code: code)
+            }
+            for button in Self.allMouseButtons where buttonsToRelease.contains(button) {
+                inputToFlush.sendMouseButton(button, mask: [], pressed: false)
             }
             inputToFlush.releaseKeys()
         }
@@ -1004,6 +1205,140 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         previousModifiers = flags
     }
 
+    // MARK: - Mouse input (issue #4 — see MOUSE INPUT in the file header)
+
+    /// ONE SOURCE OF TRUTH (issues #3 + #4): the aspect-fit scale formula,
+    /// shared by the render path (applyViewportScale) and the mouse path
+    /// (viewPointToGuestPoint). Extracting it is what makes render and input
+    /// incapable of disagreeing by construction — the design rule recorded in
+    /// this file's header the day the render transform shipped.
+    static func aspectFitScale(drawable: CGSize, guest: CGSize) -> CGFloat {
+        min(drawable.width / guest.width, drawable.height / guest.height)
+    }
+
+    /// APPLE MAIN THREAD ONLY (called from mouse event handlers). Convert an
+    /// NSEvent's locationInWindow to guest absolute coordinates:
+    /// window -> view points -> backing pixels -> flip Y (unflipped NSView is
+    /// bottom-left origin; the guest is top-left) -> subtract the centering
+    /// offset (drawable − guest×scale)/2 — the geometric meaning of the
+    /// fork's centered quad at viewportOrigin zero -> divide by the SHARED
+    /// aspect-fit scale -> clamp to guest bounds. Returns nil until a display
+    /// has bound (lastAppliedGuestSize is zero) or when geometry is
+    /// degenerate — the callers treat nil as "nothing to send".
+    private func viewPointToGuestPoint(_ locationInWindow: NSPoint) -> CGPoint? {
+        guard let mtkView else { return nil }
+        let guest = lastAppliedGuestSize
+        guard guest.width > 0, guest.height > 0 else { return nil }
+        let drawable = mtkView.drawableSize
+        guard drawable.width > 0, drawable.height > 0 else { return nil }
+
+        let viewPoint = mtkView.convert(locationInWindow, from: nil)
+        let backing = mtkView.convertToBacking(viewPoint)
+        let pixelX = backing.x
+        let pixelY = drawable.height - backing.y   // Y-flip: bottom-left -> top-left
+
+        let scale = Self.aspectFitScale(drawable: drawable, guest: guest)
+        guard scale > 0 else { return nil }
+        let offsetX = (drawable.width - guest.width * scale) / 2
+        let offsetY = (drawable.height - guest.height * scale) / 2
+
+        let guestX = min(max((pixelX - offsetX) / scale, 0), guest.width - 1)
+        let guestY = min(max((pixelY - offsetY) / scale, 0), guest.height - 1)
+        return CGPoint(x: guestX, y: guestY)
+    }
+
+    /// SILENCE IS A BUG, the pointer edition: if the SPICE server holds the
+    /// cursor in relative (server) mode, every sendMousePosition is silently
+    /// ignored per the fork's own docs — invisible by construction. Checked
+    /// at every button press (cheap — one Bool read); announced exactly once
+    /// per transition in each direction.
+    /// MODE RETRY (2026-08-08, probe run 1 — see MOUSE INPUT in the file
+    /// header for the full evidence chain): the one-shot request at
+    /// spiceInputAvailable fires within ~20 ms of the channel appearing on a
+    /// freshly rebuilt connection, early enough to lose to negotiation
+    /// timing — and nothing ever asked again (probe-proven: healthy guest
+    /// tablet, transmitted request, server still in server mode 13 s later).
+    /// So: while the wrong mode persists, RE-REQUEST client mode on every
+    /// detection. Idempotent, self-healing for any transient cause, and
+    /// free in the healthy state — this call only runs while the mode is
+    /// wrong. The request is queued on the SPICE context by the fork
+    /// (requestMouseMode's own asyncWith:), so this stays safe from the
+    /// main thread per the standing thread rule.
+    private func warnIfRelativeCursorMode(_ input: CSInput) {
+        if input.serverModeCursor {
+            input.requestMouseMode(false)
+            if !warnedRelativeCursorMode {
+                warnedRelativeCursorMode = true
+                avmPublicLog("SPICE server reports RELATIVE (server-mode) cursor despite the absolute-mode request — absolute mouse positions are being IGNORED by the server; re-requesting client mode on every press until granted (issue #4).")
+            }
+        } else if warnedRelativeCursorMode {
+            warnedRelativeCursorMode = false
+            avmPublicLog("SPICE server granted ABSOLUTE (client-mode) cursor — pointer input active again (issue #4).")
+        }
+    }
+
+    /// HOT pointer path — sends on the main thread exactly as handleKey does
+    /// (the proven input pattern in this file). Gated moves are deliberately
+    /// SILENT: they arrive hundreds of times a second, and a log line per
+    /// event is volume without meaning (the sanctioned-silence class).
+    func handleMouseMove(event: NSEvent) {
+        guard isLocked, let input else { return }
+        guard let guestPoint = viewPointToGuestPoint(event.locationInWindow) else { return }
+        input.sendMousePosition(pressedMouseButtons, absolutePoint: guestPoint)
+    }
+
+    /// Button events: position is sent FIRST (with the updated mask) so the
+    /// click lands where the pointer is, then the button transition itself.
+    /// pressedMouseButtons mirrors the guest's held-button state and is the
+    /// mask on every subsequent move — that is what makes a drag a drag.
+    /// Gated button events LOG, like gated keys: a click that silently does
+    /// nothing is a diagnosable event, and clicks are rare enough to afford
+    /// the line.
+    func handleMouseButton(event: NSEvent, button: CSInputButton, pressed: Bool) {
+        guard isLocked, let input else {
+            NSLog("AVM: mouse button gated — locked=\(isLocked), input=\(input != nil ? "present" : "nil")")
+            return
+        }
+        warnIfRelativeCursorMode(input)
+
+        if pressed {
+            pressedMouseButtons.insert(button)
+        } else {
+            pressedMouseButtons.remove(button)
+        }
+
+        if let guestPoint = viewPointToGuestPoint(event.locationInWindow) {
+            input.sendMousePosition(pressedMouseButtons, absolutePoint: guestPoint)
+        }
+        input.sendMouseButton(button, mask: pressedMouseButtons, pressed: pressed)
+    }
+
+    /// Scroll: discrete SPICE ticks for both device classes (see MOUSE INPUT
+    /// in the file header for the full rationale, including why
+    /// kCSInputScrollSmooth is deliberately not used). The accumulator lives
+    /// in point units; wheel line deltas are converted on entry. Whole ticks
+    /// drain; the fractional remainder carries over, so slow precise
+    /// scrolling still eventually ticks. scrollingDeltaY already carries the
+    /// user's natural-scrolling preference — positive means scroll up.
+    func handleScroll(event: NSEvent) {
+        guard isLocked, let input else { return }
+
+        if event.hasPreciseScrollingDeltas {
+            scrollAccumulatorY += event.scrollingDeltaY
+        } else {
+            scrollAccumulatorY += event.scrollingDeltaY * Self.preciseScrollPointsPerTick
+        }
+
+        let ticks = Int(scrollAccumulatorY / Self.preciseScrollPointsPerTick)
+        guard ticks != 0 else { return }
+        scrollAccumulatorY -= CGFloat(ticks) * Self.preciseScrollPointsPerTick
+
+        let direction: CSInputScroll = ticks > 0 ? .up : .down
+        for _ in 0..<abs(ticks) {
+            input.sendMouseScroll(direction, buttonMask: pressedMouseButtons, dy: 0)
+        }
+    }
+
     // MARK: - Viewport scaling (issue #3)
 
     /// Queue a viewport-scale recomputation on the Apple main thread, with a
@@ -1040,6 +1375,8 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     /// The fork's own setters are no-ops on unchanged values; the epsilon
     /// guard here exists only to keep the announcement stream free of
     /// no-change noise.
+    /// (Issue #4: the scale formula lives in Self.aspectFitScale — SHARED
+    /// with the mouse conversion; the computation is unchanged.)
     private func applyViewportScale(guestSize: CGSize) {
         guard guestSize.width > 0, guestSize.height > 0 else { return }
         guard let renderer, let mtkView else { return }
@@ -1047,8 +1384,7 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         guard drawable.width > 0, drawable.height > 0 else { return }
 
         lastAppliedGuestSize = guestSize
-        let scale = min(drawable.width / guestSize.width,
-                        drawable.height / guestSize.height)
+        let scale = Self.aspectFitScale(drawable: drawable, guest: guestSize)
         guard abs(renderer.viewportScale - scale) > 0.0005 else { return }
         renderer.viewportOrigin = .zero
         renderer.viewportScale = scale
@@ -1295,6 +1631,13 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         NSLog("AVM: SPICE input channel available.")
         self.input = input
         input.requestMouseMode(false)
+        // PUBLIC (issue #4): a configuration choice, announced. false =
+        // request ABSOLUTE (client-mode) positioning — the mode the fork's
+        // sendMousePosition requires and the guest's usb-tablet serves. The
+        // server's answer lands in serverModeCursor and is checked (and any
+        // refusal announced, with a re-request until granted) at every button
+        // press — see warnIfRelativeCursorMode.
+        avmPublicLog("SPICE input channel available — absolute (client-mode) cursor requested for pointer input (issue #4).")
     }
 
     func spiceInputUnavailable(_ connection: CSConnection, input: CSInput) {

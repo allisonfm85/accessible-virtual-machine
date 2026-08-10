@@ -1327,9 +1327,25 @@ final class VMManager: ObservableObject {
         // nothing to deliver the key to), and the optical boot loader times out
         // and fails to boot. usb-tablet is for pointer input. Declared BEFORE the
         // drives so bus=usb.0 resolves.
+        // MOUSE MODE BINDING (2026-08-08, issue #4): display=gpu0 binds the
+        // tablet's absolute coordinates to the virtio-gpu-pci head (the LIVE
+        // head — the one firmware and Windows draw through and the one VMView
+        // renders). STATUS: launch-proven but NOT a cure. Probe 3 (2026-08-08)
+        // FALSIFIED the theory that this binding alone restores absolute
+        // (client-mode) cursor: with these exact args, the SPICE server still
+        // reported RELATIVE (server) mode at every click — positions discarded,
+        // only clicks delivered (guest cursor frozen at 400,300 while the
+        // 3s click-hold registered). The binding is KEPT as possibly
+        // necessary-but-insufficient. The mechanism still under investigation
+        // is the two-display interplay of QEMU issue #723 ("second display
+        // device forces mouse-mode=server"); next step is QMP ground truth
+        // via query-mice / query-spice on a diagnostic monitor socket.
+        // Forward reference to gpu0 (declared below) is ACCEPTED by QEMU
+        // 10.0.2 — bare-Terminal proven 2026-08-08, both declaration orders
+        // launch.
         args += ["-device", "qemu-xhci,id=usb"]
         args += ["-device", "usb-kbd,bus=usb.0"]
-        args += ["-device", "usb-tablet,bus=usb.0"]
+        args += ["-device", "usb-tablet,bus=usb.0,display=gpu0"]
 
         // INSTALL DISK: nvme (target disk Windows installs onto). bootindex=1 so
         // the install media (bootindex=0) boots first.
@@ -1449,6 +1465,13 @@ final class VMManager: ObservableObject {
         //   - Run 9 also proved the "second display generation" is host-side
         //     lifecycle (Enter Windows recreating the SPICE view) — it occurs
         //     with a single device and no guest reboot.
+        // MOUSE MODE (2026-08-08, issue #4): virtio-gpu-pci carries id=gpu0 so
+        // the usb-tablet above can reference this head (display=gpu0) — the
+        // LIVE head, same head VMView renders, so tablet coordinates and the
+        // picture would agree once absolute mode works. NOTE: the binding is
+        // launch-proven but did NOT alone restore absolute mode (probe 3,
+        // 2026-08-08) — see the mouse-mode comment at the USB block for
+        // status and evidence.
         // A harmless "vgabios-ramfb.bin not found" warning prints unless that
         // ROM is bundled into Resources (staged by the Run Script). The
         // "Setting device address ... Not a PCI device" note is ramfb (not a
@@ -1456,8 +1479,8 @@ final class VMManager: ObservableObject {
         // virtio-gpu-pci — both single-head configurations are now proven
         // dead in both phases.
         args += ["-device", "ramfb"]
-        args += ["-device", "virtio-gpu-pci"]
-        avmLog("buildQEMUArguments: display = ramfb + virtio-gpu-pci (bisected pair, all phases; single-head experiments falsified 2026-08-02 — see display comment)")
+        args += ["-device", "virtio-gpu-pci,id=gpu0"]
+        avmLog("buildQEMUArguments: display = ramfb + virtio-gpu-pci id=gpu0 (bisected pair, all phases; tablet references gpu0 — issue #4 investigation)")
 
         args += ["-audiodev", "spice,id=spiceaudio"]
         args += ["-device", "intel-hda"]
