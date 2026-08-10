@@ -139,15 +139,30 @@
 //   Balloon (.inf/.sys/.cat). Setup auto-installs anything under a literal
 //   "$WinPEDriver$" folder at the media root during windowsPE.
 //
-// ANSWER FILE (Stage 4): the canonical template is a bundled resource
-//   (Resources/autounattend.xml) carrying two literal placeholder tokens —
-//   AVM_EDITION_NAME (the /IMAGE/NAME value) and AVM_PRODUCT_KEY (the generic
-//   edition-select key in UserData). Stage 4 substitutes both from PipelineInput
-//   (falling back to the Windows 11 Pro defaults when empty), writes the filled
-//   XML to scratch, and builds a 2MB FAT12 answer image with mformat/mcopy
-//   (proven geometry -T 4096 -h 16 -s 32; label UNATTEND). Generic product keys
-//   select the edition only — they do NOT activate Windows and store nothing
-//   sensitive.
+// ANSWER FILE (Stage 4) + EDITION RESOLUTION (2026-08-09, issue #6): the
+//   canonical template is a bundled resource (Resources/autounattend.xml)
+//   carrying two literal placeholder tokens — AVM_EDITION_NAME (the /IMAGE/NAME
+//   value) and AVM_PRODUCT_KEY (the generic edition-select key in UserData).
+//   The effective edition/key pair is resolved EXACTLY ONCE, at the top of
+//   run(), BEFORE validation (empty PipelineInput values fall back to the
+//   Windows 11 Pro defaults there and ONLY there — the edition-picker UI
+//   doesn't exist yet). The resolved pair, with a wasDefaulted provenance
+//   flag, flows to BOTH the validation gate and Stage 4, so validation and the
+//   answer file can never disagree about which edition is in play (one source
+//   of truth, same principle as VMView's shared aspect-fit scale). The gate:
+//   a USER-CHOSEN edition missing from the disc warns and may proceed (the
+//   disc may name it slightly differently); a DEFAULTED edition missing from
+//   the disc HARD-STOPS with a spoken error naming the disc's editions —
+//   root-caused from issue #6, where an IoT Enterprise LTSC ISO (no
+//   "Windows 11 Pro" image) sailed through validation and Windows Setup hung
+//   silently on an edition that didn't exist. Stage 4 substitutes from the
+//   resolved pair and carries a BACKSTOP membership assert (defaulted edition
+//   must be on the disc's list) that should be unreachable — it exists to
+//   catch any future call path that skips the gate. Stage 4 then writes the
+//   filled XML to scratch and builds a 2MB FAT12 answer image with
+//   mformat/mcopy (proven geometry -T 4096 -h 16 -s 32; label UNATTEND).
+//   Generic product keys select the edition only — they do NOT activate
+//   Windows and store nothing sensitive.
 //
 // ACCESSIBILITY (non-negotiable): the pipeline is a potentially multi-minute
 // async sequence. A silent hang is indistinguishable from a freeze for a blind
@@ -274,14 +289,32 @@ private struct ELToritoInfo {
     let volumeID: String         // for the rebuild's -V
 }
 
+// MARK: - Resolved Edition (single resolution point — issue #6)
+
+/// The EFFECTIVE edition/key pair the pipeline installs, resolved EXACTLY ONCE
+/// at the top of run() before validation. `wasDefaulted` records provenance:
+/// true when PipelineInput arrived empty and the Windows 11 Pro defaults
+/// engaged; false when the user (or a future edition picker) chose explicitly.
+/// The flag drives the validation gate's tier — a defaulted edition missing
+/// from the disc is a HARD-STOP (the user made no choice to honor; proceeding
+/// guarantees the issue-#6 silent Setup hang), while a user-chosen edition
+/// missing from the disc keeps the warn-and-proceed tier (the disc may name it
+/// slightly differently). It also scopes Stage 4's backstop assert.
+private struct ResolvedEdition {
+    let name: String
+    let key: String
+    let wasDefaulted: Bool
+}
+
 // MARK: - Validation Gate
 
 /// Result of the cheap, fail-fast ISO validation that runs BEFORE the expensive
 /// extract. Two-tier by design (Allison's framing): HARD-STOP only where AVM is
-/// CERTAIN the outcome is doomed (wrong architecture, not a Windows installer);
-/// WARN-AND-PROCEED where AVM is merely UNSURE (requested edition not in the
-/// image list, unrecognized build) so a techy user is never blocked on a
-/// valid-but-unusual ISO.
+/// CERTAIN the outcome is doomed (wrong architecture, not a Windows installer,
+/// or — since issue #6 — the DEFAULTED edition absent from the disc, which
+/// guarantees a silent Setup hang); WARN-AND-PROCEED where AVM is merely UNSURE
+/// (user-requested edition not in the image list, unrecognized build) so a
+/// techy user is never blocked on a valid-but-unusual ISO.
 enum ISOValidation {
     /// Cleared the gate — proceed with the build.
     case ok
@@ -368,15 +401,29 @@ final class WindowsInstallPipeline {
     /// run()'s serial flow.
     private var scratchDir: URL?
 
+    /// The effective edition/key for THIS run, resolved once at the top of
+    /// run() (see ResolvedEdition + the file-header EDITION RESOLUTION note).
+    /// Touched only from run()'s serial flow, same discipline as scratchDir.
+    private var resolvedEdition: ResolvedEdition?
+
+    /// The edition names read off the disc's install.wim by the validation
+    /// gate, kept for Stage 4's backstop assert. nil when the wim was
+    /// unreadable (the gate's warn tier covered that) — the backstop cannot
+    /// assert against a list that doesn't exist. Touched only from run()'s
+    /// serial flow.
+    private var discEditionNames: [String]?
+
     /// boot.wim image index that is "Microsoft Windows Setup (arm64)" — the image
     /// whose winpeshl.ini controls what runs at boot. VERIFIED on the real 25H2
     /// ARM64 ISO: image 1 is plain WinPE, image 2 is Windows Setup. Image 2 is the
     /// ConX-bypass injection target.
     private let setupBootWimImageIndex = 2
 
-    /// Stage 4 defaults, used when PipelineInput's editionName/productKey arrive
-    /// empty (the edition-picker UI doesn't exist yet). The key is the PUBLIC
-    /// generic Windows 11 Pro INSTALL key — it selects the edition only, does NOT
+    /// Defaults for the SINGLE RESOLUTION POINT at the top of run() — the ONLY
+    /// place they can engage (Stage 4's former private fallback is deleted;
+    /// issue #6). Used when PipelineInput's editionName/productKey arrive empty
+    /// (the edition-picker UI doesn't exist yet). The key is the PUBLIC generic
+    /// Windows 11 Pro INSTALL key — it selects the edition only, does NOT
     /// activate Windows, and stores nothing sensitive.
     private let defaultEditionName = "Windows 11 Pro"
     private let defaultProductKey = "VK7JG-NPHTM-C97JM-9MPGT-3V66T"
@@ -606,9 +653,10 @@ final class WindowsInstallPipeline {
 
     // MARK: - Driver Loop
 
-    /// Run the whole pipeline: validation gate, then the six build stages in
-    /// order, halting on the first failure and cleaning up scratch. Emits a
-    /// progress event before each stage. Returns the verified output artifacts.
+    /// Run the whole pipeline: edition resolution, validation gate, then the six
+    /// build stages in order, halting on the first failure and cleaning up
+    /// scratch. Emits a progress event before each stage. Returns the verified
+    /// output artifacts.
     /// @concurrent: FORCED onto the background global executor regardless of
     /// the caller's actor (plain nonisolated async proved insufficient — see
     /// CONCURRENCY MODEL in the file header).
@@ -617,8 +665,21 @@ final class WindowsInstallPipeline {
         pipelineLog("run: starting pipeline for VM \(input.vmID.uuidString)")
         pipelineLog("run: executing on main thread = \(Thread.isMainThread) (must be false)")
 
+        // SINGLE RESOLUTION POINT (issue #6): resolve the effective edition/key
+        // pair ONCE, before validation, so the gate and Stage 4 act on the same
+        // values by construction. This is the ONLY place the defaults engage.
+        let wasDefaulted = input.editionName.isEmpty
+        let resolved = ResolvedEdition(
+            name: wasDefaulted ? defaultEditionName : input.editionName,
+            key: input.productKey.isEmpty ? defaultProductKey : input.productKey,
+            wasDefaulted: wasDefaulted
+        )
+        resolvedEdition = resolved
+        discEditionNames = nil   // fresh per run; the gate fills it when readable
+        pipelineLog("run: resolved edition \"\(resolved.name)\" (\(resolved.wasDefaulted ? "default" : "user-selected"))")
+
         // Cheap, fail-fast validation BEFORE the expensive extract.
-        let validation = try await validateISO(input)
+        let validation = try await validateISO(input, resolved: resolved)
         switch validation {
         case .ok:
             pipelineLog("run: validation OK")
@@ -711,15 +772,22 @@ final class WindowsInstallPipeline {
     /// await), reads editions + architecture from install.wim via the bundled
     /// wimlib-imagex, and decides:
     ///   HARD-STOP  (certain):  no sources/install.wim (not a Windows installer);
-    ///                          architecture is not ARM64 (won't boot on `virt`).
-    ///   WARN       (unsure):   the requested edition name isn't among the images;
+    ///                          architecture is not ARM64 (won't boot on `virt`);
+    ///                          the DEFAULTED edition isn't on the disc (issue
+    ///                          #6 — Setup would hang silently on an edition
+    ///                          that doesn't exist, and the user made no choice
+    ///                          for the warn tier to honor).
+    ///   WARN       (unsure):   the USER-CHOSEN edition name isn't among the
+    ///                          images (the disc may name it differently);
     ///                          we couldn't read the architecture at all.
-    ///   OK:                    install.wim present, ARM64, requested edition found.
-    private func validateISO(_ input: PipelineInput) async throws -> ISOValidation {
+    ///   OK:                    install.wim present, ARM64, effective edition found.
+    /// Side effect: stores the disc's edition names in discEditionNames (when
+    /// the wim is readable) for Stage 4's backstop.
+    private func validateISO(_ input: PipelineInput, resolved: ResolvedEdition) async throws -> ISOValidation {
         let wimlib = try toolURL(named: "wimlib-imagex")
 
         let mount = try await mountISO(input.sourceISOPath)
-        let verdict = await validateMountedISO(input: input, wimlib: wimlib, mount: mount)
+        let verdict = await validateMountedISO(input: input, resolved: resolved, wimlib: wimlib, mount: mount)
         await detachISO(mount)
         return verdict
     }
@@ -727,7 +795,7 @@ final class WindowsInstallPipeline {
     /// The gate's decision logic against an already-mounted ISO. Non-throwing by
     /// design — every outcome is expressed as an ISOValidation — so the caller's
     /// mount/detach pairing has exactly one exit path to cover.
-    private func validateMountedISO(input: PipelineInput, wimlib: URL, mount: URL) async -> ISOValidation {
+    private func validateMountedISO(input: PipelineInput, resolved: ResolvedEdition, wimlib: URL, mount: URL) async -> ISOValidation {
         let installWim = mount.appendingPathComponent("sources/install.wim")
         guard FileManager.default.fileExists(atPath: installWim.path) else {
             // Certain: a Windows install ISO always has sources/install.wim.
@@ -737,7 +805,8 @@ final class WindowsInstallPipeline {
         let result = await runTool(wimlib, ["info", installWim.path])
         guard result.code == 0 else {
             // We found install.wim but couldn't read it. Unsure rather than
-            // certain — let a techy user proceed.
+            // certain — let a techy user proceed. (discEditionNames stays nil;
+            // Stage 4's backstop cannot assert without a list.)
             return .warn(reason: "AVM found the Windows install image but couldn't read its details. The ISO may be unusual or partly corrupted. You can proceed, but the install might not complete cleanly.")
         }
 
@@ -755,16 +824,31 @@ final class WindowsInstallPipeline {
             return .warn(reason: "AVM couldn't confirm this ISO is the ARM64 version of Windows. If it isn't ARM64, the install won't boot. You can proceed if you're sure it's the ARM64 ISO.")
         }
 
-        // UNSURE warn: the requested edition isn't among the listed images. The
-        // user could still proceed (and pick a listed edition), or the ISO may
-        // name the edition slightly differently.
+        // The wim is readable — record the disc's edition names for Stage 4's
+        // backstop before the edition check decides anything.
         let names = info.images.map { $0.name }
-        if !input.editionName.isEmpty && !names.contains(input.editionName) {
+        discEditionNames = names
+
+        // EDITION CHECK, two tiers by provenance (issue #6). The EFFECTIVE
+        // edition is checked — the resolved value, never raw input — so the
+        // defaulted case can no longer slip through unexamined.
+        if !names.contains(resolved.name) {
             let available = names.isEmpty ? "none found" : names.joined(separator: ", ")
-            return .warn(reason: "The edition you chose (\(input.editionName)) wasn't found on this ISO. Available editions are: \(available). You can proceed, but the install may not match your choice.")
+            if resolved.wasDefaulted {
+                // CERTAIN: the default isn't on this disc. Proceeding writes an
+                // answer file naming an edition that doesn't exist, and Windows
+                // Setup hangs silently — field-proven by issue #6 (IoT
+                // Enterprise LTSC). The user made no choice to honor, so there
+                // is nothing to warn about — stop, say why, name what IS there.
+                return .hardStop(reason: "This ISO does not contain \(resolved.name), the edition AVM currently installs. It contains: \(available). AVM can't install these editions yet. A standard Windows 11 ARM64 ISO from Microsoft's Windows 11 download page will work.")
+            } else {
+                // UNSURE: the user chose this name; the disc may name the
+                // edition slightly differently. Warn and let them decide.
+                return .warn(reason: "The edition you chose (\(resolved.name)) wasn't found on this ISO. Available editions are: \(available). You can proceed, but the install may not match your choice.")
+            }
         }
 
-        pipelineLog("validateISO: OK — arch \(info.architecture), \(info.images.count) edition(s)")
+        pipelineLog("validateISO: OK — arch \(info.architecture), \(info.images.count) edition(s), effective edition \"\(resolved.name)\" present")
         return .ok
     }
 
@@ -1021,8 +1105,9 @@ final class WindowsInstallPipeline {
 
     // MARK: - Stage 4 — Build answer image (implemented)
 
-    /// Template-fill the bundled autounattend.xml (substituting the edition name
-    /// and generic product key), then build a 2MB FAT12 answer image with
+    /// Template-fill the bundled autounattend.xml from the RESOLVED edition/key
+    /// pair (single resolution point at the top of run() — Stage 4 no longer
+    /// owns a fallback; issue #6), then build a 2MB FAT12 answer image with
     /// mformat/mcopy and verify it with mdir. The image is attached at launch as
     /// removable usb-storage, which is where Windows Setup scans for
     /// autounattend.xml.
@@ -1032,8 +1117,16 @@ final class WindowsInstallPipeline {
     /// edition-select key). Both are verified PRESENT before substitution: a
     /// missing token means the template lost its placeholders and edition
     /// selection would silently break, so it's surfaced as a build problem.
-    /// Empty editionName/productKey in PipelineInput fall back to the Windows 11
-    /// Pro defaults (the edition-picker UI doesn't exist yet).
+    ///
+    /// BACKSTOP (issue #6): before substituting, a DEFAULTED edition is
+    /// asserted to be on the disc's edition list (recorded by the validation
+    /// gate). The gate already hard-stops this case, so the assert should be
+    /// unreachable — it exists to catch any future call path that skips the
+    /// gate, and its message says "build problem" accordingly. A USER-CHOSEN
+    /// edition is deliberately NOT asserted (the warn tier exists precisely
+    /// because the disc may name it differently and the user consciously
+    /// proceeded), and no assert is possible when the gate couldn't read the
+    /// wim (discEditionNames nil — the warn tier covered that).
     ///
     /// FAT image recipe (proven in bare Terminal AND green in-app):
     ///   - 2MB zero-filled file (written by FileManager — no dd child process)
@@ -1054,6 +1147,27 @@ final class WindowsInstallPipeline {
         let mcopy = try toolURL(named: "mcopy")
         let mdir = try toolURL(named: "mdir")
         let mtoolsEnv = ["MTOOLS_SKIP_CHECK": "1"]
+
+        // --- The resolved edition MUST exist (set at the top of run()). Its
+        // absence means a call path reached Stage 4 without running run()'s
+        // resolution — a build problem by definition. ---
+        guard let resolved = resolvedEdition else {
+            throw PipelineError.stageFailed(
+                stage: .buildAnswerImage,
+                reason: "The edition to install was never resolved. This is a build problem, not something you did."
+            )
+        }
+
+        // --- BACKSTOP (issue #6): a DEFAULTED edition must be on the disc's
+        // list. The validation gate hard-stops this case, so firing here means
+        // a code path skipped the gate. See the doc comment for why user-chosen
+        // and unreadable-wim runs are exempt. ---
+        if resolved.wasDefaulted, let names = discEditionNames, !names.contains(resolved.name) {
+            throw PipelineError.stageFailed(
+                stage: .buildAnswerImage,
+                reason: "The edition \(resolved.name) is not on this ISO, and the earlier check that should have caught this didn't run. This is a build problem, not something you did."
+            )
+        }
 
         // --- Read the bundled template. ---
         guard let templateURL = Bundle.main.url(forResource: "autounattend", withExtension: "xml") else {
@@ -1082,12 +1196,12 @@ final class WindowsInstallPipeline {
             }
         }
 
-        // --- Substitute. Empty inputs fall back to the Windows 11 Pro defaults. ---
-        let edition = input.editionName.isEmpty ? defaultEditionName : input.editionName
-        let key = input.productKey.isEmpty ? defaultProductKey : input.productKey
+        // --- Substitute from the RESOLVED pair (no local fallback — the single
+        // resolution point at the top of run() is the only place defaults can
+        // engage; issue #6). ---
         let filled = template
-            .replacingOccurrences(of: editionToken, with: edition)
-            .replacingOccurrences(of: productKeyToken, with: key)
+            .replacingOccurrences(of: editionToken, with: resolved.name)
+            .replacingOccurrences(of: productKeyToken, with: resolved.key)
 
         // --- Write the filled XML to scratch. ---
         let filledXMLURL = scratch.appendingPathComponent("autounattend-filled.xml")
@@ -1153,7 +1267,7 @@ final class WindowsInstallPipeline {
             )
         }
 
-        pipelineLog("stageBuildAnswerImage: built \(imageURL.lastPathComponent) — edition \"\(edition)\", verified via mdir")
+        pipelineLog("stageBuildAnswerImage: built \(imageURL.lastPathComponent) — edition \"\(resolved.name)\" (\(resolved.wasDefaulted ? "default" : "user-selected")), verified via mdir")
     }
 
     // MARK: - Stage 5 — Rebuild bootable ISO (implemented; appended-partition method)
