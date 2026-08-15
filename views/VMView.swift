@@ -391,6 +391,59 @@
 //   may itself land nowhere (its position was discarded before the grant);
 //   acceptable, and a tester-doc note if it survives field testing.
 //
+// POINTER CONFINEMENT (2026-08-14, issue #4 — designed and approved after
+//   the Path A functional test; ghost-click suppression as an ABSENT CODE
+//   PATH, the same shape as the privacy stance):
+//   THE PROBLEM IT CLOSES: with the hover model alone, the Mac pointer is
+//   never captured — a stroke can exit the window mid-session, events stop
+//   (proven live: functional test read X 0..799 full-range but Y stuck at
+//   166..418, the up-stroke escaping through the title bar), and the next
+//   tap CLICKS THE MAC while the user believes they are in Windows. For a
+//   blind user with VoiceOver asleep, that is a silent ghost click.
+//   THE MODEL: while LOCKED and the window is KEY, the pointer is CONFINED —
+//   warped to the view center, dissociated from mouse movement
+//   (CGAssociateMouseAndMouseCursorPosition(0): the pointer freezes on the
+//   view; events still arrive carrying deltas), and hidden. handleMouseMove
+//   then integrates deltas into a SYNTHETIC guest position (deltas in view
+//   points x backingScaleFactor / aspectFitScale — the SAME single-source
+//   formula, so physical finger speed matches visual cursor speed on the
+//   rendered view), clamped to guest bounds. The frozen pointer can never
+//   leave the view, so events never stop and no click can land outside the
+//   guest, by construction. Corner-pinning is exact: the clamp IS the wall.
+//   The synthetic position persists across Enter/escape within the app's
+//   lifetime (re-entering must not teleport the cursor); first use starts
+//   at guest center, matching where Windows parks the cursor at boot.
+//   KEY-STATUS AMENDMENT (approved 2026-08-14): confinement FOLLOWS KEY
+//   STATUS while the lock policy stays untouched. FocusLockManager
+//   deliberately does NOT unlock on key resign (VO's panels take key
+//   constantly with VO awake — its debounced announcement design). So: on
+//   didResignKey while locked, the pointer is RESTORED immediately (never
+//   strand a hidden, dissociated cursor against a background window); on
+//   didBecomeKey while still locked, it re-confines automatically. The
+//   hover path remains as the fallback whenever the pointer is unconfined.
+//   RESTORE is one idempotent function (re-associate, unhide, flag down)
+//   called from every exit: unlock, key resign, and teardown — belt and
+//   suspenders, because a hidden dissociated cursor is the most
+//   user-hostile state a Mac app can leak. macOS also self-heals both on
+//   process exit; we never rely on that.
+//   NO NEW ANNOUNCEMENTS: confinement is part of what Entering Windows
+//   means.
+//   ENGAGEMENT HOLE, FOUND AND FIXED SAME DAY (2026-08-14, two functional
+//   runs): the first build never confined at all. Mechanism: attach() runs
+//   in makeNSView BEFORE the view joins a window, so the lock-engaged
+//   confine skipped ("no window yet"); and on re-enter the VIEW is
+//   recreated but the WINDOW never resigns/regains key, so the key-status
+//   catch-up never fired either — no path ever confined. Evidence: both
+//   runs matched hover geometry exactly (letterboxed X walls reachable,
+//   exact-edge Y walls not: 190..799/34..381, then 0..799/176..524). THE
+//   FIX is the missing third trigger: viewDidMoveToWindow notifies the
+//   coordinator (viewJoinedWindow), which attempts confinement once the
+//   view actually has a window — also the natural belt-and-suspenders the
+//   model wanted. Pointer transitions are promoted to avmPublicLog (rare —
+//   per lock cycle — and they are configuration announcements), so
+//   engagement is READABLE FROM `log show` instead of inferred from test
+//   geometry.
+//
 // THE REDACTION TRAP (2026-07-31, cost: one full evening — READ THIS)
 //   Swift's NSLog("...\(x)...") compiles the interpolated result into a SINGLE
 //   %@ object argument, and the unified log redacts %@ as <private>. So EVERY
@@ -464,43 +517,19 @@ private func avmPublicLog(_ message: String) {
 
 // MARK: - Key Event Logging Gate (Stage B, 2026-07-26)
 /// PRIVACY: AVM must not be CAPABLE of capturing what users type (Handoff 19
-/// §6). The FILE log achieves that by ABSENCE — no code path from a keystroke
-/// to the log file exists in this file, and none may ever be added. (The file
-/// logger's name is deliberately not written anywhere in this file, even in
-/// comments: Handoff 19 §6's mechanical check greps this file for that name
-/// and must return nothing.) But the `vk=` NSLogs in this file land in the
-/// UNIFIED log, where `log show` recovers every character typed in the guest
-/// — including passwords. This gate closes that: every NSLog that names a key
-/// runs ONLY when the flag below is set, so a build with defaults untouched
-/// logs no key identities ANYWHERE.
+/// §6). Stage A removed the always-on lines that named keys; these gated
+/// diagnostics exist for the rare debugging session that needs key identity,
+/// and they are OFF unless the person running the app deliberately sets the
+/// flag below and relaunches. The gate is read ONCE per launch (static let)
+/// so mid-session defaults writes cannot silently enable it.
 ///
-/// NOTE (2026-07-31, THE REDACTION TRAP): the key-naming lines are Swift
-/// NSLogs, so in practice they land as <private> in `log show` anyway. That is
-/// an ACCIDENT OF THE CALL, NOT A PRIVACY CONTROL, and must never be treated
-/// as one — they are fully visible in Xcode's console, and a configuration
-/// profile would unredact them system-wide. The gate below remains the actual
-/// control. Under NO circumstances should a key-naming line be routed through
-/// avmPublicLog().
+/// Enable (Terminal):  defaults write com.alllisonmeloy.AVM AVMKeyEventLogging -bool YES
+/// Disable:            defaults delete com.alllisonmeloy.AVM AVMKeyEventLogging
+/// then QUIT and RELAUNCH AVM either way.
 ///
-/// To enable for a diagnostic session (Terminal, then RELAUNCH AVM):
-///   defaults write com.alllisonmeloy.AVM AVMKeyEventLogging -bool YES
-/// To return to the default-off state:
-///   defaults delete com.alllisonmeloy.AVM AVMKeyEventLogging
-/// (The bundle ID really has three L's — deliberate; do not "fix" it.)
-///
-/// SNAPSHOT SEMANTICS, deliberate: `isEnabled` is a `static let`, evaluated
-/// exactly once on first access and frozen for the life of the launch. A
-/// whole launch is either logging key identities or it isn't — never a mix
-/// mid-session — and the hot typing path pays for a Bool read per keystroke,
-/// not a UserDefaults lookup. Toggling therefore requires a relaunch; for a
-/// diagnostic flag, that determinism is a feature. VMView.onAppear touches
-/// this so the snapshot (and the ENABLED self-declaration below) land before
-/// focus lock engages — i.e. before any keystroke can be forwarded.
-///
-/// SELF-DECLARATION: when the flag is ON, one line is logged so a captured
-/// unified log states its own provenance — no ambiguity later about whether a
-/// given capture ran with the flag set. When OFF, nothing is logged about the
-/// flag at all: absence, again.
+/// When enabled, the app self-declares in the unified log at first key event
+/// (the NSLog in the initializer below), so a log capture can always be
+/// audited for whether key logging was on.
 enum KeyEventLogging {
     static let isEnabled: Bool = {
         let on = UserDefaults.standard.bool(forKey: "AVMKeyEventLogging")
@@ -635,6 +664,11 @@ final class SPICEKeyCaptureView: MTKView {
         // enforcement from here.
         if window != nil {
             FocusLockManager.shared?.registerCaptureView(self)
+            // POINTER CONFINEMENT (engagement-hole fix — see the file
+            // header): attach() runs before the view has a window, so the
+            // lock-engaged confine can only skip; this is the trigger that
+            // fires once the view actually lands in one.
+            coordinator?.viewJoinedWindow()
         }
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.window else {
@@ -838,6 +872,27 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     // mode announcement fires once per transition, not once per click.
     private var warnedRelativeCursorMode = false
 
+    // POINTER CONFINEMENT (issue #4 — see the file header section): whether
+    // the Mac pointer is currently confined (warped + dissociated + hidden).
+    // MAIN-THREAD-ONLY, like the rest of the pointer state. This flag is the
+    // pairing guarantee for NSCursor.hide()/unhide(), which are counted
+    // calls — confine and restore each check it, so the pair can never
+    // unbalance.
+    private var pointerConfined = false
+
+    // POINTER CONFINEMENT: the synthetic guest cursor position that delta
+    // integration owns while confined. Persists across Enter/escape within
+    // the app's lifetime (re-entering must not teleport the cursor); nil
+    // until first use, then lazily seeded at guest center — matching where
+    // Windows parks the cursor at boot. The hover path also updates it, so
+    // the two models hand off coherently. MAIN-THREAD-ONLY.
+    private var syntheticGuestPoint: CGPoint?
+
+    // POINTER CONFINEMENT: observer tokens for the window key-status watch
+    // (confinement follows key status — see the header amendment). Removed
+    // in disconnect().
+    private var keyStatusObservers: [NSObjectProtocol] = []
+
     /// All fork mouse buttons, for flush iteration (option sets aren't
     /// natively iterable).
     private static let allMouseButtons: [CSInputButton] = [.left, .middle, .right, .side, .extra]
@@ -857,14 +912,51 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
             .removeDuplicates()
             .sink { [weak self] locked in
                 if !locked {
+                    // POINTER CONFINEMENT: restore FIRST (plain CG/AppKit
+                    // calls, cannot block) so the pointer is never hidden
+                    // outside the lock, then flush.
+                    self?.restorePointer(reason: "unlock observed")
                     // UNLOCK-FREEZE FIX: do NOT touch CSInput synchronously from
                     // the main thread here — if the SPICE worker is wedged (the
                     // audio-teardown deadlock case), a synchronous call
                     // deadlocks the main thread. Queue the flush on the SPICE
                     // context.
                     self?.flushGuestKeysOnSpiceContext(reason: "unlock observed")
+                } else {
+                    // POINTER CONFINEMENT: lock engaged — confine (warp to
+                    // view center, dissociate, hide). Guards inside handle a
+                    // not-yet-key window; the key-status watch below catches
+                    // up when key arrives.
+                    self?.confinePointer(reason: "lock engaged")
                 }
             }
+
+        // POINTER CONFINEMENT — KEY-STATUS WATCH (see the header amendment):
+        // confinement follows key status while the lock policy stays
+        // untouched. Observers filter by the capture view's own window at
+        // fire time (object: nil, because the window can change across
+        // viewDidMoveToWindow re-registrations). NSWindow posts these on the
+        // main thread. Tokens are removed in disconnect().
+        let center = NotificationCenter.default
+        keyStatusObservers.append(center.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, self.isLocked,
+                  let window = note.object as? NSWindow,
+                  window === self.mtkView?.window else { return }
+            // Never strand a hidden, dissociated cursor against a background
+            // window — restore immediately; the lock's own resign handling
+            // (FocusLockManager's debounced announcement) is unchanged.
+            self.restorePointer(reason: "window resigned key")
+        })
+        keyStatusObservers.append(center.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, self.isLocked,
+                  let window = note.object as? NSWindow,
+                  window === self.mtkView?.window else { return }
+            self.confinePointer(reason: "window regained key")
+        })
 
         let spiceMain = CSMain.shared
         if !spiceMain.running {
@@ -940,6 +1032,14 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
 
         lockCancellable?.cancel()
         lockCancellable = nil
+
+        // POINTER CONFINEMENT: restore before anything else can fail — plain
+        // CG/AppKit calls, cannot block; idempotent when already restored.
+        restorePointer(reason: "teardown")
+        for token in keyStatusObservers {
+            NotificationCenter.default.removeObserver(token)
+        }
+        keyStatusObservers.removeAll()
 
         // Stop the MTKView from driving any further frames against a display
         // we're about to release.
@@ -1247,6 +1347,65 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         return CGPoint(x: guestX, y: guestY)
     }
 
+    /// POINTER CONFINEMENT (engagement-hole fix — see the file header):
+    /// called by SPICEKeyCaptureView.viewDidMoveToWindow once the view has a
+    /// window. The async hop lets first-responder setup and window ordering
+    /// settle in the same turn of the run loop that already defers
+    /// makeFirstResponder; confinePointer's own guards (isLocked, not
+    /// already confined) make this safe to call on every window join.
+    func viewJoinedWindow() {
+        DispatchQueue.main.async { [weak self] in
+            self?.confinePointer(reason: "view joined window")
+        }
+    }
+
+    /// POINTER CONFINEMENT (issue #4 — see the file header section). APPLE
+    /// MAIN THREAD ONLY. Warp the Mac pointer to the view's center on screen,
+    /// dissociate it from mouse movement (events keep arriving, carrying
+    /// deltas, while the pointer stays frozen on the view — so the tracking
+    /// area never stops delivering and no click can land outside the guest),
+    /// and hide it. Idempotent via pointerConfined; guards make it a safe
+    /// no-op before the view has a window. The warp targets the view rect's
+    /// center converted to the CG global coordinate space (top-left origin
+    /// of the primary display — AppKit's screen space is bottom-left, hence
+    /// the flip against the primary screen's height). Transitions announce
+    /// via avmPublicLog — per lock cycle, configuration-choice class, and
+    /// the engagement evidence must be readable from `log show` (the
+    /// engagement hole was only findable by geometry inference because the
+    /// first build's lines were NSLog — redacted; see the header).
+    private func confinePointer(reason: String) {
+        guard !pointerConfined, isLocked else { return }
+        guard let mtkView, let window = mtkView.window else {
+            avmPublicLog("pointer confine (\(reason)) skipped — no window yet.")
+            return
+        }
+        let rectInWindow = mtkView.convert(mtkView.bounds, to: nil)
+        let rectOnScreen = window.convertToScreen(rectInWindow)
+        guard let primary = NSScreen.screens.first else {
+            avmPublicLog("pointer confine (\(reason)) skipped — no screens.")
+            return
+        }
+        let warpPoint = CGPoint(x: rectOnScreen.midX,
+                                y: primary.frame.height - rectOnScreen.midY)
+        CGWarpMouseCursorPosition(warpPoint)
+        CGAssociateMouseAndMouseCursorPosition(0)
+        NSCursor.hide()
+        pointerConfined = true
+        avmPublicLog("pointer CONFINED (\(reason)) — warped to view center, dissociated, hidden.")
+    }
+
+    /// POINTER CONFINEMENT: the one idempotent restore — re-associate,
+    /// unhide, flag down. Called from EVERY exit path (unlock, key resign,
+    /// teardown); pointerConfined keeps the counted NSCursor calls balanced.
+    /// Plain CG/AppKit calls — cannot block, safe on any main-thread path.
+    private func restorePointer(reason: String) {
+        guard pointerConfined else { return }
+        CGAssociateMouseAndMouseCursorPosition(1)
+        NSCursor.unhide()
+        pointerConfined = false
+        avmPublicLog("pointer RESTORED (\(reason)) — re-associated and visible.")
+    }
+
     /// SILENCE IS A BUG, the pointer edition: if the SPICE server holds the
     /// cursor in relative (server) mode, every sendMousePosition is silently
     /// ignored per the fork's own docs — invisible by construction. Checked
@@ -1283,7 +1442,33 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     /// event is volume without meaning (the sanctioned-silence class).
     func handleMouseMove(event: NSEvent) {
         guard isLocked, let input else { return }
+        // POINTER CONFINEMENT: while confined, the pointer is frozen and
+        // locationInWindow is meaningless — integrate the event's DELTAS
+        // into the synthetic position instead. Deltas arrive in view points;
+        // x backingScaleFactor converts to backing pixels and / the SHARED
+        // aspect-fit scale converts to guest pixels — the same pipeline as
+        // the hover conversion, so physical finger speed matches visual
+        // cursor speed on the rendered view. Clamp is the wall: corner
+        // pinning is exact by construction.
+        if pointerConfined {
+            let guest = lastAppliedGuestSize
+            guard guest.width > 0, guest.height > 0, let mtkView else { return }
+            let drawable = mtkView.drawableSize
+            guard drawable.width > 0, drawable.height > 0 else { return }
+            let scale = Self.aspectFitScale(drawable: drawable, guest: guest)
+            guard scale > 0 else { return }
+            let backingScale = mtkView.window?.backingScaleFactor ?? 1
+            var p = syntheticGuestPoint ?? CGPoint(x: guest.width / 2, y: guest.height / 2)
+            p.x = min(max(p.x + event.deltaX * backingScale / scale, 0), guest.width - 1)
+            p.y = min(max(p.y + event.deltaY * backingScale / scale, 0), guest.height - 1)
+            syntheticGuestPoint = p
+            input.sendMousePosition(pressedMouseButtons, absolutePoint: p)
+            return
+        }
         guard let guestPoint = viewPointToGuestPoint(event.locationInWindow) else { return }
+        // Keep the synthetic position current on the hover path too, so the
+        // two models hand off coherently at the next confine.
+        syntheticGuestPoint = guestPoint
         input.sendMousePosition(pressedMouseButtons, absolutePoint: guestPoint)
     }
 
@@ -1307,7 +1492,22 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
             pressedMouseButtons.remove(button)
         }
 
-        if let guestPoint = viewPointToGuestPoint(event.locationInWindow) {
+        // POINTER CONFINEMENT: while confined, the click lands at the
+        // synthetic position (locationInWindow is the frozen warp spot, not
+        // the cursor the user has been steering). Unconfined, the hover
+        // conversion is the source, exactly as before.
+        let guestPoint: CGPoint?
+        if pointerConfined {
+            let guest = lastAppliedGuestSize
+            guestPoint = syntheticGuestPoint
+                ?? (guest.width > 0 && guest.height > 0
+                    ? CGPoint(x: guest.width / 2, y: guest.height / 2)
+                    : nil)
+        } else {
+            guestPoint = viewPointToGuestPoint(event.locationInWindow)
+        }
+        if let guestPoint {
+            syntheticGuestPoint = guestPoint
             input.sendMousePosition(pressedMouseButtons, absolutePoint: guestPoint)
         }
         input.sendMouseButton(button, mask: pressedMouseButtons, pressed: pressed)
