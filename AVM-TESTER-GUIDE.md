@@ -430,6 +430,12 @@ dashboard's Start button in that case.
 
 - **USB keyboards work now.** Type on whatever keyboard you like; AVM
   forwards keys the same way regardless of the keyboard.
+- **Mice and trackpads work now.** On machines installed with AVM 0.1.1
+  or later, the Windows pointer follows your finger exactly and clicks
+  land where the pointer is, from the very first boot. Machines
+  installed with an earlier AVM need two small pieces of software added
+  inside Windows first — a one-time job of about ten minutes, described
+  at the end of section 14.
 - **Headsets and speakers work for listening.** Windows audio plays
   through whatever output your Mac is using.
 - **Microphones are unverified — please test yours.** The plumbing for
@@ -595,6 +601,48 @@ reinstall over a working Windows.
 
 Remember the ritual each time: sleep VoiceOver, then start — the keyboard
 is in Windows automatically.
+
+### Adding mouse support to a machine installed before version 0.1.1
+
+Machines created with AVM 0.1.1 or later get working mouse support
+automatically — the installer adds two small pieces of software during
+Windows Setup, and there is nothing for you to do. A machine installed
+with an earlier AVM is missing those two pieces. Adding them takes about
+ten minutes, happens entirely inside Windows with your screen reader, and
+is a one-time job. They are the same two pieces, the same versions, that
+AVM installs automatically on fresh installs.
+
+One warning before the steps, because it is the one way this goes wrong:
+the driver disc you are about to download also contains an installer
+called virtio-win-guest-tools. Do not run it. On ARM64 Windows it fails
+partway through and rolls itself back, leaving you where you started. The
+two-step order below is the path that works.
+
+1. **Download two files in Windows.** In your browser inside Windows,
+   download the driver disc image (about 700 MB):
+   https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.285-1/virtio-win-0.1.285.iso
+   and the agent installer (about 2 MB):
+   https://www.spice-space.org/download/windows/vdagent/vdagent-win-0.10.0/spice-vdagent-x64-0.10.0.msi
+2. **Mount the disc image.** In your Downloads folder, press Enter on
+   virtio-win-0.1.285.iso. Windows mounts it as a DVD drive.
+3. **Install the driver — this must come first.** Open Device Manager
+   (press Windows+X, then M). Under "Other devices" you will find a
+   device named "PCI Simple Communications Controller" with a warning —
+   that is the mouse channel waiting for its driver. Open its context
+   menu, choose "Update driver," then "Browse my computer for drivers."
+   Browse to the folder vioserial\w11\ARM64 on the mounted DVD drive —
+   so if Windows gave the disc the letter D, the full path is
+   D:\vioserial\w11\ARM64. Continue, and Windows installs the VirtIO
+   serial driver from that folder.
+4. **Install the agent.** In Downloads, press Enter on
+   spice-vdagent-x64-0.10.0.msi and let it complete. It has no questions
+   to ask.
+5. **Restart Windows.**
+
+That's the whole job. After the restart, the Windows pointer follows your
+Mac trackpad or mouse exactly, and a click lands where the pointer is.
+The mounted disc image does not survive the restart, and both downloaded
+files can be deleted afterward.
 
 ---
 
