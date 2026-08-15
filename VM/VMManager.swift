@@ -111,12 +111,14 @@
 //   wedge spins pre-BDS and can never generate guest disk I/O, so ANY
 //   mtime/size movement resets the streak; a wedge-looking sample with an
 //   ACTIVE disk logs "likely repair/update, waiting" and stays deliberately
-//   SILENT. On detection the watchdog announces recovery guidance: reset
-//   first (Cmd-Shift-R / resetVM — the in-process un-wedge experiment;
-//   whether system_reset clears the wedge is UNPROVEN, the next wild
-//   occurrence tests it), then stop + restart as the PROVEN fallback (the
-//   reinstall guard correctly allows a reinstall because the marker is absent
-//   and the disk holds nothing worth protecting), once per run. The marker
+//   SILENT. On detection the watchdog announces recovery guidance: stop +
+//   restart, the PROVEN recovery (the reinstall guard correctly allows a
+//   reinstall because the marker is absent and the disk holds nothing worth
+//   protecting), once per run. Reset (Cmd-Shift-R / resetVM) is deliberately
+//   NOT in the guidance: its first wild data point (2026-08-15) FAILED to
+//   recover — system_reset reached firmware (fresh screen-clear sequences on
+//   serial) but no BdsDxe lines followed and the disk stayed flat 25 minutes;
+//   the wedge re-formed pre-BDS. Future wild wedges can retest manually. The marker
 //   appearing stands the watchdog down AND speaks the SETUP-UNDERWAY
 //   MILESTONE (2026-07-24): the one mid-install moment we reliably detect,
 //   announced as a .success so a fresh install is not silence-as-success.
@@ -836,7 +838,29 @@ final class VMManager: ObservableObject {
     func forceStopVM() {
         stopBootKeypressTask()
         stopInstallWatchdog()
-        qemuProcess?.terminate()
+        // DETACH + ESCALATE (2026-08-15): the VM is dead to AVM the moment a
+        // force-stop is issued, so qemuProcess is nil'd IMMEDIATELY — the exit
+        // handler's identity guard then ignores this generation's eventual
+        // exit no matter when it fires (this pairing closes the reap-window
+        // race in the logged incident). SIGTERM alone is NOT enough: a guest
+        // spinning in HVF shrugged it off (avm-2026-08-15-121410.log), so a
+        // detached task escalates to SIGKILL if the process survives 2s.
+        let doomed = qemuProcess
+        qemuProcess = nil
+        doomed?.terminate()
+        if let proc = doomed {
+            let pid = proc.processIdentifier
+            avmLog("forceStopVM: SIGTERM sent to QEMU pid \(pid); SIGKILL escalation armed (2s)")
+            Task.detached {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if proc.isRunning {
+                    avmLog("forceStopVM: QEMU pid \(pid) survived SIGTERM for 2s — escalating to SIGKILL")
+                    kill(pid, SIGKILL)
+                } else {
+                    avmLog("forceStopVM: QEMU pid \(pid) exited within the SIGTERM grace period")
+                }
+            }
+        }
         swtpmProcess?.terminate()
         cleanUp()
         state = .stopped
@@ -864,9 +888,11 @@ final class VMManager: ObservableObject {
     /// 1. RECOVERY EXPERIMENT for the stochastic firmware reboot wedge (an
     ///    upstream QEMU/edk2 bug — UTM issue #7648; AVM's serial-level
     ///    evidence posted there 2026-07-12). Force-stop + restart is PROVEN
-    ///    to recover; whether an in-process reset also recovers is UNPROVEN —
-    ///    the next wild occurrence is the experiment. If it works, the
-    ///    watchdog can eventually automate it.
+    ///    to recover. FIRST WILD DATA POINT (2026-08-15): system_reset did
+    ///    NOT recover — firmware re-entered (fresh screen-clear sequences on
+    ///    serial) but no BdsDxe lines followed and the disk stayed flat for
+    ///    25 minutes; the wedge re-formed pre-BDS. The watchdog guidance
+    ///    therefore names stop + restart only; future occurrences can retest.
     /// 2. General escape hatch for any hard-hung guest: a reset is
     ///    deliverable even when the guest is too wedged to honor the ACPI
     ///    powerdown that stopVM sends.
@@ -1087,9 +1113,9 @@ final class VMManager: ObservableObject {
                     announcedThisRun = true
                     avmLog("installWatchdog: WEDGE DETECTED — announcing recovery guidance")
                     await MainActor.run {
-                        self.appendConsole("AVM: The Windows installation appears to be stuck (screen frozen with high CPU for about 3 minutes). To recover: choose Reset Virtual Machine from the Virtual Machine menu, or press Command Shift R. If it is still stuck a few minutes after the reset, stop the virtual machine and start it again — Setup will then start over from the beginning.\n")
+                        self.appendConsole("AVM: The Windows installation appears to be stuck (screen frozen with high CPU for about 3 minutes). To recover: stop the virtual machine, then start it again — Setup will start over from the beginning.\n")
                         Announcer.shared.announce(
-                            "The Windows installation appears to be stuck. To recover, press Command Shift R to reset the virtual machine. If it is still stuck a few minutes later, stop the virtual machine and start it again. Setup will then start over from the beginning.",
+                            "The Windows installation appears to be stuck. To recover, stop the virtual machine, then start it again. Setup will start over from the beginning.",
                             tone: .failure
                         )
                     }
@@ -1633,7 +1659,7 @@ final class VMManager: ObservableObject {
         process.terminationHandler = { proc in
             let code = proc.terminationStatus
             Task { @MainActor in
-                VMManager.shared?.handleQEMUProcessExit(exitCode: code)
+                VMManager.shared?.handleQEMUProcessExit(process: proc, exitCode: code)
             }
         }
 
@@ -1649,12 +1675,28 @@ final class VMManager: ObservableObject {
         appendConsole("AVM: QEMU process started (pid \(process.processIdentifier)).\n")
     }
 
-    func handleQEMUProcessExit(exitCode: Int32) {
+    func handleQEMUProcessExit(process: Process, exitCode: Int32) {
+        // IDENTITY GUARD (2026-08-15): only the CURRENT generation's exit may
+        // drive state. Proven incident (avm-2026-08-15-121410.log): a wedged
+        // QEMU shrugged off forceStop's SIGTERM, so its handler never fired
+        // and AVM believed the VM stopped; on the NEXT start, reapOrphanedQEMU
+        // SIGKILLed the leftover, which FINALLY fired the OLD handler — it saw
+        // state .starting, falsely announced "stopped unexpectedly," and its
+        // cleanUp() tore down the NEW start's freshly launched swtpm. This
+        // guard, PAIRED with forceStopVM's detach (which nils qemuProcess the
+        // moment a force-stop is issued), makes any stale generation's exit a
+        // logged no-op regardless of when it arrives.
+        guard process === qemuProcess else {
+            avmLog("handleQEMUProcessExit: ignoring exit of STALE QEMU (pid \(process.processIdentifier), code \(exitCode)) — not the current generation; no state change")
+            return
+        }
+
         let wasRunning: Bool
         switch state {
         case .running, .paused, .starting: wasRunning = true
         default: wasRunning = false
         }
+        avmLog("handleQEMUProcessExit: current QEMU (pid \(process.processIdentifier)) exited with code \(exitCode); state was \(state), wasRunning=\(wasRunning)")
 
         stopBootKeypressTask()
         stopInstallWatchdog()
@@ -1663,10 +1705,12 @@ final class VMManager: ObservableObject {
 
         if exitCode == 0 {
             state = .stopped
+            avmLog("handleQEMUProcessExit: clean exit — state -> stopped")
             appendConsole("AVM: QEMU exited normally.\n")
         } else if wasRunning {
             let msg = "QEMU exited with code \(exitCode). Details are in AVM's diagnostic log."
             state = .error(msg)
+            avmLog("handleQEMUProcessExit: UNEXPECTED death while running — state -> error, announcing")
             appendConsole("AVM: \(msg)\n")
             // ANNOUNCE: the VM dying mid-session is the worst silent failure
             // for a blind user — the machine just vanishes. Interrupt with
@@ -1677,6 +1721,7 @@ final class VMManager: ObservableObject {
             )
         } else {
             state = .stopped
+            avmLog("handleQEMUProcessExit: nonzero exit while not running — state -> stopped, no announcement")
         }
     }
 
