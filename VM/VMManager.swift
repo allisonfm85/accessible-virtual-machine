@@ -45,17 +45,23 @@
 //     FALSIFIED — declaration order does not matter. Screendump also came
 //     back placeholder-sized (921615), so the swapped order may additionally
 //     disturb which head firmware draws through; the swap is disqualified.
-//   LEADING THEORY (fits all three, untested directly): SPICE grants
+//   THEORY CONFIRMED (2026-08-14, two further controlled readings via qmp2,
+//     in-app SPICE client connected, one variable each): SPICE grants
 //     client-mode mouse without a guest agent only for a SINGLE display
-//     channel; with multiple displays it requires the vdagent in the guest —
-//     and AVM historically launched with agent-mouse=off and bundles no
-//     Windows SPICE agent. DECISION OF RECORD (2026-08-10): fix path A —
-//     ship the SPICE guest agent — prototype-first. agent-mouse is now ON
-//     (expected inert with no agent connected; control run to verify). Path B
-//     (hide the second head from SPICE's channel count) was researched and
-//     found to have no supported QEMU mechanism. Falsified and closed:
-//     timing/retry, USB suspend, display=gpu0 binding alone, tablet handler
-//     activation, declaration order.
+//     channel; with multiple displays it requires the vdagent in the guest.
+//     CONTROL (agent-mouse=on, NO agent in guest): 8 channels, two display
+//       channels (type 2, ids 0+1), mouse-mode SERVER — the flag alone is
+//       inert, as predicted.
+//     DISCRIMINATING (vioserial ARM64 driver + vdagent 0.10.0 installed and
+//       running in guest, same build): same two display channels, mouse-mode
+//       CLIENT. Path A proven at mechanism level; absolute positioning then
+//       verified corner-exact end-to-end (guest-sampled 0,0 to 799,599).
+//     DECISION OF RECORD (2026-08-10): fix path A — ship the SPICE guest
+//     agent — prototype-first. agent-mouse is ON. Path B (hide the second
+//     head from SPICE's channel count) was researched and found to have no
+//     supported QEMU mechanism. Falsified and closed: timing/retry, USB
+//     suspend, display=gpu0 binding alone, tablet handler activation,
+//     declaration order.
 //   The display=gpu0 / id=gpu0 tokens are KEPT (launch-proven, harmless,
 //   possibly necessary-but-insufficient for whichever fix path ships).
 //
@@ -1375,14 +1381,13 @@ final class VMManager: ObservableObject {
         // nothing to deliver the key to), and the optical boot loader times out
         // and fails to boot. usb-tablet is for pointer input. Declared BEFORE the
         // drives so bus=usb.0 resolves.
-        // MOUSE MODE (issue #4 — mechanism narrowed 2026-08-09; full three-run
+        // MOUSE MODE (issue #4 — mechanism CONFIRMED 2026-08-14; full run
         // record in the file header): SPICE holds server-mode cursor whenever
-        // TWO display channels exist and grants client mode with ONE — the
-        // multi-display/no-agent theory is the leading explanation (AVM
-        // bundles no Windows SPICE agent; agent-mouse=on as of the Path A
-        // prototype, 2026-08-10 — see the -spice line). display=gpu0
-        // is KEPT: launch-proven, harmless, possibly required by whichever
-        // fix path ships (guest agent, or single-display-channel operation).
+        // TWO display channels exist and no guest agent runs; with the SPICE
+        // vdagent running in the guest, mouse-mode flips to CLIENT with both
+        // display channels live (agent-mouse=on as of Path A, 2026-08-10 —
+        // see the -spice line). display=gpu0 is KEPT: launch-proven,
+        // harmless, possibly required by the shipping path (guest agent).
         args += ["-device", "qemu-xhci,id=usb"]
         args += ["-device", "usb-kbd,bus=usb.0"]
         args += ["-device", "usb-tablet,bus=usb.0,display=gpu0"]
@@ -1460,12 +1465,14 @@ final class VMManager: ObservableObject {
         // in-app across sessions.
         args += ["-netdev", "user,id=net0", "-device", "virtio-net-pci,netdev=net0"]
 
-        // agent-mouse=on (Path A prototype, 2026-08-10; was off): lets the
-        // SPICE vdagent drive client-mode (absolute) mouse once an agent is
-        // installed and running in the guest. With NO agent connected this
-        // flag is EXPECTED to be inert (control run to verify — do not treat
-        // as proven until it has). The virtio-serial/vdagent port wiring the
-        // agent rides on already exists below (com.redhat.spice.0).
+        // agent-mouse=on (Path A, 2026-08-10; was off): lets the SPICE
+        // vdagent drive client-mode (absolute) mouse once an agent is
+        // installed and running in the guest. VERIFIED 2026-08-14: control
+        // run (no agent) — mouse-mode stayed SERVER, flag inert as
+        // predicted; discriminating run (vioserial + vdagent 0.10.0 running
+        // in guest, same build) — mouse-mode CLIENT with both display
+        // channels live. The virtio-serial/vdagent port wiring the agent
+        // rides on already exists below (com.redhat.spice.0).
         args += [
             "-spice",
             "unix=on,addr=\(spiceSocketPath),disable-ticketing=on,agent-mouse=on"
