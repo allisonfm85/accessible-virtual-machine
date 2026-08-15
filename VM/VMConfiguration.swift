@@ -4,7 +4,9 @@
 import Foundation
 
 /// Persistent configuration for a single virtual machine.
-/// Stored as JSON in Application Support/AVM/vms.json via VMStore.
+/// Stored as JSON in Application Support/AVM/configurations.json via VMStore.
+/// (Comment trued 2026-08-15: previously said "vms.json", a filename that has
+/// never existed in a shipped build.)
 struct VMConfiguration: Identifiable, Codable, Hashable {
 
     // MARK: - Identity

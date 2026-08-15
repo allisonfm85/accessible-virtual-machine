@@ -312,7 +312,7 @@ private struct DashboardContent: View {
                                     confirmDelete(config: config)
                                 }
                                 .accessibilityLabel("Delete \(config.name)")
-                                .accessibilityHint("Permanently deletes this virtual machine configuration. Asks for confirmation first.")
+                                .accessibilityHint("Moves this virtual machine and all of its files to the Trash. Asks for confirmation first.")
                             }
                         }
                         .padding(.vertical, 4)
@@ -453,19 +453,94 @@ private struct DashboardContent: View {
     /// STAGE C (2026-08-03): the confirmed/cancelled lines below were promoted
     /// from NSLog to AVMLog.write — a confirmed irreversible action and its
     /// cancellation are decision-of-record material for the file log.
+    ///
+    /// ISSUE #5 (2026-08-15): delete now removes the VM's files, not just the
+    /// list entry. Decisions of record:
+    ///   - Files go to the TRASH (recoverable until emptied), and the dialog
+    ///     says so explicitly — the old wording claimed "cannot be undone"
+    ///     while in reality touching nothing on disk. Both halves are fixed.
+    ///   - The dialog SPEAKS THE SIZE ("about 72 gigabytes"): a sighted user
+    ///     gets a disk-space bar to glance at; the size in the dialog is the
+    ///     non-visual equivalent, and it distinguishes a husk from your main
+    ///     machine before you commit.
+    ///   - RUNNING-VM GUARD: structurally, the Delete button only renders
+    ///     when activeSession == nil, so this cannot fire while a VM runs.
+    ///     The explicit guard below is defense in depth — if a future
+    ///     dashboard redesign changes when the button renders, deleting a
+    ///     disk out from under a live QEMU must still be impossible, and the
+    ///     refusal must be spoken (.failure), never silent.
+    ///   - Outcomes are ANNOUNCED: success .success (Glass) with the size and
+    ///     the Trash-recovery note; failure .failure (Basso) stating the
+    ///     machine was NOT deleted and its files are untouched (VMStore keeps
+    ///     the entry on failure — see deleteMovingFilesToTrash).
     private func confirmDelete(config: VMConfiguration) {
+        // Defense-in-depth guard (see header). Matching ID with a live
+        // session in any non-stopped state refuses with a spoken reason.
+        if let session = activeSession,
+           session.configuration.id == config.id,
+           session.vmState != .stopped {
+            AVMLog.write("AVM: Delete refused for '\(config.name)' — VM is not stopped.")
+            Announcer.shared.announce(
+                "Cannot delete \(config.name) while it is running. Stop the virtual machine first.",
+                tone: .failure
+            )
+            return
+        }
+
+        let sizeBytes = vmStore.vmDirectorySizeBytes(for: config)
+
         let alert = NSAlert()
         alert.messageText = "Delete \(config.name)?"
-        alert.informativeText = "This permanently deletes this virtual machine's configuration. This cannot be undone."
+        if let bytes = sizeBytes {
+            alert.informativeText = "This moves this virtual machine and all of its files — \(spokenSize(bytes)) — to the Trash. You can recover it from the Trash until the Trash is emptied."
+        } else {
+            // Orphaned entry: the list has it, the disk doesn't. Honest
+            // wording — there are no files to move.
+            alert.informativeText = "This virtual machine has no files on disk. This removes it from the list."
+        }
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Delete")
         if alert.runModal() == .alertSecondButtonReturn {
             AVMLog.write("AVM: Delete confirmed for '\(config.name)'.")
-            vmStore.delete(config)
+            do {
+                let freed = try vmStore.deleteMovingFilesToTrash(config)
+                if freed > 0 {
+                    Announcer.shared.announce(
+                        "\(config.name) deleted. \(spokenSize(freed)) moved to the Trash.",
+                        tone: .success
+                    )
+                } else {
+                    Announcer.shared.announce(
+                        "\(config.name) removed from the list. There were no files on disk.",
+                        tone: .success
+                    )
+                }
+            } catch {
+                Announcer.shared.announce(
+                    "Deleting \(config.name) failed. The machine was not deleted and its files are untouched. \(error.localizedDescription)",
+                    tone: .failure
+                )
+            }
         } else {
             AVMLog.write("AVM: Delete cancelled for '\(config.name)'.")
         }
+    }
+
+    /// Spoken-friendly byte size with spelled-out units — VoiceOver reads
+    /// "GB" unreliably, same principle as the dashboard spec line. One
+    /// decimal place above 10 units would be false precision for a dialog;
+    /// whole numbers read faster and are exactly as useful.
+    private func spokenSize(_ bytes: UInt64) -> String {
+        let gb = Double(bytes) / 1_000_000_000
+        if gb >= 1 {
+            return "about \(Int(gb.rounded())) gigabytes"
+        }
+        let mb = Double(bytes) / 1_000_000
+        if mb >= 1 {
+            return "about \(Int(mb.rounded())) megabytes"
+        }
+        return "less than one megabyte"
     }
 
     private func startVM(config: VMConfiguration) {
