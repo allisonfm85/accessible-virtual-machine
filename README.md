@@ -19,9 +19,15 @@ silence itself is a bug worth reporting.
 ## What's in this repository
 
 The complete AVM application source (Swift/SwiftUI), the Xcode project,
-and the install-media resources (the unattended-install answer file
-template and the virtio ARM64 drivers for network and memory balloon,
-from the Fedora virtio-win project).
+and the install-media resources: the unattended-install answer file
+template; the virtio ARM64 drivers for network, memory balloon, and
+serial channel (vioserial), from the Fedora virtio-win project; and the
+SPICE guest agent installer (the standalone spice-vdagent for Windows,
+from the SPICE project), which new installs place inside the guest
+during Windows setup so absolute mouse positioning works from the very
+first out-of-box-experience screen. Like the other virtio drivers,
+these are redistributed unmodified under their upstream licenses (GPL
+family), matching this project's GPL v2.
 
 Deliberately **not** in this repository: the binary dependencies —
 QEMU, SPICE, GStreamer, and related frameworks, plus EFI firmware
