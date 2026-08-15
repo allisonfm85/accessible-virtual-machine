@@ -82,7 +82,18 @@ ecosystem on Windows. It holds a protected place in this list: it
 begins once the auto-updater ships, and no other item — however
 urgent it seems — moves its start.
 
-## 7. Windows Insider program enrollment — rescoped: Secure Boot
+## 7. GPU acceleration in the guest
+
+Reported by a tester (issue #7): games and other 3D applications in
+the guest fall back to Windows' built-in software renderer, which
+crashes some titles and makes others stutter. This is the same root
+cause as the display-scaling issue: AVM deliberately bundles no
+guest display driver. Getting real graphics acceleration into the
+guest is substantial work with genuine unknowns, so no version or
+date is promised — but its place in the order is settled: it begins
+after USB passthrough ships.
+
+## 8. Windows Insider program enrollment — rescoped: Secure Boot
 
 The scoping pass produced a definitive answer, and it changed what
 this item is. Enrollment itself works — the VM's TPM satisfies the
@@ -97,7 +108,7 @@ VM capable; whether to enroll a VM in preview builds remains each
 tester's own choice, and the tester guide will state the channel
 tradeoffs plainly.
 
-## 8. ISO download assistant
+## 9. ISO download assistant
 
 A future version of AVM may fetch and verify the Windows ISO
 directly, so the manual download step disappears. This is larger
@@ -109,7 +120,7 @@ Microsoft's download page (thanks to a contributed rewrite) covers
 the need well for now, so this stays deliberately behind the items
 above it.
 
-## 9. Additional guest operating systems
+## 10. Additional guest operating systems
 
 Requested by a tester: support for guests beyond Windows 11 ARM64 —
 other versions and editions of Windows, Linux distributions, and
