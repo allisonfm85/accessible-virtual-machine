@@ -121,6 +121,33 @@
           <Description>AVM: write install-complete marker to UNATTEND volume</Description>
           <Path>cmd /c for %d in (C D E F G H I J K L) do @if exist %d:\autounattend.xml echo installed&gt;%d:\AVMDONE.TAG</Path>
         </RunSynchronousCommand>
+        <!-- AVM GUEST-AGENT STAGING (mouse parity at OOBE) — DO NOT REORDER.
+             Installs the vioserial driver and the SPICE vdagent DURING the
+             specialize pass, before OOBE, so absolute (client-mode) mouse
+             works from the very first interactive screen: a sighted person
+             may be the PRIMARY user of AVM, and OOBE must be mouse-usable
+             without any guest-side manual steps. Both payload files ride
+             this same UNATTEND volume (staged by the pipeline's Stage 4);
+             the letter enumeration is the same proven pattern as the marker
+             above. pnputil installs vioser.inf (the vdagent's transport);
+             msiexec then installs the standalone vdagent 0.10.0 MSI silently
+             (the virtio-win-guest-tools bundle is NOT used — it rolls back
+             on ARM64). msiexec writes a verbose log next to the payload
+             (VDAGENT.LOG, UTF-16) as the paper trail. specialize-pass
+             msiexec, the driver install, and client-mode mouse at OOBE were
+             all proven end to end on a fresh VM 2026-08-15 (Narrator
+             confirmed focus movement from an OOBE mid-screen click and a
+             desktop corner click; VDAGENT.LOG status 0). -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>2</Order>
+          <Description>AVM: install vioserial driver from UNATTEND volume</Description>
+          <Path>cmd /c for %d in (C D E F G H I J K L) do @if exist %d:\vioser.inf pnputil /add-driver %d:\vioser.inf /install</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>3</Order>
+          <Description>AVM: install SPICE vdagent from UNATTEND volume</Description>
+          <Path>cmd /c for %d in (C D E F G H I J K L) do @if exist %d:\VDAGENT.MSI msiexec /i %d:\VDAGENT.MSI /qn /norestart /L*v %d:\VDAGENT.LOG</Path>
+        </RunSynchronousCommand>
       </RunSynchronous>
     </component>
   </settings>
