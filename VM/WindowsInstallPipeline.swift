@@ -447,6 +447,33 @@ final class WindowsInstallPipeline {
         ("Balloon", ["balloon.inf", "balloon.sys", "balloon.cat"])
     ]
 
+    /// The guest-agent payload Stage 4 copies into the FAT answer image
+    /// alongside autounattend.xml, so the specialize pass (template Orders 2-3)
+    /// can install the vdagent's transport driver and the agent itself before
+    /// OOBE — absolute (client-mode) mouse from the first interactive screen.
+    /// This is DELIBERATELY separate from virtioRequiredFiles: that table
+    /// drives Stage 3's $WinPEDriver$ drop, and vioserial must NOT go there
+    /// (the answer image is its only ride; proven design 2026-08-15).
+    ///
+    /// - vioserial triple: ARM64 vioser.inf/.cat/.sys from virtio-win 0.1.285
+    ///   (vioser.pdb — debug symbols — is deliberately NOT bundled), staged by
+    ///   the Run Script from Resources/virtio/vioserial/.
+    /// - vdagent MSI: the STANDALONE spice-vdagent-x64-0.10.0.msi (the
+    ///   virtio-win-guest-tools bundle rolls back on ARM64 — do not swap it
+    ///   in), staged by the Run Script from Resources/vdagent/, and copied
+    ///   into the image under the plain 8.3 name VDAGENT.MSI so the template's
+    ///   letter-enumeration command needs no long-filename handling.
+    ///
+    /// Each entry: the bundled source (resource dir + file name) and the name
+    /// it takes at the image root. The image-root names are load-bearing —
+    /// they are the literal names the template's if-exist guards test.
+    private let answerImagePayload: [(resourceDir: String, sourceName: String, imageName: String)] = [
+        ("virtio/vioserial", "vioser.inf", "vioser.inf"),
+        ("virtio/vioserial", "vioser.cat", "vioser.cat"),
+        ("virtio/vioserial", "vioser.sys", "vioser.sys"),
+        ("vdagent", "spice-vdagent-x64-0.10.0.msi", "VDAGENT.MSI")
+    ]
+
     init(onProgress: ((PipelineProgress) -> Void)? = nil) {
         self.onProgress = onProgress
     }
@@ -1107,10 +1134,17 @@ final class WindowsInstallPipeline {
 
     /// Template-fill the bundled autounattend.xml from the RESOLVED edition/key
     /// pair (single resolution point at the top of run() — Stage 4 no longer
-    /// owns a fallback; issue #6), then build a 2MB FAT12 answer image with
-    /// mformat/mcopy and verify it with mdir. The image is attached at launch as
-    /// removable usb-storage, which is where Windows Setup scans for
-    /// autounattend.xml.
+    /// owns a fallback; issue #6), then build an 8MB FAT12 answer image with
+    /// mformat/mcopy carrying the XML PLUS the guest-agent payload
+    /// (answerImagePayload: vioserial driver triple + vdagent MSI — see that
+    /// table's doc for what and why), and verify all five files with mdir. The
+    /// image is attached at launch as removable usb-storage, which is where
+    /// Windows Setup scans for autounattend.xml; the specialize pass (template
+    /// Orders 2-3) installs the payload from this same volume before OOBE.
+    ///
+    /// WHY 8MB: the old 2MB image left only ~78KB free once the ~1.8MB MSI
+    /// was aboard — too thin for msiexec's verbose VDAGENT.LOG (91KB observed)
+    /// plus slack. 8MB was the geometry proven end to end 2026-08-15.
     ///
     /// Template: Resources/autounattend.xml carries two literal tokens —
     /// AVM_EDITION_NAME (the /IMAGE/NAME value) and AVM_PRODUCT_KEY (the generic
@@ -1129,9 +1163,11 @@ final class WindowsInstallPipeline {
     /// wim (discEditionNames nil — the warn tier covered that).
     ///
     /// FAT image recipe (proven in bare Terminal AND green in-app):
-    ///   - 2MB zero-filled file (written by FileManager — no dd child process)
-    ///   - mformat -i <img> -v UNATTEND -T 4096 -h 16 -s 32 ::   (2MB geometry;
-    ///     the -f 1440 floppy preset FAILS on non-1.44MB images)
+    ///   - 8MB zero-filled file (written by FileManager — no dd child process)
+    ///   - mformat -i <img> -v UNATTEND -T 16384 -h 16 -s 63 ::  (8MB geometry,
+    ///     read back off the proven experiment image with file(1) — NOT scaled
+    ///     from the old 2MB "-T 4096 -s 32" by arithmetic; the -f 1440 floppy
+    ///     preset FAILS on non-1.44MB images)
     ///   - mcopy -n -i <img> <filled.xml> ::autounattend.xml     (-n avoids
     ///     interactive overwrite prompts that would hang the pipeline)
     ///   - MTOOLS_SKIP_CHECK=1 in the environment suppresses geometry warnings
@@ -1141,7 +1177,13 @@ final class WindowsInstallPipeline {
     ///   - mtools paths are passed as their own argv elements (safe with spaces);
     ///     only command-STRING contents need quoting (see PATHS WITH SPACES)
     ///
-    /// Postcondition: `mdir` of the image root lists autounattend.xml.
+    /// Postcondition: PER-FILE `mdir ::<name>` succeeds for autounattend.xml
+    /// and every payload file. Per-file (exit-code) checks, NOT a listing
+    /// substring match: mdir prints 8.3-compliant names COLUMN-SPLIT
+    /// ("vioser   inf"), so contains("vioser.inf") on the listing would
+    /// false-negative on every good image — proven in bare Terminal with the
+    /// bundled mtools version, 2026-08-15. Per-file mdir is case-insensitive,
+    /// works for both 8.3 and long names, and exits 1 on a miss.
     private func stageBuildAnswerImage(input: PipelineInput, scratch: URL) async throws {
         let mformat = try toolURL(named: "mformat")
         let mcopy = try toolURL(named: "mcopy")
@@ -1214,10 +1256,10 @@ final class WindowsInstallPipeline {
             )
         }
 
-        // --- Create the blank 2MB image (zero-filled; FileManager, no dd). ---
+        // --- Create the blank 8MB image (zero-filled; FileManager, no dd). ---
         let imageURL = answerImageURL(in: scratch)
         try? FileManager.default.removeItem(at: imageURL)
-        let blank = Data(count: 2_097_152)   // 2MB, matching the proven mformat geometry
+        let blank = Data(count: 8_388_608)   // 8MB, matching the proven mformat geometry
         do {
             try blank.write(to: imageURL)
         } catch {
@@ -1227,11 +1269,12 @@ final class WindowsInstallPipeline {
             )
         }
 
-        // --- Format FAT12, label UNATTEND, proven 2MB geometry. ---
+        // --- Format FAT12, label UNATTEND, proven 8MB geometry (read back off
+        // the 2026-08-15 experiment image: 16384 sectors, 16 heads, 63 s/track). ---
         let formatResult = await runTool(mformat, [
             "-i", imageURL.path,
             "-v", "UNATTEND",
-            "-T", "4096", "-h", "16", "-s", "32",
+            "-T", "16384", "-h", "16", "-s", "63",
             "::"
         ], extraEnvironment: mtoolsEnv)
         guard formatResult.code == 0 else {
@@ -1255,19 +1298,54 @@ final class WindowsInstallPipeline {
             )
         }
 
-        // --- Postcondition: mdir lists autounattend.xml at the image root. A
-        // silent miss would mean Setup finds an empty answer volume and runs
-        // interactively — the exact failure this pipeline exists to prevent. ---
-        let dirResult = await runTool(mdir, ["-i", imageURL.path, "::"], extraEnvironment: mtoolsEnv)
-        let landed = dirResult.code == 0 && dirResult.output.lowercased().contains("autounattend.xml")
-        guard landed else {
-            throw PipelineError.postconditionFailed(
-                stage: .buildAnswerImage,
-                reason: "The answer file didn't land inside the disk image."
-            )
+        // --- Copy the guest-agent payload to the image root (vioserial triple +
+        // vdagent MSI under its 8.3 name — see answerImagePayload's doc). Source
+        // presence is checked first: a missing bundled file is a build problem
+        // (Run Script didn't stage it), surfaced before mcopy can fail cryptically. ---
+        for item in answerImagePayload {
+            let srcDir = try resourceDirURL(named: item.resourceDir)
+            let srcFile = srcDir.appendingPathComponent(item.sourceName)
+            guard FileManager.default.fileExists(atPath: srcFile.path) else {
+                throw PipelineError.stageFailed(
+                    stage: .buildAnswerImage,
+                    reason: "The bundled \(item.sourceName) payload file is missing from the app. This is a build problem, not something you did."
+                )
+            }
+            let payloadCopy = await runTool(mcopy, [
+                "-n",
+                "-i", imageURL.path,
+                srcFile.path,
+                "::\(item.imageName)"
+            ], extraEnvironment: mtoolsEnv)
+            guard payloadCopy.code == 0 else {
+                throw PipelineError.stageFailed(
+                    stage: .buildAnswerImage,
+                    reason: "Couldn't copy \(item.imageName) into the answer-file disk image. (mcopy exit \(payloadCopy.code): \(payloadCopy.output.prefix(300)))"
+                )
+            }
         }
 
-        pipelineLog("stageBuildAnswerImage: built \(imageURL.lastPathComponent) — edition \"\(resolved.name)\" (\(resolved.wasDefaulted ? "default" : "user-selected")), verified via mdir")
+        // --- Postcondition: PER-FILE mdir for autounattend.xml and every
+        // payload file (exit 0 = present; see the doc comment for why a
+        // listing substring match is WRONG for 8.3 names). A silent
+        // autounattend.xml miss would mean Setup finds an empty answer volume
+        // and runs interactively; a silent payload miss would mean the
+        // specialize if-exist guards no-op and the guest lands at OOBE without
+        // absolute mouse — both are exactly the failures this pipeline exists
+        // to prevent, and each is named on failure. ---
+        var expectedNames = ["autounattend.xml"]
+        expectedNames.append(contentsOf: answerImagePayload.map { $0.imageName })
+        for name in expectedNames {
+            let fileCheck = await runTool(mdir, ["-i", imageURL.path, "::\(name)"], extraEnvironment: mtoolsEnv)
+            guard fileCheck.code == 0 else {
+                throw PipelineError.postconditionFailed(
+                    stage: .buildAnswerImage,
+                    reason: "\(name) didn't land inside the answer-file disk image."
+                )
+            }
+        }
+
+        pipelineLog("stageBuildAnswerImage: built \(imageURL.lastPathComponent) — edition \"\(resolved.name)\" (\(resolved.wasDefaulted ? "default" : "user-selected")), \(expectedNames.count) files verified via per-file mdir")
     }
 
     // MARK: - Stage 5 — Rebuild bootable ISO (implemented; appended-partition method)
