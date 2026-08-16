@@ -36,6 +36,14 @@ struct AVMApp: App {
     @StateObject private var vmStore = VMStore()
     @StateObject private var focusLock = FocusLockManager()
 
+    /// Sparkle updater (ADDED 2026-08-16). Created at the app root like the
+    /// other app-wide objects, but NOT injected into the view tree — no view
+    /// reads it; its only consumer is the Check for Updates menu item below.
+    /// Construction starts the updater (startingUpdater: true), which owns
+    /// the launch-time check schedule and the one-time consent dialog. Full
+    /// design of record in AVMUpdater.swift's header.
+    @StateObject private var updater = AVMUpdater()
+
     /// AVM's FIRST app delegate (added 2026-07-26). See AVMAppDelegate below
     /// for why one became necessary.
     @NSApplicationDelegateAdaptor(AVMAppDelegate.self) private var appDelegate
@@ -50,6 +58,25 @@ struct AVMApp: App {
         .commands {
             // Remove the default New Window menu item — AVM is single-window.
             CommandGroup(replacing: .newItem) { }
+
+            // Check for Updates… (application menu, after About AVM) — ADDED
+            // 2026-08-16. Placement is the macOS convention and therefore the
+            // first place a VoiceOver user will look; this is an APP
+            // operation, so it does not belong in the Virtual Machine menu
+            // (machine operations). No keyboard chord: rare, deliberate
+            // action — the same chord-budget rule as Save Diagnostic Log and
+            // Reclaim Disk Space. Dimmed via Sparkle's own canCheckForUpdates
+            // while a check or install is in flight (reactive dimming is fine
+            // HERE, unlike the parked VM-state dimming — Sparkle provides the
+            // observable). The action logs the invocation; every outcome,
+            // including "you're up to date", is carried by Sparkle's standard
+            // AppKit UI — native VoiceOver territory, nothing to self-voice.
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    updater.checkForUpdates()
+                }
+                .disabled(!updater.canCheckForUpdates)
+            }
 
             // Save Diagnostic Log… (File menu) — STAGE D (2026-08-06). The
             // whole flow (gate, save panel, copy, announcements, log lines)

@@ -6,5 +6,9 @@
 	<string>AVM needs local network access so Windows inside your virtual machine can connect to the internet.</string>
 	<key>NSUSBDeviceUsageDescription</key>
 	<string>AVM needs USB access to connect peripherals to your Windows virtual machine.</string>
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/allisonfm85/accessible-virtual-machine/main/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>tTEQr7ylWzT+WQa4Z1AYfZhEE9Rn+Hc9sgo6mniAFyE=</string>
 </dict>
 </plist>

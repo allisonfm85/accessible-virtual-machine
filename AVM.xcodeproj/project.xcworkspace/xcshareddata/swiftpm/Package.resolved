@@ -1,5 +1,5 @@
 {
-  "originHash" : "4b1e7fa360a877113fab8b0b9bd9e9214c21438d85dfd27c2f519017ad2ae1c4",
+  "originHash" : "c954ca1f0064c0143492d43b3b39ab59bcc4f7d28f29eff4c678ebb294797772",
   "pins" : [
     {
       "identity" : "cocoaspice",
@@ -8,6 +8,15 @@
       "state" : {
         "branch" : "avm-initial-fill",
         "revision" : "8b41a9af91eef3bd5dbc14b85a34470ad3903541"
+      }
+    },
+    {
+      "identity" : "sparkle",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/sparkle-project/Sparkle",
+      "state" : {
+        "revision" : "79bc9e872948e47877e76f194cb0c8e0412b0b90",
+        "version" : "2.9.5"
       }
     }
   ],

@@ -13,6 +13,7 @@
 		06430F282FD57CCC00F5FAEA /* VMStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06430F272FD57CCC00F5FAEA /* VMStore.swift */; };
 		06430F2A2FD5814B00F5FAEA /* VMView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06430F292FD5814B00F5FAEA /* VMView.swift */; };
 		06430F2C2FD5838D00F5FAEA /* USBManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06430F2B2FD5838D00F5FAEA /* USBManager.swift */; };
+		0648143D30321254002750DF /* AVMUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0648143C30321254002750DF /* AVMUpdater.swift */; };
 		064BD7122FD50A5F008025D4 /* VMConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 064BD7112FD50A5F008025D4 /* VMConfiguration.swift */; };
 		064BD7142FD50C59008025D4 /* VMManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 064BD7132FD50C59008025D4 /* VMManager.swift */; };
 		064BD7162FD50EA8008025D4 /* VMSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 064BD7152FD50EA8008025D4 /* VMSession.swift */; };
@@ -25,6 +26,7 @@
 		06BD45382FF36CBC00A48AD1 /* autounattend.xml in Resources */ = {isa = PBXBuildFile; fileRef = 06BD45372FF36CBC00A48AD1 /* autounattend.xml */; };
 		06CFA2F72FD4F651004426E1 /* AVMApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06CFA2F62FD4F651004426E1 /* AVMApp.swift */; };
 		06CFA2F92FD4F721004426E1 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06CFA2F82FD4F721004426E1 /* ContentView.swift */; };
+		06DAFA0A30316C16007B2495 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 06DAFA0930316C16007B2495 /* Sparkle */; };
 		06E772052FEE3ABE00220B01 /* WindowsInstallPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06E772042FEE3ABE00220B01 /* WindowsInstallPipeline.swift */; };
 /* End PBXBuildFile section */
 
@@ -36,6 +38,7 @@
 		06430F272FD57CCC00F5FAEA /* VMStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMStore.swift; sourceTree = "<group>"; };
 		06430F292FD5814B00F5FAEA /* VMView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMView.swift; sourceTree = "<group>"; };
 		06430F2B2FD5838D00F5FAEA /* USBManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = USBManager.swift; sourceTree = "<group>"; };
+		0648143C30321254002750DF /* AVMUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVMUpdater.swift; sourceTree = "<group>"; };
 		064BD7112FD50A5F008025D4 /* VMConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMConfiguration.swift; sourceTree = "<group>"; };
 		064BD7132FD50C59008025D4 /* VMManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMManager.swift; sourceTree = "<group>"; };
 		064BD7152FD50EA8008025D4 /* VMSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMSession.swift; sourceTree = "<group>"; };
@@ -68,6 +71,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				0693555B301AF3AC00D0F2E2 /* CocoaSpiceNoUsb in Frameworks */,
+				06DAFA0A30316C16007B2495 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -78,6 +82,7 @@
 			isa = PBXGroup;
 			children = (
 				06CFA2F62FD4F651004426E1 /* AVMApp.swift */,
+				0648143C30321254002750DF /* AVMUpdater.swift */,
 			);
 			path = app;
 			sourceTree = "<group>";
@@ -190,6 +195,7 @@
 			name = AVM;
 			packageProductDependencies = (
 				0693555A301AF3AC00D0F2E2 /* CocoaSpiceNoUsb */,
+				06DAFA0930316C16007B2495 /* Sparkle */,
 			);
 			productName = AVM;
 			productReference = 068FB6F12FD4D73200BF254D /* AVM.app */;
@@ -222,6 +228,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				06935559301AF3AC00D0F2E2 /* XCRemoteSwiftPackageReference "CocoaSpice" */,
+				06DAFA0830316C16007B2495 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 068FB6F22FD4D73200BF254D /* Products */;
@@ -274,6 +281,7 @@
 				064BD7162FD50EA8008025D4 /* VMSession.swift in Sources */,
 				064BD7142FD50C59008025D4 /* VMManager.swift in Sources */,
 				06430F282FD57CCC00F5FAEA /* VMStore.swift in Sources */,
+				0648143D30321254002750DF /* AVMUpdater.swift in Sources */,
 				062C1F9D300348D40086E56B /* Announcer.swift in Sources */,
 				06E772052FEE3ABE00220B01 /* WindowsInstallPipeline.swift in Sources */,
 				063A4A113024CEC600C47BD8 /* DiagnosticLogExporter.swift in Sources */,
@@ -704,6 +712,14 @@
 				kind = branch;
 			};
 		};
+		06DAFA0830316C16007B2495 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.9.5;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -711,6 +727,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 06935559301AF3AC00D0F2E2 /* XCRemoteSwiftPackageReference "CocoaSpice" */;
 			productName = CocoaSpiceNoUsb;
+		};
+		06DAFA0930316C16007B2495 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 06DAFA0830316C16007B2495 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
