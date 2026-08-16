@@ -144,6 +144,12 @@ appears, AVM will announce that another window took the keyboard. Turn
 VoiceOver on, read the dialog, choose Allow, and you'll hear "Keyboard
 back in Windows."
 
+**Updates.** When AVM first wants to check for updates, it asks your
+permission. Say yes and this is the last version you'll ever install by
+hand: when a new version is ready, AVM offers it, downloads it, and
+relaunches itself. You can also check any time with Check for Updates in
+the AVM menu. Everything is a normal dialog and reads with VoiceOver.
+
 ---
 
 ## 4. Before your first install: three Mac keyboard settings
@@ -188,10 +194,16 @@ The dashboard also has a **Setup Wizard** button. That is how you create a
 new virtual machine. See section 6. If you have no machines yet, the list is
 empty and that button is your first stop.
 
-**Delete asks first.** Deleting a virtual machine destroys its disk and
-everything on it, so AVM puts up a confirmation. Cancel is the default
-button, so pressing Return backs out safely. You have to deliberately choose
-Delete.
+**Delete asks first.** Deleting a virtual machine moves its disk — and
+everything on it — to the Trash, so AVM puts up a confirmation. Cancel is
+the default button, so pressing Return backs out safely. You have to
+deliberately choose Delete. If you change your mind afterward, the
+machine's folder is in the Trash until you empty it.
+
+**Reclaim Disk Space.** The Virtual Machine menu has a Reclaim Disk Space
+command. It looks for machine folders on disk that no longer appear in
+your list, tells you how much space each one holds, and moves the ones you
+pick to the Trash.
 
 Your machines live in your Library folder, under Application Support, in a
 folder named AVM. You do not need to go there, but that is where the space
