@@ -84,8 +84,8 @@ import Carbon.HIToolbox
 ///       spot. The regain announcement follows the same rule (note: in the
 ///       expected recovery flow VO is awake at regain, so regain is usually
 ///       silent by design; the log always records it).
-///     - Announcements: "Another window took the keyboard. Wake VoiceOver
-///       to check." / "Keyboard back in Windows." — distinct from the
+///     - Announcements: "Another window took the keyboard. Turn VoiceOver
+///       on to check." / "Keyboard back in Windows." — distinct from the
 ///       lock-transition pair on purpose; each phrase means one thing.
 ///     - Enforcement start also checks key status once, so a thief already
 ///       in place at lock time enters the same debounced path.
@@ -370,7 +370,7 @@ class FocusLockManager: ObservableObject {
                 return
             }
             self.keyLossAnnounced = true
-            Announcer.shared.announce("Another window took the keyboard. Wake VoiceOver to check.", tone: .info)
+            Announcer.shared.announce("Another window took the keyboard. Turn VoiceOver on to check.", tone: .info)
             AVMLog.write("AVM: FocusLock — key watch: key LOST >1s; ANNOUNCED loss.")
         }
     }
