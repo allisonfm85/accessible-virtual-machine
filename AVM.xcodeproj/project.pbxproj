@@ -19,6 +19,7 @@
 		064BD7182FD50FFB008025D4 /* FocusLockManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 064BD7172FD50FFB008025D4 /* FocusLockManager.swift */; };
 		064BD71C2FD51A95008025D4 /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 064BD71B2FD51A95008025D4 /* SetupView.swift */; };
 		064BD71E2FD51AF3008025D4 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 064BD71D2FD51AF3008025D4 /* SettingsView.swift */; };
+		0682D88A303135840028EE63 /* ReclaimView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0682D889303135840028EE63 /* ReclaimView.swift */; };
 		0693555B301AF3AC00D0F2E2 /* CocoaSpiceNoUsb in Frameworks */ = {isa = PBXBuildFile; productRef = 0693555A301AF3AC00D0F2E2 /* CocoaSpiceNoUsb */; };
 		06AC5E063017015D0058C437 /* AVMLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06AC5E053017015D0058C437 /* AVMLog.swift */; };
 		06BD45382FF36CBC00A48AD1 /* autounattend.xml in Resources */ = {isa = PBXBuildFile; fileRef = 06BD45372FF36CBC00A48AD1 /* autounattend.xml */; };
@@ -44,6 +45,7 @@
 		06600AF72FDF515400266F23 /* libglib-2.0.0.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; name = "libglib-2.0.0.dylib"; path = "../../Developer/sysroot-macos-arm64/sysroot-macOS-arm64/lib/libglib-2.0.0.dylib"; sourceTree = "<group>"; };
 		06600AFB2FDF521C00266F23 /* libgstreamer-1.0.0.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; name = "libgstreamer-1.0.0.dylib"; path = "../../Developer/sysroot-macos-arm64/sysroot-macOS-arm64/lib/libgstreamer-1.0.0.dylib"; sourceTree = "<group>"; };
 		06600AFE2FDF529200266F23 /* libspice-client-glib-2.0.8.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; name = "libspice-client-glib-2.0.8.dylib"; path = "../../Developer/sysroot-macos-arm64/sysroot-macOS-arm64/lib/libspice-client-glib-2.0.8.dylib"; sourceTree = "<group>"; };
+		0682D889303135840028EE63 /* ReclaimView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReclaimView.swift; sourceTree = "<group>"; };
 		068FB6F12FD4D73200BF254D /* AVM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AVM.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		06AC5E053017015D0058C437 /* AVMLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVMLog.swift; sourceTree = "<group>"; };
 		06BD45372FF36CBC00A48AD1 /* autounattend.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; name = autounattend.xml; path = Resources/autounattend.xml; sourceTree = "<group>"; };
@@ -133,6 +135,7 @@
 				064BD71B2FD51A95008025D4 /* SetupView.swift */,
 				064BD71D2FD51AF3008025D4 /* SettingsView.swift */,
 				06430F292FD5814B00F5FAEA /* VMView.swift */,
+				0682D889303135840028EE63 /* ReclaimView.swift */,
 			);
 			path = views;
 			sourceTree = "<group>";
@@ -276,6 +279,7 @@
 				063A4A113024CEC600C47BD8 /* DiagnosticLogExporter.swift in Sources */,
 				06CFA2F92FD4F721004426E1 /* ContentView.swift in Sources */,
 				06430F2C2FD5838D00F5FAEA /* USBManager.swift in Sources */,
+				0682D88A303135840028EE63 /* ReclaimView.swift in Sources */,
 				064BD71E2FD51AF3008025D4 /* SettingsView.swift in Sources */,
 				064BD7182FD50FFB008025D4 /* FocusLockManager.swift in Sources */,
 				06CFA2F72FD4F651004426E1 /* AVMApp.swift in Sources */,

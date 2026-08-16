@@ -4,6 +4,23 @@
 import Foundation
 import Combine
 
+// MARK: - Orphaned VM directory (2026-08-15, Reclaim Disk Space)
+
+/// One leftover directory in VMs/ with no matching configuration entry —
+/// the debris the pre-fix delete (issue #5) left behind. Everything the
+/// Reclaim sheet's row needs: identity, size, and a recognition date.
+struct OrphanedVMDirectory: Identifiable, Hashable {
+    /// The directory's name, which is its UUID string.
+    let uuidString: String
+    /// Allocated size in bytes of the whole directory.
+    let sizeBytes: UInt64
+    /// The directory's modification date — the row's recognition handle
+    /// ("from July 12, 2026" tells the user which deletion this was).
+    let modificationDate: Date?
+
+    var id: String { uuidString }
+}
+
 final class VMStore: ObservableObject {
 
     // MARK: - Published State
@@ -40,6 +57,13 @@ final class VMStore: ObservableObject {
         }
     }
 
+    /// The VMs/ container directory itself.
+    private var vmsContainerURL: URL {
+        get throws {
+            try avmDirectory.appendingPathComponent("VMs")
+        }
+    }
+
     // MARK: - Per-VM directory layout (2026-08-15, issue #5)
 
     /// The directory that holds every file belonging to one VM:
@@ -58,8 +82,7 @@ final class VMStore: ObservableObject {
     /// this layout: they point at the user's own files (e.g. an ISO in
     /// ~/Downloads) and deletion must never touch them.
     func vmDirectoryURL(for configuration: VMConfiguration) throws -> URL {
-        try avmDirectory
-            .appendingPathComponent("VMs")
+        try vmsContainerURL
             .appendingPathComponent(configuration.id.uuidString)
     }
 
@@ -72,7 +95,12 @@ final class VMStore: ObservableObject {
             let url = try? vmDirectoryURL(for: configuration),
             fileManager.fileExists(atPath: url.path)
         else { return nil }
+        return allocatedSizeBytes(of: url)
+    }
 
+    /// Shared size enumerator for the delete dialog and the Reclaim scan:
+    /// allocated size of every regular file under the given directory.
+    private func allocatedSizeBytes(of url: URL) -> UInt64 {
         let keys: Set<URLResourceKey> = [
             .totalFileAllocatedSizeKey,
             .fileAllocatedSizeKey,
@@ -95,6 +123,80 @@ final class VMStore: ObservableObject {
             total += UInt64(bytes)
         }
         return total
+    }
+
+    // MARK: - Reclaim Disk Space (2026-08-15, design of record)
+
+    /// Scans VMs/ for orphaned directories. THE DEFINITION (decision of
+    /// record): a directory whose name parses as a UUID and matches no
+    /// entry in configurations. Non-UUID names (Finder droppings, manual
+    /// creations) are INVISIBLE to this feature — we only claim to clean
+    /// up what AVM itself creates, and AVM only creates UUID-named
+    /// directories.
+    ///
+    /// The scan is fresh on every call — never cached, never run at
+    /// launch. The Reclaim menu item is the sole trigger.
+    ///
+    /// Sorted largest first: in a space-reclaiming list, the biggest win
+    /// leads.
+    func findOrphans() -> [OrphanedVMDirectory] {
+        guard
+            let container = try? vmsContainerURL,
+            fileManager.fileExists(atPath: container.path)
+        else { return [] }
+
+        let registered = Set(configurations.map { $0.id.uuidString.uppercased() })
+
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: container,
+            includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey]
+        ) else { return [] }
+
+        var orphans: [OrphanedVMDirectory] = []
+        for entry in entries {
+            let values = try? entry.resourceValues(
+                forKeys: [.isDirectoryKey, .contentModificationDateKey]
+            )
+            guard values?.isDirectory == true else { continue }
+
+            let name = entry.lastPathComponent
+            // UUID-only scope (decision of record): a name that does not
+            // parse as a UUID is not ours to touch.
+            guard let uuid = UUID(uuidString: name) else { continue }
+            guard !registered.contains(uuid.uuidString.uppercased()) else { continue }
+
+            orphans.append(OrphanedVMDirectory(
+                uuidString: name,
+                sizeBytes: allocatedSizeBytes(of: entry),
+                modificationDate: values?.contentModificationDate
+            ))
+        }
+
+        return orphans.sorted { $0.sizeBytes > $1.sizeBytes }
+    }
+
+    /// Moves one orphaned directory to the Trash. Throws on failure so
+    /// the caller can announce it.
+    ///
+    /// DEFENSE IN DEPTH: re-checks at trash time that the UUID is not a
+    /// registered configuration — the orphan list could be stale if a
+    /// configuration was created while the Reclaim sheet sat open. A
+    /// refused trash throws, so it is never silent.
+    func trashOrphan(_ orphan: OrphanedVMDirectory) throws {
+        let registered = Set(configurations.map { $0.id.uuidString.uppercased() })
+        if let uuid = UUID(uuidString: orphan.uuidString),
+           registered.contains(uuid.uuidString.uppercased()) {
+            AVMLog.write("AVM: VMStore — Reclaim REFUSED for \(orphan.uuidString): it is now a registered VM.")
+            throw NSError(
+                domain: "AVM.Reclaim",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "This folder now belongs to a virtual machine in your list and was not moved."]
+            )
+        }
+
+        let url = try vmsContainerURL.appendingPathComponent(orphan.uuidString)
+        try fileManager.trashItem(at: url, resultingItemURL: nil)
+        AVMLog.write("AVM: VMStore — Reclaim moved orphan \(orphan.uuidString) to Trash (\(orphan.sizeBytes) bytes).")
     }
 
     // MARK: - Init

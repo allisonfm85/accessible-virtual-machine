@@ -6,6 +6,7 @@ import AppKit
 
 @main
 struct AVMApp: App {
+
     // All app-wide observable objects are created here, at the root, and injected
     // into the view tree so every descendant can find them via @EnvironmentObject.
     // ContentView (and its children) read vmStore and focusLock, so BOTH must be
@@ -139,6 +140,18 @@ struct AVMApp: App {
             //    is skipped and resetVM's own guard no-ops with a console
             //    message — no confirming a no-op.
             //
+            // 5. Reclaim Disk Space… (no chord) — ADDED 2026-08-15. Cleans
+            //    up orphaned VM directories left behind by the pre-fix
+            //    delete (issue #5). Posts .avmReclaimFromMenu; ContentView
+            //    owns the response (fresh scan at invocation — announces
+            //    "nothing to reclaim" when the scan is empty, opens the
+            //    Reclaim sheet otherwise; sheet presentation needs the view
+            //    tree, and the scan needs vmStore). No keyboard chord: rare,
+            //    deliberate maintenance — the same chord-budget rule as Save
+            //    Diagnostic Log. Placed after its own Divider: maintenance,
+            //    not machine operation. Full design of record in
+            //    ReclaimView.swift's header.
+            //
             // Items 3 and 4 reach the manager through VMManager.shared (the
             // existing weak static VMSession sets at init for out-of-tree
             // handlers — same route the QEMU stderr/termination handlers
@@ -220,6 +233,13 @@ struct AVMApp: App {
                     }
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Reclaim Disk Space…") {
+                    AVMLog.write("AVM: Reclaim Disk Space menu — posting reclaim request to ContentView.")
+                    NotificationCenter.default.post(name: .avmReclaimFromMenu, object: nil)
+                }
             }
         }
     }

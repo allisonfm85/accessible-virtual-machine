@@ -13,6 +13,14 @@ import AppKit
 /// ContentView's activeSession @State, which only this view owns.
 extension Notification.Name {
     static let avmStartVMFromMenu = Notification.Name("avmStartVMFromMenu")
+
+    /// Posted by the Virtual Machine menu's "Reclaim Disk Space…" item
+    /// (2026-08-15). ContentView owns the response for the same reason as
+    /// Start: the sheet must be presented from the view tree, and the
+    /// scan-or-announce decision needs vmStore. Point 2 of the design of
+    /// record lives in the handler: fresh scan at invocation, spoken
+    /// answer when there is nothing to reclaim, sheet only when there is.
+    static let avmReclaimFromMenu = Notification.Name("avmReclaimFromMenu")
 }
 
 struct ContentView: View {
@@ -36,6 +44,7 @@ struct ContentView: View {
     @State private var activeSession: VMSession? = nil
     @State private var showingSetup = false
     @State private var showingSettings = false
+    @State private var showingReclaim = false
     @State private var errorMessage: String? = nil
 
     // MARK: - Body
@@ -103,6 +112,25 @@ struct ContentView: View {
             AVMLog.write("AVM: Start-from-menu — starting '\(config.name)'.")
             startVM(config: config)
         }
+        // Reclaim Disk Space from the menu (2026-08-15, design of record
+        // Point 2): fresh scan at invocation — never cached, never at
+        // launch. Nothing to reclaim answers with a spoken .info, not an
+        // empty dialog (a dialog demands a dismissal keystroke to say
+        // nothing happened; the announcement returns you where you were).
+        // Orphans found: open the sheet, which re-scans on appear.
+        .onReceive(NotificationCenter.default.publisher(for: .avmReclaimFromMenu)) { _ in
+            let orphans = vmStore.findOrphans()
+            guard !orphans.isEmpty else {
+                AVMLog.write("AVM: Reclaim-from-menu — scan found no orphans; announcing.")
+                Announcer.shared.announce(
+                    "No leftover files found. Nothing to reclaim.",
+                    tone: .info
+                )
+                return
+            }
+            AVMLog.write("AVM: Reclaim-from-menu — scan found \(orphans.count) orphan(s); opening sheet.")
+            showingReclaim = true
+        }
         .sheet(isPresented: $showingSetup) {
             SetupView()
                 .environmentObject(vmStore)
@@ -112,6 +140,10 @@ struct ContentView: View {
                 SettingsView(session: session)
                     .environmentObject(vmStore)
             }
+        }
+        .sheet(isPresented: $showingReclaim) {
+            ReclaimView()
+                .environmentObject(vmStore)
         }
     }
 
