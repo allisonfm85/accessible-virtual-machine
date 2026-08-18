@@ -42,7 +42,8 @@ pinned fork of CocoaSpice: https://github.com/allisonfm85/CocoaSpice
 
 Building requires Xcode on Apple Silicon, the UTM sysroot placed at the
 path named in the Run Script build phase (or edit the script to match
-your location), and macOS 13 Ventura or later as the deployment target.
+your location), and macOS 26.5 or later as the deployment target, matching
+the current Xcode project configuration.
 The bundled xorriso must be 1.5.8.pl02 or later — earlier versions
 produce install ISOs the Windows boot loader cannot read.
 
