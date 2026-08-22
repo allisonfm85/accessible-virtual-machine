@@ -33,16 +33,20 @@ Deliberately **not** in this repository: the binary dependencies —
 QEMU, SPICE, GStreamer, and related frameworks, plus EFI firmware
 images. These are staged at build time from the UTM project's
 prebuilt sysroot, with one local patch (a GStreamer osxaudio deadlock
-fix, backported from upstream). The staging steps, including exact
-paths, live in the Run Script build phase inside
+fix, backported from upstream). The staging steps live in
+the Run Script build phase inside
 `AVM.xcodeproj/project.pbxproj`. The SPICE display layer comes from a
 pinned fork of CocoaSpice: https://github.com/allisonfm85/CocoaSpice
 
 ## Building from source
 
-Building requires Xcode on Apple Silicon, the UTM sysroot placed at the
-path named in the Run Script build phase (or edit the script to match
-your location), and macOS 13 Ventura or later as the deployment target.
+Building requires Xcode on Apple Silicon, the UTM sysroot, and macOS 13
+Ventura or later as the deployment target. The sysroot location is one
+build setting, `AVM_SYSROOT`. It defaults to
+`$(HOME)/Developer/sysroot-macos-arm64/sysroot-macOS-arm64`. Keep the
+sysroot there and the project builds as is. Keep it somewhere else and
+override the setting, either in Xcode's build settings or on the
+command line with `xcodebuild AVM_SYSROOT=/your/path`.
 The bundled xorriso must be 1.5.8.pl02 or later — earlier versions
 produce install ISOs the Windows boot loader cannot read.
 
