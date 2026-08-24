@@ -279,8 +279,8 @@ struct AVMApp: App {
 /// at quit.
 ///
 /// WHY THIS WAS NECESSARY (verified by grep 2026-07-26, not assumed):
-///   FocusLockManager.cleanup() and USBManager.cleanup() both exist and both
-///   have ZERO callers. AVM had no NSApplicationDelegate, no
+///   FocusLockManager.cleanup() exists and has ZERO callers. AVM had no
+///   NSApplicationDelegate, no
 ///   applicationWillTerminate, no lifecycle hooks of any kind. Nothing ran at
 ///   quit. For the Caps Lock remap that is not a cosmetic gap: quitting while
 ///   locked would strand the mapping EVERY TIME — not just on a crash — and

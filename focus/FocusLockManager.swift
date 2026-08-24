@@ -428,7 +428,7 @@ class FocusLockManager: ObservableObject {
 
     // MARK: - Cleanup
     /// NOTE (2026-07-26): this method currently has NO CALLERS anywhere in the
-    /// project — verified by grep, along with USBManager.cleanup(). AVM has no
+    /// project — verified by grep. AVM has no
     /// NSApplicationDelegate and no applicationWillTerminate hook, so nothing
     /// runs at quit. It is left in place because it is correct and cheap, but
     /// it must NOT be treated as a safety net: the Caps Lock remap deliberately
