@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.games</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>AVM needs local network access so Windows inside your virtual machine can connect to the internet.</string>
 	<key>NSUSBDeviceUsageDescription</key>
