@@ -1414,9 +1414,17 @@ final class VMManager: ObservableObject {
         // display channels live (agent-mouse=on as of Path A, 2026-08-10 —
         // see the -spice line). display=gpu0 is KEPT: launch-proven,
         // harmless, possibly required by the shipping path (guest agent).
-        args += ["-device", "qemu-xhci,id=usb"]
-        args += ["-device", "usb-kbd,bus=usb.0"]
-        args += ["-device", "usb-tablet,bus=usb.0,display=gpu0"]
+        // PORT MAP (explicit root ports, always): p2=8,p3=8 gives this
+        // controller 8 all-speed root ports. Built-ins pin to ports 1-4:
+        // kbd=1, tablet=2, install media=3, unattend=4. Ports 5-8 are the
+        // reserve for hot-added passthrough devices. Why explicit: a
+        // port-less device_add on a full controller makes QEMU auto-create
+        // a USB 1.1 hub and coerce high-speed devices down to 12 Mb/s.
+        // Root-caused 2026-09 against the ATR2100x. Never let a device
+        // pick its own port.
+        args += ["-device", "qemu-xhci,id=usb,p2=8,p3=8"]
+        args += ["-device", "usb-kbd,bus=usb.0,port=1"]
+        args += ["-device", "usb-tablet,bus=usb.0,port=2,display=gpu0"]
 
         // INSTALL DISK: nvme (target disk Windows installs onto). bootindex=1 so
         // the install media (bootindex=0) boots first.
@@ -1450,7 +1458,7 @@ final class VMManager: ObservableObject {
             if FileManager.default.fileExists(atPath: rebuiltISOPath) {
                 args += [
                     "-drive", "if=none,id=cdrom0,file=\(rebuiltISOPath),media=cdrom,readonly=on",
-                    "-device", "usb-storage,drive=cdrom0,bootindex=0,removable=on"
+                    "-device", "usb-storage,drive=cdrom0,bus=usb.0,port=3,bootindex=0,removable=on"
                 ]
                 avmLog("buildQEMUArguments: attached AVM-built install ISO at \(rebuiltISOPath)")
             } else {
@@ -1475,7 +1483,7 @@ final class VMManager: ObservableObject {
         if FileManager.default.fileExists(atPath: autounattendImagePath) {
             args += [
                 "-drive", "if=none,id=unattend,file=\(autounattendImagePath),format=raw,cache=writeback",
-                "-device", "usb-storage,drive=unattend,removable=on"
+                "-device", "usb-storage,drive=unattend,bus=usb.0,port=4,removable=on"
             ]
             avmLog("buildQEMUArguments: attached autounattend image at \(autounattendImagePath)")
             appendConsole("AVM: Attached autounattend.xml image for unattended install.\n")
