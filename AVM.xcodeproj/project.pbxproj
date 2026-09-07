@@ -27,7 +27,43 @@
 		06CFA2F92FD4F721004426E1 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06CFA2F82FD4F721004426E1 /* ContentView.swift */; };
 		06DAFA0A30316C16007B2495 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 06DAFA0930316C16007B2495 /* Sparkle */; };
 		06E772052FEE3ABE00220B01 /* WindowsInstallPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06E772042FEE3ABE00220B01 /* WindowsInstallPipeline.swift */; };
+		06AB01AA0000000000000001 /* AVMUSBHelper in Embed USB Helper */ = {isa = PBXBuildFile; fileRef = 06F4CAF5304F3A3F0033A29C /* AVMUSBHelper */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		06AB01AA0000000000000002 /* com.alllisonmeloy.AVM.usbhelper.plist in Embed USB Helper launchd plist */ = {isa = PBXBuildFile; fileRef = 06AB01AA0000000000000003 /* com.alllisonmeloy.AVM.usbhelper.plist */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		06AB01AA0000000000000004 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 068FB6E92FD4D73200BF254D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 06F4CAF4304F3A3F0033A29C;
+			remoteInfo = AVMUSBHelper;
+		};
+/* End PBXContainerItemProxy section */
+/* Begin PBXCopyFilesBuildPhase section */
+		06AB01AA0000000000000006 /* Embed USB Helper */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				06AB01AA0000000000000001 /* AVMUSBHelper in Embed USB Helper */,
+			);
+			name = "Embed USB Helper";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		06AB01AA0000000000000007 /* Embed USB Helper launchd plist */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/LaunchDaemons;
+			dstSubfolderSpec = 1;
+			files = (
+				06AB01AA0000000000000002 /* com.alllisonmeloy.AVM.usbhelper.plist in Embed USB Helper launchd plist */,
+			);
+			name = "Embed USB Helper launchd plist";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		061611A73016C27100ED7E16 /* CapsLockRemapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapsLockRemapper.swift; sourceTree = "<group>"; };
@@ -47,15 +83,35 @@
 		068FB6F12FD4D73200BF254D /* AVM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AVM.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		06AC5E053017015D0058C437 /* AVMLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVMLog.swift; sourceTree = "<group>"; };
 		06BD45372FF36CBC00A48AD1 /* autounattend.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; name = autounattend.xml; path = Resources/autounattend.xml; sourceTree = "<group>"; };
+		06AB01AA0000000000000003 /* com.alllisonmeloy.AVM.usbhelper.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = com.alllisonmeloy.AVM.usbhelper.plist; path = Resources/com.alllisonmeloy.AVM.usbhelper.plist; sourceTree = "<group>"; };
 		06CFA2F62FD4F651004426E1 /* AVMApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVMApp.swift; sourceTree = "<group>"; };
 		06CFA2F82FD4F721004426E1 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		06E772042FEE3ABE00220B01 /* WindowsInstallPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowsInstallPipeline.swift; sourceTree = "<group>"; };
+		06F4CAF5304F3A3F0033A29C /* AVMUSBHelper */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = AVMUSBHelper; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		06327C22304F42D100FABB8D /* Exceptions for "AVMUSBHelper" folder in "AVM" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				AVMUSBHelperProtocol.swift,
+			);
+			target = 068FB6F02FD4D73200BF254D /* AVM */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		068FB6F32FD4D73200BF254D /* AVM */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = AVM;
+			sourceTree = "<group>";
+		};
+		06F4CAF6304F3A3F0033A29C /* AVMUSBHelper */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				06327C22304F42D100FABB8D /* Exceptions for "AVMUSBHelper" folder in "AVM" target */,
+			);
+			path = AVMUSBHelper;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -67,6 +123,13 @@
 			files = (
 				0693555B301AF3AC00D0F2E2 /* CocoaSpiceNoUsb in Frameworks */,
 				06DAFA0A30316C16007B2495 /* Sparkle in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		06F4CAF2304F3A3F0033A29C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -136,12 +199,14 @@
 				06AC5E053017015D0058C437 /* AVMLog.swift */,
 				062C1F9C300348D40086E56B /* Announcer.swift */,
 				06BD45372FF36CBC00A48AD1 /* autounattend.xml */,
+				06AB01AA0000000000000003 /* com.alllisonmeloy.AVM.usbhelper.plist */,
 				063B17292FD4F1AA0009496A /* app */,
 				0679D7B62FD4F11A0058D960 /* views */,
 				0679D7B42FD4F0BD0058D960 /* focus */,
 				0679D7B32FD4F07A0058D960 /* input */,
 				0679D7B22FD4EFD10058D960 /* VM */,
 				068FB6F32FD4D73200BF254D /* AVM */,
+				06F4CAF6304F3A3F0033A29C /* AVMUSBHelper */,
 				06600AF62FDF515400266F23 /* Frameworks */,
 				068FB6F22FD4D73200BF254D /* Products */,
 				0627886E2FE3AFCB00536554 /* AVM-Bridging-Header.h */,
@@ -152,6 +217,7 @@
 			isa = PBXGroup;
 			children = (
 				068FB6F12FD4D73200BF254D /* AVM.app */,
+				06F4CAF5304F3A3F0033A29C /* AVMUSBHelper */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -166,11 +232,14 @@
 				068FB6ED2FD4D73200BF254D /* Sources */,
 				068FB6EE2FD4D73200BF254D /* Frameworks */,
 				068FB6EF2FD4D73200BF254D /* Resources */,
+				06AB01AA0000000000000006 /* Embed USB Helper */,
+				06AB01AA0000000000000007 /* Embed USB Helper launchd plist */,
 				06D1147C2FE0D50300AC265D /* ShellScript */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				06AB01AA0000000000000005 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				068FB6F32FD4D73200BF254D /* AVM */,
@@ -184,6 +253,27 @@
 			productReference = 068FB6F12FD4D73200BF254D /* AVM.app */;
 			productType = "com.apple.product-type.application";
 		};
+		06F4CAF4304F3A3F0033A29C /* AVMUSBHelper */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 06F4CAFB304F3A3F0033A29C /* Build configuration list for PBXNativeTarget "AVMUSBHelper" */;
+			buildPhases = (
+				06F4CAF1304F3A3F0033A29C /* Sources */,
+				06F4CAF2304F3A3F0033A29C /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				06F4CAF6304F3A3F0033A29C /* AVMUSBHelper */,
+			);
+			name = AVMUSBHelper;
+			packageProductDependencies = (
+			);
+			productName = AVMUSBHelper;
+			productReference = 06F4CAF5304F3A3F0033A29C /* AVMUSBHelper */;
+			productType = "com.apple.product-type.tool";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -191,12 +281,15 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2650;
+				LastSwiftUpdateCheck = 2660;
 				LastUpgradeCheck = 2650;
 				TargetAttributes = {
 					068FB6F02FD4D73200BF254D = {
 						CreatedOnToolsVersion = 26.5;
 						LastSwiftMigration = 2650;
+					};
+					06F4CAF4304F3A3F0033A29C = {
+						CreatedOnToolsVersion = 26.6;
 					};
 				};
 			};
@@ -219,6 +312,7 @@
 			projectRoot = "";
 			targets = (
 				068FB6F02FD4D73200BF254D /* AVM */,
+				06F4CAF4304F3A3F0033A29C /* AVMUSBHelper */,
 			);
 		};
 /* End PBXProject section */
@@ -280,8 +374,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		06F4CAF1304F3A3F0033A29C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		06AB01AA0000000000000005 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 06F4CAF4304F3A3F0033A29C /* AVMUSBHelper */;
+			targetProxy = 06AB01AA0000000000000004 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 /* Begin XCBuildConfiguration section */
 		068FB6FA2FD4D73300BF254D /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -424,8 +532,8 @@
 					"$(PROJECT_DIR)/AVM/Frameworks",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = AVM/Info.plist;
 				HEADER_SEARCH_PATHS = "";
+				INFOPLIST_FILE = AVM/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"@executable_path/../Frameworks\n@executable_path/../MacOS\n@executable_path",
@@ -556,8 +664,8 @@
 					"$(PROJECT_DIR)/AVM/Frameworks",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = AVM/Info.plist;
 				HEADER_SEARCH_PATHS = "";
+				INFOPLIST_FILE = AVM/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"@executable_path/../Frameworks\n@executable_path/../MacOS\n@executable_path",
@@ -666,6 +774,36 @@
 			};
 			name = Release;
 		};
+		06F4CAF9304F3A3F0033A29C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4NZJSBJ32X;
+				ENABLE_HARDENED_RUNTIME = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.alllisonmeloy.AVM.usbhelper;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		06F4CAFA304F3A3F0033A29C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4NZJSBJ32X;
+				ENABLE_HARDENED_RUNTIME = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.alllisonmeloy.AVM.usbhelper;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -683,6 +821,15 @@
 			buildConfigurations = (
 				068FB6FD2FD4D73300BF254D /* Debug */,
 				068FB6FE2FD4D73300BF254D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		06F4CAFB304F3A3F0033A29C /* Build configuration list for PBXNativeTarget "AVMUSBHelper" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				06F4CAF9304F3A3F0033A29C /* Debug */,
+				06F4CAFA304F3A3F0033A29C /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
