@@ -13,12 +13,16 @@
 //  Every call and every event names its device. Multiple devices can
 //  be attached at once, each with its own stream socket to QEMU.
 //
+//  Everything here is nonisolated on purpose. XPC decodes payloads and
+//  delivers calls on its own threads, and the AVM target defaults new
+//  types to the main actor. These types must not inherit that.
+//
 
 import Foundation
 
 // MARK: - Names
 
-public enum AVMUSBHelperNames {
+nonisolated public enum AVMUSBHelperNames {
     /// launchd label and Mach service name. Three L's on purpose,
     /// same as the bundle identifier. Don't fix it.
     public static let machServiceName = "com.alllisonmeloy.AVM.usbhelper"
@@ -37,7 +41,7 @@ public enum AVMUSBHelperNames {
 /// Bus and address are what libusb uses to find it again. Vendor,
 /// product and serial are what a person recognizes.
 @objc(AVMUSBDeviceIdentity)
-public final class AVMUSBDeviceIdentity: NSObject, NSSecureCoding {
+nonisolated public final class AVMUSBDeviceIdentity: NSObject, NSSecureCoding {
     public static var supportsSecureCoding: Bool { true }
 
     @objc public let vendorID: UInt16
@@ -125,7 +129,7 @@ public final class AVMUSBDeviceIdentity: NSObject, NSSecureCoding {
 /// Where one device is in its life with the helper.
 /// The helper reports these. AVM decides what to say about them.
 @objc(AVMUSBDeviceState)
-public enum AVMUSBDeviceState: Int {
+nonisolated public enum AVMUSBDeviceState: Int {
     /// Claim in progress. Nothing to announce yet unless it takes too long.
     case attaching = 0
     /// Claimed and streaming to QEMU.
@@ -144,7 +148,7 @@ public enum AVMUSBDeviceState: Int {
 
 /// One row of the helper's status report: a device and its state.
 @objc(AVMUSBDeviceStatus)
-public final class AVMUSBDeviceStatus: NSObject, NSSecureCoding {
+nonisolated public final class AVMUSBDeviceStatus: NSObject, NSSecureCoding {
     public static var supportsSecureCoding: Bool { true }
 
     @objc public let device: AVMUSBDeviceIdentity
@@ -181,7 +185,7 @@ public final class AVMUSBDeviceStatus: NSObject, NSSecureCoding {
 // MARK: - Helper side (AVM calls these)
 
 @objc(AVMUSBHelperProtocol)
-public protocol AVMUSBHelperProtocol {
+nonisolated public protocol AVMUSBHelperProtocol {
     /// Claim a device and stream it to the QEMU usbredir socket at
     /// streamSocketPath. QEMU listens; the helper dials.
     /// Reply: success, failing step (nil on success), detail.
@@ -205,7 +209,7 @@ public protocol AVMUSBHelperProtocol {
 // MARK: - AVM side (the helper calls this back)
 
 @objc(AVMUSBHelperClientProtocol)
-public protocol AVMUSBHelperClientProtocol {
+nonisolated public protocol AVMUSBHelperClientProtocol {
     /// Fired for every state change of every device. Always carries
     /// the device it is about. Detail names a step or a reason when
     /// there is one.
@@ -216,7 +220,7 @@ public protocol AVMUSBHelperClientProtocol {
 
 // MARK: - Interfaces with secure-coding class lists
 
-public enum AVMUSBHelperInterfaces {
+nonisolated public enum AVMUSBHelperInterfaces {
     /// The interface AVM sets as remoteObjectInterface and the helper
     /// sets as exportedInterface.
     public static func helper() -> NSXPCInterface {

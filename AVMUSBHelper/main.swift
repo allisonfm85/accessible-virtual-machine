@@ -12,7 +12,12 @@
 //
 //  This is the scaffold. attach and detach reply honestly that they
 //  are not implemented. status is empty. The listener, the code
-//  signing gate and the idle exit are real and can be proven now.
+//  signing gate and the idle exit are real and were proven live on
+//  2026-09-07: on-demand launch as root, gate passed by a Debug AVM,
+//  version reply received, clean exit code 0 after the idle period.
+//
+//  Log levels: lifecycle lines are .default so `log show` keeps them.
+//  .info is dropped by default and was invisible in the first proof.
 //
 
 import Foundation
@@ -78,7 +83,7 @@ final class IdleWatch {
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + idleGracePeriod)
         t.setEventHandler {
-            os_log("idle for %{public}.0f s with no connections and no devices; exiting", log: log, type: .info, idleGracePeriod)
+            os_log("idle for %{public}.0f s with no connections and no devices; exiting", log: log, type: .default, idleGracePeriod)
             exit(0)
         }
         t.resume()
@@ -104,23 +109,24 @@ final class HelperService: NSObject, AVMUSBHelperProtocol {
                 streamSocketPath: String,
                 reply: @escaping (Bool, String?, String?) -> Void) {
         os_log("attach requested for %{public}@ to %{public}@ — not implemented in scaffold",
-               log: log, type: .info, device.description, streamSocketPath)
+               log: log, type: .default, device.description, streamSocketPath)
         reply(false, "helper not implemented yet",
               "The USB helper scaffold accepted the request for \(device.displayName) but cannot claim devices yet.")
     }
 
     func detach(_ device: AVMUSBDeviceIdentity,
                 reply: @escaping (Bool, String?) -> Void) {
-        os_log("detach requested for %{public}@ — nothing held", log: log, type: .info, device.description)
+        os_log("detach requested for %{public}@ — nothing held", log: log, type: .default, device.description)
         reply(false, "The USB helper scaffold holds no devices, so there is nothing to release.")
     }
 
     func status(reply: @escaping ([AVMUSBDeviceStatus]) -> Void) {
-        os_log("status requested — empty", log: log, type: .info)
+        os_log("status requested — empty", log: log, type: .default)
         reply([])
     }
 
     func helperVersion(reply: @escaping (String) -> Void) {
+        os_log("version requested", log: log, type: .default)
         reply(AVMUSBHelperNames.machServiceName + " " + helperBuildVersion)
     }
 }
@@ -148,16 +154,16 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
         newConnection.remoteObjectInterface = AVMUSBHelperInterfaces.client()
 
         newConnection.invalidationHandler = {
-            os_log("connection invalidated (pid %{public}d)", log: log, type: .info, newConnection.processIdentifier)
+            os_log("connection invalidated (pid %{public}d)", log: log, type: .default, newConnection.processIdentifier)
             idle.connectionClosed()
         }
         newConnection.interruptionHandler = {
-            os_log("connection interrupted (pid %{public}d)", log: log, type: .info, newConnection.processIdentifier)
+            os_log("connection interrupted (pid %{public}d)", log: log, type: .default, newConnection.processIdentifier)
         }
 
         idle.connectionOpened()
         newConnection.resume()
-        os_log("accepted connection from pid %{public}d", log: log, type: .info, newConnection.processIdentifier)
+        os_log("accepted connection from pid %{public}d", log: log, type: .default, newConnection.processIdentifier)
         return true
     }
 }
@@ -165,7 +171,7 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
 // MARK: - Main
 
 os_log("%{public}@ %{public}@ starting as uid %{public}d, requiring team %{public}@",
-       log: log, type: .info,
+       log: log, type: .default,
        AVMUSBHelperNames.machServiceName, helperBuildVersion, getuid(), clientTeamID)
 
 let delegate = ListenerDelegate()

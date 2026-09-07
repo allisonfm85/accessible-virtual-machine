@@ -21,14 +21,14 @@
 		064BD71E2FD51AF3008025D4 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 064BD71D2FD51AF3008025D4 /* SettingsView.swift */; };
 		0682D88A303135840028EE63 /* ReclaimView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0682D889303135840028EE63 /* ReclaimView.swift */; };
 		0693555B301AF3AC00D0F2E2 /* CocoaSpiceNoUsb in Frameworks */ = {isa = PBXBuildFile; productRef = 0693555A301AF3AC00D0F2E2 /* CocoaSpiceNoUsb */; };
+		06AB01AA0000000000000001 /* AVMUSBHelper in Embed USB Helper */ = {isa = PBXBuildFile; fileRef = 06F4CAF5304F3A3F0033A29C /* AVMUSBHelper */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		06AB01AA0000000000000002 /* com.alllisonmeloy.AVM.usbhelper.plist in Embed USB Helper launchd plist */ = {isa = PBXBuildFile; fileRef = 06AB01AA0000000000000003 /* com.alllisonmeloy.AVM.usbhelper.plist */; };
 		06AC5E063017015D0058C437 /* AVMLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06AC5E053017015D0058C437 /* AVMLog.swift */; };
 		06BD45382FF36CBC00A48AD1 /* autounattend.xml in Resources */ = {isa = PBXBuildFile; fileRef = 06BD45372FF36CBC00A48AD1 /* autounattend.xml */; };
 		06CFA2F72FD4F651004426E1 /* AVMApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06CFA2F62FD4F651004426E1 /* AVMApp.swift */; };
 		06CFA2F92FD4F721004426E1 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06CFA2F82FD4F721004426E1 /* ContentView.swift */; };
 		06DAFA0A30316C16007B2495 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 06DAFA0930316C16007B2495 /* Sparkle */; };
 		06E772052FEE3ABE00220B01 /* WindowsInstallPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06E772042FEE3ABE00220B01 /* WindowsInstallPipeline.swift */; };
-		06AB01AA0000000000000001 /* AVMUSBHelper in Embed USB Helper */ = {isa = PBXBuildFile; fileRef = 06F4CAF5304F3A3F0033A29C /* AVMUSBHelper */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
-		06AB01AA0000000000000002 /* com.alllisonmeloy.AVM.usbhelper.plist in Embed USB Helper launchd plist */ = {isa = PBXBuildFile; fileRef = 06AB01AA0000000000000003 /* com.alllisonmeloy.AVM.usbhelper.plist */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -40,6 +40,7 @@
 			remoteInfo = AVMUSBHelper;
 		};
 /* End PBXContainerItemProxy section */
+
 /* Begin PBXCopyFilesBuildPhase section */
 		06AB01AA0000000000000006 /* Embed USB Helper */ = {
 			isa = PBXCopyFilesBuildPhase;
@@ -81,9 +82,9 @@
 		064BD71D2FD51AF3008025D4 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		0682D889303135840028EE63 /* ReclaimView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReclaimView.swift; sourceTree = "<group>"; };
 		068FB6F12FD4D73200BF254D /* AVM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AVM.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		06AB01AA0000000000000003 /* com.alllisonmeloy.AVM.usbhelper.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = com.alllisonmeloy.AVM.usbhelper.plist; path = Resources/com.alllisonmeloy.AVM.usbhelper.plist; sourceTree = "<group>"; };
 		06AC5E053017015D0058C437 /* AVMLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVMLog.swift; sourceTree = "<group>"; };
 		06BD45372FF36CBC00A48AD1 /* autounattend.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; name = autounattend.xml; path = Resources/autounattend.xml; sourceTree = "<group>"; };
-		06AB01AA0000000000000003 /* com.alllisonmeloy.AVM.usbhelper.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = com.alllisonmeloy.AVM.usbhelper.plist; path = Resources/com.alllisonmeloy.AVM.usbhelper.plist; sourceTree = "<group>"; };
 		06CFA2F62FD4F651004426E1 /* AVMApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVMApp.swift; sourceTree = "<group>"; };
 		06CFA2F82FD4F721004426E1 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		06E772042FEE3ABE00220B01 /* WindowsInstallPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowsInstallPipeline.swift; sourceTree = "<group>"; };
@@ -390,6 +391,7 @@
 			targetProxy = 06AB01AA0000000000000004 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
 		068FB6FA2FD4D73300BF254D /* Debug */ = {
 			isa = XCBuildConfiguration;

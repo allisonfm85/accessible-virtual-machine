@@ -201,6 +201,42 @@ struct AVMApp: App {
             // Stage D's diagnostic bundle will carry. Privacy check: these
             // lines name AVM menu commands and VM state only, never guest
             // keystrokes, so the key-naming prohibition does not apply.
+            // Debug menu — DEBUG BUILDS ONLY. Test instruments for the USB
+            // helper scaffold (2026-09-07). Nothing here ships. The version
+            // probe is the first end-to-end proof of the privileged path:
+            // lazy registration, Login Items approval, launchd start, the
+            // helper's code-signing gate, and one reply. Every outcome is
+            // spoken through Announcer; every failure names its step.
+            #if DEBUG
+            CommandMenu("Debug") {
+                Button("USB Helper: Version Probe") {
+                    Task { @MainActor in
+                        AVMLog.write("Debug menu: USB helper version probe", category: "USBHelper")
+                        switch await USBHelperClient.shared.fetchHelperVersion() {
+                        case .success(let version):
+                            Announcer.shared.announce("USB helper answered: \(version)", tone: .success)
+                        case .failure(.notEnabled):
+                            // The approval dialog or the registration
+                            // announcement already said what to do.
+                            break
+                        case .failure(let error):
+                            Announcer.shared.announce("USB helper did not answer. Step: XPC call. Reason: \(error). Next: check Login Items, then the diagnostic log.", tone: .failure)
+                        }
+                    }
+                }
+                Button("USB Helper: Status") {
+                    let s = USBHelperClient.shared.refreshStatus()
+                    AVMLog.write("Debug menu: USB helper status \(s.rawValue)", category: "USBHelper")
+                    Announcer.shared.announce("USB helper status: \(s.rawValue).", tone: .info)
+                }
+                Button("USB Helper: Open Login Items") {
+                    USBHelperClient.shared.openLoginItems()
+                }
+                Button("USB Helper: Unregister") {
+                    USBHelperClient.shared.unregister()
+                }
+            }
+            #endif
             CommandMenu("Virtual Machine") {
                 Button("Start Virtual Machine") {
                     AVMLog.write("AVM: Start Virtual Machine menu — posting start request to ContentView.")
