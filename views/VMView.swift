@@ -66,14 +66,14 @@
 //
 // STUCK-KEY HANDLING (the Narrator-toggle fix):
 //   macOS does NOT deliver keyUp to a view while Command is held — the Command
-//   key "eats" the keyUp. So a chord like Win+Ctrl+Enter (Ctrl+Cmd+Return)
+//   key "eats" the keyUp. So a key combination like Win+Ctrl+Enter (Ctrl+Cmd+Return)
 //   forwards Return's PRESS but never its RELEASE, leaving Return stuck-down in
 //   the guest. After that, all navigation is polluted and the toggle misfires.
 //   Command combos also route through performKeyEquivalent, which has no "up"
 //   counterpart at all. To fix both, the coordinator TRACKS every held
 //   non-modifier scancode and force-releases any still held whenever the
-//   modifier set changes (i.e. the chord is being released). This guarantees no
-//   non-modifier key is left stuck after a Command chord, without relying on a
+//   modifier set changes (i.e. the key combination is being released). This guarantees no
+//   non-modifier key is left stuck after a Command key combination, without relying on a
 //   keyUp that AppKit may never deliver.
 //
 // Keyboard model while locked (full Windows immersion):
@@ -731,8 +731,31 @@ final class SPICEKeyCaptureView: MTKView {
         // Command combos (e.g. Ctrl+Cmd+Return for Narrator) are delivered here,
         // NOT to keyDown — and AppKit never delivers a matching keyUp while
         // Command is held. We forward the press; the stuck-key flush in
-        // handleFlagsChanged releases it when the chord's modifiers come up.
-        coordinator.handleKey(event: event, pressed: true)
+        // handleFlagsChanged releases it when the key combination's modifiers come up.
+        //
+        // COMMAND COMBOS ARE TAPS (2026-09-07, issue 13, MEASURED):
+        // Three facts from the stderr key log, one held Ctrl+Cmd+Return:
+        //   1. AppKit delivers typematic repeats of a Command key combination through
+        //      performKeyEquivalent too, each with isARepeat set.
+        //   2. With those repeats dropped, AVM sent ONE make during a 2.7 s
+        //      hold and Narrator STILL started and then exited: the guest does
+        //      its own typematic repeat from a held key and re-fires the
+        //      hotkey itself. A host-side repeat filter alone is not the lever.
+        //   3. When Command came up while Return was still physically down,
+        //      macOS resumed delivering Return's repeats via keyDown, and one
+        //      was forwarded as a bare Enter (it opened the focused desktop
+        //      item). See the phantom-repeat guard in handleKey.
+        // Every event on this path is a Command key combination, i.e. a Windows-key
+        // key combination, and no Windows-key key combination is held for repeat on purpose. So a
+        // combo key is delivered to the guest as a TAP: press and release
+        // together, never tracked as held, repeats ignored. One make, one
+        // break, for a hold of any length, and nothing left for the stuck-key
+        // flush to do. Ordinary keys arrive via keyDown and keep their repeats
+        // (see the F19-scoped note in handleKey).
+        if event.isARepeat {
+            return true
+        }
+        coordinator.handleCommandComboTap(event: event)
         return true
     }
 
@@ -846,9 +869,9 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
 
     // STUCK-KEY FIX: the set of non-modifier scancodes currently pressed in the
     // guest (as far as we've forwarded). Because macOS withholds keyUp while
-    // Command is held, a key pressed as part of a Command chord (e.g. Return in
+    // Command is held, a key pressed as part of a Command key combination (e.g. Return in
     // Win+Ctrl+Enter) would otherwise never be released. We force-release any
-    // key still in this set when the modifier flags change (the chord lifting),
+    // key still in this set when the modifier flags change (the key combination lifting),
     // and on the unlock path. Modifier scancodes are NOT tracked here — they are
     // driven directly by flagsChanged.
     private var pressedScancodes = Set<Int32>()
@@ -1139,7 +1162,7 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     }
 
     /// Force-release every non-modifier key we believe is still pressed in the
-    /// guest. Used by the Command-chord stuck-key flush in handleFlagsChanged —
+    /// guest. Used by the Command-combo stuck-key flush in handleFlagsChanged —
     /// the HOT typing path, which sends on the main thread exactly as handleKey
     /// does on every keystroke (exercised constantly without incident; outside
     /// the unlock-freeze audit). The unlock/teardown paths use
@@ -1155,6 +1178,32 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         pressedScancodes.removeAll()
     }
 
+    /// A Command combo key (Windows-key key combination) delivered as a guest-side TAP:
+    /// press and release together, not tracked in pressedScancodes. See the
+    /// COMMAND COMBOS ARE TAPS note in performKeyEquivalent. Modifiers are
+    /// not touched here; they are driven by flagsChanged as always.
+    func handleCommandComboTap(event: NSEvent) {
+        guard isLocked, let input else {
+            NSLog("AVM: combo tap gated — locked=\(isLocked), input=\(input != nil ? "present" : "nil")")
+            return
+        }
+        let vk = Int(event.keyCode)
+        guard let scancode = Self.scancode(forVirtualKey: vk) else {
+            if KeyEventLogging.isEnabled {
+                NSLog("AVM: combo key vk=\(vk) has no scancode mapping (ignored).")
+            } else {
+                NSLog("AVM: combo key with no scancode mapping ignored.")
+            }
+            return
+        }
+        let code = Int32(scancode)
+        // Stage B: key identity, gated. The sends are NOT gated.
+        if KeyEventLogging.isEnabled {
+            NSLog("AVM: combo key vk=\(vk) -> scancode=0x\(String(scancode, radix: 16)) tap (press+release)")
+        }
+        input.send(.press, code: code)
+        input.send(.release, code: code)
+    }
     func handleKey(event: NSEvent, pressed: Bool) {
         guard isLocked, let input else {
             NSLog("AVM: handleKey gated — locked=\(isLocked), input=\(input != nil ? "present" : "nil")")
@@ -1180,9 +1229,11 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         // holds of 1–4 s all left caps state OFF and produced no speech. JAWS
         // consumes a bare held modifier, so the repeat run was absorbed and was
         // never user-visible. That absorption is JAWS's doing, NOT AVM's, and it
-        // is not something to depend on: what raw Windows does with 44 makes was
-        // never measured, and a user with no screen reader running is outside
-        // everything that was tested.
+        // is not something to depend on. What raw Windows does with repeated
+        // makes WAS later measured for a hotkey key combination (2026-09-07, issue 13):
+        // it re-fires the hotkey per make, which bounced Narrator. See the
+        // repeat suppression in performKeyEquivalent. A user with no screen
+        // reader running is still outside what was tested for the courier.
         //
         // WHY SUPPRESS ANYWAY — both reasons are measured, neither depends on
         // guest behavior:
@@ -1212,6 +1263,20 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         if pressed, vk == kVK_F19, event.type == .keyDown, event.isARepeat {
             return
         }
+        // PHANTOM-REPEAT GUARD (2026-09-07, issue 13, MEASURED): a repeat for
+        // a key the guest is NOT holding is dropped. Two ways that happens:
+        // the key was a Command-combo tap (never tracked), or the stuck-key
+        // flush already released it. Either way the guest saw its break, so a
+        // repeat make now would be a fresh, bare press of that key. Observed
+        // as a bare Enter opening the focused desktop item after a held
+        // Ctrl+Cmd+Return. Held arrows, Backspace and Tab are unaffected:
+        // their press is tracked, so their repeats pass. The type check
+        // precedes isARepeat for the same reason as the F19 guard above.
+        if pressed, event.type == .keyDown, event.isARepeat,
+           let repeatCode = Self.scancode(forVirtualKey: vk),
+           !pressedScancodes.contains(Int32(repeatCode)) {
+            return
+        }
 
         guard let scancode = Self.scancode(forVirtualKey: vk) else {
             // Stage B: an unmapped key is a REAL FAILURE — the key silently
@@ -1237,7 +1302,7 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         input.send(pressed ? .press : .release, code: code)
 
         // Track held non-modifier keys so we can force-release them if AppKit
-        // withholds the keyUp (the Command-chord case). The keyUp, when it DOES
+        // withholds the keyUp (the Command-combo case). The keyUp, when it DOES
         // arrive, simply removes the code here as normal.
         //
         // NOTE (F19 courier): a remapped Caps Lock arrives here as F19 and is
@@ -1290,7 +1355,7 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
             input.send(isDown ? .press : .release, code: Int32(scancode))
         }
 
-        // STUCK-KEY FLUSH: if the modifier set is shrinking (a chord is being
+        // STUCK-KEY FLUSH: if the modifier set is shrinking (a key combination is being
         // released) and we still believe non-modifier keys are held, those keys'
         // keyUp events were withheld by AppKit while Command was down. Release
         // them now. We compare against the count of "interesting" modifiers
