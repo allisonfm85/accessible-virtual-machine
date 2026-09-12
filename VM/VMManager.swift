@@ -1847,7 +1847,18 @@ final class VMManager: ObservableObject {
         }
 
         try await sendRawQMPCommand(commandString)
-        let responseData = try await readQMPLine()
+        // Asynchronous events share this socket and can arrive ahead of
+        // the reply: RESET after system_reset, DEVICE_DELETED after a
+        // USB device_del. There is no event reader (see
+        // beginQMPEventMonitoring), so skip event lines here, or the
+        // next command would read the wrong line as its reply.
+        // (2026-09-12, USB helper increment 1b.)
+        var responseData = try await readQMPLine()
+        while let object = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+              let eventName = object["event"] as? String {
+            avmLog("sendQMPCommand(\(execute)): skipped event \(eventName)")
+            responseData = try await readQMPLine()
+        }
 
         if let errorResponse = try? JSONDecoder().decode(QMPError.self, from: responseData) {
             throw AVMError.qmpCommandFailed(errorResponse.error.desc)
@@ -1972,6 +1983,91 @@ final class VMManager: ObservableObject {
         appendConsole("AVM: Created disk image at \(path) (\(sizeGB) GB).\n")
     }
 
+    // MARK: - USB redirection (helper increment 1b, 2026-09-12)
+
+    /// Socket file name for one redirected root port. Lives in the VM's
+    /// socket dir next to qmp.sock; QEMU listens, the root helper dials.
+    static func usbRedirSocketName(port: Int) -> String {
+        "usbredir-\(port).sock"
+    }
+
+    /// Full path of the stream socket for `port`, or nil before startVM
+    /// has created the socket directory.
+    func usbRedirSocketPath(port: Int) -> String? {
+        vmSocketDir?.appendingPathComponent(VMManager.usbRedirSocketName(port: port)).path
+    }
+
+    /// Adds a usbredir chardev listening on `socketPath` and a usb-redir
+    /// device on root port `port` of the qemu-xhci controller. Explicit
+    /// port always (handoff 47: a port-less device_add lands behind an
+    /// auto-created USB 1.1 hub and a high-speed device is coerced to
+    /// full speed). The JSON shapes are qmp.py's, proven live.
+    /// On device_add failure the chardev is removed again.
+    func attachUSBRedirect(port: Int, socketPath: String) async throws {
+        let chardevID = "usbredir-\(port)"
+        let deviceID = "usbredir-dev-\(port)"
+        try? FileManager.default.removeItem(atPath: socketPath)
+        avmLog("attachUSBRedirect: port \(port), socket \(socketPath)")
+        // A previous attempt that failed between chardev-add and
+        // device_add can leave the chardev behind; clear it so this
+        // attempt cannot fail on a duplicate ID. Errors here are the
+        // normal case (nothing to remove) and are ignored.
+        if (try? await sendQMPCommand("chardev-remove", arguments: ["id": chardevID])) != nil {
+            avmLog("attachUSBRedirect: removed a stale chardev \(chardevID) first")
+        }
+        try await sendQMPCommand("chardev-add", arguments: [
+            "id": chardevID,
+            "backend": [
+                "type": "socket",
+                "data": [
+                    "addr": ["type": "unix", "data": ["path": socketPath]],
+                    "server": true,
+                    "wait": false
+                ]
+            ]
+        ])
+        do {
+            try await sendQMPCommand("device_add", arguments: [
+                "driver": "usb-redir",
+                "chardev": chardevID,
+                "id": deviceID,
+                "bus": "usb.0",
+                "port": "\(port)"
+            ])
+        } catch {
+            avmLog("attachUSBRedirect: device_add failed (\(error)); removing chardev")
+            try? await sendQMPCommand("chardev-remove", arguments: ["id": chardevID])
+            throw error
+        }
+        avmLog("attachUSBRedirect: usb-redir device on port \(port) is listening")
+    }
+
+    /// Removes the usb-redir device from `port`, then whatever is left of
+    /// its chardev, and the socket file. Call after the helper has
+    /// released the device.
+    ///
+    /// QEMU's usb-redir device deletes its own chardev when the device
+    /// is removed (learned live 2026-09-12: chardev-remove after
+    /// device_del answered "not found"). The chardev-remove here is a
+    /// best effort for the case where the device is already gone but
+    /// the chardev is not; its failure is logged, never thrown.
+    func detachUSBRedirect(port: Int) async throws {
+        let chardevID = "usbredir-\(port)"
+        let deviceID = "usbredir-dev-\(port)"
+        avmLog("detachUSBRedirect: port \(port)")
+        try await sendQMPCommand("device_del", arguments: ["id": deviceID])
+        do {
+            try await sendQMPCommand("chardev-remove", arguments: ["id": chardevID])
+            avmLog("detachUSBRedirect: chardev \(chardevID) removed explicitly")
+        } catch {
+            avmLog("detachUSBRedirect: chardev \(chardevID) already gone (\(error))")
+        }
+        if let path = usbRedirSocketPath(port: port) {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+        avmLog("detachUSBRedirect: port \(port) cleared")
+    }
+
     // MARK: - Snapshots via QMP
 
     func listSnapshots() async throws -> [[String: Any]] {
@@ -2013,7 +2109,9 @@ final class VMManager: ObservableObject {
         qmpWaiters.removeAll()
         for w in waiters { w.resume() }
         if let dir = vmSocketDir {
-            for name in ["spice.sock", "qmp.sock", "qmp2.sock", "tpm.sock"] {
+            // Ports 5 through 8 are the free root ports on the p2=8,p3=8 map.
+            let usbRedirSockets = (5...8).map { VMManager.usbRedirSocketName(port: $0) }
+            for name in ["spice.sock", "qmp.sock", "qmp2.sock", "tpm.sock"] + usbRedirSockets {
                 try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
             }
         }

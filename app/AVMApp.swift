@@ -224,6 +224,18 @@ struct AVMApp: App {
                         }
                     }
                 }
+                Button("USB Helper: Attach ATR2100x") {
+                    Task { @MainActor in
+                        AVMLog.write("Debug menu: attach ATR2100x via helper", category: "USBHelper")
+                        await USBRedirectDebug.attachTestDevice()
+                    }
+                }
+                Button("USB Helper: Detach ATR2100x") {
+                    Task { @MainActor in
+                        AVMLog.write("Debug menu: detach ATR2100x via helper", category: "USBHelper")
+                        await USBRedirectDebug.detachTestDevice()
+                    }
+                }
                 Button("USB Helper: Status") {
                     let s = USBHelperClient.shared.refreshStatus()
                     AVMLog.write("Debug menu: USB helper status \(s.rawValue)", category: "USBHelper")
