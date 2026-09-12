@@ -260,6 +260,7 @@
 			buildPhases = (
 				06F4CAF1304F3A3F0033A29C /* Sources */,
 				06F4CAF2304F3A3F0033A29C /* Frameworks */,
+				06F4CB01304F3A3F0033A29C /* Fix library paths */,
 			);
 			buildRules = (
 			);
@@ -330,6 +331,25 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		06F4CB01304F3A3F0033A29C /* Fix library paths */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Fix library paths";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nBIN=\"${BUILT_PRODUCTS_DIR}/${EXECUTABLE_PATH}\"\nS=\"${AVM_SYSROOT}/lib\"\nR=\"@executable_path/../Resources\"\necho \"Rewriting helper library references from ${S} to ${R} (the helper runs from Contents/MacOS; the libraries live in Contents/Resources; libusb is unified on its real file name so dyld loads one image).\"\ninstall_name_tool -change \"${S}/libusb-1.0.dylib\" \"${R}/libusb-1.0.0.dylib\" \"$BIN\"\ninstall_name_tool -change \"${S}/libusb-1.0.0.dylib\" \"${R}/libusb-1.0.0.dylib\" \"$BIN\"\ninstall_name_tool -change \"${S}/libusbredirhost.dylib\" \"${R}/libusbredirhost.1.dylib\" \"$BIN\"\ninstall_name_tool -change \"${S}/libusbredirhost.1.dylib\" \"${R}/libusbredirhost.1.dylib\" \"$BIN\"\ninstall_name_tool -change \"${S}/libusbredirparser.dylib\" \"${R}/libusbredirparser.1.dylib\" \"$BIN\"\ninstall_name_tool -change \"${S}/libusbredirparser.1.dylib\" \"${R}/libusbredirparser.1.dylib\" \"$BIN\"\nif otool -L \"$BIN\" | grep -q \"${S}\"; then\n    echo \"error: AVMUSBHelper still references the sysroot after rewriting:\"\n    otool -L \"$BIN\"\n    exit 1\nfi\necho \"Helper library references now:\"\notool -L \"$BIN\" | grep -E \"usb|redir\"\n";
+		};
 		06D1147C2FE0D50300AC265D /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -396,6 +416,7 @@
 		068FB6FA2FD4D73300BF254D /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				AVM_SYSROOT = "$(HOME)/Developer/sysroot-macos-arm64/sysroot-macOS-arm64";
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -460,6 +481,7 @@
 		068FB6FB2FD4D73300BF254D /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				AVM_SYSROOT = "$(HOME)/Developer/sysroot-macos-arm64/sysroot-macOS-arm64";
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -781,8 +803,20 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 4NZJSBJ32X;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				HEADER_SEARCH_PATHS = (
+					"$(AVM_SYSROOT)/include/libusb-1.0",
+					"$(AVM_SYSROOT)/include",
+				);
+				LIBRARY_SEARCH_PATHS = "$(AVM_SYSROOT)/lib";
+				OTHER_LDFLAGS = (
+					"-lusb-1.0",
+					"-lusbredirhost",
+					"-lusbredirparser",
+				);
+				SWIFT_OBJC_BRIDGING_HEADER = "AVMUSBHelper/AVMUSBHelper-Bridging-Header.h";
 				PRODUCT_BUNDLE_IDENTIFIER = com.alllisonmeloy.AVM.usbhelper;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -796,8 +830,20 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 4NZJSBJ32X;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				HEADER_SEARCH_PATHS = (
+					"$(AVM_SYSROOT)/include/libusb-1.0",
+					"$(AVM_SYSROOT)/include",
+				);
+				LIBRARY_SEARCH_PATHS = "$(AVM_SYSROOT)/lib";
+				OTHER_LDFLAGS = (
+					"-lusb-1.0",
+					"-lusbredirhost",
+					"-lusbredirparser",
+				);
+				SWIFT_OBJC_BRIDGING_HEADER = "AVMUSBHelper/AVMUSBHelper-Bridging-Header.h";
 				PRODUCT_BUNDLE_IDENTIFIER = com.alllisonmeloy.AVM.usbhelper;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
