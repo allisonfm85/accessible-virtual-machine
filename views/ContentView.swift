@@ -21,6 +21,22 @@ extension Notification.Name {
     /// record lives in the handler: fresh scan at invocation, spoken
     /// answer when there is nothing to reclaim, sheet only when there is.
     static let avmReclaimFromMenu = Notification.Name("avmReclaimFromMenu")
+
+    /// Posted by the Virtual Machine menu's "Attach USB Device…" and
+    /// "Detach USB Device…" items (2026-09-12, USB increment 2a). Same
+    /// ownership rule: the picker sheet is presented from the view tree.
+    /// Attach enumerates fresh at invocation; detach reads the
+    /// controller's live map. Empty answers are spoken, not shown.
+    static let avmAttachUSBFromMenu = Notification.Name("avmAttachUSBFromMenu")
+    static let avmDetachUSBFromMenu = Notification.Name("avmDetachUSBFromMenu")
+}
+
+/// One open of the USB picker sheet: which mode, which devices. Identity
+/// is per request so the sheet reloads if a new request arrives.
+struct USBPickerRequest: Identifiable {
+    let id = UUID()
+    let mode: USBDevicePickerView.Mode
+    let devices: [AVMUSBDeviceIdentity]
 }
 
 struct ContentView: View {
@@ -45,6 +61,7 @@ struct ContentView: View {
     @State private var showingSetup = false
     @State private var showingSettings = false
     @State private var showingReclaim = false
+    @State private var usbPicker: USBPickerRequest? = nil
     @State private var errorMessage: String? = nil
 
     // MARK: - Body
@@ -144,6 +161,47 @@ struct ContentView: View {
         .sheet(isPresented: $showingReclaim) {
             ReclaimView()
                 .environmentObject(vmStore)
+        }
+        // USB picker (2026-09-12, increment 2a). Attach: the VM must be
+        // running (the helper needs a listening QEMU port), the Mac must
+        // see at least one device, and devices already redirected are
+        // not offered twice. Detach: nothing attached is spoken; exactly
+        // one attached detaches without a sheet (no picking among one);
+        // several open the picker in detach mode.
+        .onReceive(NotificationCenter.default.publisher(for: .avmAttachUSBFromMenu)) { _ in
+            guard let manager = VMManager.shared, case .running = manager.state else {
+                AVMLog.write("AVM: Attach-USB-from-menu — VM not running; announcing.", category: "USBHelper")
+                Announcer.shared.announce("The virtual machine is not running. Start it, then attach a USB device.", tone: .failure)
+                return
+            }
+            let redirected = Set(USBRedirectController.shared.redirectedDevices)
+            let devices = USBDeviceEnumerator.all().filter { !redirected.contains($0) }
+            guard !devices.isEmpty else {
+                AVMLog.write("AVM: Attach-USB-from-menu — no devices to offer; announcing.", category: "USBHelper")
+                Announcer.shared.announce("No USB devices are plugged in. Next: plug one in and try again.", tone: .info)
+                return
+            }
+            AVMLog.write("AVM: Attach-USB-from-menu — \(devices.count) device(s); opening picker.", category: "USBHelper")
+            usbPicker = USBPickerRequest(mode: .attach, devices: devices)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .avmDetachUSBFromMenu)) { _ in
+            let devices = USBRedirectController.shared.redirectedDevices
+            switch devices.count {
+            case 0:
+                AVMLog.write("AVM: Detach-USB-from-menu — nothing attached; announcing.", category: "USBHelper")
+                Announcer.shared.announce("No USB device is attached to the virtual machine.", tone: .info)
+            case 1:
+                AVMLog.write("AVM: Detach-USB-from-menu — one device; detaching directly.", category: "USBHelper")
+                Task { @MainActor in
+                    await USBRedirectController.shared.detach(devices[0])
+                }
+            default:
+                AVMLog.write("AVM: Detach-USB-from-menu — \(devices.count) devices; opening picker.", category: "USBHelper")
+                usbPicker = USBPickerRequest(mode: .detach, devices: devices)
+            }
+        }
+        .sheet(item: $usbPicker) { request in
+            USBDevicePickerView(mode: request.mode, devices: request.devices)
         }
     }
 

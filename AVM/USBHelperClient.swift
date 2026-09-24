@@ -137,6 +137,11 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// first speaks; the other stays quiet. Cleared on the next attach.
     private var announcedAttachFailures: Set<AVMUSBDeviceIdentity> = []
 
+    /// Called on the main actor for every ending the helper reports
+    /// (released, failed, yanked) so USBRedirectController can take the
+    /// device's QEMU port back. Added 2026-09-12 (increment 2a).
+    var deviceEnded: ((AVMUSBDeviceIdentity, AVMUSBDeviceState) -> Void)?
+
     private var connection: NSXPCConnection?
     private let receiver = USBHelperCallbackReceiver()
     private var approvalWatch: Task<Void, Never>?
@@ -489,14 +494,17 @@ final class USBHelperClient: NSObject, ObservableObject {
             pendingDevices.remove(device)
             attachedDevices.remove(device)
             announce("\(name) returned to the Mac.", tone: .info)
+            deviceEnded?(device, state)
         case .failed:
             pendingDevices.remove(device)
             attachedDevices.remove(device)
             announceAttachFailure(device, step: detail ?? "unknown step")
+            deviceEnded?(device, state)
         case .yanked:
             pendingDevices.remove(device)
             attachedDevices.remove(device)
             announce("\(name) was unplugged while attached. The virtual machine has been told it is gone.", tone: .failure)
+            deviceEnded?(device, state)
         @unknown default:
             log("stateChanged: unknown state raw value \(state.rawValue)")
         }

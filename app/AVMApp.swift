@@ -201,12 +201,23 @@ struct AVMApp: App {
             // Stage D's diagnostic bundle will carry. Privacy check: these
             // lines name AVM menu commands and VM state only, never guest
             // keystrokes, so the key-naming prohibition does not apply.
+            // 6. Attach USB Device… / Detach USB Device… (no key combos) —
+            //    ADDED 2026-09-12 (USB increment 2a). Post notifications;
+            //    ContentView owns the picker sheet for the same reason as
+            //    Reclaim (sheet presentation needs the view tree). Empty
+            //    lists are spoken, never shown. The redirection itself is
+            //    USBRedirectController; the announcements are
+            //    USBHelperClient's. Placed after their own Divider: they
+            //    change what the guest can see, not the machine's state.
+            //
             // Debug menu — DEBUG BUILDS ONLY. Test instruments for the USB
             // helper scaffold (2026-09-07). Nothing here ships. The version
             // probe is the first end-to-end proof of the privileged path:
             // lazy registration, Login Items approval, launchd start, the
             // helper's code-signing gate, and one reply. Every outcome is
-            // spoken through Announcer; every failure names its step.
+            // spoken through Announcer; every failure names its step. The
+            // Attach/Detach ATR2100x instruments and USBRedirectDebug.swift
+            // were deleted 2026-09-12 when the real picker shipped.
             #if DEBUG
             CommandMenu("Debug") {
                 Button("USB Helper: Version Probe") {
@@ -222,18 +233,6 @@ struct AVMApp: App {
                         case .failure(let error):
                             Announcer.shared.announce("USB helper did not answer. Step: XPC call. Reason: \(error). Next: check Login Items, then the diagnostic log.", tone: .failure)
                         }
-                    }
-                }
-                Button("USB Helper: Attach ATR2100x") {
-                    Task { @MainActor in
-                        AVMLog.write("Debug menu: attach ATR2100x via helper", category: "USBHelper")
-                        await USBRedirectDebug.attachTestDevice()
-                    }
-                }
-                Button("USB Helper: Detach ATR2100x") {
-                    Task { @MainActor in
-                        AVMLog.write("Debug menu: detach ATR2100x via helper", category: "USBHelper")
-                        await USBRedirectDebug.detachTestDevice()
                     }
                 }
                 Button("USB Helper: Status") {
@@ -285,6 +284,17 @@ struct AVMApp: App {
                     }
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Attach USB Device…") {
+                    AVMLog.write("AVM: Attach USB Device menu — posting request to ContentView.", category: "USBHelper")
+                    NotificationCenter.default.post(name: .avmAttachUSBFromMenu, object: nil)
+                }
+                Button("Detach USB Device…") {
+                    AVMLog.write("AVM: Detach USB Device menu — posting request to ContentView.", category: "USBHelper")
+                    NotificationCenter.default.post(name: .avmDetachUSBFromMenu, object: nil)
+                }
 
                 Divider()
 
