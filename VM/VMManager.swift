@@ -1983,6 +1983,84 @@ final class VMManager: ObservableObject {
         appendConsole("AVM: Created disk image at \(path) (\(sizeGB) GB).\n")
     }
 
+    // MARK: - Disk Image Growth (2026-09-26)
+
+    /// Grows a qcow2 disk image to newSizeGB gigabytes (qemu-img's G, which
+    /// is 1024^3 bytes, the same unit createDiskImage uses).
+    ///
+    /// GROW ONLY. qemu-img refuses to shrink an image unless --shrink is
+    /// passed, and AVM never passes it. The caller also checks. Shrinking a
+    /// disk under Windows destroys data.
+    ///
+    /// STOPPED VMS ONLY. Settings offers growth only while no VM is running.
+    /// QEMU also holds a lock on the image while it runs, so qemu-img fails
+    /// with a lock error instead of touching a disk in use. The lock is the
+    /// backstop, not the plan.
+    ///
+    /// VERIFIED, NOT ASSUMED. After the resize, qemu-img info must report the
+    /// new virtual size, or this throws. The caller saves the new size to the
+    /// configuration only after this returns.
+    ///
+    /// Windows still sees the old drive C until the user extends it into the
+    /// new space. AVM's answer file puts drive C last, with no recovery
+    /// partition after it, so that is one PowerShell command inside Windows.
+    /// AVM cannot run it from the Mac.
+    func growDiskImage(at path: String, toGB newSizeGB: Int) async throws {
+        guard let imgURL = bundledBinaryURL(named: "qemu-img") else {
+            throw AVMError.binaryNotFound("qemu-img")
+        }
+
+        func runQemuImg(_ arguments: [String]) throws -> (status: Int32, output: String) {
+            let process = Process()
+            process.executableURL = imgURL
+            process.arguments = arguments
+            if let resourcePath = Bundle.main.resourcePath {
+                process.environment = ProcessInfo.processInfo.environment.merging([
+                    "DYLD_LIBRARY_PATH": resourcePath
+                ]) { _, new in new }
+            }
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError  = pipe
+            try process.run()
+            process.waitUntilExit()
+            let output = String(
+                data: pipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            ) ?? ""
+            return (process.terminationStatus, output)
+        }
+
+        func failure(_ message: String) -> NSError {
+            NSError(domain: "AVM.DiskGrowth", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: message])
+        }
+
+        AVMLog.write("AVM: growDiskImage - resizing to \(newSizeGB) GB.")
+        let resize = try runQemuImg(["resize", "-f", "qcow2", path, "\(newSizeGB)G"])
+        guard resize.status == 0 else {
+            AVMLog.write("AVM: growDiskImage - qemu-img resize FAILED (status \(resize.status)): \(resize.output)")
+            throw failure("The disk could not be resized. \(resize.output)")
+        }
+
+        let info = try runQemuImg(["info", "--output=json", "-f", "qcow2", path])
+        let expectedBytes = Int64(newSizeGB) * 1024 * 1024 * 1024
+        var reportedBytes: Int64? = nil
+        if info.status == 0,
+           let data = info.output.data(using: .utf8),
+           let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let size = json["virtual-size"] as? NSNumber {
+            reportedBytes = size.int64Value
+        }
+        guard reportedBytes == expectedBytes else {
+            let reported = reportedBytes.map { String($0) } ?? "nothing readable"
+            AVMLog.write("AVM: growDiskImage - verification FAILED: expected \(expectedBytes) bytes, qemu-img info reported \(reported).")
+            throw failure("AVM could not confirm the new disk size, so the setting was not changed.")
+        }
+        AVMLog.write("AVM: growDiskImage - VERIFIED at \(newSizeGB) GB.")
+        appendConsole("AVM: Grew disk image at \(path) to \(newSizeGB) GB.\n")
+    }
+
     // MARK: - USB redirection (helper increment 1b, 2026-09-12)
 
     /// Socket file name for one redirected root port. Lives in the VM's

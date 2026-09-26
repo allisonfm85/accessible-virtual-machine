@@ -16,6 +16,43 @@ Problems are reported through this repository's
 [issues](../../issues) — and remember: if AVM fails silently, the
 silence itself is a bug worth reporting.
 
+## Making a virtual machine's disk larger
+
+A virtual machine's disk only takes up as much space on your Mac as
+Windows has actually used. The disk size you choose is a ceiling. When
+Windows starts running out of room, you can raise it.
+
+1. Shut down Windows, so the virtual machine is stopped.
+2. In AVM, find your virtual machine in the list and choose its Settings
+   button.
+3. Raise Disk Size with the Up Arrow key, then choose Save Settings. AVM
+   makes the disk larger, checks that it worked, and tells you the new
+   size. A disk can grow but never shrink.
+
+Windows won't use the new space until you extend drive C:
+
+1. Start the virtual machine.
+2. Press Command-X, which Windows receives as Windows-X, then press A to
+   open Terminal (Admin). When Windows asks whether to allow changes,
+   press Option-Y, which Windows receives as Alt-Y.
+3. Type this command and press Enter. It prints nothing when it works.
+
+   ```
+   Resize-Partition -DriveLetter C -Size (Get-PartitionSupportedSize -DriveLetter C).SizeMax
+   ```
+
+4. To check, type this command and press Enter. It shows drive C's size
+   in gigabytes.
+
+   ```
+   [math]::Round((Get-Partition -DriveLetter C).Size / 1GB)
+   ```
+
+This works for virtual machines AVM created, because AVM puts drive C
+last on the disk. If you installed Windows some other way and the command
+reports an error, a recovery partition may be in the way. Please open an
+issue rather than deleting partitions yourself.
+
 ## What's in this repository
 
 The complete AVM application source (Swift/SwiftUI), the Xcode project,

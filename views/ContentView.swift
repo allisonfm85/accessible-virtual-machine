@@ -59,7 +59,9 @@ struct ContentView: View {
     // transitions (e.g. starting -> running) and the status stays stuck.
     @State private var activeSession: VMSession? = nil
     @State private var showingSetup = false
-    @State private var showingSettings = false
+    /// The VM whose Settings sheet is open; nil means closed. Replaces the old
+    /// show-Settings flag, which could only open Settings for a running VM.
+    @State private var settingsTarget: VMConfiguration? = nil
     @State private var showingReclaim = false
     @State private var usbPicker: USBPickerRequest? = nil
     @State private var errorMessage: String? = nil
@@ -74,7 +76,7 @@ struct ContentView: View {
                     errorMessage: $errorMessage,
                     activeSession: $activeSession,
                     showingSetup: $showingSetup,
-                    showingSettings: $showingSettings
+                    settingsTarget: $settingsTarget
                 )
             } else {
                 ScrollView {
@@ -84,7 +86,7 @@ struct ContentView: View {
                             activeSession: $activeSession,
                             errorMessage: $errorMessage,
                             showingSetup: $showingSetup,
-                            showingSettings: $showingSettings
+                            settingsTarget: $settingsTarget
                         )
                     }
                     .padding(32)
@@ -152,11 +154,15 @@ struct ContentView: View {
             SetupView()
                 .environmentObject(vmStore)
         }
-        .sheet(isPresented: $showingSettings) {
-            if let session = activeSession {
-                SettingsView(session: session)
-                    .environmentObject(vmStore)
-            }
+        .sheet(item: $settingsTarget) { config in
+            // Settings works for a stopped VM too (2026-09-26). isRunning is
+            // true only for the VM this session is running. SettingsView
+            // offers disk growth only when it is false.
+            SettingsView(
+                configuration: config,
+                isRunning: activeSession?.configuration.id == config.id
+            )
+            .environmentObject(vmStore)
         }
         .sheet(isPresented: $showingReclaim) {
             ReclaimView()
@@ -255,7 +261,7 @@ private struct SessionGate: View {
     @Binding var errorMessage: String?
     @Binding var activeSession: VMSession?
     @Binding var showingSetup: Bool
-    @Binding var showingSettings: Bool
+    @Binding var settingsTarget: VMConfiguration?
 
     /// Tracks whether we've already auto-locked for this running session, so we
     /// only auto-lock on the first transition into .running, not on every
@@ -278,7 +284,7 @@ private struct SessionGate: View {
                             activeSession: $activeSession,
                             errorMessage: $errorMessage,
                             showingSetup: $showingSetup,
-                            showingSettings: $showingSettings
+                            settingsTarget: $settingsTarget
                         )
                     }
                     .padding(32)
@@ -358,7 +364,7 @@ private struct DashboardContent: View {
     @Binding var activeSession: VMSession?
     @Binding var errorMessage: String?
     @Binding var showingSetup: Bool
-    @Binding var showingSettings: Bool
+    @Binding var settingsTarget: VMConfiguration?
 
     var body: some View {
         VStack(spacing: 24) {
@@ -397,6 +403,12 @@ private struct DashboardContent: View {
                                 }
                                 .accessibilityLabel("Start \(config.name)")
                                 .accessibilityHint("Starts this virtual machine")
+
+                                Button("Settings") {
+                                    settingsTarget = config
+                                }
+                                .accessibilityLabel("Settings for \(config.name)")
+                                .accessibilityHint("Opens settings for this virtual machine")
 
                                 Button("Delete") {
                                     confirmDelete(config: config)
@@ -502,7 +514,7 @@ private struct DashboardContent: View {
 
                 if activeSession != nil {
                     Button("Settings") {
-                        showingSettings = true
+                        settingsTarget = activeSession?.configuration
                     }
                     .accessibilityHint("Opens virtual machine settings")
                     .keyboardShortcut(",", modifiers: .command)
