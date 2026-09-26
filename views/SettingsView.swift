@@ -17,6 +17,10 @@ import SwiftUI
 ///     stopped VMs only, verified before the new size is saved. Before this,
 ///     the stepper saved a number and nothing resized the disk, so the
 ///     dashboard showed a size that was not true.
+///   - USB (increment 2b): plug-in mode and remembered devices, saved with
+///     the configuration. "USB changes apply right away" holds only because
+///     the hot-plug watcher reads the SAVED configuration at each plug-in,
+///     never a copy taken when the VM started. Keep it that way.
 ///   - Shared folder: REMOVED. Nothing in AVM ever read it, so choosing a
 ///     folder "saved" and Windows never saw it. A path already saved stays in
 ///     the configuration, untouched, for when the feature exists.
@@ -81,6 +85,8 @@ struct SettingsView: View {
     @State private var validationErrors: [String] = []
     @State private var isSaving = false
     @State private var saveMessage: String? = nil
+    @State private var usbMode: USBPlugMode = .ask
+    @State private var rememberedDevices: [RememberedUSBDevice] = []
 
     // MARK: - Body
 
@@ -207,11 +213,55 @@ struct SettingsView: View {
             Text("USB Devices")
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
-            Text("USB pass-through will be available in a future update.")
+
+            Text("When a USB device is plugged in while this virtual machine is running:")
+                .fixedSize(horizontal: false, vertical: true)
+            // Short group name with its label hidden: the same pattern as the
+            // 2a device picker. With the long sentence as the Picker label,
+            // VoiceOver repeated it on every radio button (heard 2026-09-26).
+            Picker("When plugged in", selection: $usbMode) {
+                Text("Ask each time").tag(USBPlugMode.ask)
+                Text("Always use in Windows").tag(USBPlugMode.always)
+                Text("Keep on the Mac").tag(USBPlugMode.keepOnMac)
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+
+            Text("Keyboards, braille displays, and other input devices always ask, even with Always use in Windows. You can still attach any device from the Virtual Machine menu.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Remembered devices")
+                .font(.subheadline)
+                .accessibilityAddTraits(.isHeader)
+            if rememberedDevices.isEmpty {
+                Text("No remembered devices.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(rememberedDevices) { device in
+                    HStack(spacing: 12) {
+                        Text("\(device.name): \(decisionText(for: device))")
+                        Button("Forget") {
+                            rememberedDevices.removeAll { $0.id == device.id }
+                        }
+                        .accessibilityLabel("Forget \(device.name)")
+                        .accessibilityHint("AVM will follow the setting above for this device again. Takes effect when you save.")
+                    }
+                }
+            }
         }
         .padding(.horizontal)
+    }
+
+    /// Plain words for a remembered decision. An unknown word from a newer
+    /// AVM is said plainly, and callers treat it as not remembered.
+    private func decisionText(for device: RememberedUSBDevice) -> String {
+        switch device.usesWindows {
+        case .some(true): return "use in Windows"
+        case .some(false): return "keep on the Mac"
+        case .none: return "unknown choice, AVM will ask"
+        }
     }
 
     // MARK: - Load Current Settings
@@ -221,6 +271,8 @@ struct SettingsView: View {
         cpuCount = configuration.cpuCount
         ramSizeGB = configuration.ramSizeGB
         diskSizeGB = configuration.diskSizeGB
+        usbMode = configuration.effectiveUSBMode
+        rememberedDevices = configuration.usbRememberedDevices ?? []
     }
 
     // MARK: - Save Settings
@@ -263,13 +315,15 @@ struct SettingsView: View {
             if let growTo {
                 updated.diskSizeGB = growTo
             }
+            updated.usbMode = usbMode.rawValue
+            updated.usbRememberedDevices = rememberedDevices.isEmpty ? nil : rememberedDevices
             vmStore.save(updated)
 
             let message: String
             if let growTo {
                 message = "Settings saved. The disk is now \(growTo) GB. The next time you start Windows, extend drive C to use the new space. The README explains how."
             } else if isRunning {
-                message = "Settings saved. Restart Windows for changes to take effect."
+                message = "Settings saved. USB changes apply right away. Other changes take effect after you restart Windows."
             } else {
                 message = "Settings saved. Changes take effect the next time you start Windows."
             }
