@@ -69,7 +69,7 @@ import Carbon.HIToolbox
 ///
 /// KEY-WINDOW AUDIBILITY (added 2026-07-22):
 ///   The scope limit above accepts key-window loss — but in the recommended
-///   ritual VoiceOver is ASLEEP while locked, so a foreign window taking key
+///   ritual VoiceOver is OFF while locked, so a foreign window taking key
 ///   (e.g. a system password dialog: the Developer Tools Access incident,
 ///   2026-07-22) silently swallows every keystroke with no cue. "My keyboard
 ///   is dead" is the natural misread. So: while locked, we WATCH key status
@@ -78,11 +78,11 @@ import Carbon.HIToolbox
 ///       window churn) stays silent; a real dialog sits there waiting and
 ///       always gets announced. All conditions are re-checked when the
 ///       timer fires, not when it is scheduled.
-///     - Suppressed while VoiceOver is running: with VO awake the user can
+///     - Suppressed while VoiceOver is running: with VO on the user can
 ///       already perceive the thief, and VO's own panels legitimately take
-///       key constantly. This cue exists precisely for the VO-asleep blind
+///       key constantly. This cue exists precisely for the VO-off blind
 ///       spot. The regain announcement follows the same rule (note: in the
-///       expected recovery flow VO is awake at regain, so regain is usually
+///       expected recovery flow VO is on at regain, so regain is usually
 ///       silent by design; the log always records it).
 ///     - Announcements: "Another window took the keyboard. Turn VoiceOver
 ///       on to check." / "Keyboard back in Windows." — distinct from the
@@ -112,7 +112,7 @@ import Carbon.HIToolbox
 ///      chew the 5MB cap and bury the transitions; the same reasoning that
 ///      keeps reclaims audibly silent) and the three debounce intermediates
 ///      (resign/regain-within-debounce/conditions-cleared — VO's panels
-///      take key constantly with VO awake, so these are the mechanism's
+///      take key constantly with VO on, so these are the mechanism's
 ///      heartbeat, not its verdicts). Verdict to file log, mechanism to
 ///      unified log — same split as CapsLockRemapper tier 3; every path
 ///      that matters ends in a tier-1 line.
@@ -323,7 +323,7 @@ class FocusLockManager: ObservableObject {
 
     private func handleKeyResign() {
         guard isLocked else { return }
-        // STAGE C tier 2: NSLog permanently — with VoiceOver awake, VO's
+        // STAGE C tier 2: NSLog permanently — with VoiceOver on, VO's
         // panels take key constantly; this is the mechanism's heartbeat.
         // The verdict lines (loss/regain outcomes) go to the file log.
         NSLog("AVM: FocusLock — key watch: window RESIGNED key; debounce started.")
@@ -356,7 +356,7 @@ class FocusLockManager: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             self.pendingLossTask = nil
             // Re-check EVERYTHING at fire time: still locked, window still
-            // not key, VoiceOver still asleep.
+            // not key, VoiceOver still off.
             guard self.isLocked,
                   let window = self.captureView?.window,
                   !window.isKeyWindow else {

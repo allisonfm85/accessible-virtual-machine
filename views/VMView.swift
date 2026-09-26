@@ -113,7 +113,7 @@
 //   in fact the first evidence that hold duration had been restored).
 //   Side benefit: while the mapping is active, the host's caps state can no
 //   longer drift while the user is working in Windows — a silent hazard for a
-//   user with VoiceOver asleep.
+//   user with VoiceOver off.
 //
 //   REJECTED ALTERNATIVE: latch the guest's Caps Lock DOWN on toggle-on and
 //   release it on toggle-off. Requires no remap and no system-wide change, but
@@ -399,7 +399,7 @@
 //   (proven live: functional test read X 0..799 full-range but Y stuck at
 //   166..418, the up-stroke escaping through the title bar), and the next
 //   tap CLICKS THE MAC while the user believes they are in Windows. For a
-//   blind user with VoiceOver asleep, that is a silent ghost click.
+//   blind user with VoiceOver off, that is a silent ghost click.
 //   THE MODEL: while LOCKED and the window is KEY, the pointer is CONFINED —
 //   warped to the view center, dissociated from mouse movement
 //   (CGAssociateMouseAndMouseCursorPosition(0): the pointer freezes on the
@@ -416,7 +416,7 @@
 //   KEY-STATUS AMENDMENT (approved 2026-08-14): confinement FOLLOWS KEY
 //   STATUS while the lock policy stays untouched. FocusLockManager
 //   deliberately does NOT unlock on key resign (VO's panels take key
-//   constantly with VO awake — its debounced announcement design). So: on
+//   constantly with VO on — its debounced announcement design). So: on
 //   didResignKey while locked, the pointer is RESTORED immediately (never
 //   strand a hidden, dissociated cursor against a background window); on
 //   didBecomeKey while still locked, it re-confines automatically. The

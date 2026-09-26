@@ -9,7 +9,7 @@ about: What you heard, what you expected, and when
 important: where did you expect speech and get silence? Silence is a bug
 in this project, not the absence of one.
 
-**Was VoiceOver awake or asleep at the time?**
+**Was VoiceOver on or off at the time?**
 
 **Roughly what time did it happen?** So it can be matched against the log.
 

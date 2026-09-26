@@ -30,7 +30,7 @@
 //
 // WHY hidutil AND NOT AN EVENT TAP:
 //   hidutil needs no permission prompt. A CGEventTap needs Input Monitoring,
-//   and a surprise permissions dialog while VoiceOver is asleep is precisely
+//   and a surprise permissions dialog while VoiceOver is off is precisely
 //   the failure mode AVM exists to prevent. (AVM previously carried a
 //   never-started CGEventTap that claimed to do this job; it was removed
 //   2026-07-26. It could never have worked — see the root cause above.)

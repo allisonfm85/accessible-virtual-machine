@@ -259,7 +259,7 @@ struct AVMApp: App {
                     // Same gate as the dashboard's Enter Windows button: only
                     // meaningful when a VM is running or paused. focusLock.lock()
                     // flips SessionGate to VMView and speaks "Windows keyboard
-                    // on" (system voice — audible with VoiceOver asleep).
+                    // on" (system voice — audible with VoiceOver off).
                     guard let manager = VMManager.shared else {
                         AVMLog.write("AVM: Enter Windows menu — no VMManager; beeping.")
                         NSSound.beep()
