@@ -728,6 +728,19 @@ final class SPICEKeyCaptureView: MTKView {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard let coordinator, coordinator.isLocked else { return false }
+        // COMMAND COMBOS ONLY (2026-09-26, macOS 27, MEASURED): everything
+        // below treats an event here as a Command (Windows-key) combination
+        // and sends it as a TAP. On macOS 27 the Caps Lock courier (F19) also
+        // arrives here. Stderr key log, three holds of about 1.1 to 1.3 s:
+        // each logged "combo key vk=80 ... tap (press+release)", then the
+        // keyUp arrived through keyUp. The guest saw an instant tap, never a
+        // HELD Caps Lock, so JAWS and NVDA laptop-layout commands such as
+        // Caps Lock+T stopped working. When the courier was measured on
+        // 2026-07-26 it arrived through keyDown. Returning false for events
+        // without Command hands them back to AppKit, which then delivers them
+        // to keyDown, where held keys stay held and the F19 repeat filter
+        // applies. Real Command combinations are unchanged.
+        guard event.modifierFlags.contains(.command) else { return false }
         // Command combos (e.g. Ctrl+Cmd+Return for Narrator) are delivered here,
         // NOT to keyDown — and AppKit never delivers a matching keyUp while
         // Command is held. We forward the press; the stuck-key flush in
