@@ -304,7 +304,31 @@ final class VMManager: ObservableObject {
 
     // MARK: Published State
 
-    @Published private(set) var state: VMRuntimeState = .stopped
+    @Published private(set) var state: VMRuntimeState = .stopped {
+        didSet { usbWatcherFollowState() }
+    }
+
+    /// Starts the USB hot-plug watcher when the VM reaches running and
+    /// stops it at stopped or error. State is set in about a dozen places,
+    /// and this one hook covers all of them. Starting, stopping, and paused
+    /// leave the watcher as it is. A repeat start for the same VM, as after
+    /// a pause, does nothing.
+    private func usbWatcherFollowState() {
+        switch state {
+        case .running:
+            if let id = activeConfiguration?.id {
+                USBHotPlugWatcher.shared.start(vmID: id)
+            } else {
+                AVMLog.write("VMManager: running with no active configuration; USB watcher not started", category: "USBHotPlug")
+            }
+        case .stopped:
+            USBHotPlugWatcher.shared.stop(reason: "VM stopped")
+        case .error:
+            USBHotPlugWatcher.shared.stop(reason: "VM error")
+        default:
+            break
+        }
+    }
     @Published private(set) var qemuVersion: String = ""
     @Published private(set) var consoleOutput: String = ""
 

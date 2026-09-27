@@ -27,6 +27,13 @@ final class VMStore: ObservableObject {
 
     @Published private(set) var configurations: [VMConfiguration] = []
 
+    /// The one VMStore, for code outside the windows. The USB hot-plug
+    /// watcher reads the SAVED configuration here at every plug-in,
+    /// never a copy taken when the VM started, so USB changes made in
+    /// Settings apply right away. Weak, like VMManager.shared: the app
+    /// owns the store, and this reference never keeps it alive.
+    static weak var shared: VMStore?
+
     // MARK: - Private Properties
 
     private let fileManager = FileManager.default
@@ -203,6 +210,7 @@ final class VMStore: ObservableObject {
 
     init() {
         configurations = loadAll()
+        VMStore.shared = self
     }
 
     // MARK: - Load
