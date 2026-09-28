@@ -487,9 +487,23 @@ private struct DashboardContent: View {
                     if session.vmState == .running || session.vmState == .paused {
                         Button("Stop Windows") {
                             Task {
-                                do { try await session.stop() }
-                                catch { errorMessage = error.localizedDescription }
-                                activeSession = nil
+                                // stopGracefully waits until Windows has shut down,
+                                // so the session (and its VMManager) stays alive the
+                                // whole time. Throwing it away early is what used to
+                                // kill QEMU mid-shutdown (fixed 2026-09-27).
+                                do {
+                                    try await session.stopGracefully()
+                                    // Clear only the session this Stop was for: after
+                                    // a Force Stop, a new VM may already be running.
+                                    if activeSession === session { activeSession = nil }
+                                } catch {
+                                    // Keep the session, so Force Stop stays available.
+                                    errorMessage = error.localizedDescription
+                                    Announcer.shared.announce(
+                                        "Windows could not be shut down. Reason: \(error.localizedDescription). Next: try Stop again, or use Force Stop.",
+                                        tone: .failure
+                                    )
+                                }
                             }
                         }
                         .accessibilityHint("Gracefully shuts down Windows")

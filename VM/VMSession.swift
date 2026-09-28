@@ -24,6 +24,10 @@ final class VMSession: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
 
+    /// Set by forceStop, so a graceful stop that is still waiting does not
+    /// announce a clean shutdown that never happened.
+    private var forceStopRequested = false
+
     // MARK: - Init
 
     init(configuration: VMConfiguration) {
@@ -76,7 +80,77 @@ final class VMSession: ObservableObject {
         try await manager.stopVM()
     }
 
+    /// The main window's Stop. Asks Windows to shut down and waits until it
+    /// has, so the session, and the VMManager inside it, stay alive through
+    /// the whole shutdown.
+    ///
+    /// Why (2026-09-27): the main window used to throw the session away
+    /// right after the request. VMManager's deinit then killed QEMU in the
+    /// middle of Windows' shutdown, like pulling the plug, with nothing in
+    /// the log, no Stopped state, and the USB watcher left running.
+    ///
+    /// Never force-stops on its own: a Windows update can make shutdown take
+    /// many minutes. After two minutes it reminds the user once, then keeps
+    /// waiting. A paused VM is resumed first, because the shutdown request
+    /// only reaches a running guest. Wording approved by Allison 2026-09-27.
+    func stopGracefully() async throws {
+        forceStopRequested = false
+        if case .paused = manager.state {
+            AVMLog.write("VMSession: stopGracefully: VM is paused; resuming before shutdown")
+            try await manager.resumeVM()
+        }
+        Announcer.shared.announce("Shutting down Windows.", tone: .info)
+        AVMLog.write("VMSession: stopGracefully: shutdown requested; waiting for the VM to stop")
+        try await manager.stopVM()
+
+        switch manager.state {
+        case .stopping, .stopped, .error:
+            break
+        default:
+            AVMLog.write("VMSession: stopGracefully: VM was not in a state that can shut down (\(manager.state)); not waiting")
+            throw StopError.notRunning
+        }
+
+        let reminderAfter: TimeInterval = 120
+        let started = Date()
+        var reminded = false
+        while true {
+            switch manager.state {
+            case .stopped:
+                if forceStopRequested {
+                    AVMLog.write("VMSession: stopGracefully: VM was force-stopped during shutdown")
+                } else {
+                    AVMLog.write("VMSession: stopGracefully: Windows has shut down after \(Int(Date().timeIntervalSince(started))) seconds")
+                    Announcer.shared.announce("Windows has shut down.", tone: .success)
+                }
+                return
+            case .error:
+                // handleQEMUProcessExit has already announced the failure.
+                AVMLog.write("VMSession: stopGracefully: VM ended in an error state during shutdown")
+                return
+            default:
+                break
+            }
+            if !reminded, Date().timeIntervalSince(started) >= reminderAfter {
+                reminded = true
+                AVMLog.write("VMSession: stopGracefully: still shutting down after \(Int(reminderAfter)) seconds; reminded the user, still waiting")
+                Announcer.shared.announce("Windows is still shutting down. You can keep waiting, or use Force Stop.", tone: .info)
+            }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+    }
+
+    enum StopError: LocalizedError {
+        case notRunning
+        var errorDescription: String? {
+            switch self {
+            case .notRunning: return "the virtual machine was not running"
+            }
+        }
+    }
+
     func forceStop() {
+        forceStopRequested = true
         manager.forceStopVM()
     }
 
