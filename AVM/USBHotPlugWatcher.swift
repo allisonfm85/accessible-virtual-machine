@@ -100,7 +100,7 @@ final class USBHotPlugWatcher {
         // are recorded, not announced.
         let present = recordPresent(arrivedIterator)
         forEach(removedIterator) { _ in }
-        log("start: watching USB for VM \(vmID.uuidString); \(present) devices already present, recorded quietly")
+        log("start: watching USB for VM \(vmID.uuidString); \(present) \(present == 1 ? "device" : "devices") already present, recorded quietly")
     }
 
     func stop(reason: String) {
@@ -161,7 +161,8 @@ final class USBHotPlugWatcher {
             ? "none yet"
             : classes.interfaces.map { String(format: "0x%02x", $0) }.joined(separator: ",")
         let serial = identity.serialNumber == nil ? "no" : "yes"
-        log("arrived: \(identity), serial \(serial), device class \(deviceClass), interface classes \(interfaceList); settings say \(settingsSay(for: identity))")
+        let classification = USBDeviceClassifier.classify(service, identity: identity)
+        log("arrived: \(identity), serial \(serial), device class \(deviceClass), interface classes \(interfaceList); settings say \(settingsSay(for: identity)); \(classification.logText)")
     }
 
     /// What the saved settings say to do with this device, read fresh
