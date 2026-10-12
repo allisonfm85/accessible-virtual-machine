@@ -84,6 +84,11 @@ final class Announcer {
 
     private init() {}
 
+    /// True while the system voice is speaking or has lines waiting.
+    /// USBPlugPrompt waits on this so a plug-in alert doesn't appear
+    /// while "Mac keyboard on" is still being spoken.
+    var isSpeaking: Bool { synthesizer.isSpeaking }
+
     /// Play the tone's sound immediately, then speak the message with the
     /// system voice. Failures interrupt (stop current speech and flush the
     /// queue); successes and infos enqueue behind whatever is speaking so

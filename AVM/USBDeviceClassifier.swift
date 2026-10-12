@@ -48,6 +48,23 @@ struct USBDeviceClassification {
     /// Every HID usage found, as "page/usage" in hex, for the log.
     let hidUsages: [String]
 
+    /// What the plug-in alert should call this device. Exact, so the
+    /// alert never has to read meaning out of the log reasons.
+    enum Kind: String {
+        case ordinary
+        /// Braille evidence beyond a generic serial chip.
+        case brailleDisplay = "braille display"
+        /// The only braille evidence is a generic serial chip.
+        case possibleBrailleDisplay = "possible braille display"
+        case keyboard
+        case mouse
+        /// The Mac's current sound output, or possibly it.
+        case soundOutput = "sound output"
+        /// An HID interface whose kind can't be read yet.
+        case unknownInput = "unknown input"
+    }
+    let kind: Kind
+
     var logText: String {
         let kinds = hidUsages.isEmpty ? "none" : hidUsages.joined(separator: ",")
         if protection == .none {
@@ -81,7 +98,7 @@ enum USBDeviceClassifier {
         // 2. BRLTTY's table, for displays that don't speak HID braille.
         switch USBBrailleDeviceTable.match(vendorID: identity.vendorID, productID: identity.productID) {
         case .braille?: braille.append("in BRLTTY's braille table")
-        case .genericChip?: braille.append("generic serial chip braille displays use")
+        case .genericChip?: braille.append(genericChipReason)
         case nil: break
         }
         if let maker = brailleMakers[identity.vendorID] {
@@ -99,16 +116,25 @@ enum USBDeviceClassifier {
 
         let usageText = hid.usages.map { String(format: "%02x/%02x", $0.page, $0.usage) }
         if !audio.isEmpty {
-            return USBDeviceClassification(protection: .alwaysAsk, reasons: unique(audio + braille + inputParts), hidUsages: usageText)
+            return USBDeviceClassification(protection: .alwaysAsk, reasons: unique(audio + braille + inputParts), hidUsages: usageText, kind: .soundOutput)
         }
         if !braille.isEmpty {
-            return USBDeviceClassification(protection: .brailleDisplay, reasons: unique(braille + inputParts), hidUsages: usageText)
+            let onlyGenericChip = braille.allSatisfy { $0 == genericChipReason }
+            return USBDeviceClassification(protection: .brailleDisplay, reasons: unique(braille + inputParts), hidUsages: usageText,
+                                           kind: onlyGenericChip ? .possibleBrailleDisplay : .brailleDisplay)
         }
         if !inputParts.isEmpty {
-            return USBDeviceClassification(protection: .alwaysAsk, reasons: unique(inputParts), hidUsages: usageText)
+            // A keyboard with a built-in pointer is called a keyboard.
+            let kind: USBDeviceClassification.Kind = inputParts.contains("keyboard") ? .keyboard
+                : inputParts.contains("mouse") ? .mouse : .unknownInput
+            return USBDeviceClassification(protection: .alwaysAsk, reasons: unique(inputParts), hidUsages: usageText, kind: kind)
         }
-        return USBDeviceClassification(protection: .none, reasons: [], hidUsages: usageText)
+        return USBDeviceClassification(protection: .none, reasons: [], hidUsages: usageText, kind: .ordinary)
     }
+
+    /// The reason text for a generic serial chip. Shared so the kind
+    /// check above matches the log wording exactly.
+    private static let genericChipReason = "generic serial chip braille displays use"
 
     /// Vendor IDs that belong only to makers of braille and low-vision
     /// products. Any device from one of them counts as a braille display,

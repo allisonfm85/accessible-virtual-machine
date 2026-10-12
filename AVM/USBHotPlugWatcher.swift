@@ -3,8 +3,9 @@
 //  AVM
 //
 //  USB increment 2b, piece 3: notices USB devices arriving and leaving
-//  while a VM runs. Detection only. Piece 4 adds the alert, the spoken
-//  line while in Windows, and attaching.
+//  while a VM runs. Piece 4 step 3 hands each "ask" decision and each
+//  removal to USBPlugPrompt, which shows the alert and speaks. Nothing
+//  is sent to Windows yet; step 4 adds that.
 //
 //  How it works: IOKit tells AVM about every IOUSBHostDevice that
 //  appears (first-match notification) or goes away (terminated
@@ -105,6 +106,7 @@ final class USBHotPlugWatcher {
 
     func stop(reason: String) {
         guard vmID != nil || notifyPort != nil else { return }
+        USBPlugPrompt.shared.vmStopped()
         if arrivedIterator != 0 { IOObjectRelease(arrivedIterator); arrivedIterator = 0 }
         if removedIterator != 0 { IOObjectRelease(removedIterator); removedIterator = 0 }
         if let port = notifyPort { IONotificationPortDestroy(port); notifyPort = nil }
@@ -135,7 +137,7 @@ final class USBHotPlugWatcher {
                     self.log("arrived: \(identity), but watching stopped before its class codes were read")
                     return
                 }
-                self.logArrival(identity, service: service)
+                self.logArrival(identity, entryID: entryID, service: service)
             }
         }
     }
@@ -151,10 +153,11 @@ final class USBHotPlugWatcher {
             } else {
                 log("removed: registry entry \(entryID), never seen arriving")
             }
+            USBPlugPrompt.shared.removed(entryID: entryID)
         }
     }
 
-    private func logArrival(_ identity: AVMUSBDeviceIdentity, service: io_service_t) {
+    private func logArrival(_ identity: AVMUSBDeviceIdentity, entryID: UInt64, service: io_service_t) {
         let classes = USBDeviceEnumerator.classCodes(for: service)
         let deviceClass = classes.device.map { String(format: "0x%02x", $0) } ?? "none"
         let interfaceList = classes.interfaces.isEmpty
@@ -162,19 +165,31 @@ final class USBHotPlugWatcher {
             : classes.interfaces.map { String(format: "0x%02x", $0) }.joined(separator: ",")
         let serial = identity.serialNumber == nil ? "no" : "yes"
         let classification = USBDeviceClassifier.classify(service, identity: identity)
-        log("arrived: \(identity), serial \(serial), device class \(deviceClass), interface classes \(interfaceList); \(classification.logText); decision: \(decisionText(for: identity, classification: classification))")
+        let decided = decide(for: identity, classification: classification)
+        log("arrived: \(identity), serial \(serial), device class \(deviceClass), interface classes \(interfaceList); \(classification.logText); decision: \(decided.text)")
+        if case .ask(let rememberOffered)? = decided.decision, let vmID {
+            USBPlugPrompt.shared.ask(USBPlugQuestion(entryID: entryID,
+                                                     vmID: vmID,
+                                                     identity: identity,
+                                                     vendorName: vendorName(service),
+                                                     kind: classification.kind,
+                                                     rememberOffered: rememberOffered))
+        }
     }
 
     /// What AVM would do with this device: the SAVED settings, read fresh
     /// from VMStore at the moment of arrival, plus the classifier's answer,
-    /// run through USBPlugDecider. Step 2 only logs it; nothing acts on it.
-    /// When the settings can't be read, the answer is ask, the safe one.
-    private func decisionText(for identity: AVMUSBDeviceIdentity,
-                              classification: USBDeviceClassification) -> String {
-        guard let vmID else { return "ask (not watching)" }
+    /// run through USBPlugDecider. Step 3 hands "ask" to USBPlugPrompt;
+    /// step 4 acts on the other answers.
+    /// When the settings can't be read, the answer is ask, the safe one,
+    /// with no Remember option, since there is nowhere to save it.
+    private func decide(for identity: AVMUSBDeviceIdentity,
+                        classification: USBDeviceClassification) -> (decision: USBPlugDecision?, text: String) {
+        guard let vmID else { return (nil, "none (not watching)") }
         guard let store = VMStore.shared,
               let config = store.configurations.first(where: { $0.id == vmID }) else {
-            return "ask (saved settings for VM \(vmID.uuidString) are not available)"
+            return (.ask(rememberOffered: false),
+                    "ask (no remember option): saved settings for VM \(vmID.uuidString) are not available")
         }
         let remembered = config.usbRememberedDevices?.first(where: {
             $0.matches(vendorID: Int(identity.vendorID),
@@ -187,7 +202,7 @@ final class USBHotPlugWatcher {
         let result = USBPlugDecider.decide(mode: config.effectiveUSBMode,
                                            remembered: remembered?.usesWindows,
                                            protection: classification.protection)
-        return "\(result.decision.logText) (\(result.why))\(note)"
+        return (result.decision, "\(result.decision.logText) (\(result.why))\(note)")
     }
 
     // MARK: Helpers
@@ -212,6 +227,14 @@ final class USBHotPlugWatcher {
             body(service)
             IOObjectRelease(service)
         }
+    }
+
+    /// The maker's name the device reports, for the alert. Read here
+    /// rather than added to AVMUSBDeviceIdentity, which the privileged
+    /// helper shares.
+    private func vendorName(_ service: io_service_t) -> String? {
+        IORegistryEntryCreateCFProperty(service, "USB Vendor Name" as CFString, kCFAllocatorDefault, 0)?
+            .takeRetainedValue() as? String
     }
 
     private func registryID(_ service: io_service_t) -> UInt64? {
