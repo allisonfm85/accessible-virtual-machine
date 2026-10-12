@@ -84,6 +84,9 @@ enum USBDeviceClassifier {
         case .genericChip?: braille.append("generic serial chip braille displays use")
         case nil: break
         }
+        if let maker = brailleMakers[identity.vendorID] {
+            braille.append("made by \(maker), a braille maker")
+        }
 
         // 3. The Mac's current audio output or alert output.
         let output = currentUSBOutput()
@@ -106,6 +109,32 @@ enum USBDeviceClassifier {
         }
         return USBDeviceClassification(protection: .none, reasons: [], hidUsages: usageText)
     }
+
+    /// Vendor IDs that belong only to makers of braille and low-vision
+    /// products. Any device from one of them counts as a braille display,
+    /// whatever it presents at the moment.
+    ///
+    /// Why (decided with Allison 2026-10-11): a Monarch outside Braille
+    /// Terminal presents only its file-transfer interface (class 0x06),
+    /// with no braille at all, and people plug these in for braille far
+    /// more often than for files. Side effect, accepted: these makers'
+    /// other products (a Victor Reader Stream, a magnifier) also ask in
+    /// Always mode, and can be remembered.
+    ///
+    /// Shared vendor IDs stay out on purpose: HIMS uses Microsoft's
+    /// (0x045e), EuroBraille also uses Keil's (0xc251), and several
+    /// displays use generic chip or open-source IDs. Those are caught by
+    /// exact model in USBBrailleDeviceTable, or by HID braille usage.
+    /// Checked against the public USB ID registry 2026-10-11. To add a
+    /// maker, the vendor ID must be used for nothing but its products.
+    private static let brailleMakers: [UInt16: String] = [
+        0x1c71: "HumanWare",
+        0x0f4e: "Freedom Scientific",
+        0x0904: "Baum",
+        0x1fe4: "Handy Tech",
+        0x28ac: "EuroBraille",
+        0x0798: "Optelec",
+    ]
 
     // MARK: HID kinds
 

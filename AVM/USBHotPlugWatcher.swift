@@ -162,29 +162,32 @@ final class USBHotPlugWatcher {
             : classes.interfaces.map { String(format: "0x%02x", $0) }.joined(separator: ",")
         let serial = identity.serialNumber == nil ? "no" : "yes"
         let classification = USBDeviceClassifier.classify(service, identity: identity)
-        log("arrived: \(identity), serial \(serial), device class \(deviceClass), interface classes \(interfaceList); settings say \(settingsSay(for: identity)); \(classification.logText)")
+        log("arrived: \(identity), serial \(serial), device class \(deviceClass), interface classes \(interfaceList); \(classification.logText); decision: \(decisionText(for: identity, classification: classification))")
     }
 
-    /// What the saved settings say to do with this device, read fresh
-    /// from VMStore at the moment of arrival.
-    private func settingsSay(for identity: AVMUSBDeviceIdentity) -> String {
-        guard let vmID else { return "nothing (not watching)" }
-        guard let store = VMStore.shared else { return "unknown (VMStore is not available)" }
-        guard let config = store.configurations.first(where: { $0.id == vmID }) else {
-            return "unknown (VM \(vmID.uuidString) has no saved configuration)"
+    /// What AVM would do with this device: the SAVED settings, read fresh
+    /// from VMStore at the moment of arrival, plus the classifier's answer,
+    /// run through USBPlugDecider. Step 2 only logs it; nothing acts on it.
+    /// When the settings can't be read, the answer is ask, the safe one.
+    private func decisionText(for identity: AVMUSBDeviceIdentity,
+                              classification: USBDeviceClassification) -> String {
+        guard let vmID else { return "ask (not watching)" }
+        guard let store = VMStore.shared,
+              let config = store.configurations.first(where: { $0.id == vmID }) else {
+            return "ask (saved settings for VM \(vmID.uuidString) are not available)"
         }
-        if let remembered = config.usbRememberedDevices?.first(where: {
+        let remembered = config.usbRememberedDevices?.first(where: {
             $0.matches(vendorID: Int(identity.vendorID),
                        productID: Int(identity.productID),
                        serialNumber: identity.serialNumber)
-        }) {
-            switch remembered.usesWindows {
-            case true?: return "remembered, use in Windows"
-            case false?: return "remembered, keep on the Mac"
-            case nil: return "remembered with unknown word '\(remembered.decision)', so ask"
-            }
-        }
-        return "mode \(config.effectiveUSBMode.rawValue)"
+        })
+        let note = (remembered != nil && remembered?.usesWindows == nil)
+            ? "; remembered word '\(remembered?.decision ?? "")' not understood, ignored"
+            : ""
+        let result = USBPlugDecider.decide(mode: config.effectiveUSBMode,
+                                           remembered: remembered?.usesWindows,
+                                           protection: classification.protection)
+        return "\(result.decision.logText) (\(result.why))\(note)"
     }
 
     // MARK: Helpers
