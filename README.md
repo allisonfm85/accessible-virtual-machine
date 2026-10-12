@@ -53,6 +53,20 @@ last on the disk. If you installed Windows some other way and the command
 reports an error, a recovery partition may be in the way. Please open an
 issue rather than deleting partitions yourself.
 
+## Braille displays
+
+When you plug in a USB device while Windows is running, AVM checks whether it's a braille display before doing anything with it. A braille display is never sent to Windows without asking, even when "Always use in Windows" is chosen in Settings. If you check "Remember for this device," AVM will use your choice from then on.
+
+AVM recognizes a braille display in three ways:
+
+- It identifies itself as a braille display. Most newer displays, like the Monarch, do this.
+- Its model is in the list of USB braille displays kept by the BRLTTY project.
+- It comes from a company that makes braille and low-vision products: HumanWare, Freedom Scientific, Baum, Handy Tech, EuroBraille, or Optelec.
+
+Some displays use common USB chips that other gadgets also use. AVM treats those as possible braille displays, so it asks about them too.
+
+**If AVM doesn't recognize your display,** please open an issue and include the display's name and model. Also include its USB IDs, if you can: plug in the display while Windows is running, then in AVM choose File, then Save Diagnostic Log, and attach the log. AVM records the IDs of each device plugged in, but never what you type.
+
 ## What's in this repository
 
 The complete AVM application source (Swift/SwiftUI), the Xcode project,
