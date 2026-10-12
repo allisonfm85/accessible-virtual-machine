@@ -34,6 +34,17 @@ struct SettingsView: View {
     // MARK: - Input
 
     let configuration: VMConfiguration
+
+    /// This VM's SAVED configuration, read from VMStore each time it's needed.
+    /// `configuration` is the copy handed over when the sheet opened, and it
+    /// can be older than what is saved. Reading the copy made Settings show
+    /// "Ask each time" after the USB choice had been saved as something else
+    /// (found 2026-10-11), and a save that started from the copy could write
+    /// old values back. Falls back to the copy only if the VM is not in the
+    /// store.
+    private var saved: VMConfiguration {
+        vmStore.configurations.first(where: { $0.id == configuration.id }) ?? configuration
+    }
     /// True only when this VM is the one currently running.
     let isRunning: Bool
 
@@ -63,7 +74,7 @@ struct SettingsView: View {
     }
 
     /// Disks grow but never shrink, so the stepper starts at the current size.
-    private var currentDiskGB: Int { configuration.diskSizeGB }
+    private var currentDiskGB: Int { saved.diskSizeGB }
 
     /// Never below the current size: free space can drop under it, and a
     /// stepper range whose top is below its bottom is invalid.
@@ -267,12 +278,13 @@ struct SettingsView: View {
     // MARK: - Load Current Settings
 
     private func loadCurrentSettings() {
-        vmName = configuration.name
-        cpuCount = configuration.cpuCount
-        ramSizeGB = configuration.ramSizeGB
-        diskSizeGB = configuration.diskSizeGB
-        usbMode = configuration.effectiveUSBMode
-        rememberedDevices = configuration.usbRememberedDevices ?? []
+        let saved = self.saved
+        vmName = saved.name
+        cpuCount = saved.cpuCount
+        ramSizeGB = saved.ramSizeGB
+        diskSizeGB = saved.diskSizeGB
+        usbMode = saved.effectiveUSBMode
+        rememberedDevices = saved.usbRememberedDevices ?? []
     }
 
     // MARK: - Save Settings
@@ -308,7 +320,7 @@ struct SettingsView: View {
                 }
             }
 
-            var updated = configuration
+            var updated = saved
             updated.name = vmName
             updated.cpuCount = cpuCount
             updated.ramSizeGB = ramSizeGB
