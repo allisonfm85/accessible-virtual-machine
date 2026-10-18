@@ -281,6 +281,7 @@ private struct SessionGate: View {
                     VStack(spacing: 24) {
                         DashboardContent(
                             observedSession: session,
+                            vmState: session.vmState,
                             activeSession: $activeSession,
                             errorMessage: $errorMessage,
                             showingSetup: $showingSetup,
@@ -361,6 +362,13 @@ private struct DashboardContent: View {
     @EnvironmentObject var focusLock: FocusLockManager
 
     var observedSession: VMSession?
+    /// The VM state, passed by value so SwiftUI redraws this view when it
+    /// changes. observedSession alone is the same object every time, so
+    /// SwiftUI skipped the redraw, and after a pause the dashboard kept
+    /// showing Running and a Pause button (2026-10-17). The body still
+    /// reads the state through the session; this input only forces the
+    /// redraw. nil when no session exists.
+    var vmState: VMRuntimeState? = nil
     @Binding var activeSession: VMSession?
     @Binding var errorMessage: String?
     @Binding var showingSetup: Bool
