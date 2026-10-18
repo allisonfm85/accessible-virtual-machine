@@ -45,6 +45,105 @@ final class USBRedirectController: ObservableObject {
     /// Devices holding a QEMU port: pending or attached.
     @Published private(set) var portByDevice: [AVMUSBDeviceIdentity: Int] = [:]
 
+    /// Devices AVM is handing back to the Mac right now, by
+    /// USBPlugPrompt.deviceKey, and when each recent hand-back finished.
+    private var handingBack: Set<String> = []
+    private var handedBackAt: [String: Date] = [:]
+    /// How long after a hand-back its re-arrivals count as coming home.
+    static let handBackSettle: TimeInterval = 5
+
+    /// True while AVM is handing this device back to the Mac, or within
+    /// handBackSettle seconds after. macOS can drop and re-add a device
+    /// several times while it comes home (log, 2026-10-12); the watcher
+    /// asks nothing about those arrivals.
+    func isBeingHandedBack(_ device: AVMUSBDeviceIdentity) -> Bool {
+        let key = USBPlugPrompt.deviceKey(device)
+        if handingBack.contains(key) { return true }
+        guard let finished = handedBackAt[key] else { return false }
+        if Date().timeIntervalSince(finished) < Self.handBackSettle { return true }
+        handedBackAt[key] = nil
+        return false
+    }
+
+    /// How long the helper gets to report a vanished device itself.
+    /// It reported the mic's unplug within milliseconds (2026-10-12).
+    static let vanishGrace: Duration = .seconds(2)
+
+    /// The watcher saw a device leave the Mac. If it was in Windows and
+    /// still holds a port after vanishGrace, the helper never reported
+    /// it (a Monarch switching modes, 2026-10-17), so AVM speaks the
+    /// unplug, frees the port, and quietly tells the helper to drop it.
+    func deviceVanished(_ device: AVMUSBDeviceIdentity) {
+        guard let held = heldIdentity(matching: device) else { return }
+        let followKey = Self.followKey(held)
+        leftWindowsAt[followKey] = Date()
+        leftWindowsCopy[followKey] = held
+        Task { @MainActor in
+            try? await Task.sleep(for: Self.vanishGrace)
+            guard self.portByDevice[held] != nil else {
+                self.log("vanished \(held.description): the helper reported it; nothing to clean up")
+                return
+            }
+            self.log("vanished \(held.description): no helper report after \(Self.vanishGrace); cleaning up")
+            USBHelperClient.shared.forget(held)
+            self.announce("\(held.displayName) was unplugged.", tone: .info)
+            await self.releasePort(for: held, reason: "vanished with no helper report")
+            _ = await USBHelperClient.shared.detach(held, quiet: true)
+        }
+    }
+
+    // MARK: Follow-through
+
+    /// How soon a device must come back to follow the user's choice to
+    /// Windows without being asked. A minute, so people with dexterity
+    /// needs or who need extra time aren't pressured (Allison,
+    /// 2026-10-18). A replug at about 10.9 seconds missed the first
+    /// 10 second window.
+    static let followWindow: TimeInterval = 60
+
+    /// When each device last left Windows, and the identity it held a
+    /// port under, by followKey.
+    private var leftWindowsAt: [String: Date] = [:]
+    private var leftWindowsCopy: [String: AVMUSBDeviceIdentity] = [:]
+
+    /// The same physical device across mode changes: maker and serial.
+    /// A Monarch is 1c71:d100 for file transfer and 1c71:d110 in Braille
+    /// Terminal (2026-10-17). With no serial, maker and product.
+    static func followKey(_ device: AVMUSBDeviceIdentity) -> String {
+        if let serial = device.serialNumber, serial.isEmpty == false {
+            return "\(device.vendorID):serial:\(serial)"
+        }
+        return "\(device.vendorID):\(device.productID):noserial"
+    }
+
+    /// True when this device left Windows less than followWindow seconds
+    /// ago. Takes the record, and quietly clears the vanished copy if
+    /// it still holds a port, so the return is not also announced as an
+    /// unplug.
+    func takeFollowThrough(_ device: AVMUSBDeviceIdentity) -> Bool {
+        let key = Self.followKey(device)
+        let stale = leftWindowsCopy.removeValue(forKey: key)
+        guard let left = leftWindowsAt.removeValue(forKey: key),
+              Date().timeIntervalSince(left) < Self.followWindow else { return false }
+        if let stale, portByDevice[stale] != nil {
+            Task { @MainActor in
+                USBHelperClient.shared.forget(stale)
+                await self.releasePort(for: stale, reason: "came back as a new device; followed to Windows")
+                _ = await USBHelperClient.shared.detach(stale, quiet: true)
+            }
+        }
+        return true
+    }
+
+    /// The identity this controller holds a port for that is the same
+    /// device: vendor, product, bus, and address.
+    private func heldIdentity(matching device: AVMUSBDeviceIdentity) -> AVMUSBDeviceIdentity? {
+        portByDevice.keys.first {
+            $0.vendorID == device.vendorID && $0.productID == device.productID
+                && $0.busNumber == device.busNumber && $0.deviceAddress == device.deviceAddress
+        }
+    }
+
     private init() {
         USBHelperClient.shared.deviceEnded = { [weak self] device, state in
             Task { @MainActor in
@@ -107,6 +206,8 @@ final class USBRedirectController: ObservableObject {
             return
         }
         portByDevice[device] = nil
+        let key = USBPlugPrompt.deviceKey(device)
+        handingBack.insert(key)
 
         // Helper first. Its reply arrives after the device is back with
         // macOS; the released event is spoken by USBHelperClient.
@@ -118,6 +219,8 @@ final class USBRedirectController: ObservableObject {
             // back; a stale usb-redir device would block the next attach.
             log("helper detach failed: \(error); removing the QEMU port anyway")
         }
+        handingBack.remove(key)
+        handedBackAt[key] = Date()
         await removeQEMUPort(port, for: device)
     }
 

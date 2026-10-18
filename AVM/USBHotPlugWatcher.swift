@@ -3,9 +3,11 @@
 //  AVM
 //
 //  USB increment 2b, piece 3: notices USB devices arriving and leaving
-//  while a VM runs. Piece 4 step 3 hands each "ask" decision and each
-//  removal to USBPlugPrompt, which shows the alert and speaks. Nothing
-//  is sent to Windows yet; step 4 adds that.
+//  while a VM runs, and acts on each arrival's decision (piece 4):
+//  "ask" goes to USBPlugPrompt's alert, "send to Windows" (Always mode
+//  or a remembered choice) goes straight to USBPlugPrompt.send, and a
+//  remembered "keep on the Mac" is silent by design (Allison,
+//  2026-10-12). Removals go to USBPlugPrompt too.
 //
 //  How it works: IOKit tells AVM about every IOUSBHostDevice that
 //  appears (first-match notification) or goes away (terminated
@@ -150,6 +152,10 @@ final class USBHotPlugWatcher {
             }
             if let identity = known.removeValue(forKey: entryID) {
                 log("removed: \(identity)")
+                // The watcher is the final word on whether a device is
+                // here. If it was in Windows and the helper stays silent,
+                // the controller cleans up (2026-10-17).
+                USBRedirectController.shared.deviceVanished(identity)
             } else {
                 log("removed: registry entry \(entryID), never seen arriving")
             }
@@ -158,6 +164,22 @@ final class USBHotPlugWatcher {
     }
 
     private func logArrival(_ identity: AVMUSBDeviceIdentity, entryID: UInt64, service: io_service_t) {
+        // A device already in Windows has nothing to decide. Evidence
+        // (2026-10-12): attaching did not make macOS drop and re-add the
+        // device, so this is a safety net, not a known path.
+        if USBRedirectController.shared.portByDevice.keys.contains(where: {
+            $0.vendorID == identity.vendorID && $0.productID == identity.productID
+                && $0.busNumber == identity.busNumber && $0.deviceAddress == identity.deviceAddress
+        }) {
+            log("arrived: \(identity) is already in Windows; nothing to decide")
+            return
+        }
+        // Coming home after AVM's own Detach. macOS can drop and re-add
+        // the device several times on the way (log, 2026-10-12).
+        if USBRedirectController.shared.isBeingHandedBack(identity) {
+            log("arrived: \(identity) is being handed back to the Mac by AVM; nothing to decide")
+            return
+        }
         let classes = USBDeviceEnumerator.classCodes(for: service)
         let deviceClass = classes.device.map { String(format: "0x%02x", $0) } ?? "none"
         let interfaceList = classes.interfaces.isEmpty
@@ -167,20 +189,39 @@ final class USBHotPlugWatcher {
         let classification = USBDeviceClassifier.classify(service, identity: identity)
         let decided = decide(for: identity, classification: classification)
         log("arrived: \(identity), serial \(serial), device class \(deviceClass), interface classes \(interfaceList); \(classification.logText); decision: \(decided.text)")
-        if case .ask(let rememberOffered)? = decided.decision, let vmID {
-            USBPlugPrompt.shared.ask(USBPlugQuestion(entryID: entryID,
-                                                     vmID: vmID,
-                                                     identity: identity,
-                                                     vendorName: vendorName(service),
-                                                     kind: classification.kind,
-                                                     rememberOffered: rememberOffered))
+        guard let vmID, let decision = decided.decision else { return }
+        var rememberOffered = false
+        if case .ask(let offered) = decision { rememberOffered = offered }
+        let question = USBPlugQuestion(entryID: entryID,
+                                       vmID: vmID,
+                                       identity: identity,
+                                       vendorName: vendorName(service),
+                                       kind: classification.kind,
+                                       rememberOffered: rememberOffered)
+        // Follow-through (Allison, 2026-10-17): the same device left
+        // Windows moments ago, as a Monarch does when it switches modes,
+        // so it follows the user's choice back. Never for always-ask
+        // devices. The check also clears the vanished copy quietly.
+        if classification.protection != .alwaysAsk,
+           USBRedirectController.shared.takeFollowThrough(identity) {
+            log("arrived: \(identity) left Windows moments ago; following the user's choice back to Windows")
+            USBPlugPrompt.shared.send(question, because: "came back within \(Int(USBRedirectController.followWindow)) seconds of leaving Windows")
+            return
+        }
+        switch decision {
+        case .ask:
+            USBPlugPrompt.shared.ask(question)
+        case .sendToWindows:
+            USBPlugPrompt.shared.send(question, because: decided.text)
+        case .keepOnMac:
+            // Silent by design: the device simply works on the Mac.
+            break
         }
     }
 
     /// What AVM would do with this device: the SAVED settings, read fresh
     /// from VMStore at the moment of arrival, plus the classifier's answer,
-    /// run through USBPlugDecider. Step 3 hands "ask" to USBPlugPrompt;
-    /// step 4 acts on the other answers.
+    /// run through USBPlugDecider. logArrival acts on the answer.
     /// When the settings can't be read, the answer is ask, the safe one,
     /// with no Remember option, since there is nowhere to save it.
     private func decide(for identity: AVMUSBDeviceIdentity,

@@ -2,8 +2,10 @@
 //  USBPlugPrompt.swift
 //  AVM
 //
-//  USB increment 2b, piece 4 step 3: the plug-in alert and the spoken
-//  lines. Step 3 only records the answer in the log. Step 4 acts on it.
+//  USB increment 2b, piece 4: the plug-in alert, the spoken lines, and
+//  acting on the answer (step 4): remembering it, and sending the device
+//  to Windows through USBRedirectController, the same path the Attach
+//  USB Device menu uses.
 //
 //  Design of record (agreed with Allison 2026-10-11):
 //  - A standard Mac alert, so VoiceOver reads it like any system alert.
@@ -30,6 +32,21 @@
 //    focus to Keep on Mac once the alert is up. VoiceOver then reads
 //    the title and message by itself. AVM once asked VoiceOver to read
 //    them too, and they were heard twice, so AVM doesn't.
+//
+//  Step 4 design of record (agreed with Allison 2026-10-12):
+//  - Sending goes through USBRedirectController.attach. USBHelperClient
+//    speaks the outcome: "<name> is now in Windows." or the failure line
+//    with its step and next action. Automatic sends (Always mode, a
+//    remembered choice) are spoken the same way, never silent.
+//  - A remembered "keep on the Mac" is silent. The watcher handles it.
+//  - Remember saves this device's choice in this VM's settings, replacing
+//    any earlier choice for the same device.
+//  - Windows paused: the send is held. AVM says "Windows is paused. AVM
+//    will send <name> when Windows resumes." On resume it is sent:
+//    VMManager's state hook calls vmRunning(). If the
+//    device is unplugged first, AVM says so and drops it. If Windows
+//    stops instead, it is dropped quietly.
+//  - Sends run one at a time, so two devices never race for a port.
 //
 //  Run loop note: the alert runs modally from a run loop perform, not
 //  from inside a main-queue block or Task. A modal loop started inside
@@ -65,6 +82,11 @@ final class USBPlugPrompt {
     private var activeWatch: NSObjectProtocol?
     private var escapeMonitor: Any?
 
+    /// Devices waiting for Windows to resume before they are sent.
+    private var heldForResume: [USBPlugQuestion] = []
+    /// The most recent send. Each send waits for the one before it.
+    private var lastSend: Task<Void, Never>?
+
     /// Pause before showing, so the focus change settles first.
     private static let firstPause: Duration = .milliseconds(600)
     private static let speechPoll: Duration = .milliseconds(200)
@@ -78,6 +100,21 @@ final class USBPlugPrompt {
     /// A device whose decision is "ask".
     func ask(_ question: USBPlugQuestion) {
         watchForReturn()
+        // One question per physical device. macOS can drop and re-add a
+        // device several times in a row, with a new address each time
+        // (log, 2026-10-12), so a repeat replaces the older question.
+        let key = Self.deviceKey(question.identity)
+        if let index = waiting.firstIndex(where: { Self.deviceKey($0.identity) == key }) {
+            waiting[index] = question
+            log("arrived again while waiting: \(question.identity); replaced the older question for the same device")
+            scheduleShow()
+            return
+        }
+        if let current = onScreen, Self.deviceKey(current.identity) == key {
+            onScreen = question
+            log("arrived again while its alert is open: \(question.identity); the open alert now refers to it")
+            return
+        }
         let anotherIsOpen = onScreen != nil || showScheduled
         waiting.append(question)
         log("waiting: \(question.identity) as \(question.kind.rawValue), remember \(question.rememberOffered ? "offered" : "not offered"); \(waiting.count) waiting")
@@ -106,11 +143,21 @@ final class USBPlugPrompt {
             let question = waiting.remove(at: index)
             log("unplugged before it was asked about: \(question.identity); question dropped")
             say("\(Self.sentenceName(question)) was unplugged.")
+            return
+        }
+        if let index = heldForResume.firstIndex(where: { $0.entryID == entryID }) {
+            let question = heldForResume.remove(at: index)
+            log("unplugged while held for resume: \(question.identity); dropped")
+            say("\(Self.sentenceName(question)) was unplugged.")
         }
     }
 
     /// The VM stopped. Its questions no longer mean anything.
     func vmStopped() {
+        if heldForResume.isEmpty == false {
+            log("VM stopped; dropping \(heldForResume.count) held for resume")
+            heldForResume.removeAll()
+        }
         guard waiting.isEmpty == false || onScreen != nil else { return }
         log("VM stopped; dropping \(waiting.count) waiting \(waiting.count == 1 ? "question" : "questions")\(onScreen == nil ? "" : " and closing the open alert")")
         waiting.removeAll()
@@ -125,8 +172,16 @@ final class USBPlugPrompt {
     private var userIsInWindows: Bool { FocusLockManager.shared?.isLocked == true }
 
     private func scheduleShow() {
-        guard showScheduled == false, onScreen == nil, waiting.isEmpty == false,
-              userIsInWindows == false, NSApp.isActive else { return }
+        guard showScheduled == false, onScreen == nil, waiting.isEmpty == false else { return }
+        // Why an alert waits is logged, to explain any delay before it.
+        if userIsInWindows {
+            log("alert held: the user is in Windows")
+            return
+        }
+        if NSApp.isActive == false {
+            log("alert held: AVM is not the active app")
+            return
+        }
         showScheduled = true
         Task { @MainActor in
             try? await Task.sleep(for: Self.firstPause)
@@ -134,6 +189,9 @@ final class USBPlugPrompt {
             while Announcer.shared.isSpeaking, waited < Self.longestSpeechWait {
                 try? await Task.sleep(for: Self.speechPoll)
                 waited += Self.speechPoll
+            }
+            if waited > .zero {
+                self.log("alert waited \(waited) for AVM's speech to finish\(waited >= Self.longestSpeechWait ? " (gave up waiting)" : "")")
             }
             // See the run loop note in the header.
             RunLoop.main.perform(inModes: [.common]) {
@@ -151,7 +209,7 @@ final class USBPlugPrompt {
             log("not showing yet: the user left the Mac or AVM before the alert could open")
             return
         }
-        let question = waiting.removeFirst()
+        var question = waiting.removeFirst()
         onScreen = question
         closeReason = nil
 
@@ -161,16 +219,20 @@ final class USBPlugPrompt {
         log("alert open: \(question.identity)")
         let response = alert.runModal()
         removeEscape()
+        // The device may have re-arrived while the alert was open.
+        if let latest = onScreen { question = latest }
         onScreen = nil
 
         let remember = question.rememberOffered && alert.suppressionButton?.state == .on
         let rememberText = remember ? ", Remember checked" : ""
         switch response {
         case .alertFirstButtonReturn:
-            log("chose keep on the Mac for \(question.identity)\(rememberText). Step 3 records this only.")
+            log("chose keep on the Mac for \(question.identity)\(rememberText)")
+            if remember { self.remember(question, usesWindows: false) }
         case .alertSecondButtonReturn:
-            log("chose send to Windows for \(question.identity)\(rememberText). Step 3 does not send yet.")
-            say("AVM can't send devices to Windows yet. \(Self.sentenceName(question)) stays on the Mac for now.")
+            log("chose send to Windows for \(question.identity)\(rememberText)")
+            if remember { self.remember(question, usesWindows: true) }
+            send(question, because: "chosen in the alert")
         default:
             log("alert closed by AVM: \(closeReason ?? "unknown reason")")
         }
@@ -227,6 +289,70 @@ final class USBPlugPrompt {
         escapeMonitor = nil
     }
 
+    // MARK: Sending
+
+    /// Sends a device to Windows: from the alert, a remembered choice,
+    /// or Always mode. While Windows is paused, holds it until resume.
+    func send(_ question: USBPlugQuestion, because why: String) {
+        if let manager = VMManager.shared, case .paused = manager.state {
+            heldForResume.append(question)
+            log("send held: Windows is paused; \(question.identity) waits for resume (\(why))")
+            say("Windows is paused. AVM will send \(Self.titleName(question)) when Windows resumes.")
+            return
+        }
+        log("sending \(question.identity) to Windows (\(why))")
+        attachInOrder(question)
+    }
+
+    /// Runs attaches one at a time. USBRedirectController picks a free
+    /// port before it awaits QEMU, so two at once could pick the same one.
+    private func attachInOrder(_ question: USBPlugQuestion) {
+        let previous = lastSend
+        lastSend = Task { @MainActor in
+            await previous?.value
+            await USBRedirectController.shared.attach(question.identity)
+        }
+    }
+
+    /// Called by VMManager's state hook every time the VM reaches
+    /// running, including after a resume. Sends anything held while
+    /// Windows was paused. A stop instead drops them, through vmStopped.
+    func vmRunning() {
+        guard heldForResume.isEmpty == false else { return }
+        let held = heldForResume
+        heldForResume.removeAll()
+        for question in held {
+            log("Windows is running again; sending held \(question.identity)")
+            attachInOrder(question)
+        }
+    }
+
+    // MARK: Remembering
+
+    /// Saves this device's choice in this VM's settings, replacing any
+    /// earlier choice for the same device. Only called when the user
+    /// checked Remember, so a braille display is never remembered
+    /// without the user's own say.
+    private func remember(_ question: USBPlugQuestion, usesWindows: Bool) {
+        guard let store = VMStore.shared,
+              var config = store.configurations.first(where: { $0.id == question.vmID }) else {
+            log("remember failed: saved settings for VM \(question.vmID.uuidString) are not available")
+            say("AVM could not remember your choice for \(Self.titleName(question)). Reason: this virtual machine's settings could not be read. Next: choose again the next time you plug it in.", tone: .failure)
+            return
+        }
+        let id = question.identity
+        var list = config.usbRememberedDevices ?? []
+        list.removeAll { $0.matches(vendorID: Int(id.vendorID), productID: Int(id.productID), serialNumber: id.serialNumber) }
+        list.append(RememberedUSBDevice(name: Self.titleName(question),
+                                        vendorID: Int(id.vendorID),
+                                        productID: Int(id.productID),
+                                        serialNumber: id.serialNumber,
+                                        decision: usesWindows ? "windows" : "mac"))
+        config.usbRememberedDevices = list
+        store.save(config)
+        log("remembered \(usesWindows ? "use in Windows" : "keep on the Mac") for \(id) in VM \(question.vmID.uuidString)")
+    }
+
     // MARK: Coming back to the Mac
 
     /// Shows waiting alerts when focus lock turns off or AVM becomes
@@ -250,6 +376,13 @@ final class USBPlugPrompt {
     }
 
     // MARK: Words
+
+    /// The same physical device across re-arrivals: vendor, product, and
+    /// serial number. The bus address can change when macOS re-adds a
+    /// device. Devices with no serial share one key per vendor and product.
+    static func deviceKey(_ identity: AVMUSBDeviceIdentity) -> String {
+        "\(identity.vendorID):\(identity.productID):\(identity.serialNumber ?? "")"
+    }
 
     /// The name inside the alert title.
     static func titleName(_ question: USBPlugQuestion) -> String {
@@ -300,8 +433,8 @@ final class USBPlugPrompt {
 
     // MARK: Helpers
 
-    private func say(_ text: String) {
-        Announcer.shared.announce(text, tone: .info)
+    private func say(_ text: String, tone: Announcer.Tone = .info) {
+        Announcer.shared.announce(text, tone: tone)
     }
 
     private func log(_ message: String) {

@@ -432,7 +432,9 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// answers false after ten seconds if the pump never came back. The
     /// released event is spoken by handleStateChanged; this reply is
     /// only logged, and a refusal is spoken with its reason.
-    func detach(_ device: AVMUSBDeviceIdentity) async -> Result<Void, USBHelperError> {
+    /// quiet: log a failure instead of speaking it. Used when the device
+    /// has already vanished and the unplug has been spoken.
+    func detach(_ device: AVMUSBDeviceIdentity, quiet: Bool = false) async -> Result<Void, USBHelperError> {
         guard ensureRegistered() else {
             return .failure(.notEnabled(status))
         }
@@ -461,10 +463,20 @@ final class USBHelperClient: NSObject, ObservableObject {
             log("detach: helper released \(device.description)")
         case .failure(let error):
             log("detach: \(device.description): \(error)")
-            announce("Could not release \(device.displayName). Reason: \(error). Next: unplug and replug the device if the Mac does not see it.", tone: .failure)
+            if quiet == false {
+                announce("Could not release \(device.displayName). Reason: \(error). Next: unplug and replug the device if the Mac does not see it.", tone: .failure)
+            }
         }
         disconnectIfIdle()
         return result
+    }
+
+    /// Clears a device that vanished without a helper report, so a late
+    /// yanked or released report for it is logged, not spoken again.
+    func forget(_ device: AVMUSBDeviceIdentity) {
+        pendingDevices.remove(device)
+        attachedDevices.remove(device)
+        log("forget: \(device.description); it vanished with no helper report")
     }
 
     /// Speaks an attach failure exactly once per attempt, whichever
@@ -489,11 +501,20 @@ final class USBHelperClient: NSObject, ObservableObject {
         case .attached:
             pendingDevices.remove(device)
             attachedDevices.insert(device)
-            announce("\(name) attached to the virtual machine.", tone: .success)
+            announce("\(name) is now in Windows.", tone: .success)
         case .released:
+            // One unplug reports yanked, then released, 0.03 s apart
+            // (log, 2026-10-12). Yanked already spoke and cleared the
+            // device, so released is spoken only for a device that was
+            // still attached or attaching, as after Detach USB Device.
+            let wasInWindows = attachedDevices.contains(device) || pendingDevices.contains(device)
             pendingDevices.remove(device)
             attachedDevices.remove(device)
-            announce("\(name) returned to the Mac.", tone: .info)
+            if wasInWindows {
+                announce("\(name) returned to the Mac.", tone: .info)
+            } else {
+                log("released after unplug: \(device.description); already spoken, not repeated")
+            }
             deviceEnded?(device, state)
         case .failed:
             pendingDevices.remove(device)
@@ -501,9 +522,19 @@ final class USBHelperClient: NSObject, ObservableObject {
             announceAttachFailure(device, step: detail ?? "unknown step")
             deviceEnded?(device, state)
         case .yanked:
+            let stillKnown = attachedDevices.contains(device) || pendingDevices.contains(device)
             pendingDevices.remove(device)
             attachedDevices.remove(device)
-            announce("\(name) was unplugged while attached. The virtual machine has been told it is gone.", tone: .failure)
+            // Unplugging is normal in plug and play, so this uses the
+            // ordinary sound, not the failure sound that cuts off other
+            // speech (Allison, 2026-10-12). The VM has been told already.
+            // A device AVM already cleaned up after it vanished was
+            // spoken then, so a late report is only logged.
+            if stillKnown {
+                announce("\(name) was unplugged.", tone: .info)
+            } else {
+                log("yanked after cleanup: \(device.description); already spoken, not repeated")
+            }
             deviceEnded?(device, state)
         @unknown default:
             log("stateChanged: unknown state raw value \(state.rawValue)")

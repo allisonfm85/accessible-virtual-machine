@@ -314,10 +314,15 @@ final class VMManager: ObservableObject {
     /// leave the watcher as it is. A repeat start for the same VM, as after
     /// a pause, does nothing.
     private func usbWatcherFollowState() {
+        // Every state change, for USB diagnosis (pause and resume showed
+        // nothing in the log before, 2026-10-12).
+        AVMLog.write("VMManager: state is now \(state)", category: "USBHotPlug")
         switch state {
         case .running:
             if let id = activeConfiguration?.id {
                 USBHotPlugWatcher.shared.start(vmID: id)
+                // Sends any device held while Windows was paused.
+                USBPlugPrompt.shared.vmRunning()
             } else {
                 AVMLog.write("VMManager: running with no active configuration; USB watcher not started", category: "USBHotPlug")
             }
