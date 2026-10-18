@@ -81,9 +81,16 @@ final class USBRedirectController: ObservableObject {
     /// unplug, frees the port, and quietly tells the helper to drop it.
     func deviceVanished(_ device: AVMUSBDeviceIdentity) {
         guard let held = heldIdentity(matching: device) else { return }
-        let followKey = Self.followKey(held)
-        leftWindowsAt[followKey] = Date()
-        leftWindowsCopy[followKey] = held
+        // Only a device that actually reached Windows can follow back.
+        // A device also holds a port while its attach is still being
+        // tried (thumb drive, 2026-10-18).
+        if USBHelperClient.shared.reachedWindows(held) {
+            let followKey = Self.followKey(held)
+            leftWindowsAt[followKey] = Date()
+            leftWindowsCopy[followKey] = held
+        } else {
+            log("vanished \(held.description): it never reached Windows, so it won't follow back")
+        }
         Task { @MainActor in
             try? await Task.sleep(for: Self.vanishGrace)
             guard self.portByDevice[held] != nil else {
@@ -244,6 +251,13 @@ final class USBRedirectController: ObservableObject {
             // a stream that never comes.
             log("helper refused \(device.description): \(error); removing the QEMU port")
             await releasePort(for: device, reason: "refused attach")
+            // A failed grab can make macOS drop and re-add the device
+            // (thumb drive, 2026-10-18). For a manual attach, treat that
+            // return like a hand-back, so it isn't asked about as a new
+            // plug-in. The send gate tracks its own bounces.
+            if quiet == false {
+                handedBackAt[USBPlugPrompt.deviceKey(device)] = Date()
+            }
             return false
         }
     }

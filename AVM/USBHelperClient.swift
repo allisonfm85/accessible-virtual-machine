@@ -152,6 +152,16 @@ final class USBHelperClient: NSObject, ObservableObject {
         quietKeys.contains(USBRedirectController.followKey(device))
     }
 
+    /// Devices the helper reported attached at some point since their
+    /// latest attach began. Unlike attachedDevices, an unplug doesn't
+    /// clear it, so the controller can tell a device that left Windows
+    /// from one whose attach never finished (thumb drive, 2026-10-18).
+    private var reached: Set<AVMUSBDeviceIdentity> = []
+
+    func reachedWindows(_ device: AVMUSBDeviceIdentity) -> Bool {
+        reached.contains(device)
+    }
+
     /// Called on the main actor for every ending the helper reports
     /// (released, failed, yanked) so USBRedirectController can take the
     /// device's QEMU port back. Added 2026-09-12 (increment 2a).
@@ -390,6 +400,7 @@ final class USBHelperClient: NSObject, ObservableObject {
             return .failure(.notEnabled(status))
         }
         announcedAttachFailures.remove(device)
+        reached.remove(device)
         pendingDevices.insert(device)
         let c = connect()
         log("attach: \(device.description) -> \(socketPath)")
@@ -522,6 +533,7 @@ final class USBHelperClient: NSObject, ObservableObject {
         case .attached:
             pendingDevices.remove(device)
             attachedDevices.insert(device)
+            reached.insert(device)
             if isQuiet(device) {
                 log("attached: not spoken; the send gate is handling \(device.description)")
             } else {
