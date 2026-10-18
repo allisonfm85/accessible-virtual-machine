@@ -137,6 +137,21 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// first speaks; the other stays quiet. Cleared on the next attach.
     private var announcedAttachFailures: Set<AVMUSBDeviceIdentity> = []
 
+    /// Devices USBPlugPrompt's send gate is handling, by
+    /// USBRedirectController.followKey, so every address of the same
+    /// physical device counts. Their lines are logged, not spoken; the
+    /// gate speaks one outcome itself (USB 2c, 2026-10-18).
+    private var quietKeys: Set<String> = []
+
+    func setQuiet(_ device: AVMUSBDeviceIdentity, _ quiet: Bool) {
+        let key = USBRedirectController.followKey(device)
+        if quiet { quietKeys.insert(key) } else { quietKeys.remove(key) }
+    }
+
+    func isQuiet(_ device: AVMUSBDeviceIdentity) -> Bool {
+        quietKeys.contains(USBRedirectController.followKey(device))
+    }
+
     /// Called on the main actor for every ending the helper reports
     /// (released, failed, yanked) so USBRedirectController can take the
     /// device's QEMU port back. Added 2026-09-12 (increment 2a).
@@ -383,7 +398,7 @@ final class USBHelperClient: NSObject, ObservableObject {
         let stillWorking = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard let self, Task.isCancelled == false else { return }
-            if self.pendingDevices.contains(device) {
+            if self.pendingDevices.contains(device), self.isQuiet(device) == false {
                 self.announce("Still attaching \(device.displayName).", tone: .info)
             }
         }
@@ -417,7 +432,9 @@ final class USBHelperClient: NSObject, ObservableObject {
             if case .helperUnavailable = error, retrying == false, recoverLostRegistration() {
                 return await attach(device, socketPath: socketPath, retrying: true)
             }
-            if case .helper(let step, _) = error {
+            if isQuiet(device) {
+                log("attach: failure not spoken; the send gate is handling \(device.description)")
+            } else if case .helper(let step, _) = error {
                 announceAttachFailure(device, step: step)
             } else {
                 announce("Could not reach the USB helper to attach \(device.displayName). Step: XPC call. Next: check Login Items, then the diagnostic log.", tone: .failure)
@@ -482,6 +499,10 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// Speaks an attach failure exactly once per attempt, whichever
     /// path (event or reply) reports it first.
     private func announceAttachFailure(_ device: AVMUSBDeviceIdentity, step: String) {
+        guard isQuiet(device) == false else {
+            log("attach failure not spoken; the send gate is handling \(device.description)")
+            return
+        }
         guard announcedAttachFailures.insert(device).inserted else { return }
         announce("Could not attach \(device.displayName). Step: \(step). Next: check that no other app is using the device and try again.", tone: .failure)
     }
@@ -501,7 +522,11 @@ final class USBHelperClient: NSObject, ObservableObject {
         case .attached:
             pendingDevices.remove(device)
             attachedDevices.insert(device)
-            announce("\(name) is now in Windows.", tone: .success)
+            if isQuiet(device) {
+                log("attached: not spoken; the send gate is handling \(device.description)")
+            } else {
+                announce("\(name) is now in Windows.", tone: .success)
+            }
         case .released:
             // One unplug reports yanked, then released, 0.03 s apart
             // (log, 2026-10-12). Yanked already spoke and cleared the
@@ -510,7 +535,9 @@ final class USBHelperClient: NSObject, ObservableObject {
             let wasInWindows = attachedDevices.contains(device) || pendingDevices.contains(device)
             pendingDevices.remove(device)
             attachedDevices.remove(device)
-            if wasInWindows {
+            if wasInWindows, isQuiet(device) {
+                log("released: not spoken; the send gate is handling \(device.description)")
+            } else if wasInWindows {
                 announce("\(name) returned to the Mac.", tone: .info)
             } else {
                 log("released after unplug: \(device.description); already spoken, not repeated")
@@ -530,7 +557,9 @@ final class USBHelperClient: NSObject, ObservableObject {
             // speech (Allison, 2026-10-12). The VM has been told already.
             // A device AVM already cleaned up after it vanished was
             // spoken then, so a late report is only logged.
-            if stillKnown {
+            if stillKnown, isQuiet(device) {
+                log("yanked: not spoken; the send gate is handling \(device.description)")
+            } else if stillKnown {
                 announce("\(name) was unplugged.", tone: .info)
             } else {
                 log("yanked after cleanup: \(device.description); already spoken, not repeated")

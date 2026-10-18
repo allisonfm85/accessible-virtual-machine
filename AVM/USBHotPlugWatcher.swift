@@ -168,6 +168,7 @@ final class USBHotPlugWatcher {
             }
             if let identity = known.removeValue(forKey: entryID) {
                 log("removed: \(identity)")
+                USBPlugPrompt.shared.gateNoteRemoval(identity)
                 // The watcher is the final word on whether a device is
                 // here. If it was in Windows and the helper stays silent,
                 // the controller cleans up (2026-10-17).
@@ -215,6 +216,13 @@ final class USBHotPlugWatcher {
                                        vendorName: vendorName(service),
                                        kind: classification.kind,
                                        rememberOffered: rememberOffered)
+        // A send gate is already handling this device: it bounced while
+        // being sent (2026-10-18). The gate notes it and decides once the
+        // device has settled.
+        if USBPlugPrompt.shared.gateAbsorbs(question) {
+            log("\(label): \(identity) is being sent by the send gate; noted, nothing decided")
+            return
+        }
         // Follow-through (Allison, 2026-10-17): the same device left
         // Windows moments ago, as a Monarch does when it switches modes,
         // so it follows the user's choice back. Never for always-ask
@@ -287,6 +295,13 @@ final class USBHotPlugWatcher {
                                     remembered: remembered?.usesWindows,
                                     protection: classification.protection)
         return (result.decision, "\(result.decision.logText) (\(result.why))\(note)")
+    }
+
+    /// True when the Mac sees this physical device right now, under any
+    /// address (USBRedirectController.followKey). For the send gate.
+    func isPresent(_ device: AVMUSBDeviceIdentity) -> Bool {
+        let key = USBRedirectController.followKey(device)
+        return known.values.contains { USBRedirectController.followKey($0) == key }
     }
 
     // MARK: Helpers

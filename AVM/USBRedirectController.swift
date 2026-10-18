@@ -27,9 +27,15 @@
 //  nothing to do. Every QEMU cleanup here is idempotent by that rule.
 //
 //  Speech: USBHelperClient owns the device announcements (attached,
-//  returned, failed, unplugged). This file speaks only what the client
-//  cannot know: VM not running, nothing attached, no port free, and
-//  QMP failures with their step and next action.
+//  returned, failed, unplugged). This file speaks what the client
+//  cannot know: VM not running, nothing attached, no port free, QMP
+//  failures with their step and next action, and "was unplugged" after
+//  a vanish cleanup the helper never reported (2026-10-17).
+//
+//  Send gate (USB 2c, 2026-10-18): USBPlugPrompt marks a device quiet
+//  in USBHelperClient while it handles an automatic send. Then attach
+//  (quiet: true) logs instead of speaking, the vanish cleanup's unplug
+//  line is logged, and the gate speaks one outcome itself.
 //
 
 import Combine
@@ -86,7 +92,11 @@ final class USBRedirectController: ObservableObject {
             }
             self.log("vanished \(held.description): no helper report after \(Self.vanishGrace); cleaning up")
             USBHelperClient.shared.forget(held)
-            self.announce("\(held.displayName) was unplugged.", tone: .info)
+            if USBHelperClient.shared.isQuiet(held) {
+                self.log("vanished \(held.description): the send gate is handling it; unplug not spoken")
+            } else {
+                self.announce("\(held.displayName) was unplugged.", tone: .info)
+            }
             await self.releasePort(for: held, reason: "vanished with no helper report")
             _ = await USBHelperClient.shared.detach(held, quiet: true)
         }
@@ -109,7 +119,7 @@ final class USBRedirectController: ObservableObject {
     /// The same physical device across mode changes: maker and serial.
     /// A Monarch is 1c71:d100 for file transfer and 1c71:d110 in Braille
     /// Terminal (2026-10-17). With no serial, maker and product.
-    static func followKey(_ device: AVMUSBDeviceIdentity) -> String {
+    nonisolated static func followKey(_ device: AVMUSBDeviceIdentity) -> String {
         if let serial = device.serialNumber, serial.isEmpty == false {
             return "\(device.vendorID):serial:\(serial)"
         }
@@ -133,6 +143,38 @@ final class USBRedirectController: ObservableObject {
             }
         }
         return true
+    }
+
+    /// Drops this device's follow-through record. The send gate calls it
+    /// when it finishes, so its own bounces never count as leaving Windows.
+    func clearFollowThrough(_ device: AVMUSBDeviceIdentity) {
+        let key = Self.followKey(device)
+        leftWindowsAt[key] = nil
+        leftWindowsCopy[key] = nil
+    }
+
+    // MARK: Send gate helpers (USB 2c)
+
+    /// True when this physical device, under any address, holds a port
+    /// and the helper reports it attached.
+    func isInWindows(_ device: AVMUSBDeviceIdentity) -> Bool {
+        let key = Self.followKey(device)
+        return portByDevice.keys.contains {
+            Self.followKey($0) == key && USBHelperClient.shared.attachedDevices.contains($0)
+        }
+    }
+
+    /// Quietly frees every port held for this physical device under an
+    /// address other than the one given. The send gate calls it before
+    /// a retry, since a bouncing device leaves old addresses behind.
+    func releaseStale(_ device: AVMUSBDeviceIdentity) async {
+        let key = Self.followKey(device)
+        let stale = portByDevice.keys.filter { Self.followKey($0) == key && $0 != device }
+        for held in stale {
+            USBHelperClient.shared.forget(held)
+            await releasePort(for: held, reason: "an old address of a device the send gate is resending")
+            _ = await USBHelperClient.shared.detach(held, quiet: true)
+        }
     }
 
     /// The identity this controller holds a port for that is the same
@@ -159,30 +201,35 @@ final class USBRedirectController: ObservableObject {
 
     // MARK: Attach
 
-    func attach(_ device: AVMUSBDeviceIdentity) async {
+    /// Returns true when the helper accepted the device (the attached
+    /// event comes later) or it already holds a port. quiet: log the
+    /// failures instead of speaking them; the send gate speaks one
+    /// outcome itself.
+    @discardableResult
+    func attach(_ device: AVMUSBDeviceIdentity, quiet: Bool = false) async -> Bool {
         guard let manager = VMManager.shared, case .running = manager.state else {
-            announce("The virtual machine is not running. Start it, then attach \(device.displayName).", tone: .failure)
-            return
+            say("The virtual machine is not running. Start it, then attach \(device.displayName).", tone: .failure, quiet: quiet)
+            return false
         }
         if let port = portByDevice[device] {
-            announce("\(device.displayName) is already attached to the virtual machine on port \(port).", tone: .info)
-            return
+            say("\(device.displayName) is already attached to the virtual machine on port \(port).", tone: .info, quiet: quiet)
+            return true
         }
         guard let port = freePort() else {
-            announce("All \(USBRedirectController.ports.count) USB slots are in use. Next: detach a device, then attach \(device.displayName).", tone: .failure)
-            return
+            say("All \(USBRedirectController.ports.count) USB slots are in use. Next: detach a device, then attach \(device.displayName).", tone: .failure, quiet: quiet)
+            return false
         }
         guard let socketPath = manager.usbRedirSocketPath(port: port) else {
-            announce("The virtual machine has no socket directory. Step: socket path. Next: wait for the VM to finish starting.", tone: .failure)
-            return
+            say("The virtual machine has no socket directory. Step: socket path. Next: wait for the VM to finish starting.", tone: .failure, quiet: quiet)
+            return false
         }
 
         do {
             try await manager.attachUSBRedirect(port: port, socketPath: socketPath)
         } catch {
             log("QMP attach failed for \(device.description): \(error)")
-            announce("QEMU refused the USB redirection port. Step: QMP device add. Reason: \(error.localizedDescription). Next: check the diagnostic log.", tone: .failure)
-            return
+            say("QEMU refused the USB redirection port. Step: QMP device add. Reason: \(error.localizedDescription). Next: check the diagnostic log.", tone: .failure, quiet: quiet)
+            return false
         }
 
         portByDevice[device] = port
@@ -190,11 +237,22 @@ final class USBRedirectController: ObservableObject {
         switch await USBHelperClient.shared.attach(device, socketPath: socketPath) {
         case .success:
             log("helper accepted \(device.description); waiting for the attached event")
+            return true
         case .failure(let error):
-            // The client already spoke the failure. Take the port back
-            // so QEMU is not left listening for a stream that never comes.
+            // The client already spoke the failure, unless the device is
+            // quiet. Take the port back so QEMU is not left listening for
+            // a stream that never comes.
             log("helper refused \(device.description): \(error); removing the QEMU port")
             await releasePort(for: device, reason: "refused attach")
+            return false
+        }
+    }
+
+    private func say(_ message: String, tone: Announcer.Tone, quiet: Bool) {
+        if quiet {
+            log("not spoken (send gate): \(message)")
+        } else {
+            announce(message, tone: tone)
         }
     }
 

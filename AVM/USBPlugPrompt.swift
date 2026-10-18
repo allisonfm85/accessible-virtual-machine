@@ -98,6 +98,25 @@ final class USBPlugPrompt {
     /// The most recent send. Each send waits for the one before it.
     private var lastSend: Task<Void, Never>?
 
+    /// Every automatic send goes through a gate for its physical device
+    /// (USBRedirectController.followKey). A device can bounce while it is
+    /// sent: macOS drops and re-adds it with a new address (log,
+    /// 2026-10-18). The gate notes each bounce instead of reacting, waits
+    /// until the device has been steady for settleQuiet seconds, then
+    /// decides once: in Windows, retry once, give up with one line, or
+    /// say nothing because it was really unplugged (Allison, 2026-10-18).
+    /// Manual Attach USB Device does not use the gate.
+    private struct SendGate {
+        var question: USBPlugQuestion
+        var attempts = 0
+        var bounces = 0
+        var lastActivity = Date()
+    }
+    private var gates: [String: SendGate] = [:]
+    private static let settleQuiet: TimeInterval = 3
+    private static let longestSettle: TimeInterval = 30
+    private static let maxAttempts = 2
+
     /// Pause before showing, so the focus change settles first.
     private static let firstPause: Duration = .milliseconds(600)
     private static let speechPoll: Duration = .milliseconds(200)
@@ -223,6 +242,7 @@ final class USBPlugPrompt {
 
     /// The VM stopped. Its questions no longer mean anything.
     func vmStopped() {
+        for key in Array(gates.keys) { finishGate(key, .stopped) }
         windowsHasBooted = false
         bootFallback?.cancel()
         bootFallback = nil
@@ -380,13 +400,113 @@ final class USBPlugPrompt {
         attachInOrder(question)
     }
 
-    /// Runs attaches one at a time. USBRedirectController picks a free
-    /// port before it awaits QEMU, so two at once could pick the same one.
+    /// Opens a send gate for this device and runs gates one at a time.
+    /// USBRedirectController picks a free port before it awaits QEMU, so
+    /// two attaches at once could pick the same one.
     private func attachInOrder(_ question: USBPlugQuestion) {
+        let key = USBRedirectController.followKey(question.identity)
+        if gates[key] != nil {
+            _ = gateAbsorbs(question)
+            return
+        }
+        gates[key] = SendGate(question: question)
+        USBHelperClient.shared.setQuiet(question.identity, true)
+        log("send gate opened for \(question.identity)")
         let previous = lastSend
         lastSend = Task { @MainActor in
             await previous?.value
-            await USBRedirectController.shared.attach(question.identity)
+            await self.runGate(key)
+        }
+    }
+
+    // MARK: Send gate (USB 2c)
+
+    /// The watcher saw this device arrive. True when a gate is handling
+    /// it: the gate takes the newest address and the watcher decides
+    /// nothing.
+    func gateAbsorbs(_ question: USBPlugQuestion) -> Bool {
+        let key = USBRedirectController.followKey(question.identity)
+        guard var gate = gates[key] else { return false }
+        gate.question = question
+        gate.bounces += 1
+        gate.lastActivity = Date()
+        gates[key] = gate
+        log("send gate: \(question.identity) arrived again; noted (\(gate.bounces) so far)")
+        return true
+    }
+
+    /// The watcher saw this device leave. Restarts the gate's quiet time.
+    func gateNoteRemoval(_ identity: AVMUSBDeviceIdentity) {
+        let key = USBRedirectController.followKey(identity)
+        guard var gate = gates[key] else { return }
+        gate.lastActivity = Date()
+        gates[key] = gate
+    }
+
+    private func runGate(_ key: String) async {
+        while var gate = gates[key] {
+            gate.attempts += 1
+            gate.lastActivity = Date()
+            gates[key] = gate
+            let device = gate.question.identity
+            await USBRedirectController.shared.releaseStale(device)
+            let accepted = await USBRedirectController.shared.attach(device, quiet: true)
+            log("send gate: attempt \(gate.attempts) of \(Self.maxAttempts) for \(device): \(accepted ? "helper accepted" : "refused")")
+            await settle(key)
+            guard let settled = gates[key] else { return }
+            if USBRedirectController.shared.isInWindows(settled.question.identity) {
+                finishGate(key, .inWindows)
+                return
+            }
+            if USBHotPlugWatcher.shared.isPresent(settled.question.identity) == false {
+                finishGate(key, .gone)
+                return
+            }
+            if settled.attempts >= Self.maxAttempts {
+                finishGate(key, .failed)
+                return
+            }
+            log("send gate: \(settled.question.identity) settled on the Mac; trying once more")
+        }
+    }
+
+    /// Waits until the device has been steady for settleQuiet seconds,
+    /// or longestSettle has passed, or the gate was closed.
+    private func settle(_ key: String) async {
+        let started = Date()
+        while true {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard let gate = gates[key] else { return }
+            if Date().timeIntervalSince(gate.lastActivity) >= Self.settleQuiet { return }
+            if Date().timeIntervalSince(started) >= Self.longestSettle {
+                log("send gate: \(gate.question.identity) still bouncing after \(Int(Self.longestSettle)) seconds; deciding now")
+                return
+            }
+        }
+    }
+
+    private enum GateOutcome { case inWindows, gone, failed, stopped }
+
+    /// Closes the gate and speaks its one outcome.
+    private func finishGate(_ key: String, _ outcome: GateOutcome) {
+        guard let gate = gates.removeValue(forKey: key) else { return }
+        let device = gate.question.identity
+        USBHelperClient.shared.setQuiet(device, false)
+        USBRedirectController.shared.clearFollowThrough(device)
+        let name = Self.titleName(gate.question)
+        let tries = "\(gate.attempts) \(gate.attempts == 1 ? "attempt" : "attempts"), \(gate.bounces) \(gate.bounces == 1 ? "bounce" : "bounces")"
+        switch outcome {
+        case .inWindows:
+            log("send gate closed: \(device) is in Windows (\(tries))")
+            say("\(name) is now in Windows.", tone: .success)
+        case .gone:
+            log("send gate closed: \(device) is no longer on the Mac, so it was unplugged; nothing spoken (\(tries))")
+        case .failed:
+            let reason = gate.bounces > 0 ? "it kept disconnecting" : "Windows didn't take it"
+            log("send gate closed: \(device) not sent (\(tries))")
+            say("AVM couldn't send \(name) to Windows. Reason: \(reason). Next: try Attach USB Device.", tone: .failure)
+        case .stopped:
+            log("send gate closed: \(device); the VM stopped")
         }
     }
 

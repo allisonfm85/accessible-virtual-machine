@@ -42,6 +42,14 @@
 //       immediately for every tone — the audible verdict stays real-time
 //       even when its speech is waiting in line.
 //
+// REVISED 2026-10-18 (Allison): AVM speech should never interrupt other
+//   speech if it can be helped. Failures now ENQUEUE too, and nothing is
+//   flushed. The failure sound still plays the instant it happens, so the
+//   verdict stays real-time. Lines are spoken in the order they happened,
+//   so an older success line before a failure is history, not a claim.
+//   USB sends speak at most one failure line per device, so failures no
+//   longer pile up in the queue.
+//
 // Considered and REJECTED: UNUserNotificationCenter banners (requires a
 // one-time permission grant, adds a notarization/entitlement variable) and
 // NSAccessibility announcements (VoiceOver only speaks them from the FOCUSED
@@ -90,15 +98,12 @@ final class Announcer {
     var isSpeaking: Bool { synthesizer.isSpeaking }
 
     /// Play the tone's sound immediately, then speak the message with the
-    /// system voice. Failures interrupt (stop current speech and flush the
-    /// queue); successes and infos enqueue behind whatever is speaking so
-    /// nothing is ever silently eaten. See INTERRUPTION POLICY in the header.
+    /// system voice. Every tone enqueues behind whatever is speaking, so
+    /// nothing is cut off or silently eaten. See INTERRUPTION POLICY in
+    /// the header (revised 2026-10-18).
     func announce(_ message: String, tone: Tone) {
         NSSound(named: tone.soundName)?.play()
 
-        if tone == .failure, synthesizer.isSpeaking {
-            synthesizer.stopSpeaking(at: .immediate)
-        }
         let utterance = AVSpeechUtterance(string: message)
         synthesizer.speak(utterance)
     }
