@@ -308,6 +308,11 @@ final class VMManager: ObservableObject {
         didSet { usbWatcherFollowState() }
     }
 
+    /// Whether Windows setup had finished when this VM last started
+    /// (the install-complete marker). USB 2c: during setup, start-time
+    /// devices wait for the SPICE agent, with no fallback.
+    private(set) var installCompleteAtStart = false
+
     /// Starts the USB hot-plug watcher when the VM reaches running and
     /// stops it at stopped or error. State is set in about a dozen places,
     /// and this one hook covers all of them. Starting, stopping, and paused
@@ -769,6 +774,8 @@ final class VMManager: ObservableObject {
         // the boot keypress task, so this start cannot re-enter Setup and let
         // the answer file wipe the installed disk.
         let installComplete = checkInstallCompleteMarker(configuration: configuration, runtimeDir: runtimeDir)
+        // USB 2c: start-time devices wait for setup to finish (2026-10-18).
+        installCompleteAtStart = installComplete
 
         if installComplete {
             avmLog("startVM: install-complete marker PRESENT — skipping media build/attach and boot keypress")

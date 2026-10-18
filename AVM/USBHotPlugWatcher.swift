@@ -9,6 +9,12 @@
 //  remembered "keep on the Mac" is silent by design (Allison,
 //  2026-10-12). Removals go to USBPlugPrompt too.
 //
+//  USB increment 2c (2026-10-18): devices already plugged in when
+//  Windows starts get the same treatment, using the start rule in
+//  USBPlugDecision.swift. Remembered for Windows goes over. In Always
+//  mode, ordinary devices go over. Everything else stays on the Mac
+//  with no question.
+//
 //  How it works: IOKit tells AVM about every IOUSBHostDevice that
 //  appears (first-match notification) or goes away (terminated
 //  notification). Both arrive on the main run loop.
@@ -18,9 +24,10 @@
 //    arrival, never a copy taken at VM start, so USB changes made in
 //    Settings apply right away.
 //  - Arming a notification also reports every device already present.
-//    Those are recorded quietly, not treated as plugged in, so the
-//    keyboard in use is never "new". Recording them means a later
-//    removal of one of them is still noticed.
+//    Those go through the start rule, which never asks about a device
+//    that isn't remembered, so the keyboard in use is never "new".
+//    Recording them means a later removal of one of them is still
+//    noticed.
 //  - A removal can arrive after the device's properties are gone, so
 //    the identity recorded at arrival is looked up by registry entry ID.
 //  - Interfaces are often published a moment after the device itself,
@@ -28,9 +35,10 @@
 //  - The log says whether a device has a serial number, never the
 //    serial itself. Diagnostic logs get attached to public issues.
 //
-//  VMManager starts the watcher when the VM reaches running and stops
-//  it at stopped or error. While paused it keeps listening. Attaching
-//  refuses while paused, and piece 4 decides what to say then.
+//  VMManager starts the watcher when the VM first reaches running and
+//  stops it at stopped or error. A resume doesn't start it again, so
+//  start-time sends happen once per Windows start. While paused it
+//  keeps listening, and USBPlugPrompt holds any send until resume.
 //
 
 import Foundation
@@ -100,10 +108,10 @@ final class USBHotPlugWatcher {
         self.vmID = vmID
         known = [:]
         // Draining both iterators arms them. Devices already present
-        // are recorded, not announced.
-        let present = recordPresent(arrivedIterator)
+        // go through the start rule once their class codes are read.
+        let present = handleArrivals(arrivedIterator, atStart: true)
         forEach(removedIterator) { _ in }
-        log("start: watching USB for VM \(vmID.uuidString); \(present) \(present == 1 ? "device" : "devices") already present, recorded quietly")
+        log("start: watching USB for VM \(vmID.uuidString); \(present) \(present == 1 ? "device" : "devices") already present, each checked against the start rule")
     }
 
     func stop(reason: String) {
@@ -119,29 +127,37 @@ final class USBHotPlugWatcher {
 
     // MARK: Arrivals and removals
 
-    private func handleArrivals(_ iterator: io_iterator_t) {
+    /// Records each device and, after the class-read delay, decides what
+    /// to do with it. atStart is true for devices already plugged in
+    /// when watching began. Returns how many devices were recorded.
+    @discardableResult
+    private func handleArrivals(_ iterator: io_iterator_t, atStart: Bool = false) -> Int {
+        let label = atStart ? "present at start" : "arrived"
+        var count = 0
         forEach(iterator) { service in
             guard let entryID = registryID(service) else {
-                log("arrived: a device with no registry entry ID; skipped")
+                log("\(label): a device with no registry entry ID; skipped")
                 return
             }
             guard let identity = USBDeviceEnumerator.identity(for: service) else {
-                log("arrived: registry entry \(entryID) has no vendor, product, location, or address; skipped")
+                log("\(label): registry entry \(entryID) has no vendor, product, location, or address; skipped")
                 return
             }
             known[entryID] = identity
+            count += 1
             IOObjectRetain(service)
             let vmAtArrival = vmID
             Task { @MainActor in
                 try? await Task.sleep(for: USBHotPlugWatcher.classReadDelay)
                 defer { IOObjectRelease(service) }
                 guard vmAtArrival != nil, self.vmID == vmAtArrival else {
-                    self.log("arrived: \(identity), but watching stopped before its class codes were read")
+                    self.log("\(label): \(identity), but watching stopped before its class codes were read")
                     return
                 }
-                self.logArrival(identity, entryID: entryID, service: service)
+                self.logArrival(identity, entryID: entryID, service: service, atStart: atStart)
             }
         }
+        return count
     }
 
     private func handleRemovals(_ iterator: io_iterator_t) {
@@ -163,7 +179,8 @@ final class USBHotPlugWatcher {
         }
     }
 
-    private func logArrival(_ identity: AVMUSBDeviceIdentity, entryID: UInt64, service: io_service_t) {
+    private func logArrival(_ identity: AVMUSBDeviceIdentity, entryID: UInt64, service: io_service_t, atStart: Bool) {
+        let label = atStart ? "present at start" : "arrived"
         // A device already in Windows has nothing to decide. Evidence
         // (2026-10-12): attaching did not make macOS drop and re-add the
         // device, so this is a safety net, not a known path.
@@ -171,13 +188,13 @@ final class USBHotPlugWatcher {
             $0.vendorID == identity.vendorID && $0.productID == identity.productID
                 && $0.busNumber == identity.busNumber && $0.deviceAddress == identity.deviceAddress
         }) {
-            log("arrived: \(identity) is already in Windows; nothing to decide")
+            log("\(label): \(identity) is already in Windows; nothing to decide")
             return
         }
         // Coming home after AVM's own Detach. macOS can drop and re-add
         // the device several times on the way (log, 2026-10-12).
         if USBRedirectController.shared.isBeingHandedBack(identity) {
-            log("arrived: \(identity) is being handed back to the Mac by AVM; nothing to decide")
+            log("\(label): \(identity) is being handed back to the Mac by AVM; nothing to decide")
             return
         }
         let classes = USBDeviceEnumerator.classCodes(for: service)
@@ -187,8 +204,8 @@ final class USBHotPlugWatcher {
             : classes.interfaces.map { String(format: "0x%02x", $0) }.joined(separator: ",")
         let serial = identity.serialNumber == nil ? "no" : "yes"
         let classification = USBDeviceClassifier.classify(service, identity: identity)
-        let decided = decide(for: identity, classification: classification)
-        log("arrived: \(identity), serial \(serial), device class \(deviceClass), interface classes \(interfaceList); \(classification.logText); decision: \(decided.text)")
+        let decided = decide(for: identity, classification: classification, atStart: atStart)
+        log("\(label): \(identity), serial \(serial), device class \(deviceClass), interface classes \(interfaceList); \(classification.logText); decision: \(decided.text)")
         guard let vmID, let decision = decided.decision else { return }
         var rememberOffered = false
         if case .ask(let offered) = decision { rememberOffered = offered }
@@ -201,11 +218,26 @@ final class USBHotPlugWatcher {
         // Follow-through (Allison, 2026-10-17): the same device left
         // Windows moments ago, as a Monarch does when it switches modes,
         // so it follows the user's choice back. Never for always-ask
-        // devices. The check also clears the vanished copy quietly.
-        if classification.protection != .alwaysAsk,
+        // devices, and never at start, since nothing has just left
+        // Windows. The check also clears the vanished copy quietly.
+        if !atStart,
+           classification.protection != .alwaysAsk,
            USBRedirectController.shared.takeFollowThrough(identity) {
             log("arrived: \(identity) left Windows moments ago; following the user's choice back to Windows")
             USBPlugPrompt.shared.send(question, because: "came back within \(Int(USBRedirectController.followWindow)) seconds of leaving Windows")
+            return
+        }
+        // At start, sends and the one alert wait until Windows has booted
+        // (USB 2c, 2026-10-18). See USBPlugPrompt.whenWindowsIsUp.
+        if atStart {
+            switch decision {
+            case .ask:
+                USBPlugPrompt.shared.whenWindowsIsUp(question, sendBecause: nil)
+            case .sendToWindows:
+                USBPlugPrompt.shared.whenWindowsIsUp(question, sendBecause: decided.text)
+            case .keepOnMac:
+                break
+            }
             return
         }
         switch decision {
@@ -221,14 +253,21 @@ final class USBHotPlugWatcher {
 
     /// What AVM would do with this device: the SAVED settings, read fresh
     /// from VMStore at the moment of arrival, plus the classifier's answer,
-    /// run through USBPlugDecider. logArrival acts on the answer.
+    /// run through USBPlugDecider. At start, the start rule is used.
+    /// logArrival acts on the answer.
     /// When the settings can't be read, the answer is ask, the safe one,
-    /// with no Remember option, since there is nowhere to save it.
+    /// with no Remember option, since there is nowhere to save it. At
+    /// start it's a quiet keep instead, since nothing is remembered.
     private func decide(for identity: AVMUSBDeviceIdentity,
-                        classification: USBDeviceClassification) -> (decision: USBPlugDecision?, text: String) {
+                        classification: USBDeviceClassification,
+                        atStart: Bool) -> (decision: USBPlugDecision?, text: String) {
         guard let vmID else { return (nil, "none (not watching)") }
         guard let store = VMStore.shared,
               let config = store.configurations.first(where: { $0.id == vmID }) else {
+            if atStart {
+                return (.keepOnMac,
+                        "keep on the Mac (at start): saved settings for VM \(vmID.uuidString) are not available")
+            }
             return (.ask(rememberOffered: false),
                     "ask (no remember option): saved settings for VM \(vmID.uuidString) are not available")
         }
@@ -240,24 +279,17 @@ final class USBHotPlugWatcher {
         let note = (remembered != nil && remembered?.usesWindows == nil)
             ? "; remembered word '\(remembered?.decision ?? "")' not understood, ignored"
             : ""
-        let result = USBPlugDecider.decide(mode: config.effectiveUSBMode,
+        let result = atStart
+            ? USBPlugDecider.decideAtStart(mode: config.effectiveUSBMode,
                                            remembered: remembered?.usesWindows,
                                            protection: classification.protection)
+            : USBPlugDecider.decide(mode: config.effectiveUSBMode,
+                                    remembered: remembered?.usesWindows,
+                                    protection: classification.protection)
         return (result.decision, "\(result.decision.logText) (\(result.why))\(note)")
     }
 
     // MARK: Helpers
-
-    private func recordPresent(_ iterator: io_iterator_t) -> Int {
-        var count = 0
-        forEach(iterator) { service in
-            guard let entryID = registryID(service),
-                  let identity = USBDeviceEnumerator.identity(for: service) else { return }
-            known[entryID] = identity
-            count += 1
-        }
-        return count
-    }
 
     /// Calls body for each service in the iterator, releasing each one
     /// after body returns. Emptying the iterator is what arms it.

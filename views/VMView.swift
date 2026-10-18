@@ -1927,9 +1927,18 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
 
     func spiceAgentConnected(_ connection: CSConnection, supportingFeatures features: CSConnectionAgentFeature) {
         NSLog("AVM: SPICE agent connected, features: \(features.rawValue)")
+        // In AVM's own log for USB 2c timing (2026-10-18). NSLog lines
+        // never showed up in the unified log.
+        AVMLog.write("VMView: SPICE agent connected, features \(features.rawValue)", category: "USBHotPlug")
+        // USB 2c: the agent is a service inside Windows, so its first
+        // connect means Windows has booted. Only the first one counts.
+        Task { @MainActor in
+            USBPlugPrompt.shared.windowsIsUp(because: "the SPICE agent connected")
+        }
     }
     func spiceAgentDisconnected(_ connection: CSConnection) {
         NSLog("AVM: SPICE agent disconnected.")
+        AVMLog.write("VMView: SPICE agent disconnected", category: "USBHotPlug")
     }
     func spiceForwardedPortOpened(_ connection: CSConnection, port: CSPort) {
         NSLog("AVM: SPICE port opened.")

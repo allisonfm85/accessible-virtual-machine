@@ -2,12 +2,13 @@
 //  USBPlugDecision.swift
 //  AVM
 //
-//  USB increment 2b, piece 4 step 2: what AVM does with a USB device
-//  plugged in while a VM runs. One pure function, so the rule lives in
-//  one place. Step 2 only logs the answer; later steps act on it.
+//  What AVM does with a USB device: one plugged in while Windows runs
+//  (decide), and one already plugged in when Windows starts
+//  (decideAtStart). Pure functions, so the rules live in one place.
+//  USBHotPlugWatcher acts on the answers.
 //
-//  Decision order of record (agreed with Allison 2026-09-27). The first
-//  rule that applies wins:
+//  Plug-in decision order of record (agreed with Allison 2026-09-27).
+//  The first rule that applies wins:
 //  1. Always-ask devices (keyboard, mouse, the Mac's current audio
 //     output, HID not readable yet): ask, with no Remember option.
 //     Exception: a remembered "keep on the Mac" is honored. It can only
@@ -21,6 +22,17 @@
 //     "Always use in Windows" never applies to it.
 //  5. Mode "always": send it to Windows.
 //  6. Mode "ask": ask, Remember offered.
+//
+//  Start rule (agreed with Allison 2026-10-18): run the plug-in rule,
+//  then keep its send and keep answers. An ask becomes a quiet keep on
+//  the Mac, except one case: a device remembered for Windows that is
+//  now always-ask, such as the Mac's current sound output. That one
+//  gets the normal alert. So at start:
+//  - Remembered for Windows goes over. Remembered keep on the Mac stays.
+//  - In Always mode, ordinary devices go over. Making sure nothing is
+//    in use on the Mac is the user's job, as at plug-in.
+//  - Everything else stays on the Mac with no question. Asking about
+//    every plugged-in device at each start would get tiresome.
 //
 
 import Foundation
@@ -67,5 +79,20 @@ enum USBPlugDecider {
             return (.sendToWindows, "rule 5: mode always")
         }
         return (.ask(rememberOffered: true), "rule 6: mode ask")
+    }
+
+    /// The same inputs as decide, for a device already plugged in when
+    /// Windows starts. See the start rule in the header.
+    static func decideAtStart(mode: USBPlugMode,
+                              remembered: Bool?,
+                              protection: USBDeviceClassification.Protection) -> (decision: USBPlugDecision, why: String) {
+        let plugIn = decide(mode: mode, remembered: remembered, protection: protection)
+        guard case .ask = plugIn.decision else {
+            return (plugIn.decision, "at start, \(plugIn.why)")
+        }
+        if protection == .alwaysAsk, remembered == true {
+            return (.ask(rememberOffered: false), "at start: remembered use in Windows, but now always asks")
+        }
+        return (.keepOnMac, "at start: would ask at plug-in, stays on the Mac quietly (\(plugIn.why))")
     }
 }

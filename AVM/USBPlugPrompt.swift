@@ -84,6 +84,17 @@ final class USBPlugPrompt {
 
     /// Devices waiting for Windows to resume before they are sent.
     private var heldForResume: [USBPlugQuestion] = []
+    /// Devices already plugged in when Windows started, waiting for
+    /// Windows to finish booting (USB 2c). A why of nil means the one
+    /// start-time alert; otherwise it is a send.
+    private var heldForWindows: [(question: USBPlugQuestion, why: String?)] = []
+    /// True once Windows has booted in this run: the SPICE agent
+    /// connected, or the fallback ran out.
+    private var windowsHasBooted = false
+    private var bootFallback: Task<Void, Never>?
+    /// How long to wait for the agent when setup is finished. Only a VM
+    /// without the agent should ever get this far.
+    private static let bootFallbackWait: Duration = .seconds(120)
     /// The most recent send. Each send waits for the one before it.
     private var lastSend: Task<Void, Never>?
 
@@ -130,6 +141,58 @@ final class USBPlugPrompt {
         scheduleShow()
     }
 
+    // MARK: Start-time devices (USB 2c)
+
+    /// A device already plugged in when Windows started. It waits until
+    /// Windows has booted, because the firmware and Windows reset USB
+    /// devices while booting, and a passed-through device then bounces
+    /// on the Mac (log, 2026-10-18). why is nil for the start-time alert.
+    func whenWindowsIsUp(_ question: USBPlugQuestion, sendBecause why: String?) {
+        if windowsHasBooted {
+            release(question, why: why)
+            return
+        }
+        heldForWindows.append((question, why))
+        log("held until Windows is up: \(question.identity) (\(why ?? "ask"))")
+        if heldForWindows.count == 1 { startBootFallback() }
+    }
+
+    /// Windows has booted. Called when the SPICE agent connects, and by
+    /// the fallback. Only the first call in a run does anything.
+    func windowsIsUp(because reason: String) {
+        guard windowsHasBooted == false else { return }
+        windowsHasBooted = true
+        bootFallback?.cancel()
+        bootFallback = nil
+        log("Windows is up: \(reason); releasing \(heldForWindows.count) held")
+        let held = heldForWindows
+        heldForWindows.removeAll()
+        for item in held { release(item.question, why: item.why) }
+    }
+
+    private func release(_ question: USBPlugQuestion, why: String?) {
+        if let why {
+            send(question, because: why)
+        } else {
+            ask(question)
+        }
+    }
+
+    /// During setup there is no fallback: setup restarts Windows several
+    /// times, and each restart resets USB devices (Allison, 2026-10-18).
+    private func startBootFallback() {
+        guard bootFallback == nil else { return }
+        guard VMManager.shared?.installCompleteAtStart == true else {
+            log("Windows setup is not finished; held devices wait for the SPICE agent, with no fallback")
+            return
+        }
+        bootFallback = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: USBPlugPrompt.bootFallbackWait)
+            guard Task.isCancelled == false, let self else { return }
+            self.windowsIsUp(because: "the SPICE agent did not connect within \(USBPlugPrompt.bootFallbackWait.components.seconds) seconds")
+        }
+    }
+
     /// A device went away. Speaks only when a question was waiting for it.
     func removed(entryID: UInt64) {
         if let current = onScreen, current.entryID == entryID {
@@ -149,11 +212,24 @@ final class USBPlugPrompt {
             let question = heldForResume.remove(at: index)
             log("unplugged while held for resume: \(question.identity); dropped")
             say("\(Self.sentenceName(question)) was unplugged.")
+            return
+        }
+        if let index = heldForWindows.firstIndex(where: { $0.question.entryID == entryID }) {
+            let item = heldForWindows.remove(at: index)
+            // Quiet: the user was never told about it.
+            log("unplugged while held until Windows is up: \(item.question.identity); dropped")
         }
     }
 
     /// The VM stopped. Its questions no longer mean anything.
     func vmStopped() {
+        windowsHasBooted = false
+        bootFallback?.cancel()
+        bootFallback = nil
+        if heldForWindows.isEmpty == false {
+            log("VM stopped; dropping \(heldForWindows.count) held until Windows is up")
+            heldForWindows.removeAll()
+        }
         if heldForResume.isEmpty == false {
             log("VM stopped; dropping \(heldForResume.count) held for resume")
             heldForResume.removeAll()
