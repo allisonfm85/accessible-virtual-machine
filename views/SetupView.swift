@@ -82,6 +82,36 @@ struct SetupView: View {
     @State private var notices: [Notice] = []
     @State private var isCreating = false
 
+    // MARK: - Ubuntu (2026-10-19)
+    //
+    // Picking the ISO decides the guest: AVM reads it (UbuntuInstallPipeline
+    // .identify) and, for an Ubuntu installer, shows the account fields
+    // Ubuntu's no-questions install needs up front. Any other ISO stays on
+    // the Windows path, whose own validation gate speaks to a wrong file at
+    // start. The result is spoken as well as shown, because the form
+    // changes under the user's focus.
+
+    private enum InstallerKind: Equatable {
+        case none
+        case checking
+        case windows
+        case ubuntu(UbuntuISOInfo)
+        /// An Ubuntu ISO AVM can't install from, with the reason.
+        case unusableUbuntu(String)
+    }
+
+    @State private var installerKind: InstallerKind = .none
+    @State private var ubuntuRealName: String = NSFullUserName()
+    @State private var ubuntuUserName: String = UbuntuAccount.suggestedUserName()
+    @State private var ubuntuPassword: String = ""
+    @State private var ubuntuPasswordConfirm: String = ""
+    @State private var ubuntuSignInAutomatically = true
+
+    private var isUbuntu: Bool {
+        if case .ubuntu = installerKind { return true }
+        return false
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -148,28 +178,32 @@ struct SetupView: View {
                 // happens, and an inert informational stub is noise under
                 // VoiceOver in an otherwise all-controls window.
 
-                // Windows Installer
+                // Installer
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Windows Installer Image")
+                    Text("Installer Image")
                         .font(.headline)
-                    Text("Required: ISO file containing the Windows installer.")
+                    Text("Required: an ISO file with the Windows 11 for ARM installer, or Ubuntu Desktop for ARM.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
                     if let url = installerURL {
-                        Text(url.lastPathComponent)
+                        Text("\(url.lastPathComponent)\(installerKindText.map { ". \($0)" } ?? "")")
                             .foregroundStyle(.secondary)
-                            .accessibilityLabel("Selected installer: \(url.lastPathComponent)")
+                            .accessibilityLabel("Selected installer: \(url.lastPathComponent)\(installerKindText.map { ". \($0)" } ?? "")")
                     } else {
                         Text("No installer selected")
                             .foregroundStyle(.secondary)
-                            .accessibilityLabel("No Windows installer image selected")
+                            .accessibilityLabel("No installer image selected")
                     }
 
                     Button("Choose Installer Image") {
                         showingFilePicker = true
                     }
-                    .accessibilityHint("Opens a file picker to select your Windows installer ISO")
+                    .accessibilityHint("Opens a file picker to select your Windows or Ubuntu installer ISO")
+                }
+
+                if isUbuntu {
+                    ubuntuAccountSection
                 }
             }
             .padding(.horizontal)
@@ -226,8 +260,85 @@ struct SetupView: View {
             switch result {
             case .success(let urls):
                 installerURL = urls.first
+                if let url = urls.first {
+                    identifyInstaller(url)
+                }
             case .failure(let error):
                 reportFailure(error.localizedDescription)
+            }
+        }
+    }
+
+    // MARK: - Ubuntu account
+
+    private var ubuntuAccountSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Ubuntu Account")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Text("Ubuntu installs with no questions, so it needs your account now. Orca, Ubuntu's screen reader, will be on when Ubuntu starts.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            TextField("Your name", text: $ubuntuRealName)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Your name")
+                .accessibilityHint("Shown at the Ubuntu login screen")
+
+            TextField("User name", text: $ubuntuUserName)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Ubuntu user name")
+                .accessibilityHint("Lower-case letters, digits, hyphens and underscores, starting with a letter")
+
+            SecureField("Password", text: $ubuntuPassword)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Ubuntu password")
+                .accessibilityHint("Used to sign in and to make changes to Ubuntu. AVM keeps only a scrambled form of it, until Ubuntu is installed.")
+
+            SecureField("Confirm password", text: $ubuntuPasswordConfirm)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Confirm Ubuntu password")
+
+            Toggle("Sign in automatically", isOn: $ubuntuSignInAutomatically)
+                .accessibilityHint("When on, Ubuntu starts straight to the desktop with no password prompt")
+        }
+    }
+
+    /// The installer's kind, as shown and spoken after the file name.
+    private var installerKindText: String? {
+        switch installerKind {
+        case .none: return nil
+        case .checking: return "Checking the installer…"
+        case .windows: return nil
+        case .ubuntu(let info): return "\(info.spokenName) installer"
+        case .unusableUbuntu(let reason): return reason
+        }
+    }
+
+    /// Read the picked ISO and say what it is. A newer pick wins over a
+    /// slower, older read.
+    private func identifyInstaller(_ url: URL) {
+        installerKind = .checking
+        notices = []
+        let path = url.path
+        Task {
+            let info = await UbuntuInstallPipeline.identify(isoPath: path)
+            guard installerURL?.path == path else { return }
+            if info == nil {
+                installerKind = .windows
+                return
+            }
+            if let problem = UbuntuInstallPipeline.problem(with: info) {
+                installerKind = .unusableUbuntu(problem)
+                reportGuidance(problem)
+                return
+            }
+            if let info {
+                installerKind = .ubuntu(info)
+                Announcer.shared.announce(
+                    "\(info.spokenName) installer selected. Fill in the Ubuntu account below.",
+                    tone: .info
+                )
             }
         }
     }
@@ -252,13 +363,51 @@ struct SetupView: View {
 
     private func createVM() {
         guard let installerURL else {
-            reportGuidance("Please select a Windows installer image.")
+            reportGuidance("Please select an installer image.")
             return
         }
 
         guard !vmName.trimmingCharacters(in: .whitespaces).isEmpty else {
             reportGuidance("Please enter a name for the virtual machine.")
             return
+        }
+
+        switch installerKind {
+        case .checking:
+            reportGuidance("AVM is still checking the installer. Try again in a moment.")
+            return
+        case .unusableUbuntu(let reason):
+            reportGuidance(reason)
+            return
+        default:
+            break
+        }
+
+        var ubuntuAccount: UbuntuAccount? = nil
+        if isUbuntu {
+            let realName = ubuntuRealName.trimmingCharacters(in: .whitespaces)
+            guard !realName.isEmpty else {
+                reportGuidance("Please enter your name for the Ubuntu account.")
+                return
+            }
+            if let problem = UbuntuAccount.problem(withUserName: ubuntuUserName) {
+                reportGuidance(problem)
+                return
+            }
+            guard !ubuntuPassword.isEmpty else {
+                reportGuidance("Please enter a password for the Ubuntu account.")
+                return
+            }
+            guard ubuntuPassword == ubuntuPasswordConfirm else {
+                reportGuidance("The two Ubuntu passwords don't match. Please type them again.")
+                return
+            }
+            ubuntuAccount = UbuntuAccount(
+                realName: realName,
+                userName: ubuntuUserName,
+                passwordHash: SHA512Crypt.hash(password: ubuntuPassword),
+                signInAutomatically: ubuntuSignInAutomatically
+            )
         }
 
         // Build the disk image path in Application Support/AVM/vms/<uuid>/disk.qcow2.
@@ -279,6 +428,9 @@ struct SetupView: View {
                 .appendingPathComponent(vmID.uuidString)
             try FileManager.default.createDirectory(at: vmDir, withIntermediateDirectories: true)
             diskPath = vmDir.appendingPathComponent("disk.qcow2").path
+            // Only the hash is stored, owner-only, until the install media
+            // is built (see UbuntuInstallPipeline.swift).
+            try ubuntuAccount?.save(inVMDirectory: vmDir)
         } catch {
             reportFailure(error.localizedDescription)
             return
@@ -291,7 +443,8 @@ struct SetupView: View {
             ramSizeGB: ramSizeGB,
             diskSizeGB: diskSizeGB,
             diskImagePath: diskPath,
-            installISOPath: installerURL.path
+            installISOPath: installerURL.path,
+            guestOSName: isUbuntu ? GuestOS.ubuntu.rawValue : nil
         )
 
         isCreating = true

@@ -672,6 +672,11 @@ final class VMManager: ObservableObject {
             return
         }
 
+        if configuration.guestOS == .ubuntu {
+            try await ensureUbuntuInstallMedia(configuration: configuration, sourceISO: iso, runtimeDir: runtimeDir)
+            return
+        }
+
         avmLog("ensureInstallMedia: building install media from \(iso)")
         appendConsole("AVM: Building unattended install media. This can take several minutes on some Macs.\n")
         installProgress = "Preparing the Windows install media."
@@ -727,6 +732,55 @@ final class VMManager: ObservableObject {
         }
     }
 
+    /// Ubuntu's counterpart of the Windows build in ensureInstallMedia: the
+    /// same two artifacts, the same announcements, and the same fresh NVRAM
+    /// afterwards. See UbuntuInstallPipeline.swift.
+    ///
+    /// The completion line pre-explains the long silence that follows: the
+    /// installer runs with no screen reader (there is nothing to answer), so
+    /// the user is told how long it takes and that AVM will speak when it is
+    /// done (UBUNTU INSTALL END, handleQEMUProcessExit).
+    private func ensureUbuntuInstallMedia(configuration: VMConfiguration, sourceISO: String, runtimeDir: URL) async throws {
+        avmLog("ensureUbuntuInstallMedia: building install media from \(sourceISO)")
+        appendConsole("AVM: Building unattended Ubuntu install media.\n")
+        installProgress = "Preparing the Ubuntu install media."
+
+        let pipeline = UbuntuInstallPipeline()
+        pipeline.onProgress = { [weak self] spoken, visible in
+            self?.installProgress = spoken
+            self?.appendConsole("AVM: \(visible)\n")
+        }
+        do {
+            try await pipeline.run(UbuntuInstallPipeline.Input(
+                vmID: configuration.id,
+                vmName: configuration.name,
+                sourceISOPath: sourceISO,
+                runtimeDir: runtimeDir
+            ))
+            appendConsole("AVM: Install media ready.\n")
+            installProgress = "Install media ready."
+            Announcer.shared.announce(
+                "Install media ready. Ubuntu is installing now, with no questions. This takes about 15 to 40 minutes, and nothing speaks until it's done. AVM will tell you when Ubuntu is installed.",
+                tone: .success
+            )
+        } catch {
+            installProgress = ""
+            avmLog("ensureUbuntuInstallMedia: pipeline FAILED: \(error.localizedDescription)")
+            appendConsole("AVM: Install media build failed: \(error.localizedDescription)\n")
+            Announcer.shared.announce(
+                "Install media build failed. \(error.localizedDescription)",
+                tone: .failure
+            )
+            throw error
+        }
+
+        let nvram = runtimeDir.appendingPathComponent("nvram.fd")
+        if FileManager.default.fileExists(atPath: nvram.path) {
+            try? FileManager.default.removeItem(at: nvram)
+            avmLog("ensureUbuntuInstallMedia: removed stale nvram.fd for a fresh first boot")
+        }
+    }
+
     /// Main-actor warning gate for the pipeline's validation WARN tier. Asks the
     /// UI via installWarningHandler if one is set; otherwise notes the warning in
     /// the console and proceeds (the pipeline's own headless default).
@@ -779,7 +833,10 @@ final class VMManager: ObservableObject {
 
         if installComplete {
             avmLog("startVM: install-complete marker PRESENT — skipping media build/attach and boot keypress")
-            appendConsole("AVM: Windows is already installed on this VM. Booting from the installed disk; install media will not be attached.\n")
+            appendConsole("AVM: \(configuration.guestOS.displayName) is already installed on this VM. Booting from the installed disk; install media will not be attached.\n")
+            if configuration.guestOS == .ubuntu {
+                removeFinishedUbuntuMedia(runtimeDir: runtimeDir)
+            }
         } else {
             // Build the unattended install media FIRST if this VM has an install ISO
             // and the media doesn't exist yet (six-stage pipeline; reused thereafter).
@@ -858,10 +915,24 @@ final class VMManager: ObservableObject {
         if installComplete {
             avmLog("startVM: boot keypress task NOT started (install-complete marker present)")
         } else {
-            startBootKeypressTask()
-            // INSTALL WATCHDOG: an install is in flight — watch for the wedge
-            // signature until the marker appears or the VM stops.
-            startInstallWatchdog(configuration: configuration, runtimeDir: runtimeDir)
+            if configuration.guestOS == .ubuntu {
+                // Neither applies to Ubuntu. Its boot menu starts on its own
+                // after one second (UbuntuInstallPipeline.editedBootMenu), so
+                // there is no "press any key" prompt. And the watchdog's
+                // wedge signature (frozen frame, busy CPU, flat disk) is the
+                // firmware hang at Windows' mid-install reboot; Ubuntu's
+                // install never reboots, and its installer shows a still
+                // splash with a flat disk for minutes at a time while it
+                // downloads, which would raise a false "stuck" alarm. Ubuntu
+                // reports its own end instead: a marker and a power-off,
+                // for success and for failure (UBUNTU INSTALL END).
+                avmLog("startVM: Ubuntu install — no boot keypress task, no install watchdog")
+            } else {
+                startBootKeypressTask()
+                // INSTALL WATCHDOG: an install is in flight — watch for the wedge
+                // signature until the marker appears or the VM stops.
+                startInstallWatchdog(configuration: configuration, runtimeDir: runtimeDir)
+            }
         }
     }
 
@@ -1637,7 +1708,14 @@ final class VMManager: ObservableObject {
         avmLog("buildQEMUArguments: diagnostic QMP socket -> \(diagnosticQMPSocketPath)")
 
         args += tpmArguments
-        args += ["-rtc", "base=localtime,clock=host"]
+        // Windows keeps the hardware clock in local time; Linux keeps it in
+        // UTC, and a local-time clock would put Ubuntu hours off until its
+        // network time sync caught up.
+        if configuration.guestOS == .ubuntu {
+            args += ["-rtc", "base=utc,clock=host"]
+        } else {
+            args += ["-rtc", "base=localtime,clock=host"]
+        }
 
         // FIRMWARE SERIAL LOG (PERMANENT — reclassified Stage C 2026-08-03,
         // previously marked "DEBUG remove before ship"): captures edk2's serial
@@ -1751,6 +1829,7 @@ final class VMManager: ObservableObject {
             state = .stopped
             avmLog("handleQEMUProcessExit: clean exit — state -> stopped")
             appendConsole("AVM: QEMU exited normally.\n")
+            restartIfUbuntuInstallFinished()
         } else if wasRunning {
             let msg = "QEMU exited with code \(exitCode). Details are in AVM's diagnostic log."
             state = .error(msg)
@@ -1767,6 +1846,122 @@ final class VMManager: ObservableObject {
             state = .stopped
             avmLog("handleQEMUProcessExit: nonzero exit while not running — state -> stopped, no announcement")
         }
+    }
+
+    /// UBUNTU INSTALL END (2026-10-19). Ubuntu's answer file ends with a
+    /// power-off, never a reboot: its boot menu needs no key press, so a
+    /// reboot with the install media attached could start the install
+    /// again (UbuntuInstallPipeline.swift header). So when an Ubuntu VM
+    /// that started mid-install exits cleanly AND the marker is now on the
+    /// UNATTEND volume, the install has just finished: say so and start
+    /// the VM again. That start finds the marker, attaches no install media
+    /// and deletes it. A clean exit with no marker is an ordinary shutdown
+    /// (or the user stopping the install), and nothing more happens.
+    ///
+    /// FAILURE: the answer file's error-commands write AVMFAIL.TAG and power
+    /// off instead (UbuntuInstallPipeline.failureScript), because a failed
+    /// installer otherwise sits on an error screen, silent, forever. That
+    /// exit is announced with what to do next.
+    private func restartIfUbuntuInstallFinished() {
+        guard let configuration = activeConfiguration,
+              configuration.guestOS == .ubuntu,
+              !installCompleteAtStart,
+              let runtimeDir = vmRuntimeDir else {
+            return
+        }
+        guard checkInstallCompleteMarker(configuration: configuration, runtimeDir: runtimeDir) else {
+            if unattendVolumeHasFile(named: "AVMFAIL", runtimeDir: runtimeDir) {
+                avmLog("restartIfUbuntuInstallFinished: AVMFAIL.TAG present — Ubuntu's installer reported an error")
+                appendConsole("AVM: Ubuntu's installer stopped with an error. Its logs are on the virtual machine's UNATTEND disk.\n")
+                Announcer.shared.announce(
+                    "Ubuntu's install stopped with an error, and the virtual machine turned off. Next: press Start to try the install again. If it stops again, report it with the diagnostic log.",
+                    tone: .failure
+                )
+                clearUbuntuFailureMarker(runtimeDir: runtimeDir)
+            }
+            return
+        }
+        avmLog("restartIfUbuntuInstallFinished: Ubuntu install complete — starting the VM again")
+        appendConsole("AVM: Ubuntu is installed. Starting it.\n")
+        Announcer.shared.announce(
+            "Ubuntu is installed. Starting it now. Orca will speak when the desktop is ready, in about a minute. Orca's key is Caps Lock.",
+            tone: .success
+        )
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.startVM(configuration: configuration)
+            } catch {
+                avmLog("restartIfUbuntuInstallFinished: start FAILED: \(error.localizedDescription)")
+                Announcer.shared.announce(
+                    "Ubuntu is installed, but AVM couldn't start it again. Reason: \(error.localizedDescription) Next: press Start.",
+                    tone: .failure
+                )
+            }
+        }
+    }
+
+    /// Whether the UNATTEND volume holds a file whose 8.3 listing contains
+    /// `name` (mdir column-splits 8.3 names, so AVMFAIL.TAG lists as
+    /// "AVMFAIL  TAG"; same matching as checkInstallCompleteMarker).
+    private func unattendVolumeHasFile(named name: String, runtimeDir: URL) -> Bool {
+        let imgPath = runtimeDir.appendingPathComponent("autounattend.img").path
+        guard FileManager.default.fileExists(atPath: imgPath),
+              let mdirURL = bundledBinaryURL(named: "mdir") else { return false }
+        let process = Process()
+        process.executableURL = mdirURL
+        process.arguments = ["-i", imgPath, "::"]
+        var env = ProcessInfo.processInfo.environment
+        env["MTOOLS_SKIP_CHECK"] = "1"
+        env.removeValue(forKey: "DYLD_LIBRARY_PATH")
+        process.environment = env
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do { try process.run() } catch { return false }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return false }
+        return (String(data: data, encoding: .utf8) ?? "").uppercased().contains(name.uppercased())
+    }
+
+    /// Remove AVMFAIL.TAG so the next start's install begins clean. The
+    /// installer's logs stay on the volume beside it.
+    private func clearUbuntuFailureMarker(runtimeDir: URL) {
+        let imgPath = runtimeDir.appendingPathComponent("autounattend.img").path
+        guard let mdelURL = bundledBinaryURL(named: "mdir")?.deletingLastPathComponent().appendingPathComponent("mtools") else { return }
+        let process = Process()
+        process.executableURL = mdelURL
+        process.arguments = ["-c", "mdel", "-i", imgPath, "::AVMFAIL.TAG"]
+        var env = ProcessInfo.processInfo.environment
+        env["MTOOLS_SKIP_CHECK"] = "1"
+        env.removeValue(forKey: "DYLD_LIBRARY_PATH")
+        process.environment = env
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            avmLog("clearUbuntuFailureMarker: mtools mdel exited \(process.terminationStatus)")
+        } catch {
+            avmLog("clearUbuntuFailureMarker: couldn't run mtools: \(error)")
+        }
+    }
+
+    /// Ubuntu's install media is never needed once the install is complete,
+    /// and install-avm.iso is the one place the account's password hash
+    /// still lives (UbuntuInstallPipeline.swift header). Delete it, never
+    /// the UNATTEND volume: that holds the marker the REINSTALL GUARD reads.
+    private func removeFinishedUbuntuMedia(runtimeDir: URL) {
+        let iso = runtimeDir.appendingPathComponent("install-avm.iso")
+        guard FileManager.default.fileExists(atPath: iso.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: iso)
+            avmLog("removeFinishedUbuntuMedia: deleted install-avm.iso (install complete)")
+        } catch {
+            avmLog("removeFinishedUbuntuMedia: couldn't delete install-avm.iso: \(error.localizedDescription)")
+        }
+        UbuntuAccount.delete(fromVMDirectory: runtimeDir)
     }
 
     // MARK: - Shared instance (needed for handlers)
