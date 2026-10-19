@@ -81,7 +81,13 @@
 //     stays attached for the marker, and would otherwise show up as a
 //     USB drive in Files and in Orca's announcements.
 //   - The SPICE guest agent (spice-vdagent), for absolute mouse
-//     positioning (issue #4 mechanism: two display channels need the agent).
+//     positioning (issue #4 mechanism: two display channels need the agent),
+//     with its audio volume sync disarmed. PROVEN IN-APP 2026-10-19: on
+//     every SPICE connect (each Enter Ubuntu) the agent set Ubuntu's master
+//     volume to 0, the volume AVM's SPICE client reports, so Orca ran but
+//     was silent. Stopping the agent kept the sound; running it with an
+//     ALSA configuration that has no mixer (a systemd user drop-in) kept
+//     the sound AND client-mode mouse. The Windows agent is not affected.
 //
 // CONCURRENCY: the same model as WindowsInstallPipeline — run() is
 // @concurrent, tools run on a background GCD queue inside a continuation,
@@ -510,6 +516,14 @@ nonisolated final class UbuntuInstallPipeline {
         sed -i 's/console=ttyAMA0 //' $T/etc/default/grub
         curtin in-target -- update-grub
         if [ -f $T/etc/default/apport ]; then sed -i 's/^enabled=1/enabled=0/' $T/etc/default/apport; fi
+        # The SPICE agent's audio volume sync sets Ubuntu's master volume to
+        # whatever AVM's SPICE client reports, which is 0, every time AVM
+        # connects (each Enter Ubuntu), so Orca goes silent. The agent has no
+        # switch for it, so it runs with an ALSA configuration that has no
+        # mixer to reach; its mouse and display work is untouched.
+        mkdir -p $T/etc/avm $T/etc/systemd/user/spice-vdagent.service.d
+        echo 'ctl.!default { type hw card 31 }' > $T/etc/avm/spice-vdagent-alsa.conf
+        printf '[Service]\\nEnvironment=ALSA_CONFIG_PATH=/etc/avm/spice-vdagent-alsa.conf\\n' > $T/etc/systemd/user/spice-vdagent.service.d/10-avm-no-volume-sync.conf
         # The UNATTEND volume stays attached for the marker; keep it out of
         # the desktop's drive list (and out of Orca's announcements).
         echo 'ENV{ID_FS_LABEL}=="UNATTEND", ENV{UDISKS_IGNORE}="1"' > $T/etc/udev/rules.d/99-avm-unattend.rules
