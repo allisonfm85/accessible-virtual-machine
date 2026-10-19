@@ -113,7 +113,7 @@ struct ContentView: View {
         // which gate answered. Privacy check: configuration names and counts
         // only, same as VMManager already writes to the file log.
         .onReceive(NotificationCenter.default.publisher(for: .avmStartVMFromMenu)) { _ in
-            guard activeSession == nil else {
+            guard activeSession == nil || activeSession?.canStartAgain == true else {
                 AVMLog.write("AVM: Start-from-menu — a session is already active; beeping.")
                 NSSound.beep()
                 errorMessage = "A virtual machine is already running."
@@ -282,6 +282,7 @@ private struct SessionGate: View {
                         DashboardContent(
                             observedSession: session,
                             vmState: session.vmState,
+                            canStartAgain: session.canStartAgain,
                             activeSession: $activeSession,
                             errorMessage: $errorMessage,
                             showingSetup: $showingSetup,
@@ -372,6 +373,10 @@ private struct DashboardContent: View {
     /// reads the state through the session; this input only forces the
     /// redraw. nil when no session exists.
     var vmState: VMRuntimeState? = nil
+    /// session.canStartAgain, passed by value for the same reason as
+    /// vmState: a failed restart after an Ubuntu install can change it with
+    /// no state change, and the Start buttons must appear then.
+    var canStartAgain: Bool = false
     @Binding var activeSession: VMSession?
     @Binding var errorMessage: String?
     @Binding var showingSetup: Bool
@@ -408,7 +413,7 @@ private struct DashboardContent: View {
 
                             Spacer()
 
-                            if activeSession == nil {
+                            if activeSession == nil || canStartAgain {
                                 Button("Start") {
                                     startVM(config: config)
                                 }

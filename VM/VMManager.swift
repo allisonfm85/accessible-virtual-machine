@@ -308,6 +308,11 @@ final class VMManager: ObservableObject {
         didSet { usbWatcherFollowState() }
     }
 
+    /// True while AVM itself is starting an Ubuntu VM again after its
+    /// install powered off (restartIfUbuntuInstallFinished). The dashboard
+    /// reads it so it never offers Start in that moment.
+    @Published private(set) var restartingAfterInstall = false
+
     /// Whether Windows setup had finished when this VM last started
     /// (the install-complete marker). USB 2c: during setup, start-time
     /// devices wait for the SPICE agent, with no fallback.
@@ -606,13 +611,31 @@ final class VMManager: ObservableObject {
             return false
         }
 
+        guard let listing = unattendListing(mdirURL: mdirURL, imgPath: imgPath) else {
+            avmLog("checkInstallCompleteMarker: mdir failed to launch — treating marker as absent")
+            return false
+        }
+        if listing.status != 0 {
+            avmLog("checkInstallCompleteMarker: mdir exited \(listing.status); output: \(listing.output) — treating marker as absent")
+            return false
+        }
+
+        let found = listing.output.uppercased().contains("AVMDONE")
+        avmLog("checkInstallCompleteMarker: marker \(found ? "PRESENT" : "absent") on \(imgPath)")
+        return found
+    }
+
+    /// The UNATTEND volume's root listing, from the bundled mdir. nil when
+    /// mdir can't be launched. Shared by the REINSTALL GUARD and the Ubuntu
+    /// install-end check, so the mtools rules live in one place: inherit the
+    /// environment but add MTOOLS_SKIP_CHECK and STRIP DYLD_LIBRARY_PATH (it
+    /// poisons mtools — proven; never set it for pipeline child processes),
+    /// and read the pipe before waiting, so a large listing can't fill the
+    /// pipe and deadlock.
+    private func unattendListing(mdirURL: URL, imgPath: String) -> (status: Int32, output: String)? {
         let process = Process()
         process.executableURL = mdirURL
         process.arguments = ["-i", imgPath, "::"]
-
-        // Inherit the environment but add MTOOLS_SKIP_CHECK and STRIP
-        // DYLD_LIBRARY_PATH (it poisons mtools — proven; never set it for
-        // pipeline child processes).
         var env = ProcessInfo.processInfo.environment
         env["MTOOLS_SKIP_CHECK"] = "1"
         env.removeValue(forKey: "DYLD_LIBRARY_PATH")
@@ -621,28 +644,15 @@ final class VMManager: ObservableObject {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
-
         do {
             try process.run()
         } catch {
-            avmLog("checkInstallCompleteMarker: mdir failed to launch: \(error) — treating marker as absent")
-            return false
+            avmLog("unattendListing: mdir failed to launch: \(error)")
+            return nil
         }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-
-        let output = String(
-            data: pipe.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        ) ?? ""
-
-        if process.terminationStatus != 0 {
-            avmLog("checkInstallCompleteMarker: mdir exited \(process.terminationStatus); output: \(output) — treating marker as absent")
-            return false
-        }
-
-        let found = output.uppercased().contains("AVMDONE")
-        avmLog("checkInstallCompleteMarker: marker \(found ? "PRESENT" : "absent") on \(imgPath)")
-        return found
+        return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
     }
 
     /// Ensure the AVM-built install media (install-avm.iso + autounattend.img)
@@ -925,8 +935,11 @@ final class VMManager: ObservableObject {
                 // splash with a flat disk for minutes at a time while it
                 // downloads, which would raise a false "stuck" alarm. Ubuntu
                 // reports its own end instead: a marker and a power-off,
-                // for success and for failure (UBUNTU INSTALL END).
-                avmLog("startVM: Ubuntu install — no boot keypress task, no install watchdog")
+                // for success and for failure (UBUNTU INSTALL END). What it
+                // can't report is a stall, so the Ubuntu stall watch below
+                // covers that.
+                avmLog("startVM: Ubuntu install — no boot keypress task; Ubuntu stall watch instead of the install watchdog")
+                startUbuntuStallWatch(configuration: configuration, runtimeDir: runtimeDir)
             } else {
                 startBootKeypressTask()
                 // INSTALL WATCHDOG: an install is in flight — watch for the wedge
@@ -1228,6 +1241,101 @@ final class VMManager: ObservableObject {
                     }
                     // Keep sampling (log-only) so the debug log records whether
                     // the wedge persists or the guest recovers on its own.
+                }
+            }
+        }
+    }
+
+    /// UBUNTU STALL WATCH (code review, 2026-10-19). One test install in
+    /// five stopped early in the live system's start-up and sat there with
+    /// no disk writes and no serial output, and nothing would ever have said
+    /// so: the user had been told nothing speaks until the install is done.
+    /// Every minute this compares the qcow2 disk (size and modification
+    /// time) and firmware-serial.log (size) with the last sample. Fifteen
+    /// minutes with neither changing is announced once, with what to do. A
+    /// healthy install writes the disk steadily once it is under way; its
+    /// longest flat stretches (live start-up, downloads) are a few minutes.
+    /// Shares installWatchdogTask, so every path that stops the watchdog
+    /// (exit, Stop, Force Stop) stops this too.
+    private func startUbuntuStallWatch(configuration: VMConfiguration, runtimeDir: URL) {
+        stopInstallWatchdog()
+        let serialLog = runtimeDir.appendingPathComponent("firmware-serial.log").path
+        installWatchdogTask = Task { [weak self] in
+            let sampleNanoseconds: UInt64 = 60_000_000_000   // 1 min
+            let quietMinutesToAnnounce = 15
+            var previous: String? = nil
+            var quietMinutes = 0
+            var minutesSinceFailureMarker: Int? = nil
+            avmLog("ubuntuStallWatch: started (1 min samples; \(quietMinutesToAnnounce) quiet minutes = stalled)")
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: sampleNanoseconds)
+                if Task.isCancelled { return }
+                guard let self else { return }
+                let current = await MainActor.run { self.state }
+                switch current {
+                case .running:
+                    break
+                case .paused:
+                    // A paused VM is quiet by choice; start counting afresh.
+                    quietMinutes = 0
+                    previous = nil
+                    continue
+                default:
+                    avmLog("ubuntuStallWatch: VM no longer running — standing down")
+                    return
+                }
+                // A failed install writes AVMFAIL.TAG and powers off
+                // (failureScript), and the exit announces it. If the
+                // power-off doesn't happen, stop the VM here after three
+                // minutes, so the failure is still announced and Start
+                // works again.
+                let failed = await MainActor.run { () -> Bool in
+                    let img = runtimeDir.appendingPathComponent("autounattend.img").path
+                    guard let mdir = self.bundledBinaryURL(named: "mdir"),
+                          let listing = self.unattendListing(mdirURL: mdir, imgPath: img),
+                          listing.status == 0 else { return false }
+                    return listing.output.uppercased().contains("AVMFAIL")
+                }
+                if failed {
+                    let minutes = (minutesSinceFailureMarker ?? -1) + 1
+                    minutesSinceFailureMarker = minutes
+                    if minutes == 0 { avmLog("ubuntuStallWatch: AVMFAIL.TAG appeared; waiting for the installer's power-off") }
+                    if minutes >= 3 {
+                        avmLog("ubuntuStallWatch: AVMFAIL.TAG present and still running after 3 minutes — stopping the VM")
+                        await MainActor.run {
+                            self.forceStopVM()
+                            self.appendConsole("AVM: Ubuntu's installer stopped with an error. Its logs are on the virtual machine's UNATTEND disk.\n")
+                            Announcer.shared.announce(
+                                "Ubuntu's install stopped with an error, and AVM turned the virtual machine off. Next: press Start to try the install again. If it stops again, report it with the diagnostic log.",
+                                tone: .failure
+                            )
+                            self.clearUbuntuFailureMarker(runtimeDir: runtimeDir)
+                        }
+                        return
+                    }
+                    continue
+                }
+
+                let fm = FileManager.default
+                let disk = try? fm.attributesOfItem(atPath: configuration.diskImagePath)
+                let serial = try? fm.attributesOfItem(atPath: serialLog)
+                let sample = "\((disk?[.size] as? NSNumber)?.int64Value ?? -1)/\((disk?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1)/\((serial?[.size] as? NSNumber)?.int64Value ?? -1)"
+                if sample == previous {
+                    quietMinutes += 1
+                } else {
+                    if quietMinutes > 0 { avmLog("ubuntuStallWatch: activity after \(quietMinutes) quiet minutes") }
+                    quietMinutes = 0
+                }
+                previous = sample
+                if quietMinutes == quietMinutesToAnnounce {
+                    avmLog("ubuntuStallWatch: STALL — no disk or serial activity for \(quietMinutes) minutes; announcing")
+                    await MainActor.run {
+                        self.appendConsole("AVM: Ubuntu's install seems to have stopped: nothing has changed for 15 minutes.\n")
+                        Announcer.shared.announce(
+                            "Ubuntu's install seems to have stopped. Nothing has changed for 15 minutes. Next: save the diagnostic log from the File menu, then stop the virtual machine and start it again.",
+                            tone: .failure
+                        )
+                    }
                 }
             }
         }
@@ -1818,6 +1926,7 @@ final class VMManager: ObservableObject {
         case .running, .paused, .starting: wasRunning = true
         default: wasRunning = false
         }
+        let userStopped = (state == .stopping)
         avmLog("handleQEMUProcessExit: current QEMU (pid \(process.processIdentifier)) exited with code \(exitCode); state was \(state), wasRunning=\(wasRunning)")
 
         stopBootKeypressTask()
@@ -1829,7 +1938,7 @@ final class VMManager: ObservableObject {
             state = .stopped
             avmLog("handleQEMUProcessExit: clean exit — state -> stopped")
             appendConsole("AVM: QEMU exited normally.\n")
-            restartIfUbuntuInstallFinished()
+            restartIfUbuntuInstallFinished(userStopped: userStopped)
         } else if wasRunning {
             let msg = "QEMU exited with code \(exitCode). Details are in AVM's diagnostic log."
             state = .error(msg)
@@ -1862,15 +1971,34 @@ final class VMManager: ObservableObject {
     /// off instead (UbuntuInstallPipeline.failureScript), because a failed
     /// installer otherwise sits on an error screen, silent, forever. That
     /// exit is announced with what to do next.
-    private func restartIfUbuntuInstallFinished() {
+    ///
+    /// A STOP THE USER ASKED FOR WINS (code review, 2026-10-19): if Stop was
+    /// pressed as the install ended, the exit is the user's, so AVM says
+    /// Ubuntu is installed and does not start it. Starting anyway would also
+    /// leave stopGracefully, which waits to see .stopped, waiting forever.
+    ///
+    /// restartingAfterInstall is true from the clean exit until the restart
+    /// has begun or failed, so the dashboard doesn't offer Start in the
+    /// moment between (DashboardContent.canStartAgain).
+    private func restartIfUbuntuInstallFinished(userStopped: Bool) {
         guard let configuration = activeConfiguration,
               configuration.guestOS == .ubuntu,
               !installCompleteAtStart,
               let runtimeDir = vmRuntimeDir else {
             return
         }
-        guard checkInstallCompleteMarker(configuration: configuration, runtimeDir: runtimeDir) else {
-            if unattendVolumeHasFile(named: "AVMFAIL", runtimeDir: runtimeDir) {
+        let imgPath = runtimeDir.appendingPathComponent("autounattend.img").path
+        guard FileManager.default.fileExists(atPath: imgPath),
+              let mdirURL = bundledBinaryURL(named: "mdir"),
+              let listing = unattendListing(mdirURL: mdirURL, imgPath: imgPath),
+              listing.status == 0 else {
+            avmLog("restartIfUbuntuInstallFinished: couldn't read the UNATTEND volume; nothing to do")
+            return
+        }
+        let names = listing.output.uppercased()
+
+        if !names.contains("AVMDONE") {
+            if names.contains("AVMFAIL") {
                 avmLog("restartIfUbuntuInstallFinished: AVMFAIL.TAG present — Ubuntu's installer reported an error")
                 appendConsole("AVM: Ubuntu's installer stopped with an error. Its logs are on the virtual machine's UNATTEND disk.\n")
                 Announcer.shared.announce(
@@ -1881,17 +2009,31 @@ final class VMManager: ObservableObject {
             }
             return
         }
+
+        if userStopped {
+            avmLog("restartIfUbuntuInstallFinished: install complete, but the user pressed Stop — not starting it")
+            appendConsole("AVM: Ubuntu is installed. It will start the next time you press Start.\n")
+            Announcer.shared.announce(
+                "Ubuntu is installed. It will start the next time you press Start.",
+                tone: .success
+            )
+            return
+        }
+
         avmLog("restartIfUbuntuInstallFinished: Ubuntu install complete — starting the VM again")
         appendConsole("AVM: Ubuntu is installed. Starting it.\n")
         Announcer.shared.announce(
             "Ubuntu is installed. Starting it now. Orca will speak when the desktop is ready, in about a minute. Orca's key is Caps Lock.",
             tone: .success
         )
+        restartingAfterInstall = true
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await self.startVM(configuration: configuration)
+                self.restartingAfterInstall = false
             } catch {
+                self.restartingAfterInstall = false
                 avmLog("restartIfUbuntuInstallFinished: start FAILED: \(error.localizedDescription)")
                 Announcer.shared.announce(
                     "Ubuntu is installed, but AVM couldn't start it again. Reason: \(error.localizedDescription) Next: press Start.",
@@ -1901,37 +2043,13 @@ final class VMManager: ObservableObject {
         }
     }
 
-    /// Whether the UNATTEND volume holds a file whose 8.3 listing contains
-    /// `name` (mdir column-splits 8.3 names, so AVMFAIL.TAG lists as
-    /// "AVMFAIL  TAG"; same matching as checkInstallCompleteMarker).
-    private func unattendVolumeHasFile(named name: String, runtimeDir: URL) -> Bool {
-        let imgPath = runtimeDir.appendingPathComponent("autounattend.img").path
-        guard FileManager.default.fileExists(atPath: imgPath),
-              let mdirURL = bundledBinaryURL(named: "mdir") else { return false }
-        let process = Process()
-        process.executableURL = mdirURL
-        process.arguments = ["-i", imgPath, "::"]
-        var env = ProcessInfo.processInfo.environment
-        env["MTOOLS_SKIP_CHECK"] = "1"
-        env.removeValue(forKey: "DYLD_LIBRARY_PATH")
-        process.environment = env
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        do { try process.run() } catch { return false }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return false }
-        return (String(data: data, encoding: .utf8) ?? "").uppercased().contains(name.uppercased())
-    }
-
     /// Remove AVMFAIL.TAG so the next start's install begins clean. The
     /// installer's logs stay on the volume beside it.
     private func clearUbuntuFailureMarker(runtimeDir: URL) {
         let imgPath = runtimeDir.appendingPathComponent("autounattend.img").path
-        guard let mdelURL = bundledBinaryURL(named: "mdir")?.deletingLastPathComponent().appendingPathComponent("mtools") else { return }
+        guard let mtoolsURL = bundledBinaryURL(named: "mtools") else { return }
         let process = Process()
-        process.executableURL = mdelURL
+        process.executableURL = mtoolsURL
         process.arguments = ["-c", "mdel", "-i", imgPath, "::AVMFAIL.TAG"]
         var env = ProcessInfo.processInfo.environment
         env["MTOOLS_SKIP_CHECK"] = "1"

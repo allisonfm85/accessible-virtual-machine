@@ -793,13 +793,18 @@ If the install fails, the machine turns off and AVM says so:
 - **A larger disk is not used automatically.** After you make the disk
   larger in Settings, Ubuntu's main partition has to be made larger too.
 - **Stop** shuts Ubuntu down normally, which has taken about 15 seconds.
-- **One test install out of four stalled** early in the installer's
+- **One of the first seven test installs stalled** early in the installer's
   start-up, before anything was written to the disk. Stopping and
-  starting the machine again ran the install normally. If yours stalls
-  for more than 40 minutes, first save the diagnostic log (section 17)
-  while the machine is still running: for Ubuntu, the machine's startup
-  log records the installer's own start-up messages, and the next start
-  replaces it. Then stop the machine, start it again, and report it.
+  starting the machine again ran the install normally. AVM watches for
+  this: if nothing changes for 15 minutes, it says:
+
+  > Ubuntu's install seems to have stopped. Nothing has changed for 15
+  > minutes. Next: save the diagnostic log from the File menu, then stop
+  > the virtual machine and start it again.
+
+  Save the log while the machine is still running (section 17): for
+  Ubuntu, the machine's startup log records the installer's own start-up
+  messages, and the next start replaces it. Then please report it.
 
 ---
 

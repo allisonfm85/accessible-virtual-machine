@@ -142,6 +142,24 @@ nonisolated struct UbuntuAccount: Codable, Equatable {
         return nil
     }
 
+    /// Why `name` can't be the account's full name, or nil when it can.
+    /// Ubuntu's installer refuses : , and = there (the account database
+    /// uses them as separators) and more than 160 characters. Caught here,
+    /// not 15 silent minutes into the install (code review, 2026-10-19).
+    static func problem(withRealName name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            return "Please enter your name for the Ubuntu account."
+        }
+        if trimmed.count > 160 {
+            return "Your name for the Ubuntu account can be at most 160 characters."
+        }
+        if trimmed.rangeOfCharacter(from: CharacterSet(charactersIn: ":,=").union(.controlCharacters)) != nil {
+            return "Your name for the Ubuntu account can't contain a colon, a comma or an equals sign."
+        }
+        return nil
+    }
+
     /// A suggested user name from the Mac's own short name.
     static func suggestedUserName() -> String {
         let lowered = NSUserName().lowercased()
@@ -195,6 +213,19 @@ nonisolated struct UbuntuISOInfo: Equatable {
     /// The major version, e.g. 26 for 26.04.1. 0 when unknown.
     var majorVersion: Int {
         Int(version.split(separator: ".").first ?? "") ?? 0
+    }
+}
+
+/// What identify found. Not Ubuntu and couldn't read are different
+/// answers: the first means the Windows path, the second means saying so.
+nonisolated enum ISOIdentity: Equatable {
+    case ubuntu(UbuntuISOInfo)
+    case notUbuntu
+    case unreadable(String)
+
+    var info: UbuntuISOInfo? {
+        if case .ubuntu(let info) = self { return info }
+        return nil
     }
 }
 
@@ -267,8 +298,12 @@ nonisolated final class UbuntuInstallPipeline {
     /// already records as firmware-serial.log in the VM's folder: the one
     /// place a stalled install can be diagnosed from. The menu's own
     /// console=tty0 comes later on the line, so the screen stays the main
-    /// console.
-    static let kernelArguments = "autoinstall ds=nocloud\\;s=/cdrom/nocloud/ console=ttyAMA0"
+    /// console. noprompt: without it the live system's shutdown stops at
+    /// "Please remove the installation medium, then press ENTER" and waits
+    /// for a key forever, so a failed install's power-off never happens
+    /// (proven with a forced failure; the success path's own power-off
+    /// skips the prompt, which is why only failures hit it).
+    static let kernelArguments = "autoinstall ds=nocloud\\;s=/cdrom/nocloud/ noprompt console=ttyAMA0"
 
     /// The boot menu's new first line: when the install-complete marker is
     /// on any disk GRUB can see (the UNATTEND volume), hand back to the
@@ -281,8 +316,10 @@ nonisolated final class UbuntuInstallPipeline {
     /// Ubuntu installer at all (no /casper/vmlinuz). Runs xorriso; call off
     /// the main actor.
     @concurrent
-    static func identify(isoPath: String) async -> UbuntuISOInfo? {
-        guard let xorriso = try? toolURL(named: "xorriso") else { return nil }
+    static func identify(isoPath: String) async -> ISOIdentity {
+        guard let xorriso = try? toolURL(named: "xorriso") else {
+            return .unreadable("A required tool (xorriso) is missing from the app. This is a build problem, not something you did.")
+        }
         // One path per -find. On a disc with no /casper/vmlinuz the first
         // -find fails and xorriso stops, which is the answer: not Ubuntu.
         let listing = await runTool(xorriso, [
@@ -293,8 +330,20 @@ nonisolated final class UbuntuInstallPipeline {
         // Match whole lines: xorriso's failure message quotes the path too.
         let found = Set(listing.output.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) })
         guard found.contains("'/casper/vmlinuz'") else {
-            ubuntuLog("identify: no /casper/vmlinuz — not an Ubuntu installer")
-            return nil
+            // Only xorriso's own "no such path" answer means "not Ubuntu".
+            // Anything else (unreadable file, not an ISO, xorriso failing to
+            // start) must not quietly become a Windows VM (code review,
+            // 2026-10-19).
+            // xorriso loads a file it can't read as a BLANK medium and then
+            // reports the path missing, so a blank medium is "couldn't
+            // read", not "not Ubuntu" (proven with an unreadable file).
+            let blank = listing.output.contains("Media status : is blank")
+            if !blank && listing.output.contains("Cannot find path '/casper/vmlinuz'") {
+                ubuntuLog("identify: no /casper/vmlinuz — not an Ubuntu installer")
+                return .notUbuntu
+            }
+            ubuntuLog("identify: xorriso couldn't read the ISO (exit \(listing.code)): \(listing.output.suffix(300))")
+            return .unreadable("AVM couldn't read this ISO. It may be damaged, still downloading, or not a disc image.")
         }
         let isARM64 = found.contains("'/EFI/boot/bootaa64.efi'")
 
@@ -318,7 +367,7 @@ nonisolated final class UbuntuInstallPipeline {
         }
         let info = UbuntuISOInfo(discInfo: discInfo, version: version, isARM64: isARM64, isDesktop: isDesktop)
         ubuntuLog("identify: \(info.spokenName), arm64=\(isARM64), desktop=\(isDesktop), disc info \"\(discInfo)\"")
-        return info
+        return .ubuntu(info)
     }
 
     /// Why AVM can't install from this ISO, or nil when it can. The same
@@ -345,8 +394,12 @@ nonisolated final class UbuntuInstallPipeline {
     func run(_ input: Input) async throws {
         ubuntuLog("run: starting for VM \(input.vmID.uuidString)")
 
-        let info = await Self.identify(isoPath: input.sourceISOPath)
-        if let problem = Self.problem(with: info) {
+        let identity = await Self.identify(isoPath: input.sourceISOPath)
+        if case .unreadable(let reason) = identity {
+            ubuntuLog("run: validation HARD-STOP: \(reason)")
+            throw UbuntuPipelineError.notAnUbuntuInstaller(reason)
+        }
+        if let problem = Self.problem(with: identity.info) {
             ubuntuLog("run: validation HARD-STOP: \(problem)")
             throw UbuntuPipelineError.notAnUbuntuInstaller(problem)
         }
@@ -467,7 +520,11 @@ nonisolated final class UbuntuInstallPipeline {
         return """
         #!/bin/bash
         # Written by AVM. Runs once, at the end of Ubuntu's install.
-        set -x
+        # set -e: any failed step fails the install, so error-commands
+        # (failed.sh) report it, instead of the marker announcing an install
+        # whose Orca or sign-in settings never landed (code review,
+        # 2026-10-19). Optional steps say so with || true.
+        set -ex
         T=/target
         U=\(user)
         \(autoLogin)
@@ -502,19 +559,21 @@ nonisolated final class UbuntuInstallPipeline {
         keyboard-layout='laptop'
         DCONF
         curtin in-target -- dconf update
+        grep -q 'screen-reader-enabled=true' $T/etc/dconf/db/local.d/00-avm
+        grep -q 'screen-reader-enabled=true' $T/etc/dconf/db/gdm.d/00-avm
         # No first-run wizard, and no crash-report prompts. Ubuntu also runs
         # a per-release welcome tour (gnome-initial-setup --upgrade-user)
         # until upgrade-<release>-done exists; the name follows the release.
         mkdir -p $T/home/$U/.config/gnome-initial-setup
         echo yes > $T/home/$U/.config/gnome-initial-setup-done
-        V=$(. $T/etc/os-release && echo "$VERSION_ID")
-        [ -n "$V" ] && touch "$T/home/$U/.config/gnome-initial-setup/upgrade-$V-done"
+        V=$(. $T/etc/os-release && echo "$VERSION_ID") || true
+        if [ -n "$V" ]; then touch "$T/home/$U/.config/gnome-initial-setup/upgrade-$V-done"; fi
         curtin in-target -- chown -R $U:$U /home/$U/.config
         # The installer carries its boot arguments into the new system;
         # only the installer needs them. (The installed system still uses
         # the serial port the firmware declares; that is Ubuntu's own.)
-        sed -i 's/console=ttyAMA0 //' $T/etc/default/grub
-        curtin in-target -- update-grub
+        sed -i -e 's/console=ttyAMA0 //' -e 's/noprompt //' $T/etc/default/grub || true
+        curtin in-target -- update-grub || true
         if [ -f $T/etc/default/apport ]; then sed -i 's/^enabled=1/enabled=0/' $T/etc/default/apport; fi
         # The SPICE agent's audio volume sync sets Ubuntu's master volume to
         # whatever AVM's SPICE client reports, which is 0, every time AVM
@@ -556,7 +615,10 @@ nonisolated final class UbuntuInstallPipeline {
             sync
             umount /run/avm-unattend
         fi
-        systemctl poweroff
+        # The installer holds a shutdown inhibitor; a plain poweroff is
+        # refused ("Operation denied due to active block inhibitor", proven
+        # with a forced failure). Fall back to an immediate power-off.
+        systemctl poweroff --ignore-inhibitors || systemctl poweroff --force
 
         """
 

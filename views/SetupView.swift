@@ -98,6 +98,9 @@ struct SetupView: View {
         case ubuntu(UbuntuISOInfo)
         /// An Ubuntu ISO AVM can't install from, with the reason.
         case unusableUbuntu(String)
+        /// AVM couldn't read the ISO at all, with the reason. Never taken
+        /// for Windows: that would hide the real problem until Start.
+        case unreadable(String)
     }
 
     @State private var installerKind: InstallerKind = .none
@@ -312,6 +315,7 @@ struct SetupView: View {
         case .windows: return nil
         case .ubuntu(let info): return "\(info.spokenName) installer"
         case .unusableUbuntu(let reason): return reason
+        case .unreadable(let reason): return reason
         }
     }
 
@@ -322,18 +326,20 @@ struct SetupView: View {
         notices = []
         let path = url.path
         Task {
-            let info = await UbuntuInstallPipeline.identify(isoPath: path)
+            let identity = await UbuntuInstallPipeline.identify(isoPath: path)
             guard installerURL?.path == path else { return }
-            if info == nil {
+            switch identity {
+            case .notUbuntu:
                 installerKind = .windows
-                return
-            }
-            if let problem = UbuntuInstallPipeline.problem(with: info) {
-                installerKind = .unusableUbuntu(problem)
-                reportGuidance(problem)
-                return
-            }
-            if let info {
+            case .unreadable(let reason):
+                installerKind = .unreadable(reason)
+                reportFailure(reason)
+            case .ubuntu(let info):
+                if let problem = UbuntuInstallPipeline.problem(with: info) {
+                    installerKind = .unusableUbuntu(problem)
+                    reportGuidance(problem)
+                    return
+                }
                 installerKind = .ubuntu(info)
                 Announcer.shared.announce(
                     "\(info.spokenName) installer selected. Fill in the Ubuntu account below.",
@@ -379,6 +385,9 @@ struct SetupView: View {
         case .unusableUbuntu(let reason):
             reportGuidance(reason)
             return
+        case .unreadable(let reason):
+            reportFailure(reason)
+            return
         default:
             break
         }
@@ -386,8 +395,8 @@ struct SetupView: View {
         var ubuntuAccount: UbuntuAccount? = nil
         if isUbuntu {
             let realName = ubuntuRealName.trimmingCharacters(in: .whitespaces)
-            guard !realName.isEmpty else {
-                reportGuidance("Please enter your name for the Ubuntu account.")
+            if let problem = UbuntuAccount.problem(withRealName: realName) {
+                reportGuidance(problem)
                 return
             }
             if let problem = UbuntuAccount.problem(withUserName: ubuntuUserName) {

@@ -62,12 +62,37 @@ final class VMSession: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // A failed restart after an Ubuntu install changes canStartAgain
+        // with no state change; redraw for it too.
+        manager.$restartingAfterInstall
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+
         manager.$qemuVersion
             .sink { [weak self] newVersion in
                 guard let self else { return }
                 self.qemuVersion = newVersion
             }
             .store(in: &cancellables)
+    }
+
+    // MARK: - Starting again
+
+    /// True when this session's VM has stopped by itself, with no Stop
+    /// pressed in AVM: shut down from inside the guest, a failed Ubuntu
+    /// install, or an error. The session stays (only Stop and Force Stop
+    /// clear it), and the dashboard used to hide every Start button while
+    /// any session existed, so a user told "press Start" had none to press
+    /// (code review, 2026-10-19). Never true while AVM is starting an Ubuntu
+    /// VM again after its install.
+    var canStartAgain: Bool {
+        if manager.restartingAfterInstall { return false }
+        switch vmState {
+        case .stopped, .error: return true
+        default: return false
+        }
     }
 
     // MARK: - Session Control
