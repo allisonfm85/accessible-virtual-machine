@@ -129,3 +129,8 @@ story (which screen reader runs during install, and how), so these
 will be evaluated individually with the same standard AVM applies to
 Windows: a blind user must be able to complete the entire install
 without sighted assistance.
+
+**Ubuntu Desktop for ARM (24.04 and later) is the first.** It installs
+with no questions from the user's own ISO, and Orca is on at the login
+screen and on the desktop, with Caps Lock as the Orca key (tester
+guide, section 16).
