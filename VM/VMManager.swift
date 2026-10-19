@@ -602,7 +602,7 @@ final class VMManager: ObservableObject {
 
         guard let mdirURL = bundledBinaryURL(named: "mdir") else {
             avmLog("checkInstallCompleteMarker: WARNING — mdir not found in bundle; cannot check marker; treating as absent")
-            appendConsole("AVM: WARNING — could not check whether Windows is already installed (mdir missing from the app bundle). Proceeding as a new install.\n")
+            appendConsole("AVM: WARNING — could not check whether \(configuration.guestOS.displayName) is already installed (mdir missing from the app bundle). Proceeding as a new install.\n")
             return false
         }
 
@@ -1772,6 +1772,13 @@ final class VMManager: ObservableObject {
     // MARK: - Shared instance (needed for handlers)
 
     static weak var shared: VMManager?
+
+    /// The guest's name ("Windows" or "Ubuntu") for words spoken and shown
+    /// by code that has no configuration at hand: focus lock, USB, menus.
+    /// Windows when no VM has started, as before Ubuntu support.
+    static var currentGuestName: String {
+        shared?.activeConfiguration?.guestOS.displayName ?? GuestOS.windows.displayName
+    }
 
     // MARK: - QMP Connection
 

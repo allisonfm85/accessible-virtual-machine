@@ -80,11 +80,29 @@ struct SettingsView: View {
     /// stepper range whose top is below its bottom is invalid.
     private var diskGrowthCeilingGB: Int { max(currentDiskGB, maxDiskInGB) }
 
+    /// "Windows" or "Ubuntu".
+    private var guest: String { configuration.guestOS.displayName }
+
+    /// What the user does inside the guest after the disk grows. Windows
+    /// has drive C extended by hand (the README explains how); Ubuntu's
+    /// main partition has to be made larger in the same way.
+    private var diskGrowthFollowUp: String {
+        configuration.guestOS == .ubuntu
+            ? "After it grows, make Ubuntu's main partition larger to use the new space."
+            : "After it grows, extend drive C inside Windows to use the new space."
+    }
+
+    private func savedDiskMessage(_ growTo: Int) -> String {
+        configuration.guestOS == .ubuntu
+            ? "Settings saved. The disk is now \(growTo) GB. The next time you start Ubuntu, make its main partition larger to use the new space."
+            : "Settings saved. The disk is now \(growTo) GB. The next time you start Windows, extend drive C to use the new space. The README explains how."
+    }
+
     /// When CPU and memory changes land, worded for this VM's state.
     private var timingSentence: String {
         isRunning
-            ? "Changes take effect after restarting Windows."
-            : "Changes take effect the next time you start Windows."
+            ? "Changes take effect after restarting \(guest)."
+            : "Changes take effect the next time you start \(guest)."
     }
 
     // MARK: - State
@@ -150,7 +168,7 @@ struct SettingsView: View {
                         .font(.headline)
                         .accessibilityLabel("Disk size: \(diskSizeGB) gigabytes")
                     if isRunning {
-                        Text("Stop Windows to make the disk larger.")
+                        Text("Stop \(guest) to make the disk larger.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else if diskGrowthCeilingGB <= currentDiskGB {
@@ -162,7 +180,7 @@ struct SettingsView: View {
                             .labelsHidden()
                             .accessibilityLabel("Disk size in gigabytes")
                             .accessibilityValue("\(diskSizeGB) gigabytes")
-                            .accessibilityHint("Adjust with arrow keys. The disk can grow but never shrink. Minimum \(currentDiskGB) GB, maximum \(diskGrowthCeilingGB) GB. After it grows, extend drive C inside Windows to use the new space.")
+                            .accessibilityHint("Adjust with arrow keys. The disk can grow but never shrink. Minimum \(currentDiskGB) GB, maximum \(diskGrowthCeilingGB) GB. \(diskGrowthFollowUp)")
                     }
                 }
 
@@ -232,13 +250,13 @@ struct SettingsView: View {
             // VoiceOver repeated it on every radio button (heard 2026-09-26).
             Picker("When plugged in", selection: $usbMode) {
                 Text("Ask each time").tag(USBPlugMode.ask)
-                Text("Always use in Windows").tag(USBPlugMode.always)
+                Text("Always use in \(guest)").tag(USBPlugMode.always)
                 Text("Keep on the Mac").tag(USBPlugMode.keepOnMac)
             }
             .pickerStyle(.radioGroup)
             .labelsHidden()
 
-            Text("Keyboards, braille displays, and other input devices always ask, even with Always use in Windows. You can still attach any device from the Virtual Machine menu.")
+            Text("Keyboards, braille displays, and other input devices always ask, even with Always use in \(guest). You can still attach any device from the Virtual Machine menu.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -269,7 +287,7 @@ struct SettingsView: View {
     /// AVM is said plainly, and callers treat it as not remembered.
     private func decisionText(for device: RememberedUSBDevice) -> String {
         switch device.usesWindows {
-        case .some(true): return "use in Windows"
+        case .some(true): return "use in \(guest)"
         case .some(false): return "keep on the Mac"
         case .none: return "unknown choice, AVM will ask"
         }
@@ -333,11 +351,11 @@ struct SettingsView: View {
 
             let message: String
             if let growTo {
-                message = "Settings saved. The disk is now \(growTo) GB. The next time you start Windows, extend drive C to use the new space. The README explains how."
+                message = savedDiskMessage(growTo)
             } else if isRunning {
-                message = "Settings saved. USB changes apply right away. Other changes take effect after you restart Windows."
+                message = "Settings saved. USB changes apply right away. Other changes take effect after you restart \(guest)."
             } else {
-                message = "Settings saved. Changes take effect the next time you start Windows."
+                message = "Settings saved. Changes take effect the next time you start \(guest)."
             }
             saveMessage = message
             Announcer.shared.announce(message, tone: .info)
