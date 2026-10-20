@@ -592,6 +592,27 @@ nonisolated final class UbuntuInstallPipeline {
         mkdir -p $T/etc/avm $T/etc/systemd/user/spice-vdagent.service.d
         echo 'ctl.!default { type hw card 31 }' > $T/etc/avm/spice-vdagent-alsa.conf
         printf '[Service]\\nEnvironment=ALSA_CONFIG_PATH=/etc/avm/spice-vdagent-alsa.conf\\n' > $T/etc/systemd/user/spice-vdagent.service.d/10-avm-no-volume-sync.conf
+        # Audio without crackle (2026-10-19, heard in the in-app test): run
+        # PipeWire at 44.1 kHz, the rate AVM's QEMU audio uses, so nothing is
+        # resampled, and give the emulated sound card a larger buffer, so
+        # speech doesn't run dry between QEMU's audio ticks.
+        mkdir -p $T/etc/pipewire/pipewire.conf.d $T/etc/wireplumber/wireplumber.conf.d
+        cat > $T/etc/pipewire/pipewire.conf.d/10-avm-audio.conf <<'PW'
+        context.properties = {
+            default.clock.rate          = 44100
+            default.clock.allowed-rates = [ 44100 ]
+            default.clock.quantum       = 1024
+            default.clock.min-quantum   = 1024
+        }
+        PW
+        cat > $T/etc/wireplumber/wireplumber.conf.d/50-avm-audio.conf <<'WP'
+        monitor.alsa.rules = [
+          {
+            matches = [ { node.name = "~alsa_output.*" } ]
+            actions = { update-props = { api.alsa.period-size = 1024, api.alsa.headroom = 8192 } }
+          }
+        ]
+        WP
         # The UNATTEND volume stays attached for the marker; keep it out of
         # the desktop's drive list (and out of Orca's announcements).
         echo 'ENV{ID_FS_LABEL}=="UNATTEND", ENV{UDISKS_IGNORE}="1"' > $T/etc/udev/rules.d/99-avm-unattend.rules

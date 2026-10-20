@@ -785,6 +785,8 @@ If the install fails, the machine turns off and AVM says so:
   hidden from the desktop, so it doesn't show up as a USB drive.
 - Your Mac's time zone, US English, and a US keyboard layout.
 - The SPICE guest agent, for the mouse.
+- Ubuntu's sound tuned for AVM: the same sample rate as AVM's audio and a
+  larger buffer, which removed crackling in Orca's speech.
 
 ### Known limitations for Ubuntu
 
