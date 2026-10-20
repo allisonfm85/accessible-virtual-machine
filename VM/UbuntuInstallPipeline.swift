@@ -386,8 +386,12 @@ nonisolated final class UbuntuInstallPipeline {
         if !info.isDesktop {
             return "This is the Ubuntu Server installer. AVM needs Ubuntu Desktop for ARM, which brings the desktop and the Orca screen reader."
         }
-        if info.majorVersion != 0 && info.majorVersion < 24 {
-            return "This is \(info.spokenName). AVM needs Ubuntu 24.04 or later, whose installer can run without questions."
+        // 26.04 is the release every part of this was proven on. Older
+        // releases differ in ways that matter here, e.g. 24.04's WirePlumber
+        // 0.4 ignores the audio tuning's configuration format (third review,
+        // 2026-10-19), so they are refused rather than half-supported.
+        if info.majorVersion != 0 && info.majorVersion < 26 {
+            return "This is \(info.spokenName). AVM needs Ubuntu 26.04 or later."
         }
         return nil
     }
@@ -593,7 +597,9 @@ nonisolated final class UbuntuInstallPipeline {
         echo 'ctl.!default { type hw card 31 }' > $T/etc/avm/spice-vdagent-alsa.conf
         printf '[Service]\\nEnvironment=ALSA_CONFIG_PATH=/etc/avm/spice-vdagent-alsa.conf\\n' > $T/etc/systemd/user/spice-vdagent.service.d/10-avm-no-volume-sync.conf
         # Audio without crackle (2026-10-19, heard in the in-app test): run
-        # PipeWire at 44.1 kHz, the rate AVM's QEMU audio uses, so nothing is
+        # PipeWire at 44.1 kHz, the rate AVM's QEMU audio uses (QMP
+        # query-audiodevs on a running AVM VM: spice out frequency 44100,
+        # fixed-settings true), so nothing is
         # resampled, and give the emulated sound card a larger buffer, so
         # speech doesn't run dry between QEMU's audio ticks.
         mkdir -p $T/etc/pipewire/pipewire.conf.d $T/etc/wireplumber/wireplumber.conf.d

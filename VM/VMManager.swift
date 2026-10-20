@@ -1960,7 +1960,7 @@ final class VMManager: ObservableObject {
             // ends the session unless restartingAfterInstall is already set
             // (seen in the in-app failure test, 2026-10-19).
             let ubuntuEnd = ubuntuInstallEnd(userStopped: userStopped)
-            if ubuntuEnd == .installedRestart {
+            if case .installedRestart = ubuntuEnd {
                 restartingAfterInstall = true
             }
             state = .stopped
@@ -1985,6 +1985,36 @@ final class VMManager: ObservableObject {
         }
     }
 
+    /// How an Ubuntu VM's clean exit ends its install, if it does. The
+    /// cases carry what acting on them needs, read once in
+    /// ubuntuInstallEnd, so nothing can go missing between deciding and
+    /// acting.
+    private enum UbuntuInstallEnd: Equatable {
+        case notAnInstallEnd
+        case failed(runtimeDir: URL)
+        case installedButUserStopped
+        case installedRestart(VMConfiguration)
+    }
+
+    /// Reads the markers; changes nothing. Called before .stopped is
+    /// published (see handleQEMUProcessExit).
+    private func ubuntuInstallEnd(userStopped: Bool) -> UbuntuInstallEnd {
+        guard let configuration = activeConfiguration,
+              configuration.guestOS == .ubuntu,
+              !installCompleteAtStart,
+              let runtimeDir = vmRuntimeDir else {
+            return .notAnInstallEnd
+        }
+        guard let names = unattendNames(mdirURL: bundledBinaryURL(named: "mdir"), runtimeDir: runtimeDir) else {
+            avmLog("ubuntuInstallEnd: couldn't read the UNATTEND volume; nothing to do")
+            return .notAnInstallEnd
+        }
+        if names.contains("AVMDONE") {
+            return userStopped ? .installedButUserStopped : .installedRestart(configuration)
+        }
+        return names.contains("AVMFAIL") ? .failed(runtimeDir: runtimeDir) : .notAnInstallEnd
+    }
+
     /// UBUNTU INSTALL END (2026-10-19). Ubuntu's answer file ends with a
     /// power-off, never a reboot: its boot menu needs no key press, so a
     /// reboot with the install media attached could start the install
@@ -2005,43 +2035,16 @@ final class VMManager: ObservableObject {
     /// Ubuntu is installed and does not start it. Starting anyway would also
     /// leave stopGracefully, which waits to see .stopped, waiting forever.
     ///
-    /// restartingAfterInstall is true from the clean exit until the restart
-    /// has begun or failed, so SessionGate doesn't end the session in the
-    /// moment between.
-    /// How an Ubuntu VM's clean exit ends its install, if it does.
-    private enum UbuntuInstallEnd {
-        case notAnInstallEnd
-        case failed
-        case installedButUserStopped
-        case installedRestart
-    }
-
-    /// Reads the markers; changes nothing. Called before .stopped is
-    /// published (see handleQEMUProcessExit).
-    private func ubuntuInstallEnd(userStopped: Bool) -> UbuntuInstallEnd {
-        guard let configuration = activeConfiguration,
-              configuration.guestOS == .ubuntu,
-              !installCompleteAtStart,
-              let runtimeDir = vmRuntimeDir else {
-            return .notAnInstallEnd
-        }
-        guard let names = unattendNames(mdirURL: bundledBinaryURL(named: "mdir"), runtimeDir: runtimeDir) else {
-            avmLog("ubuntuInstallEnd: couldn't read the UNATTEND volume; nothing to do")
-            return .notAnInstallEnd
-        }
-        if names.contains("AVMDONE") {
-            return userStopped ? .installedButUserStopped : .installedRestart
-        }
-        return names.contains("AVMFAIL") ? .failed : .notAnInstallEnd
-    }
-
+    /// restartingAfterInstall is set before .stopped is published (see
+    /// handleQEMUProcessExit) and cleared as the restart task begins, before
+    /// startVM can publish anything, so SessionGate keeps the session through
+    /// the gap and still sees any .error the restart publishes.
     private func handleUbuntuInstallEnd(_ end: UbuntuInstallEnd) {
-        guard let configuration = activeConfiguration, let runtimeDir = vmRuntimeDir else { return }
         switch end {
         case .notAnInstallEnd:
             return
 
-        case .failed:
+        case .failed(let runtimeDir):
             avmLog("handleUbuntuInstallEnd: AVMFAIL.TAG present — Ubuntu's installer reported an error")
             appendConsole("AVM: Ubuntu's installer stopped with an error. Its logs are on the virtual machine's UNATTEND disk.\n")
             Announcer.shared.announce(
@@ -2058,7 +2061,7 @@ final class VMManager: ObservableObject {
                 tone: .success
             )
 
-        case .installedRestart:
+        case .installedRestart(let configuration):
             restartAfterInstall(configuration: configuration)
         }
     }
@@ -2072,13 +2075,16 @@ final class VMManager: ObservableObject {
         )
         Task { [weak self] in
             guard let self else { return }
+            // Cleared before startVM runs: from here on its own state
+            // changes protect the session (.starting, .running), and an
+            // .error it publishes must reach SessionGate so Start comes back
+            // (third review, 2026-10-19).
+            self.restartingAfterInstall = false
             do {
                 try await self.startVM(configuration: configuration)
-                self.restartingAfterInstall = false
             } catch {
-                self.restartingAfterInstall = false
-                // Always end in a state change, so the dashboard notices
-                // and ends the session (SessionGate), which brings Start back.
+                // startVM may throw without publishing anything; always end
+                // in a state change so SessionGate ends the session.
                 if case .stopped = self.state {
                     self.state = .error(error.localizedDescription)
                 }

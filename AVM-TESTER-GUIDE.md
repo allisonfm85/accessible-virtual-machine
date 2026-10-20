@@ -700,8 +700,8 @@ session went perfectly.
 
 ## 16. Ubuntu instead of Windows
 
-AVM can also install **Ubuntu Desktop for ARM**, version 24.04 or later.
-Ubuntu 26.04 LTS is the version this has been tested with. Everything
+AVM can also install **Ubuntu Desktop for ARM**, version 26.04 LTS or later.
+26.04 is the version this has been tested with. Everything
 else in this guide (the dashboard, the keyboard model, Caps Lock,
 Control-Command-Escape, the announcements) works the same way. Where
 the guide says "Windows", the app says "Ubuntu" for an Ubuntu machine:
@@ -790,7 +790,7 @@ If the install fails, the machine turns off and AVM says so:
 
 ### Known limitations for Ubuntu
 
-- **ARM desktop images only**, Ubuntu 24.04 or later.
+- **ARM desktop images only**, Ubuntu 26.04 or later.
 - **English and a US keyboard only** for now.
 - **A larger disk is not used automatically.** After you make the disk
   larger in Settings, Ubuntu's main partition has to be made larger too.
