@@ -309,7 +309,7 @@ final class VMManager: ObservableObject {
     }
 
     /// True while AVM itself is starting an Ubuntu VM again after its
-    /// install powered off (restartIfUbuntuInstallFinished). SessionGate
+    /// install powered off (restartAfterInstall). SessionGate
     /// reads it so it doesn't end the session in that moment.
     @Published private(set) var restartingAfterInstall = false
 
@@ -1955,10 +1955,18 @@ final class VMManager: ObservableObject {
         qemuProcess = nil
 
         if exitCode == 0 {
+            // Decide about an Ubuntu install's end BEFORE publishing
+            // .stopped: SessionGate reacts to .stopped synchronously and
+            // ends the session unless restartingAfterInstall is already set
+            // (seen in the in-app failure test, 2026-10-19).
+            let ubuntuEnd = ubuntuInstallEnd(userStopped: userStopped)
+            if ubuntuEnd == .installedRestart {
+                restartingAfterInstall = true
+            }
             state = .stopped
             avmLog("handleQEMUProcessExit: clean exit — state -> stopped")
             appendConsole("AVM: QEMU exited normally.\n")
-            restartIfUbuntuInstallFinished(userStopped: userStopped)
+            handleUbuntuInstallEnd(ubuntuEnd)
         } else if wasRunning {
             let msg = "QEMU exited with code \(exitCode). Details are in AVM's diagnostic log."
             state = .error(msg)
@@ -2000,48 +2008,68 @@ final class VMManager: ObservableObject {
     /// restartingAfterInstall is true from the clean exit until the restart
     /// has begun or failed, so SessionGate doesn't end the session in the
     /// moment between.
-    private func restartIfUbuntuInstallFinished(userStopped: Bool) {
+    /// How an Ubuntu VM's clean exit ends its install, if it does.
+    private enum UbuntuInstallEnd {
+        case notAnInstallEnd
+        case failed
+        case installedButUserStopped
+        case installedRestart
+    }
+
+    /// Reads the markers; changes nothing. Called before .stopped is
+    /// published (see handleQEMUProcessExit).
+    private func ubuntuInstallEnd(userStopped: Bool) -> UbuntuInstallEnd {
         guard let configuration = activeConfiguration,
               configuration.guestOS == .ubuntu,
               !installCompleteAtStart,
               let runtimeDir = vmRuntimeDir else {
-            return
+            return .notAnInstallEnd
         }
         guard let names = unattendNames(mdirURL: bundledBinaryURL(named: "mdir"), runtimeDir: runtimeDir) else {
-            avmLog("restartIfUbuntuInstallFinished: couldn't read the UNATTEND volume; nothing to do")
-            return
+            avmLog("ubuntuInstallEnd: couldn't read the UNATTEND volume; nothing to do")
+            return .notAnInstallEnd
         }
-
-        if !names.contains("AVMDONE") {
-            if names.contains("AVMFAIL") {
-                avmLog("restartIfUbuntuInstallFinished: AVMFAIL.TAG present — Ubuntu's installer reported an error")
-                appendConsole("AVM: Ubuntu's installer stopped with an error. Its logs are on the virtual machine's UNATTEND disk.\n")
-                Announcer.shared.announce(
-                    "Ubuntu's install stopped with an error, and the virtual machine turned off. Next: press Start to try the install again. If it stops again, report it with the diagnostic log.",
-                    tone: .failure
-                )
-                clearUbuntuFailureMarker(runtimeDir: runtimeDir)
-            }
-            return
+        if names.contains("AVMDONE") {
+            return userStopped ? .installedButUserStopped : .installedRestart
         }
+        return names.contains("AVMFAIL") ? .failed : .notAnInstallEnd
+    }
 
-        if userStopped {
-            avmLog("restartIfUbuntuInstallFinished: install complete, but the user pressed Stop — not starting it")
+    private func handleUbuntuInstallEnd(_ end: UbuntuInstallEnd) {
+        guard let configuration = activeConfiguration, let runtimeDir = vmRuntimeDir else { return }
+        switch end {
+        case .notAnInstallEnd:
+            return
+
+        case .failed:
+            avmLog("handleUbuntuInstallEnd: AVMFAIL.TAG present — Ubuntu's installer reported an error")
+            appendConsole("AVM: Ubuntu's installer stopped with an error. Its logs are on the virtual machine's UNATTEND disk.\n")
+            Announcer.shared.announce(
+                "Ubuntu's install stopped with an error, and the virtual machine turned off. Next: press Start to try the install again. If it stops again, report it with the diagnostic log.",
+                tone: .failure
+            )
+            clearUbuntuFailureMarker(runtimeDir: runtimeDir)
+
+        case .installedButUserStopped:
+            avmLog("handleUbuntuInstallEnd: install complete, but the user pressed Stop — not starting it")
             appendConsole("AVM: Ubuntu is installed. It will start the next time you press Start.\n")
             Announcer.shared.announce(
                 "Ubuntu is installed. It will start the next time you press Start.",
                 tone: .success
             )
-            return
-        }
 
-        avmLog("restartIfUbuntuInstallFinished: Ubuntu install complete — starting the VM again")
+        case .installedRestart:
+            restartAfterInstall(configuration: configuration)
+        }
+    }
+
+    private func restartAfterInstall(configuration: VMConfiguration) {
+        avmLog("restartAfterInstall: Ubuntu install complete — starting the VM again")
         appendConsole("AVM: Ubuntu is installed. Starting it.\n")
         Announcer.shared.announce(
             "Ubuntu is installed. Starting it now. Orca will speak when the desktop is ready, in about a minute. Orca's key is Caps Lock.",
             tone: .success
         )
-        restartingAfterInstall = true
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -2054,7 +2082,7 @@ final class VMManager: ObservableObject {
                 if case .stopped = self.state {
                     self.state = .error(error.localizedDescription)
                 }
-                avmLog("restartIfUbuntuInstallFinished: start FAILED: \(error.localizedDescription)")
+                avmLog("restartAfterInstall: start FAILED: \(error.localizedDescription)")
                 Announcer.shared.announce(
                     "Ubuntu is installed, but AVM couldn't start it again. Reason: \(error.localizedDescription) Next: press Start.",
                     tone: .failure
