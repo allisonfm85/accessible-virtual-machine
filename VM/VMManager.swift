@@ -309,8 +309,8 @@ final class VMManager: ObservableObject {
     }
 
     /// True while AVM itself is starting an Ubuntu VM again after its
-    /// install powered off (restartIfUbuntuInstallFinished). The dashboard
-    /// reads it so it never offers Start in that moment.
+    /// install powered off (restartIfUbuntuInstallFinished). SessionGate
+    /// reads it so it doesn't end the session in that moment.
     @Published private(set) var restartingAfterInstall = false
 
     /// Whether Windows setup had finished when this VM last started
@@ -632,7 +632,9 @@ final class VMManager: ObservableObject {
     /// poisons mtools — proven; never set it for pipeline child processes),
     /// and read the pipe before waiting, so a large listing can't fill the
     /// pipe and deadlock.
-    private func unattendListing(mdirURL: URL, imgPath: String) -> (status: Int32, output: String)? {
+    /// nonisolated: the Ubuntu stall watch calls it once a minute from its
+    /// background task, so the main thread never waits on mdir.
+    nonisolated private func unattendListing(mdirURL: URL, imgPath: String) -> (status: Int32, output: String)? {
         let process = Process()
         process.executableURL = mdirURL
         process.arguments = ["-i", imgPath, "::"]
@@ -647,12 +649,24 @@ final class VMManager: ObservableObject {
         do {
             try process.run()
         } catch {
-            avmLog("unattendListing: mdir failed to launch: \(error)")
+            AVMLog.write("unattendListing: mdir failed to launch: \(error)")
             return nil
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+    }
+
+    /// The UNATTEND volume's file names, upper-cased, for the Ubuntu
+    /// marker checks (AVMDONE, AVMFAIL). nil when the volume or mdir is
+    /// missing or mdir fails. nonisolated, like unattendListing; the mdir
+    /// URL is passed in because bundledBinaryURL belongs to the main actor.
+    nonisolated private func unattendNames(mdirURL: URL?, runtimeDir: URL) -> String? {
+        let imgPath = runtimeDir.appendingPathComponent("autounattend.img").path
+        guard let mdirURL, FileManager.default.fileExists(atPath: imgPath),
+              let listing = unattendListing(mdirURL: mdirURL, imgPath: imgPath),
+              listing.status == 0 else { return nil }
+        return listing.output.uppercased()
     }
 
     /// Ensure the AVM-built install media (install-avm.iso + autounattend.img)
@@ -852,6 +866,12 @@ final class VMManager: ObservableObject {
             // and the media doesn't exist yet (six-stage pipeline; reused thereafter).
             // A failure surfaces as .error with the pipeline's actionable message
             // (and an interrupting announcement from ensureInstallMedia).
+            // A failure marker left by an earlier run (Force Stop, or the
+            // stall watch stopping a failed install) must not count against
+            // this one. Removed here, before QEMU opens the volume.
+            if configuration.guestOS == .ubuntu {
+                clearUbuntuFailureMarker(runtimeDir: runtimeDir)
+            }
             do {
                 try await ensureInstallMedia(configuration: configuration, runtimeDir: runtimeDir)
             } catch {
@@ -1246,8 +1266,8 @@ final class VMManager: ObservableObject {
         }
     }
 
-    /// UBUNTU STALL WATCH (code review, 2026-10-19). One test install in
-    /// five stopped early in the live system's start-up and sat there with
+    /// UBUNTU STALL WATCH (code review, 2026-10-19). One of the first seven
+    /// test installs stopped early in the live system's start-up and sat there with
     /// no disk writes and no serial output, and nothing would ever have said
     /// so: the user had been told nothing speaks until the install is done.
     /// Every minute this compares the qcow2 disk (size and modification
@@ -1260,6 +1280,7 @@ final class VMManager: ObservableObject {
     private func startUbuntuStallWatch(configuration: VMConfiguration, runtimeDir: URL) {
         stopInstallWatchdog()
         let serialLog = runtimeDir.appendingPathComponent("firmware-serial.log").path
+        let mdirURL = bundledBinaryURL(named: "mdir")
         installWatchdogTask = Task { [weak self] in
             let sampleNanoseconds: UInt64 = 60_000_000_000   // 1 min
             let quietMinutesToAnnounce = 15
@@ -1289,13 +1310,10 @@ final class VMManager: ObservableObject {
                 // power-off doesn't happen, stop the VM here after three
                 // minutes, so the failure is still announced and Start
                 // works again.
-                let failed = await MainActor.run { () -> Bool in
-                    let img = runtimeDir.appendingPathComponent("autounattend.img").path
-                    guard let mdir = self.bundledBinaryURL(named: "mdir"),
-                          let listing = self.unattendListing(mdirURL: mdir, imgPath: img),
-                          listing.status == 0 else { return false }
-                    return listing.output.uppercased().contains("AVMFAIL")
-                }
+                // AVMDONE wins: a marker written by a successful install is
+                // never undone by an AVMFAIL written after it.
+                let names = self.unattendNames(mdirURL: mdirURL, runtimeDir: runtimeDir) ?? ""
+                let failed = names.contains("AVMFAIL") && !names.contains("AVMDONE")
                 if failed {
                     let minutes = (minutesSinceFailureMarker ?? -1) + 1
                     minutesSinceFailureMarker = minutes
@@ -1309,7 +1327,9 @@ final class VMManager: ObservableObject {
                                 "Ubuntu's install stopped with an error, and AVM turned the virtual machine off. Next: press Start to try the install again. If it stops again, report it with the diagnostic log.",
                                 tone: .failure
                             )
-                            self.clearUbuntuFailureMarker(runtimeDir: runtimeDir)
+                            // AVMFAIL.TAG is NOT removed here: QEMU may still
+                            // have the volume open while it exits. The next
+                            // start removes it (startVM) before any install.
                         }
                         return
                     }
@@ -1978,8 +1998,8 @@ final class VMManager: ObservableObject {
     /// leave stopGracefully, which waits to see .stopped, waiting forever.
     ///
     /// restartingAfterInstall is true from the clean exit until the restart
-    /// has begun or failed, so the dashboard doesn't offer Start in the
-    /// moment between (DashboardContent.canStartAgain).
+    /// has begun or failed, so SessionGate doesn't end the session in the
+    /// moment between.
     private func restartIfUbuntuInstallFinished(userStopped: Bool) {
         guard let configuration = activeConfiguration,
               configuration.guestOS == .ubuntu,
@@ -1987,15 +2007,10 @@ final class VMManager: ObservableObject {
               let runtimeDir = vmRuntimeDir else {
             return
         }
-        let imgPath = runtimeDir.appendingPathComponent("autounattend.img").path
-        guard FileManager.default.fileExists(atPath: imgPath),
-              let mdirURL = bundledBinaryURL(named: "mdir"),
-              let listing = unattendListing(mdirURL: mdirURL, imgPath: imgPath),
-              listing.status == 0 else {
+        guard let names = unattendNames(mdirURL: bundledBinaryURL(named: "mdir"), runtimeDir: runtimeDir) else {
             avmLog("restartIfUbuntuInstallFinished: couldn't read the UNATTEND volume; nothing to do")
             return
         }
-        let names = listing.output.uppercased()
 
         if !names.contains("AVMDONE") {
             if names.contains("AVMFAIL") {
@@ -2034,6 +2049,11 @@ final class VMManager: ObservableObject {
                 self.restartingAfterInstall = false
             } catch {
                 self.restartingAfterInstall = false
+                // Always end in a state change, so the dashboard notices
+                // and ends the session (SessionGate), which brings Start back.
+                if case .stopped = self.state {
+                    self.state = .error(error.localizedDescription)
+                }
                 avmLog("restartIfUbuntuInstallFinished: start FAILED: \(error.localizedDescription)")
                 Announcer.shared.announce(
                     "Ubuntu is installed, but AVM couldn't start it again. Reason: \(error.localizedDescription) Next: press Start.",

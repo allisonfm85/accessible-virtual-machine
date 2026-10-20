@@ -113,7 +113,7 @@ struct ContentView: View {
         // which gate answered. Privacy check: configuration names and counts
         // only, same as VMManager already writes to the file log.
         .onReceive(NotificationCenter.default.publisher(for: .avmStartVMFromMenu)) { _ in
-            guard activeSession == nil || activeSession?.canStartAgain == true else {
+            guard activeSession == nil else {
                 AVMLog.write("AVM: Start-from-menu — a session is already active; beeping.")
                 NSSound.beep()
                 errorMessage = "A virtual machine is already running."
@@ -282,7 +282,6 @@ private struct SessionGate: View {
                         DashboardContent(
                             observedSession: session,
                             vmState: session.vmState,
-                            canStartAgain: session.canStartAgain,
                             activeSession: $activeSession,
                             errorMessage: $errorMessage,
                             showingSetup: $showingSetup,
@@ -320,10 +319,31 @@ private struct SessionGate: View {
                 if focusLock.isLocked {
                     focusLock.unlock()
                 }
+                endSessionIfStoppedByItself(newState)
             default:
                 break
             }
         }
+    }
+
+    /// SESSION END WHEN THE VM STOPS BY ITSELF (code review, 2026-10-19).
+    /// Only Stop and Force Stop used to end a session, so a VM that shut
+    /// down from inside, an Ubuntu install that failed, or a VM that died
+    /// left a stopped session behind, and the dashboard hid every Start
+    /// button while any session existed: "press Start" had nothing to
+    /// press. Ending the session here brings back Start, Settings and
+    /// Delete exactly as after Stop. Not while AVM is starting an Ubuntu VM
+    /// again after its install (same manager, same session). An error's
+    /// text moves to the dashboard's error line, which outlives the session.
+    /// After a Stop it runs too, harmlessly: stopGracefully watches the
+    /// manager, not the session, and clears only a session still current.
+    private func endSessionIfStoppedByItself(_ newState: VMRuntimeState) {
+        guard activeSession === session, !session.manager.restartingAfterInstall else { return }
+        if case .error(let message) = newState {
+            errorMessage = message
+        }
+        AVMLog.write("AVM: SessionGate — VM stopped by itself (\(newState)); ending the session so Start is available.")
+        activeSession = nil
     }
 }
 
@@ -373,10 +393,6 @@ private struct DashboardContent: View {
     /// reads the state through the session; this input only forces the
     /// redraw. nil when no session exists.
     var vmState: VMRuntimeState? = nil
-    /// session.canStartAgain, passed by value for the same reason as
-    /// vmState: a failed restart after an Ubuntu install can change it with
-    /// no state change, and the Start buttons must appear then.
-    var canStartAgain: Bool = false
     @Binding var activeSession: VMSession?
     @Binding var errorMessage: String?
     @Binding var showingSetup: Bool
@@ -413,7 +429,7 @@ private struct DashboardContent: View {
 
                             Spacer()
 
-                            if activeSession == nil || canStartAgain {
+                            if activeSession == nil {
                                 Button("Start") {
                                     startVM(config: config)
                                 }

@@ -151,7 +151,7 @@ nonisolated struct UbuntuAccount: Codable, Equatable {
         if trimmed.isEmpty {
             return "Please enter your name for the Ubuntu account."
         }
-        if trimmed.count > 160 {
+        if trimmed.unicodeScalars.count > 160 {   // the installer counts code points
             return "Your name for the Ubuntu account can be at most 160 characters."
         }
         if trimmed.rangeOfCharacter(from: CharacterSet(charactersIn: ":,=").union(.controlCharacters)) != nil {
@@ -312,16 +312,17 @@ nonisolated final class UbuntuInstallPipeline {
 
     // MARK: Identify
 
-    /// Read what an ISO is, without changing anything. nil when it isn't an
-    /// Ubuntu installer at all (no /casper/vmlinuz). Runs xorriso; call off
-    /// the main actor.
+    /// Read what an ISO is, without changing anything: .ubuntu with what it
+    /// found, .notUbuntu when there is no /casper/vmlinuz (the Windows path),
+    /// or .unreadable when the file or the tool can't be used at all. Runs
+    /// xorriso; call off the main actor.
     @concurrent
     static func identify(isoPath: String) async -> ISOIdentity {
         guard let xorriso = try? toolURL(named: "xorriso") else {
             return .unreadable("A required tool (xorriso) is missing from the app. This is a build problem, not something you did.")
         }
         // One path per -find. On a disc with no /casper/vmlinuz the first
-        // -find fails and xorriso stops, which is the answer: not Ubuntu.
+        // -find fails and xorriso stops; see below for what that means.
         let listing = await runTool(xorriso, [
             "-indev", isoPath,
             "-find", "/casper/vmlinuz", "--",
@@ -335,10 +336,13 @@ nonisolated final class UbuntuInstallPipeline {
             // start) must not quietly become a Windows VM (code review,
             // 2026-10-19).
             // xorriso loads a file it can't read as a BLANK medium and then
-            // reports the path missing, so a blank medium is "couldn't
-            // read", not "not Ubuntu" (proven with an unreadable file).
-            let blank = listing.output.contains("Media status : is blank")
-            if !blank && listing.output.contains("Cannot find path '/casper/vmlinuz'") {
+            // reports the path missing (proven with an unreadable file). But
+            // a valid Windows ISO it can't parse may also look blank, so
+            // only a file macOS itself can't read is "couldn't read"; every
+            // other no-casper answer stays on the Windows path, whose own
+            // gate speaks to a wrong file.
+            let readable = FileManager.default.isReadableFile(atPath: isoPath)
+            if readable && listing.output.contains("Cannot find path '/casper/vmlinuz'") {
                 ubuntuLog("identify: no /casper/vmlinuz — not an Ubuntu installer")
                 return .notUbuntu
             }
@@ -559,8 +563,13 @@ nonisolated final class UbuntuInstallPipeline {
         keyboard-layout='laptop'
         DCONF
         curtin in-target -- dconf update
-        grep -q 'screen-reader-enabled=true' $T/etc/dconf/db/local.d/00-avm
-        grep -q 'screen-reader-enabled=true' $T/etc/dconf/db/gdm.d/00-avm
+        # dconf update must have compiled both databases from these files;
+        # a database older than its keyfile means the settings never landed.
+        # One test per line: set -e ignores a failure early in an && list.
+        [ -s $T/etc/dconf/db/local ]
+        [ ! $T/etc/dconf/db/local.d/00-avm -nt $T/etc/dconf/db/local ]
+        [ -s $T/etc/dconf/db/gdm ]
+        [ ! $T/etc/dconf/db/gdm.d/00-avm -nt $T/etc/dconf/db/gdm ]
         # No first-run wizard, and no crash-report prompts. Ubuntu also runs
         # a per-release welcome tour (gnome-initial-setup --upgrade-user)
         # until upgrade-<release>-done exists; the name follows the release.
@@ -591,7 +600,9 @@ nonisolated final class UbuntuInstallPipeline {
         mount -t vfat /dev/disk/by-label/UNATTEND /run/avm-unattend || exit 1
         echo "Ubuntu installed by AVM" > /run/avm-unattend/AVMDONE.TAG
         sync
-        umount /run/avm-unattend
+        # The marker is written and synced; nothing after it may fail the
+        # install (VMManager also lets AVMDONE win over AVMFAIL).
+        umount /run/avm-unattend || true
         exit 0
 
         """
