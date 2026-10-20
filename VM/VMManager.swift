@@ -313,6 +313,9 @@ final class VMManager: ObservableObject {
     /// reads it so it doesn't end the session in that moment.
     @Published private(set) var restartingAfterInstall = false
 
+    /// Set when Force Stop is pressed during that restart.
+    private var restartStoppedByUser = false
+
     /// Whether Windows setup had finished when this VM last started
     /// (the install-complete marker). USB 2c: during setup, start-time
     /// devices wait for the SPICE agent, with no fallback.
@@ -976,6 +979,9 @@ final class VMManager: ObservableObject {
     }
 
     func forceStopVM() {
+        // A Force Stop while AVM restarts Ubuntu after its install is the
+        // user's choice: the restart stands down (restartAfterInstall).
+        if restartingAfterInstall { restartStoppedByUser = true }
         stopBootKeypressTask()
         stopInstallWatchdog()
         // DETACH + ESCALATE (2026-08-15): the VM is dead to AVM the moment a
@@ -2077,20 +2083,44 @@ final class VMManager: ObservableObject {
             "Ubuntu is installed. Starting it now. Orca will speak when the desktop is ready, in about a minute. Orca's key is Caps Lock.",
             tone: .success
         )
+        restartStoppedByUser = false
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await self.startVM(configuration: configuration)
-                self.restartingAfterInstall = false
-            } catch {
-                // startVM can fail at any point: before .starting, after it,
-                // or with QEMU already launched. Stop anything it left
-                // running, publish the error, then clear the flag, which is
-                // what lets SessionGate end the session (see above).
-                if self.qemuProcess != nil {
+                if self.restartStoppedByUser {
+                    // Force Stop landed while startVM was between steps and
+                    // it carried on; honour the stop.
+                    avmLog("restartAfterInstall: Force Stop during the restart — stopping the VM it started")
                     self.forceStopVM()
                 }
-                self.state = .error(error.localizedDescription)
+                self.restartingAfterInstall = false
+            } catch {
+                if self.restartStoppedByUser {
+                    // The user stopped it; the failure is theirs to have caused.
+                    avmLog("restartAfterInstall: restart ended by Force Stop: \(error.localizedDescription)")
+                    self.restartingAfterInstall = false
+                    return
+                }
+                // startVM can fail at any point: before .starting, after it,
+                // with swtpm or QEMU already launched. Tear down what it
+                // started, then clear the flag, which lets SessionGate end
+                // the session.
+                if self.qemuProcess != nil || self.swtpmProcess != nil {
+                    self.stopInstallWatchdog()
+                    let doomed = self.qemuProcess
+                    self.qemuProcess = nil
+                    doomed?.terminate()
+                    self.swtpmProcess?.terminate()
+                    self.cleanUp()
+                }
+                // Keep an error already published (QEMU's exit handler sets a
+                // more specific one). Announce regardless: some startVM
+                // failures publish an error without speaking, and silence is
+                // worse than a second announcement after a crash.
+                if case .error = self.state {} else {
+                    self.state = .error(error.localizedDescription)
+                }
                 self.restartingAfterInstall = false
                 avmLog("restartAfterInstall: start FAILED: \(error.localizedDescription)")
                 Announcer.shared.announce(

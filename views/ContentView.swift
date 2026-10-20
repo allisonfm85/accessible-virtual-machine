@@ -348,7 +348,7 @@ private struct SessionGate: View {
     /// After a Stop it runs too, harmlessly: stopGracefully watches the
     /// manager, not the session, and clears only a session still current.
     private func endSessionIfStoppedByItself(_ newState: VMRuntimeState) {
-        guard activeSession === session, !session.restartingAfterInstall, !session.manager.restartingAfterInstall else { return }
+        guard activeSession === session, !session.restartingAfterInstall else { return }
         if case .error(let message) = newState {
             errorMessage = message
         }
