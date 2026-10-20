@@ -3,7 +3,9 @@
 AVM is a macOS application that lets blind and low-vision users install
 and run Windows 11 ARM64 virtual machines entirely through VoiceOver —
 no sighted assistance required at any step. Every failure produces a
-spoken, specific, actionable announcement.
+spoken, specific, actionable announcement. It can also install Ubuntu
+Desktop for ARM with no installer questions, with the Orca screen reader
+speaking from the first boot (tester guide, section 16).
 
 AVM is currently in early testing. It is distributed to testers as a
 notarized DMG.
@@ -79,6 +81,11 @@ during Windows setup so absolute mouse positioning works from the very
 first out-of-box-experience screen. Like the other virtio drivers,
 these are redistributed unmodified under their upstream licenses (GPL
 family), matching this project's GPL v2.
+
+Ubuntu needs nothing extra in the repository: its answer file is
+written by `VM/UbuntuInstallPipeline.swift` and added to a copy of the
+user's own Ubuntu ISO with the bundled xorriso, and the SPICE guest
+agent comes from Ubuntu's own archive during the install.
 
 Deliberately **not** in this repository: the binary dependencies —
 QEMU, SPICE, GStreamer, and related frameworks, plus EFI firmware

@@ -581,27 +581,30 @@ struct VMView: View {
         }
     }
 
+    /// "Windows" or "Ubuntu".
+    private var guest: String { session.configuration.guestOS.displayName }
+
     private var accessibilityOverlay: some View {
         VStack(spacing: 12) {
-            Text("Windows is running. Press Control Command Escape to return to Mac.")
+            Text("\(guest) is running. Press Control Command Escape to return to Mac.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .accessibilityLabel("Windows is running. Press Control Command Escape to return to Mac.")
+                .accessibilityLabel("\(guest) is running. Press Control Command Escape to return to Mac.")
             HStack(spacing: 16) {
                 Button("Return to Mac") {
                     focusLock.unlock()
                 }
                 .keyboardShortcut(.escape, modifiers: [.control, .command])
                 .accessibilityHint("Unlocks focus and returns keyboard control to macOS")
-                Button("Stop Windows") {
+                Button("Stop \(guest)") {
                     Task {
                         do { try await session.stop() }
                         catch {}
                         focusLock.unlock()
                     }
                 }
-                .accessibilityHint("Shuts down the Windows virtual machine")
+                .accessibilityHint("Shuts down the \(guest) virtual machine")
                 Button("Force Stop") {
                     session.forceStop()
                     focusLock.unlock()

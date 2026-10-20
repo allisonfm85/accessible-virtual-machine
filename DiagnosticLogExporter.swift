@@ -23,6 +23,16 @@
 //     path, so it is copied WITHOUT a sanitizer pass — the only identifiers
 //     in it are guest-internal (GPT GUIDs) and the VM identity AVM itself
 //     injects, which a diagnostic bundle SHOULD carry.
+//     UBUNTU (2026-10-19): the Ubuntu installer's boot adds
+//     console=ttyAMA0 (UbuntuInstallPipeline.kernelArguments), so during an
+//     install this file also carries the live system's kernel and systemd
+//     start-up lines. The installed Ubuntu writes its boot messages and a
+//     serial login prompt here too: on ARM it uses the serial console the
+//     firmware declares (ACPI SPCR) whatever its boot arguments say. The
+//     prompt can take no input (QEMU writes the port to this file). Still
+//     guest-side only: Ubuntu's own names and the host name AVM derives
+//     from the VM's name; the account's user name was not in it on any
+//     test install.
 //   - Missing or empty sources are skipped silently: the tester cannot act
 //     on an omission, and absence is visible to us on receipt (decision of
 //     record, 2026-08-06).

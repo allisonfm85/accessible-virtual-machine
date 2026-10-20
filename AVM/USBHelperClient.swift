@@ -537,7 +537,7 @@ final class USBHelperClient: NSObject, ObservableObject {
             if isQuiet(device) {
                 log("attached: not spoken; the send gate is handling \(device.description)")
             } else {
-                announce("\(name) is now in Windows.", tone: .success)
+                announce("\(name) is now in \(VMManager.currentGuestName).", tone: .success)
             }
         case .released:
             // One unplug reports yanked, then released, 0.03 s apart

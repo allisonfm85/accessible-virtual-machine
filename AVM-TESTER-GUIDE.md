@@ -698,7 +698,119 @@ session went perfectly.
 
 ---
 
-## 16. The diagnostic log, your privacy, and reporting a problem
+## 16. Ubuntu instead of Windows
+
+AVM can also install **Ubuntu Desktop for ARM**, version 26.04 LTS or later.
+26.04 is the version this has been tested with. Everything
+else in this guide (the dashboard, the keyboard model, Caps Lock,
+Control-Command-Escape, the announcements) works the same way. Where
+the guide says "Windows", the app says "Ubuntu" for an Ubuntu machine:
+**Enter Ubuntu**, **Stop Ubuntu**, "Ubuntu keyboard on".
+
+### Getting the Ubuntu ISO
+
+Download **Ubuntu Desktop for ARM** from ubuntu.com. The file is named
+like `ubuntu-26.04.1-desktop-arm64.iso` and is about 4 GB. Two other
+Ubuntu downloads look similar and will not work: the version for Intel
+and AMD PCs (its name ends in `amd64.iso`), and Ubuntu Server. If you
+choose either, AVM tells you which one you picked and which one it
+needs.
+
+### Creating the machine
+
+In the Setup Wizard, choose the Ubuntu ISO as the installer image. AVM
+reads it and says:
+
+> Ubuntu 26.04.1 LTS desktop installer selected. Fill in the Ubuntu
+> account below.
+
+An **Ubuntu Account** section then appears below the installer, because
+Ubuntu installs with no questions and needs your account up front:
+
+- **Your name**, filled in from your Mac account. It is shown at the
+  Ubuntu login screen.
+- **User name**, filled in from your Mac's short user name. Lower-case
+  letters, digits, hyphens and underscores, starting with a letter.
+- **Password** and **Confirm password.** You will use it to sign in and
+  to make changes to Ubuntu.
+- **Sign in automatically**, on to begin with. Ubuntu then starts
+  straight to the desktop with no password prompt.
+
+AVM never stores the password itself. It keeps only a scrambled form
+(the hash Ubuntu's installer asks for), first in the machine's own
+folder and then inside the install media it builds, and it deletes the
+install media once Ubuntu is installed.
+
+### The install: what you will hear
+
+Start the machine. AVM builds the install media in a few seconds, then
+says:
+
+> Install media ready. Ubuntu is installing now, with no questions. This
+> takes about 15 to 40 minutes, and nothing speaks until it's done. AVM
+> will tell you when Ubuntu is installed.
+
+Silence after that is expected. The installer runs with no screen reader,
+because there is nothing to answer. When it finishes, the virtual machine
+turns itself off, and AVM says:
+
+> Ubuntu is installed. Starting it now. Orca will speak when the desktop
+> is ready, in about a minute. Orca's key is Caps Lock.
+
+AVM then starts the machine again by itself, and Orca, Ubuntu's screen
+reader, speaks at the login screen or, with Sign in automatically, on
+the desktop.
+
+If the install fails, the machine turns off and AVM says so:
+
+> Ubuntu's install stopped with an error, and the virtual machine turned
+> off. Next: press Start to try the install again. If it stops again,
+> report it with the diagnostic log.
+
+### Orca
+
+- **Orca is on from the start**, at the login screen and after.
+- **Orca's key is Caps Lock.** AVM sets Orca's laptop layout, whose Orca
+  key is Caps Lock, because a Mac keyboard has no Insert key. AVM hands
+  Caps Lock to Ubuntu the same way it does for Windows (section 9).
+- Press **Caps Lock and H** for Orca's learn mode, and Escape to leave it.
+
+### What AVM sets up in Ubuntu
+
+- No screen lock and no automatic suspend. A locked or sleeping machine
+  is silent, and silence reads as broken.
+- No first-run welcome screens or welcome tour, and no crash-report
+  prompts.
+- AVM's small UNATTEND disk, which stays attached to the machine, is
+  hidden from the desktop, so it doesn't show up as a USB drive.
+- Your Mac's time zone, US English, and a US keyboard layout.
+- The SPICE guest agent, for the mouse.
+- Ubuntu's sound tuned for AVM: the same sample rate as AVM's audio and a
+  larger buffer, which removed crackling in Orca's speech.
+
+### Known limitations for Ubuntu
+
+- **ARM desktop images only**, Ubuntu 26.04 or later.
+- **English and a US keyboard only** for now.
+- **A larger disk is not used automatically.** After you make the disk
+  larger in Settings, Ubuntu's main partition has to be made larger too.
+- **Stop** shuts Ubuntu down normally, which has taken about 15 seconds.
+- **One of the first seven test installs stalled** early in the installer's
+  start-up, before anything was written to the disk. Stopping and
+  starting the machine again ran the install normally. AVM watches for
+  this: if nothing changes for 15 minutes, it says:
+
+  > Ubuntu's install seems to have stopped. Nothing has changed for 15
+  > minutes. Next: save the diagnostic log from the File menu, then stop
+  > the virtual machine and start it again.
+
+  Save the log while the machine is still running (section 17): for
+  Ubuntu, the machine's startup log records the installer's own start-up
+  messages, and the next start replaces it. Then please report it.
+
+---
+
+## 17. The diagnostic log, your privacy, and reporting a problem
 
 ### What AVM records, and what it never records
 

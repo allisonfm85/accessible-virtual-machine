@@ -14,6 +14,9 @@ final class VMSession: ObservableObject {
     @Published private(set) var vmState: VMRuntimeState = .stopped
     @Published private(set) var consoleOutput: String = ""
     @Published private(set) var qemuVersion: String = ""
+    /// Mirror of manager.restartingAfterInstall, so SessionGate can react
+    /// when AVM's restart after an Ubuntu install ends (see VMManager).
+    @Published private(set) var restartingAfterInstall = false
 
     // MARK: - Dependencies
 
@@ -62,6 +65,13 @@ final class VMSession: ObservableObject {
             }
             .store(in: &cancellables)
 
+        manager.$restartingAfterInstall
+            .sink { [weak self] value in
+                guard let self else { return }
+                self.restartingAfterInstall = value
+            }
+            .store(in: &cancellables)
+
         manager.$qemuVersion
             .sink { [weak self] newVersion in
                 guard let self else { return }
@@ -99,7 +109,7 @@ final class VMSession: ObservableObject {
             AVMLog.write("VMSession: stopGracefully: VM is paused; resuming before shutdown")
             try await manager.resumeVM()
         }
-        Announcer.shared.announce("Shutting down Windows.", tone: .info)
+        Announcer.shared.announce("Shutting down \(configuration.guestOS.displayName).", tone: .info)
         AVMLog.write("VMSession: stopGracefully: shutdown requested; waiting for the VM to stop")
         try await manager.stopVM()
 
@@ -121,7 +131,7 @@ final class VMSession: ObservableObject {
                     AVMLog.write("VMSession: stopGracefully: VM was force-stopped during shutdown")
                 } else {
                     AVMLog.write("VMSession: stopGracefully: Windows has shut down after \(Int(Date().timeIntervalSince(started))) seconds")
-                    Announcer.shared.announce("Windows has shut down.", tone: .success)
+                    Announcer.shared.announce("\(configuration.guestOS.displayName) has shut down.", tone: .success)
                 }
                 return
             case .error:
@@ -134,7 +144,7 @@ final class VMSession: ObservableObject {
             if !reminded, Date().timeIntervalSince(started) >= reminderAfter {
                 reminded = true
                 AVMLog.write("VMSession: stopGracefully: still shutting down after \(Int(reminderAfter)) seconds; reminded the user, still waiting")
-                Announcer.shared.announce("Windows is still shutting down. You can keep waiting, or use Force Stop.", tone: .info)
+                Announcer.shared.announce("\(configuration.guestOS.displayName) is still shutting down. You can keep waiting, or use Force Stop.", tone: .info)
             }
             try? await Task.sleep(for: .milliseconds(500))
         }
