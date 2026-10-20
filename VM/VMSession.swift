@@ -14,6 +14,9 @@ final class VMSession: ObservableObject {
     @Published private(set) var vmState: VMRuntimeState = .stopped
     @Published private(set) var consoleOutput: String = ""
     @Published private(set) var qemuVersion: String = ""
+    /// Mirror of manager.restartingAfterInstall, so SessionGate can react
+    /// when AVM's restart after an Ubuntu install ends (see VMManager).
+    @Published private(set) var restartingAfterInstall = false
 
     // MARK: - Dependencies
 
@@ -59,6 +62,13 @@ final class VMSession: ObservableObject {
             .sink { [weak self] newOutput in
                 guard let self else { return }
                 self.consoleOutput = newOutput
+            }
+            .store(in: &cancellables)
+
+        manager.$restartingAfterInstall
+            .sink { [weak self] value in
+                guard let self else { return }
+                self.restartingAfterInstall = value
             }
             .store(in: &cancellables)
 

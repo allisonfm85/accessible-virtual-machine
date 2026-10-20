@@ -1989,7 +1989,7 @@ final class VMManager: ObservableObject {
     /// cases carry what acting on them needs, read once in
     /// ubuntuInstallEnd, so nothing can go missing between deciding and
     /// acting.
-    private enum UbuntuInstallEnd: Equatable {
+    private enum UbuntuInstallEnd {
         case notAnInstallEnd
         case failed(runtimeDir: URL)
         case installedButUserStopped
@@ -2036,9 +2036,13 @@ final class VMManager: ObservableObject {
     /// leave stopGracefully, which waits to see .stopped, waiting forever.
     ///
     /// restartingAfterInstall is set before .stopped is published (see
-    /// handleQEMUProcessExit) and cleared as the restart task begins, before
-    /// startVM can publish anything, so SessionGate keeps the session through
-    /// the gap and still sees any .error the restart publishes.
+    /// handleQEMUProcessExit) and stays set for the WHOLE restart, so no
+    /// state the restart passes through (.stopped, .starting, an .error)
+    /// ends the session early. SessionGate also watches the flag itself:
+    /// when it clears, a session left .stopped or .error ends then, so a
+    /// failed restart brings Start back however it failed (fourth review,
+    /// 2026-10-19: clearing it earlier made the session depend on startVM
+    /// publishing .starting before its first await).
     private func handleUbuntuInstallEnd(_ end: UbuntuInstallEnd) {
         switch end {
         case .notAnInstallEnd:
@@ -2075,19 +2079,19 @@ final class VMManager: ObservableObject {
         )
         Task { [weak self] in
             guard let self else { return }
-            // Cleared before startVM runs: from here on its own state
-            // changes protect the session (.starting, .running), and an
-            // .error it publishes must reach SessionGate so Start comes back
-            // (third review, 2026-10-19).
-            self.restartingAfterInstall = false
             do {
                 try await self.startVM(configuration: configuration)
+                self.restartingAfterInstall = false
             } catch {
-                // startVM may throw without publishing anything; always end
-                // in a state change so SessionGate ends the session.
-                if case .stopped = self.state {
-                    self.state = .error(error.localizedDescription)
+                // startVM can fail at any point: before .starting, after it,
+                // or with QEMU already launched. Stop anything it left
+                // running, publish the error, then clear the flag, which is
+                // what lets SessionGate end the session (see above).
+                if self.qemuProcess != nil {
+                    self.forceStopVM()
                 }
+                self.state = .error(error.localizedDescription)
+                self.restartingAfterInstall = false
                 avmLog("restartAfterInstall: start FAILED: \(error.localizedDescription)")
                 Announcer.shared.announce(
                     "Ubuntu is installed, but AVM couldn't start it again. Reason: \(error.localizedDescription) Next: press Start.",

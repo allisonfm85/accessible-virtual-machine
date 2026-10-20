@@ -386,11 +386,15 @@ nonisolated final class UbuntuInstallPipeline {
         if !info.isDesktop {
             return "This is the Ubuntu Server installer. AVM needs Ubuntu Desktop for ARM, which brings the desktop and the Orca screen reader."
         }
-        // 26.04 is the release every part of this was proven on. Older
-        // releases differ in ways that matter here, e.g. 24.04's WirePlumber
-        // 0.4 ignores the audio tuning's configuration format (third review,
-        // 2026-10-19), so they are refused rather than half-supported.
-        if info.majorVersion != 0 && info.majorVersion < 26 {
+        // 26.04 is the release every part of this was proven on, so anything
+        // older is refused rather than half-supported: the interim 25.04 and
+        // 25.10 were never tested, and 24.04's WirePlumber 0.4 ignores the
+        // audio tuning's configuration format (third review, 2026-10-19). A
+        // version AVM can't read is refused for the same reason.
+        if info.majorVersion == 0 {
+            return "AVM couldn't tell which Ubuntu version this is. AVM needs Ubuntu 26.04 or later, from ubuntu.com."
+        }
+        if info.majorVersion < 26 {
             return "This is \(info.spokenName). AVM needs Ubuntu 26.04 or later."
         }
         return nil

@@ -296,6 +296,16 @@ private struct SessionGate: View {
         .onAppear {
             focusLock.guestName = session.configuration.guestOS.displayName
         }
+        .onChange(of: session.restartingAfterInstall) { restarting in
+            // AVM's restart after an Ubuntu install has ended. If it left
+            // the VM stopped or in error, end the session now (it was kept
+            // through the restart on purpose).
+            guard !restarting else { return }
+            switch session.vmState {
+            case .stopped, .error: endSessionIfStoppedByItself(session.vmState)
+            default: break
+            }
+        }
         .onChange(of: session.vmState) { newState in
             // Auto-lock the first time the VM reaches running, so the user is
             // taken straight into Windows. Reset the latch when the VM leaves
@@ -338,7 +348,7 @@ private struct SessionGate: View {
     /// After a Stop it runs too, harmlessly: stopGracefully watches the
     /// manager, not the session, and clears only a session still current.
     private func endSessionIfStoppedByItself(_ newState: VMRuntimeState) {
-        guard activeSession === session, !session.manager.restartingAfterInstall else { return }
+        guard activeSession === session, !session.restartingAfterInstall, !session.manager.restartingAfterInstall else { return }
         if case .error(let message) = newState {
             errorMessage = message
         }
