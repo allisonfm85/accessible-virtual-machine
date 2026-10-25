@@ -77,7 +77,7 @@ If you plug in a device while you're working in Windows, or while AVM is in the 
 
 If Windows is paused, AVM holds on to the device and sends it as soon as Windows resumes.
 
-Some devices disconnect and reconnect when you change their mode. If a device you sent to Windows comes back within a minute, AVM sends it right back to Windows without asking. For example, this happens when you switch a Monarch from file transfer to Braille Terminal. The minute gives you time to make the switch without rushing.
+Some devices disconnect and reconnect when you change their mode. If a device you sent to Windows comes back within a minute, AVM sends it right back to Windows without asking. The minute gives you time to make the switch without rushing.
 
 When Windows starts, AVM sends the devices you've chosen to remember for Windows once Windows has finished starting up. During Windows setup, AVM waits until setup is almost done, since that's when most people are ready to use their devices.
 
@@ -96,6 +96,8 @@ AVM recognizes a braille display in three ways:
 Some displays use common USB chips that other gadgets also use. AVM treats those as possible braille displays, so it asks about them too.
 
 **If AVM doesn't recognize your display,** please open an issue and include the display's name and model. Also include its USB IDs, if you can: plug in the display while Windows is running, then in AVM choose File, then Save Diagnostic Log, and attach the log. AVM records the IDs of each device plugged in, but never what you type.
+
+**Using a Monarch with Windows:** open Braille Terminal, choose USB, and then plug in the Monarch. After you detach it from Windows, you may need to restart the Monarch before the Mac can use it again.
 
 ## What's in this repository
 
