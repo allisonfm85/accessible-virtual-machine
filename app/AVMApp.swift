@@ -327,6 +327,24 @@ struct AVMApp: App {
                     NotificationCenter.default.post(name: .avmReclaimFromMenu, object: nil)
                 }
             }
+
+            // Help menu (2026-10-24, suggested by Victor Tsaran). The system's
+            // own Help item only said help isn't available for AVM. This
+            // replaces it with one item that opens the README, where the
+            // help is. It goes straight to the README rather than the
+            // repository's main page, so someone who's stuck lands where
+            // they need to be. No key combo: Command-? would be the usual one,
+            // but macOS keeps it for the Help menu's search, so this item
+            // never received it (tested 2026-10-24). The search field is the
+            // system's and stays.
+            CommandGroup(replacing: .help) {
+                Button("AVM README on GitHub") {
+                    AVMLog.write("AVM: Help menu — opening the README on GitHub.")
+                    if let url = URL(string: "https://github.com/allisonfm85/accessible-virtual-machine#readme") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
         }
     }
 }
