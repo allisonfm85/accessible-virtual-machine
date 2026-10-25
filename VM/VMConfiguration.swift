@@ -55,6 +55,14 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// alert. nil means none remembered yet.
     var usbRememberedDevices: [RememberedUSBDevice]?
 
+    // MARK: - Guest operating system (Ubuntu, 2026-10-19)
+
+    /// Which operating system this VM installs and runs. Plain text for the
+    /// same reason as usbMode. nil, or a word this AVM doesn't know, means
+    /// Windows: every VM made before Ubuntu support is a Windows VM. Read
+    /// it through guestOS, never directly.
+    var guestOSName: String?
+
     // MARK: - Defaults
 
     init(
@@ -67,7 +75,8 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         installISOPath: String? = nil,
         sharedFolderPath: String? = nil,
         usbMode: String? = nil,
-        usbRememberedDevices: [RememberedUSBDevice]? = nil
+        usbRememberedDevices: [RememberedUSBDevice]? = nil,
+        guestOSName: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -79,6 +88,31 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         self.sharedFolderPath = sharedFolderPath
         self.usbMode = usbMode
         self.usbRememberedDevices = usbRememberedDevices
+        self.guestOSName = guestOSName
+    }
+}
+
+// MARK: - Guest operating system
+
+/// The operating systems AVM installs. Raw values are the words
+/// guestOSName stores.
+enum GuestOS: String {
+    case windows
+    case ubuntu
+
+    /// The name AVM says and shows for the running guest: "Enter Ubuntu",
+    /// "Ubuntu keyboard on", "Send the keyboard to Ubuntu?".
+    var displayName: String {
+        switch self {
+        case .windows: return "Windows"
+        case .ubuntu: return "Ubuntu"
+        }
+    }
+}
+
+extension VMConfiguration {
+    var guestOS: GuestOS {
+        guestOSName.flatMap(GuestOS.init(rawValue:)) ?? .windows
     }
 }
 

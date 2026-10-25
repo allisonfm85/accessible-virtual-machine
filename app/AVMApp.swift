@@ -255,7 +255,7 @@ struct AVMApp: App {
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
 
-                Button("Enter Windows") {
+                Button("Enter \(focusLock.guestName)") {
                     // Same gate as the dashboard's Enter Windows button: only
                     // meaningful when a VM is running or paused. focusLock.lock()
                     // flips SessionGate to VMView and speaks "Windows keyboard
@@ -308,7 +308,8 @@ struct AVMApp: App {
                         }
                         let alert = NSAlert()
                         alert.messageText = "Reset the virtual machine?"
-                        alert.informativeText = "This is like pressing the reset button on a physical PC. Windows restarts immediately and unsaved work inside the virtual machine is lost. If Windows is installing or updating, a reset can damage it."
+                        let guest = VMManager.currentGuestName
+                        alert.informativeText = "This is like pressing the reset button on a physical PC. \(guest) restarts immediately and unsaved work inside the virtual machine is lost. If \(guest) is installing or updating, a reset can damage it."
                         alert.alertStyle = .warning
                         alert.addButton(withTitle: "Cancel")
                         alert.addButton(withTitle: "Reset")

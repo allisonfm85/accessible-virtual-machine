@@ -293,6 +293,19 @@ private struct SessionGate: View {
                 .frame(minWidth: 480, minHeight: 560)
             }
         }
+        .onAppear {
+            focusLock.guestName = session.configuration.guestOS.displayName
+        }
+        .onChange(of: session.restartingAfterInstall) { restarting in
+            // AVM's restart after an Ubuntu install has ended. If it left
+            // the VM stopped or in error, end the session now (it was kept
+            // through the restart on purpose).
+            guard !restarting else { return }
+            switch session.vmState {
+            case .stopped, .error: endSessionIfStoppedByItself(session.vmState)
+            default: break
+            }
+        }
         .onChange(of: session.vmState) { newState in
             // Auto-lock the first time the VM reaches running, so the user is
             // taken straight into Windows. Reset the latch when the VM leaves
@@ -316,10 +329,31 @@ private struct SessionGate: View {
                 if focusLock.isLocked {
                     focusLock.unlock()
                 }
+                endSessionIfStoppedByItself(newState)
             default:
                 break
             }
         }
+    }
+
+    /// SESSION END WHEN THE VM STOPS BY ITSELF (code review, 2026-10-19).
+    /// Only Stop and Force Stop used to end a session, so a VM that shut
+    /// down from inside, an Ubuntu install that failed, or a VM that died
+    /// left a stopped session behind, and the dashboard hid every Start
+    /// button while any session existed: "press Start" had nothing to
+    /// press. Ending the session here brings back Start, Settings and
+    /// Delete exactly as after Stop. Not while AVM is starting an Ubuntu VM
+    /// again after its install (same manager, same session). An error's
+    /// text moves to the dashboard's error line, which outlives the session.
+    /// After a Stop it runs too, harmlessly: stopGracefully watches the
+    /// manager, not the session, and clears only a session still current.
+    private func endSessionIfStoppedByItself(_ newState: VMRuntimeState) {
+        guard activeSession === session, !session.restartingAfterInstall else { return }
+        if case .error(let message) = newState {
+            errorMessage = message
+        }
+        AVMLog.write("AVM: SessionGate — VM stopped by itself (\(newState)); ending the session so Start is available.")
+        activeSession = nil
     }
 }
 
@@ -454,26 +488,26 @@ private struct DashboardContent: View {
                     if session.vmState == .starting {
                         ProgressView()
                             .accessibilityLabel("Virtual machine is starting, please wait")
-                        Text("Starting Windows…")
+                        Text("Starting \(guest)…")
                             .font(.body)
                     }
 
                     if session.vmState == .stopping {
                         ProgressView()
                             .accessibilityLabel("Virtual machine is stopping, please wait")
-                        Text("Stopping Windows…")
+                        Text("Stopping \(guest)…")
                             .font(.body)
                     }
 
                     if session.vmState == .running || session.vmState == .paused {
-                        Button("Enter Windows") {
+                        Button("Enter \(guest)") {
                             focusLock.lock()
                         }
-                        .accessibilityHint("Switches keyboard focus to the Windows display. Press Control Command Escape to return.")
+                        .accessibilityHint("Switches keyboard focus to the \(guest) display. Press Control Command Escape to return.")
                     }
 
                     if session.vmState == .running {
-                        Button("Pause Windows") {
+                        Button("Pause \(guest)") {
                             Task {
                                 do { try await session.pause() }
                                 catch { errorMessage = error.localizedDescription }
@@ -483,7 +517,7 @@ private struct DashboardContent: View {
                     }
 
                     if session.vmState == .paused {
-                        Button("Resume Windows") {
+                        Button("Resume \(guest)") {
                             Task {
                                 do { try await session.resume() }
                                 catch { errorMessage = error.localizedDescription }
@@ -493,7 +527,7 @@ private struct DashboardContent: View {
                     }
 
                     if session.vmState == .running || session.vmState == .paused {
-                        Button("Stop Windows") {
+                        Button("Stop \(guest)") {
                             Task {
                                 // stopGracefully waits until Windows has shut down,
                                 // so the session (and its VMManager) stays alive the
@@ -508,13 +542,13 @@ private struct DashboardContent: View {
                                     // Keep the session, so Force Stop stays available.
                                     errorMessage = error.localizedDescription
                                     Announcer.shared.announce(
-                                        "Windows could not be shut down. Reason: \(error.localizedDescription). Next: try Stop again, or use Force Stop.",
+                                        "\(guest) could not be shut down. Reason: \(error.localizedDescription). Next: try Stop again, or use Force Stop.",
                                         tone: .failure
                                     )
                                 }
                             }
                         }
-                        .accessibilityHint("Gracefully shuts down Windows")
+                        .accessibilityHint("Gracefully shuts down \(guest)")
                         .keyboardShortcut(".", modifiers: .command)
 
                         Button("Force Stop") {
@@ -549,7 +583,7 @@ private struct DashboardContent: View {
             // is always a deliberate action (Enter Windows, or Cmd-Shift-E).
             // The previous caption called this a "toggle", which the hotkey
             // never was.
-            Text("Press Control Command Escape at any time to return to the Mac. Use Enter Windows to go back into Windows.")
+            Text("Press Control Command Escape at any time to return to the Mac. Use Enter \(guest) to go back into \(guest).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -557,6 +591,17 @@ private struct DashboardContent: View {
     }
 
     // MARK: - Helpers
+
+    /// The guest's name for the words above: the running session's, or,
+    /// with none, the one every saved VM shares. Windows when they differ
+    /// or there are none, as before Ubuntu support.
+    private var guest: String {
+        if let session = observedSession {
+            return session.configuration.guestOS.displayName
+        }
+        let kinds = Set(vmStore.configurations.map(\.guestOS))
+        return kinds.count == 1 ? kinds.first!.displayName : GuestOS.windows.displayName
+    }
 
     private var statusMessage: String {
         guard let session = observedSession else { return "No virtual machine running" }

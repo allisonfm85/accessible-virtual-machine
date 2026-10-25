@@ -121,6 +121,13 @@ class FocusLockManager: ObservableObject {
     // MARK: - Published State
     @Published var isLocked: Bool = false
 
+    /// The guest's name for "Enter Windows" / "Enter Ubuntu" and the
+    /// keyboard announcements. A published mirror of
+    /// VMManager.currentGuestName (the one source), so the menu redraws:
+    /// SessionGate sets it when a session appears, and lock() refreshes it
+    /// before speaking. Windows until then.
+    @Published var guestName: String = GuestOS.windows.displayName
+
     // MARK: - Out-of-tree access
     /// Same pattern as VMManager.shared: set at init so out-of-tree callers
     /// (the capture view registering itself from viewDidMoveToWindow) can
@@ -198,7 +205,8 @@ class FocusLockManager: ObservableObject {
         // "Windows keyboard on" would clip that announcement mid-word. The
         // remapper is silent on success and handles its own failure speech.
         CapsLockRemapper.shared.applyForLock()
-        Announcer.shared.announce("Windows keyboard on", tone: .info)
+        guestName = VMManager.currentGuestName
+        Announcer.shared.announce("\(guestName) keyboard on", tone: .info)
         AVMLog.write("AVM: FocusLock.lock() — NOW LOCKED (isLocked=true).")
     }
 
@@ -339,7 +347,7 @@ class FocusLockManager: ObservableObject {
             if voiceOverIsRunning {
                 AVMLog.write("AVM: FocusLock — key watch: window REGAINED key; announcement suppressed (VoiceOver running).")
             } else {
-                Announcer.shared.announce("Keyboard back in Windows", tone: .info)
+                Announcer.shared.announce("Keyboard back in \(guestName)", tone: .info)
                 AVMLog.write("AVM: FocusLock — key watch: window REGAINED key; ANNOUNCED return.")
             }
         } else {

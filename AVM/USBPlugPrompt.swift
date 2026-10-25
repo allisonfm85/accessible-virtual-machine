@@ -339,11 +339,11 @@ final class USBPlugPrompt {
     private func makeAlert(for question: USBPlugQuestion) -> NSAlert {
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = "Send \(Self.titleName(question)) to Windows?"
+        alert.messageText = "Send \(Self.titleName(question)) to \(VMManager.currentGuestName)?"
         alert.informativeText = Self.message(for: question.kind)
         // First button: Return. Escape is mapped to it in installEscape.
         _ = alert.addButton(withTitle: "Keep on Mac")
-        _ = alert.addButton(withTitle: "Send to Windows")
+        _ = alert.addButton(withTitle: "Send to \(VMManager.currentGuestName)")
         if question.rememberOffered {
             alert.showsSuppressionButton = true
             alert.suppressionButton?.title = "Remember my choice for this device"
@@ -393,7 +393,8 @@ final class USBPlugPrompt {
         if let manager = VMManager.shared, case .paused = manager.state {
             heldForResume.append(question)
             log("send held: Windows is paused; \(question.identity) waits for resume (\(why))")
-            say("Windows is paused. AVM will send \(Self.titleName(question)) when Windows resumes.")
+            let guest = VMManager.currentGuestName
+            say("\(guest) is paused. AVM will send \(Self.titleName(question)) when \(guest) resumes.")
             return
         }
         log("sending \(question.identity) to Windows (\(why))")
@@ -498,13 +499,13 @@ final class USBPlugPrompt {
         switch outcome {
         case .inWindows:
             log("send gate closed: \(device) is in Windows (\(tries))")
-            say("\(name) is now in Windows.", tone: .success)
+            say("\(name) is now in \(VMManager.currentGuestName).", tone: .success)
         case .gone:
             log("send gate closed: \(device) is no longer on the Mac, so it was unplugged; nothing spoken (\(tries))")
         case .failed:
-            let reason = gate.bounces > 0 ? "it kept disconnecting" : "Windows didn't take it"
+            let reason = gate.bounces > 0 ? "it kept disconnecting" : "\(VMManager.currentGuestName) didn't take it"
             log("send gate closed: \(device) not sent (\(tries))")
-            say("AVM couldn't send \(name) to Windows. Reason: \(reason). Next: try Attach USB Device.", tone: .failure)
+            say("AVM couldn't send \(name) to \(VMManager.currentGuestName). Reason: \(reason). Next: try Attach USB Device.", tone: .failure)
         case .stopped:
             log("send gate closed: \(device); the VM stopped")
         }
@@ -607,11 +608,12 @@ final class USBPlugPrompt {
     }
 
     static func message(for kind: USBDeviceClassification.Kind) -> String {
-        let macLoses = "If you send it to Windows, the Mac can't use it until you unplug it or shut down Windows."
-        let voiceOverLoses = "If you send it to Windows, VoiceOver can't use it until you unplug it or shut down Windows. A Windows screen reader can use it instead."
+        let guest = VMManager.currentGuestName
+        let macLoses = "If you send it to \(guest), the Mac can't use it until you unplug it or shut down \(guest)."
+        let voiceOverLoses = "If you send it to \(guest), VoiceOver can't use it until you unplug it or shut down \(guest). A screen reader in \(guest) can use it instead."
         switch kind {
         case .ordinary:
-            return "You plugged it in while Windows is running. \(macLoses)"
+            return "You plugged it in while \(guest) is running. \(macLoses)"
         case .brailleDisplay:
             return "This is a braille display. \(voiceOverLoses)"
         case .possibleBrailleDisplay:
@@ -621,7 +623,7 @@ final class USBPlugPrompt {
         case .mouse:
             return "This is a mouse or trackpad. \(macLoses)"
         case .soundOutput:
-            return "Your Mac is playing sound through this device right now, including VoiceOver speech. If you send it to Windows, the Mac loses that sound until you unplug it or shut down Windows."
+            return "Your Mac is playing sound through this device right now, including VoiceOver speech. If you send it to \(guest), the Mac loses that sound until you unplug it or shut down \(guest)."
         case .unknownInput:
             return "This might be a keyboard, mouse, or other input device. \(macLoses)"
         }
