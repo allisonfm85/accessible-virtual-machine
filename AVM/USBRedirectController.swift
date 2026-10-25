@@ -30,7 +30,9 @@
 //  returned, failed, unplugged). This file speaks what the client
 //  cannot know: VM not running, nothing attached, no port free, QMP
 //  failures with their step and next action, and "was unplugged" after
-//  a vanish cleanup the helper never reported (2026-10-17).
+//  a vanish cleanup the helper never reported (2026-10-17). A vanish
+//  is cancelled when the device comes back at the same address while
+//  the helper holds it (deviceReturned, 2026-10-24).
 //
 //  Send gate (USB 2c, 2026-10-18): USBPlugPrompt marks a device quiet
 //  in USBHelperClient while it handles an automatic send. Then attach
@@ -75,6 +77,11 @@ final class USBRedirectController: ObservableObject {
     /// It reported the mic's unplug within milliseconds (2026-10-12).
     static let vanishGrace: Duration = .seconds(2)
 
+    /// One token per device whose vanishGrace is running. A device that
+    /// comes back at the same address loses its token (deviceReturned),
+    /// and a newer vanish replaces it, so only the latest one can clean up.
+    private var vanishToken: [AVMUSBDeviceIdentity: UUID] = [:]
+
     /// The watcher saw a device leave the Mac. If it was in Windows and
     /// still holds a port after vanishGrace, the helper never reported
     /// it (a Monarch switching modes, 2026-10-17), so AVM speaks the
@@ -91,8 +98,15 @@ final class USBRedirectController: ObservableObject {
         } else {
             log("vanished \(held.description): it never reached Windows, so it won't follow back")
         }
+        let token = UUID()
+        vanishToken[held] = token
         Task { @MainActor in
             try? await Task.sleep(for: Self.vanishGrace)
+            guard self.vanishToken[held] == token else {
+                self.log("vanished \(held.description): it came back, or vanished again; this cleanup stands down")
+                return
+            }
+            self.vanishToken[held] = nil
             guard self.portByDevice[held] != nil else {
                 self.log("vanished \(held.description): the helper reported it; nothing to clean up")
                 return
@@ -107,6 +121,20 @@ final class USBRedirectController: ObservableObject {
             await self.releasePort(for: held, reason: "vanished with no helper report")
             _ = await USBHelperClient.shared.detach(held, quiet: true)
         }
+    }
+
+    /// The watcher saw a device arrive at an address it still holds a
+    /// port under. After a vanish, that means macOS dropped and re-added
+    /// the device while the helper kept hold of it. libusb does this when
+    /// it takes a device from a Mac driver: the Monarch in its file
+    /// transfer mode (1c71:d100), 2026-10-24. The device is still in
+    /// Windows, so the pending cleanup is cancelled, and so is the
+    /// follow-through record, since it never left.
+    func deviceReturned(_ device: AVMUSBDeviceIdentity) {
+        guard let held = heldIdentity(matching: device),
+              vanishToken.removeValue(forKey: held) != nil else { return }
+        clearFollowThrough(held)
+        log("returned \(held.description): back at the same address while the helper holds it; vanish cleanup cancelled")
     }
 
     // MARK: Follow-through

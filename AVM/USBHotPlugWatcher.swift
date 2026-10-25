@@ -182,14 +182,18 @@ final class USBHotPlugWatcher {
 
     private func logArrival(_ identity: AVMUSBDeviceIdentity, entryID: UInt64, service: io_service_t, atStart: Bool) {
         let label = atStart ? "present at start" : "arrived"
-        // A device already in Windows has nothing to decide. Evidence
-        // (2026-10-12): attaching did not make macOS drop and re-add the
-        // device, so this is a safety net, not a known path.
+        // A device already in Windows has nothing to decide. This is a
+        // known path, not only a safety net: when libusb takes a device
+        // from a Mac driver, macOS drops it and adds it back at the same
+        // address while the helper keeps hold (the Monarch in its file
+        // transfer mode, 2026-10-24). The ATR never did this (2026-10-12).
+        // deviceReturned cancels the vanish cleanup that drop started.
         if USBRedirectController.shared.portByDevice.keys.contains(where: {
             $0.vendorID == identity.vendorID && $0.productID == identity.productID
                 && $0.busNumber == identity.busNumber && $0.deviceAddress == identity.deviceAddress
         }) {
             log("\(label): \(identity) is already in Windows; nothing to decide")
+            USBRedirectController.shared.deviceReturned(identity)
             return
         }
         // Coming home after AVM's own Detach. macOS can drop and re-add
