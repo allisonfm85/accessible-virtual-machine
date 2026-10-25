@@ -458,12 +458,15 @@ guess. Use the dashboard's Start button in that case.
   described at the end of section 14.
 - **Headsets and speakers work for listening.** Windows audio plays
   through whatever output your Mac is using.
-- **Microphones are unverified, so please test yours.** The plumbing for
-  audio input exists but has never been confirmed end to end. If you get
-  Windows to hear your microphone, or you can't, either way that's a
-  valuable report.
-- **Thumb drives and other USB storage do not reach Windows yet.** That
-  arrives with the USB passthrough work described in section 15.
+- **Other USB devices can go straight to Windows.** When you plug one in
+  while Windows is running, AVM sends it or asks first, depending on your
+  USB Devices setting. Braille displays and USB microphones work this way.
+  The README's USB devices section explains the choices.
+- **The Mac's own microphone doesn't reach Windows yet** (issue 12). A USB
+  microphone sent to Windows does work.
+- **Thumb drives and other USB storage don't reach Windows yet.** macOS 27
+  blocks it, and I'm working with Apple on a fix. AVM tells you when you
+  plug one in.
 
 ---
 
@@ -687,14 +690,11 @@ files can be deleted afterward.
   creation. You go through Microsoft's own setup with Narrator.
 - **No ISO downloader.** You supply the Windows image yourself.
 
-The next piece of work is USB passthrough, which means connecting USB
-devices directly to Windows. The motivating case is audio hardware: audio
-interfaces and MIDI controllers reaching Windows recording software. I
-can't promise timing or say which devices will work, because that
-investigation hasn't happened yet, and I would rather not publish guesses.
-But it is next, and you can shape it. When you report, mention the USB
-hardware you'd want working in Windows, even if everything else in your
-session went perfectly.
+USB passthrough is here, except for USB drives. Next is firmware work:
+stopping Windows Update from blocking updates over the TPM and processor
+checks (issues 16 and 17), and Secure Boot. After that comes graphics
+acceleration. If a USB device you need doesn't work in Windows, please
+report it, with its name and a diagnostic log.
 
 ---
 
