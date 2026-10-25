@@ -405,6 +405,10 @@ final class USBPlugPrompt {
     /// USBRedirectController picks a free port before it awaits QEMU, so
     /// two attaches at once could pick the same one.
     private func attachInOrder(_ question: USBPlugQuestion) {
+        // USB drives can't go to Windows yet (USBRedirectController
+        // header). Stop before a gate opens, so the gate never speaks a
+        // misleading failure.
+        if USBRedirectController.shared.refusesStorage(question.identity) { return }
         let key = USBRedirectController.followKey(question.identity)
         if gates[key] != nil {
             _ = gateAbsorbs(question)

@@ -39,6 +39,13 @@
 //  (quiet: true) logs instead of speaking, the vanish cleanup's unplug
 //  line is logged, and the gate speaks one outcome itself.
 //
+//  USB drives (2026-10-25): macOS 27 won't let AVM's helper open a USB
+//  storage device, since a launchd daemon has no responsible app for
+//  the Removable Volumes permission. Apple has a code-level support
+//  request. Until that's solved, storageBlocked stops every send of a
+//  drive: here for the menu, and in USBPlugPrompt before a send gate
+//  opens. refuseStorage speaks why.
+//
 
 import Combine
 import Foundation
@@ -246,6 +253,7 @@ final class USBRedirectController: ObservableObject {
             say("The virtual machine is not running. Start it, then attach \(device.displayName).", tone: .failure, quiet: quiet)
             return false
         }
+        if refusesStorage(device) { return false }
         if let port = portByDevice[device] {
             say("\(device.displayName) is already attached to the virtual machine on port \(port).", tone: .info, quiet: quiet)
             return true
@@ -288,6 +296,27 @@ final class USBRedirectController: ObservableObject {
             }
             return false
         }
+    }
+
+    // MARK: USB drives
+
+    /// Set to false once Apple lets AVM capture USB storage. See the
+    /// header.
+    static let storageBlocked = true
+
+    /// True, after speaking why, when device is a USB drive and drives
+    /// are blocked. Reads the device's interfaces fresh.
+    func refusesStorage(_ device: AVMUSBDeviceIdentity) -> Bool {
+        guard Self.storageBlocked, USBDeviceEnumerator.hasStorageInterface(device) else { return false }
+        refuseStorage(device)
+        return true
+    }
+
+    /// Speaks why a USB drive stays on the Mac. Always spoken, never
+    /// quiet, since no send gate is ever open for a drive.
+    func refuseStorage(_ device: AVMUSBDeviceIdentity) {
+        log("\(device.description) is a USB drive; not sent (macOS 27 blocks USB storage)")
+        announce("\(device.displayName) stays on the Mac. macOS doesn't let AVM send USB drives to Windows yet.", tone: .info)
     }
 
     private func say(_ message: String, tone: Announcer.Tone, quiet: Bool) {

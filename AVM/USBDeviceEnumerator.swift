@@ -109,6 +109,32 @@ enum USBDeviceEnumerator {
         return (deviceClass, interfaceClasses.sorted())
     }
 
+    /// The USB interface class for mass storage, which thumb drives and
+    /// external disks use.
+    static let storageInterfaceClass = 0x08
+
+    /// True when the device macOS sees at this identity has a mass
+    /// storage interface. Read fresh from the registry, so it also
+    /// catches a drive whose interfaces weren't published yet when it
+    /// arrived.
+    static func hasStorageInterface(_ device: AVMUSBDeviceIdentity) -> Bool {
+        guard let matching = IOServiceMatching("IOUSBHostDevice") else { return false }
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else { return false }
+        defer { IOObjectRelease(iterator) }
+        while true {
+            let service = IOIteratorNext(iterator)
+            if service == 0 { break }
+            defer { IOObjectRelease(service) }
+            guard let found = identity(for: service),
+                  found.vendorID == device.vendorID, found.productID == device.productID,
+                  found.busNumber == device.busNumber, found.deviceAddress == device.deviceAddress
+            else { continue }
+            return classCodes(for: service).interfaces.contains(storageInterfaceClass)
+        }
+        return false
+    }
+
     /// Calls body once for each direct child of entry in the IOService
     /// plane. Each child is released after body returns.
     private static func forEachChild(of entry: io_registry_entry_t, _ body: (io_registry_entry_t) -> Void) {

@@ -212,6 +212,20 @@ final class USBHotPlugWatcher {
         let decided = decide(for: identity, classification: classification, atStart: atStart)
         log("\(label): \(identity), serial \(serial), device class \(deviceClass), interface classes \(interfaceList); \(classification.logText); decision: \(decided.text)")
         guard let vmID, let decision = decided.decision else { return }
+        // USB drives (2026-10-25): macOS 27 blocks sending them (see the
+        // USBRedirectController header), so a drive never gets an alert.
+        // At plug-in AVM says why. It stays quiet at start, like other
+        // devices that aren't sent then, and when the user chose to keep
+        // it on the Mac.
+        if USBRedirectController.storageBlocked,
+           classes.interfaces.contains(USBDeviceEnumerator.storageInterfaceClass) {
+            if atStart || decision == .keepOnMac {
+                log("\(label): \(identity) is a USB drive; stays on the Mac quietly")
+            } else {
+                USBRedirectController.shared.refuseStorage(identity)
+            }
+            return
+        }
         var rememberOffered = false
         if case .ask(let offered) = decision { rememberOffered = offered }
         let question = USBPlugQuestion(entryID: entryID,
