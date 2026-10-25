@@ -3,9 +3,11 @@
 <plist version="1.0">
 <dict>
 	<key>LSApplicationCategoryType</key>
-	<string>public.app-category.games</string>
+	<string>public.app-category.utilities</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>AVM needs local network access so Windows inside your virtual machine can connect to the internet.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>AVM needs access to removable drives so it can send them to your Windows virtual machine.</string>
 	<key>NSUSBDeviceUsageDescription</key>
 	<string>AVM needs USB access to connect peripherals to your Windows virtual machine.</string>
 	<key>SUFeedURL</key>
