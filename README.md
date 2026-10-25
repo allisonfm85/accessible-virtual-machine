@@ -55,9 +55,37 @@ last on the disk. If you installed Windows some other way and the command
 reports an error, a recovery partition may be in the way. Please open an
 issue rather than deleting partitions yourself.
 
+## USB devices
+
+When you plug in a USB device while Windows is running, AVM decides what to do based on the USB Devices setting for that virtual machine. You'll find it in Settings, under the USB Devices heading. Each virtual machine keeps its own setting and its own remembered devices.
+
+There are three choices. From left to right, they are:
+
+- **Ask each time.** AVM asks before sending a device to Windows.
+- **Always use in Windows.** Devices go straight to Windows. Keyboards, braille displays, and other input devices still ask.
+- **Keep on the Mac.** Devices stay on the Mac.
+
+When AVM asks, you can check "Remember my choice for this device" so it won't ask about that device again.
+
+You can also attach or detach a device yourself at any time. In the Virtual Machine menu, choose Attach USB Device or Detach USB Device. A device you detach goes back to the Mac.
+
+### What to expect
+
+AVM always tells you when it sends a device to Windows, even when it does it automatically, so you're never left wondering where a device went.
+
+If you plug in a device while you're working in Windows, or while AVM is in the background, AVM lets you know it's there. It waits to ask until you're back in AVM on the Mac, so you aren't pulled out of what you're doing.
+
+If Windows is paused, AVM holds on to the device and sends it as soon as Windows resumes.
+
+Some devices disconnect and reconnect when you change their mode. If a device you sent to Windows comes back within a minute, AVM sends it right back to Windows without asking. For example, this happens when you switch a Monarch from file transfer to Braille Terminal. The minute gives you time to make the switch without rushing.
+
+When Windows starts, AVM sends the devices you've chosen to remember for Windows once Windows has finished starting up. During Windows setup, AVM waits until setup is almost done, since that's when most people are ready to use their devices.
+
+**USB flash drives don't work yet.** macOS 27 blocks AVM from sending a USB storage device to Windows. I'm working with Apple on a fix.
+
 ## Braille displays
 
-When you plug in a USB device while Windows is running, AVM checks whether it's a braille display before doing anything with it. A braille display is never sent to Windows without asking, even when "Always use in Windows" is chosen in Settings. If you check "Remember for this device," AVM will use your choice from then on.
+When you plug in a USB device while Windows is running, AVM checks whether it's a braille display before doing anything with it. A braille display is never sent to Windows without asking, even when "Always use in Windows" is chosen in Settings. If you check "Remember my choice for this device," AVM will use your choice from then on.
 
 AVM recognizes a braille display in three ways:
 
