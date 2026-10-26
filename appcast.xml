@@ -5,6 +5,12 @@
         <description>Update feed for AVM, the Accessible Virtual Machine. Entries are added here with each release.</description>
         <language>en</language>
         <item>
+            <title>Version 0.1.3</title>
+            <sparkle:version>4</sparkle:version>
+            <sparkle:shortVersionString>0.1.3</sparkle:shortVersionString>
+            <enclosure url="https://github.com/allisonfm85/accessible-virtual-machine/releases/download/v0.1.3/AVM-0.1.3.zip" sparkle:edSignature="iNzd6HWFmVhbdjlN1w4XKRoEb0wnamTUdKNDZZa8ZbCWTJ1GGZw6v+JiJcLqhPhxKdzp2ZRjGuiUdifByIaLAg==" length="53650608" type="application/octet-stream" />
+        </item>
+        <item>
             <title>Version 0.1.2</title>
             <sparkle:version>3</sparkle:version>
             <sparkle:shortVersionString>0.1.2</sparkle:shortVersionString>
