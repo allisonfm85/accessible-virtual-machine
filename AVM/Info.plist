@@ -7,7 +7,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>AVM needs local network access so Windows inside your virtual machine can connect to the internet.</string>
 	<key>NSRemovableVolumesUsageDescription</key>
-	<string>AVM needs access to removable drives so it can send them to your Windows virtual machine.</string>
+	<string>AVM needs access to removable drives to store virtual machines on them, and to send them to your Windows virtual machine.</string>
 	<key>NSUSBDeviceUsageDescription</key>
 	<string>AVM needs USB access to connect peripherals to your Windows virtual machine.</string>
 	<key>SUFeedURL</key>
