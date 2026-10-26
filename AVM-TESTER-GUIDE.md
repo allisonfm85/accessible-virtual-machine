@@ -462,6 +462,10 @@ guess. Use the dashboard's Start button in that case.
   while Windows is running, AVM sends it or asks first, depending on your
   USB Devices setting. Braille displays and USB microphones work this way.
   The README's USB devices section explains the choices.
+- **The first time a device goes to Windows, AVM sets up its USB helper.**
+  macOS may ask you to allow it, or it may not. If it asks, the request
+  reads fine with VoiceOver. If you aren't an administrator on your Mac,
+  allowing it may need an administrator's name and password.
 - **The Mac's own microphone doesn't reach Windows yet** (issue 12). A USB
   microphone sent to Windows does work.
 - **Thumb drives and other USB storage don't reach Windows yet.** macOS 27
