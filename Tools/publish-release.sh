@@ -68,7 +68,7 @@ DRAFT_FLAG=()
 [ "$DRAFT" = "1" ] && DRAFT_FLAG=(--draft)
 gh release create "v$VERSION" "$DMG" "$ZIP" --repo "$REPO_SLUG" --target "$FEED_BRANCH" \
     --title "AVM $VERSION" --notes "AVM $VERSION. Install from the DMG; existing installs update from inside AVM." \
-    "${DRAFT_FLAG[@]}" || fail "gh could not create the release."
+    ${DRAFT_FLAG[@]+"${DRAFT_FLAG[@]}"} || fail "gh could not create the release."
 echo "Created release v$VERSION."
 
 if [ "$DRAFT" = "1" ]; then
