@@ -158,6 +158,9 @@ private struct AuditNode {
     var placeholder: String
     /// What VoiceOver says after a pause: AXHelp (SwiftUI's accessibilityHint).
     var hint: String = ""
+    /// What VoiceOver says for its kind, "text field" or "pop-up button":
+    /// AXRoleDescription.
+    var roleDescription: String = ""
     var enabled: Bool
     /// The heading level reported as AXValue, as WebKit gives it; 0 when
     /// none is (always, from SwiftUI on macOS: see headingLevelsReported).
@@ -196,6 +199,7 @@ private struct AuditNode {
         if !value.isEmpty { parts.append("value=\"\(value.prefix(80))\"") }
         if !placeholder.isEmpty { parts.append("placeholder=\"\(placeholder)\"") }
         if !hint.isEmpty { parts.append("hint=\"\(hint.prefix(100))\"") }
+        if isControl && !roleDescription.isEmpty { parts.append("says=\"\(roleDescription)\"") }
         if headingLevel > 0 { parts.append("level=\(headingLevel)") }
         if !enabled { parts.append("dimmed") }
         if isControl && focusable == false { parts.append("no-keyboard-focus") }
@@ -437,6 +441,7 @@ private final class Auditor {
                 value: Self.text(element.object("AXValue")),
                 placeholder: element.string("AXPlaceholderValue"),
                 hint: element.string("AXHelp"),
+                roleDescription: element.string("AXRoleDescription"),
                 enabled: element.bool("AXEnabled") ?? true,
                 headingLevel: 0,
                 path: "",
@@ -634,6 +639,7 @@ private final class Auditor {
     @objc optional func accessibilityValue() -> Any?
     @objc optional func accessibilityPlaceholderValue() -> String?
     @objc optional func accessibilityHelp() -> String?
+    @objc optional func accessibilityRoleDescription() -> String?
     @objc optional func accessibilityChildren() -> [Any]?
     @objc optional func accessibilityTitleUIElement() -> Any?
     @objc optional func isAccessibilityElement() -> Bool
@@ -679,6 +685,7 @@ private struct AXElementReader {
             case "AXTitle": return raw.accessibilityTitle?()
             case "AXPlaceholderValue": return raw.accessibilityPlaceholderValue?()
             case "AXHelp": return raw.accessibilityHelp?()
+            case "AXRoleDescription": return raw.accessibilityRoleDescription?()
             default: return nil
             }
         }()

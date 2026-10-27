@@ -44,6 +44,7 @@ struct MacSetupView: View {
                     .textFieldStyle(.roundedBorder)
                     .focused($nameFocused)
                     .accessibilityLabel("Virtual machine name")
+                    .accessibilityHint("Type a name for this virtual machine.")
                 // Each stepper said its words twice (2026-10-26, accessibility
                 // audit): SwiftUI shows a stepper's title as text and also
                 // names the stepper with it ("Cores: 4", then "Cores: 4, 4,
@@ -215,6 +216,7 @@ struct MacSettingsView: View {
             TextField("Name", text: $name)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Virtual machine name")
+                .accessibilityHint("Type a new name for this virtual machine.")
             // Named once, as in New macOS Virtual Machine (2026-10-26).
             Stepper(value: $cpuCount, in: 2...maxCores) { Text("Cores: \(cpuCount)") }
                 .accessibilityLabel("Cores")

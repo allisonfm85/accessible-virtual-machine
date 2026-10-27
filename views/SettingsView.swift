@@ -157,12 +157,17 @@ struct SettingsView: View {
 
                 // VM Name
                 VStack(alignment: .leading, spacing: 6) {
+                    // The shown words, hidden from VoiceOver (2026-10-27, tester
+                    // feedback): the field just after has the same name, and
+                    // VoiceOver read the two as plain text and a field it
+                    // didn't clearly call a text field. Its hint says to type.
                     Text("Virtual Machine Name")
                         .font(.headline)
+                        .accessibilityHidden(true)
                     TextField("Virtual machine name", text: $vmName)
                         .textFieldStyle(.roundedBorder)
                         .accessibilityLabel("Virtual machine name")
-                        .accessibilityHint("The name used to identify this virtual machine")
+                        .accessibilityHint("Type a new name for this virtual machine, then choose Save Settings.")
                         .accessibilityFocused($isFirstFieldFocused)
                 }
 

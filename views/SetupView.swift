@@ -206,12 +206,17 @@ struct SetupView: View {
 
                 // VM Name
                 VStack(alignment: .leading, spacing: 6) {
+                    // The shown words, hidden from VoiceOver (2026-10-27, tester
+                    // feedback): the field just after has the same name, and
+                    // VoiceOver read the two as plain text and a field it
+                    // didn't clearly call a text field. Its hint says to type.
                     Text("Virtual Machine Name")
                         .font(.headline)
+                        .accessibilityHidden(true)
                     TextField("For example: My Windows 11", text: $vmName)
                         .textFieldStyle(.roundedBorder)
                         .accessibilityLabel("Virtual machine name")
-                        .accessibilityHint("Enter a name to identify this virtual machine")
+                        .accessibilityHint("Type a name for this virtual machine, such as My Windows 11.")
                         .accessibilityFocused($isNameFieldFocused)
                 }
 
@@ -533,10 +538,15 @@ struct SetupView: View {
                 }
             }
             .accessibilityHint("Opens the list of time zones for Windows' clock.")
+            // A shown name for sighted users, who saw only the placeholder;
+            // hidden from VoiceOver, which hears the field's own (2026-10-27,
+            // tester feedback). Its hint says to type.
+            Text("Computer name")
+                .accessibilityHidden(true)
             TextField("Computer name", text: $windowsComputerName, prompt: Text(suggestedComputerName))
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Computer name")
-                .accessibilityHint("Up to 15 letters, digits and hyphens. Leave it empty for \(suggestedComputerName).")
+                .accessibilityHint("Type the name Windows gives this PC: up to 15 letters, digits and hyphens. Leave it empty for \(suggestedComputerName).")
 
             // The shown words, hidden from VoiceOver (2026-10-26,
             // accessibility audit): the radio group just after has the
