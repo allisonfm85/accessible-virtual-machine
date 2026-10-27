@@ -12,3 +12,6 @@ Frameworks/
 .DS_Store
 # Logs
 *.log
+# Swift package build output (the logic tests)
+.build/
+.swiftpm/
