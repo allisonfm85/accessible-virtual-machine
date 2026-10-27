@@ -201,7 +201,20 @@ final class CapsLockRemapper {
         // the apply is exactly what the saved copy is for. There is no window
         // in which we have changed the system without having recorded how to
         // put it back.
-        if let encoded = try? JSONEncoder().encode(existing),
+        //
+        // NEVER SAVE AVM'S OWN REMAP AS THE ORIGINAL (2026-10-25, code audit):
+        // if an earlier restore failed, the system still carries Caps Lock to
+        // F19 and the flag is still set. Saving that as the "original" meant
+        // the next successful restore wrote the remap back and cleared the
+        // flag, leaving Caps Lock dead with nothing left to recover it. So
+        // AVM's own entry is filtered out, and an original saved earlier and
+        // not yet restored is kept as it is.
+        let original = existing.filter { !($0.src == Self.capsLockUsage && $0.dst == Self.f19Usage) }
+        let unrestored = UserDefaults.standard.bool(forKey: Self.activeKey)
+            && UserDefaults.standard.string(forKey: Self.savedMappingKey) != nil
+        if unrestored {
+            AVMLog.write("AVM: CapsLockRemapper — an earlier original is still saved (not yet restored); keeping it.")
+        } else if let encoded = try? JSONEncoder().encode(original),
            let json = String(data: encoded, encoding: .utf8) {
             UserDefaults.standard.set(json, forKey: Self.savedMappingKey)
         } else {

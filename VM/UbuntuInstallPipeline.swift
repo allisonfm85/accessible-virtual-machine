@@ -98,6 +98,7 @@
 // pipeline is boot-proven, and this change does not touch it.
 
 import Foundation
+import Carbon
 
 /// PRIVACY: through AVMLog's sanitizer, like pipelineLog. Never logs the
 /// answer file itself (it holds the password hash).
@@ -118,6 +119,14 @@ nonisolated struct UbuntuAccount: Codable, Equatable {
     var passwordHash: String
     /// Sign in at startup with no password prompt.
     var signInAutomatically: Bool
+    /// Ubuntu's keyboard layout and variant, matching the Mac's layout when
+    /// the VM was made (2026-10-25, code audit; see UbuntuKeyboard). nil
+    /// means US, as before. The password is typed on the Mac with its own
+    /// layout, and the guest receives key positions, so a US guest under an
+    /// AZERTY or QWERTZ Mac turned the password into different characters
+    /// at the login screen, locking the user out.
+    var keyboardLayout: String? = nil
+    var keyboardVariant: String? = nil
 
     static let fileName = "ubuntu-account.json"
 
@@ -132,11 +141,23 @@ nonisolated struct UbuntuAccount: Codable, Equatable {
         guard name.range(of: "^[a-z][a-z0-9_-]{0,31}$", options: .regularExpression) != nil else {
             return "The user name can use only lower-case letters, digits, hyphens and underscores, and must start with a letter."
         }
+        // Ubuntu Desktop's own users and groups (widened 2026-10-25, code
+        // audit): "audio" or "video" used to pass here and then fail useradd
+        // 15 silent minutes into the install.
         let reserved: Set<String> = ["root", "daemon", "bin", "sys", "sync", "games", "man", "lp",
                                      "mail", "news", "uucp", "proxy", "www-data", "backup", "list",
-                                     "irc", "nobody", "systemd-network", "messagebus", "syslog",
-                                     "gdm", "admin", "sudo", "ubuntu"]
-        if reserved.contains(name) {
+                                     "irc", "nobody", "nogroup", "messagebus", "syslog",
+                                     "gdm", "admin", "sudo", "ubuntu", "adm", "tty", "disk", "kmem",
+                                     "dialout", "fax", "voice", "cdrom", "floppy", "tape", "audio",
+                                     "dip", "video", "plugdev", "staff", "users", "operator", "src",
+                                     "shadow", "utmp", "sasl", "input", "sgx", "kvm", "render",
+                                     "netdev", "lpadmin", "sambashare", "lxd", "polkitd", "avahi",
+                                     "pulse", "pulse-access", "colord", "geoclue", "rtkit", "saned",
+                                     "tss", "uuidd", "tcpdump", "usbmux", "whoopsie", "kernoops",
+                                     "dnsmasq", "cups-pk-helper", "fwupd-refresh", "gnome-initial-setup",
+                                     "speech-dispatcher", "nm-openvpn", "sssd", "landscape", "pollinate",
+                                     "snapd", "crontab", "ssl-cert", "bluetooth", "scanner", "wheel"]
+        if reserved.contains(name) || name.hasPrefix("systemd-") {
             return "Ubuntu keeps the name \(name) for itself. Please choose another user name."
         }
         return nil
@@ -171,21 +192,116 @@ nonisolated struct UbuntuAccount: Codable, Equatable {
 
     // MARK: Storage
 
+    /// Owner-only from the first byte (2026-10-25, code audit): writing
+    /// first and chmodding after left a moment, or a failed chmod, in which
+    /// the hash sat in a file anyone on the Mac could read.
     func save(inVMDirectory dir: URL) throws {
         let url = dir.appendingPathComponent(Self.fileName)
         let data = try JSONEncoder().encode(self)
-        try data.write(to: url, options: [.atomic])
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        Darwin.unlink(url.path)
+        let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else { throw CocoaError(.fileWriteNoPermission, userInfo: [NSFilePathErrorKey: url.path]) }
+        defer { Darwin.close(fd) }
+        let written = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, data.count) }
+        guard written == data.count else { throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: url.path]) }
     }
 
+    /// The saved account, checked again (2026-10-25, code audit): the user
+    /// name goes unquoted into a script that runs as root in the installer,
+    /// so a file edited by hand must not be able to put anything else there.
     static func load(fromVMDirectory dir: URL) -> UbuntuAccount? {
         let url = dir.appendingPathComponent(fileName)
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(UbuntuAccount.self, from: data)
+        guard let data = try? Data(contentsOf: url),
+              let account = try? JSONDecoder().decode(UbuntuAccount.self, from: data) else { return nil }
+        guard problem(withUserName: account.userName) == nil,
+              problem(withRealName: account.realName) == nil else {
+            ubuntuLog("UbuntuAccount.load: the saved account fails its own checks; not using it")
+            return nil
+        }
+        if let layout = account.keyboardLayout, layout.range(of: "^[a-z]{2,8}$", options: .regularExpression) == nil {
+            return nil
+        }
+        if let variant = account.keyboardVariant, variant.range(of: "^[a-z_]{1,16}$", options: .regularExpression) == nil {
+            return nil
+        }
+        return account
     }
 
     static func delete(fromVMDirectory dir: URL) {
         try? FileManager.default.removeItem(at: dir.appendingPathComponent(fileName))
+    }
+}
+
+// MARK: - Keyboard layout (2026-10-25)
+
+/// The Mac's current keyboard layout, as Ubuntu's (xkb) layout and variant.
+/// Read on the main thread when the VM is made (Text Input Sources must be
+/// asked from the main thread). Apple's layouts map to xkb's "mac" variants
+/// where xkb has one, since those match the Mac's key positions. nil for a
+/// layout not in the table; the setup wizard then says Ubuntu will use US.
+enum UbuntuKeyboard {
+    struct Layout: Equatable {
+        let layout: String
+        let variant: String?
+        let name: String
+    }
+
+    static let table: [String: Layout] = [
+        "com.apple.keylayout.US": Layout(layout: "us", variant: nil, name: "U.S."),
+        "com.apple.keylayout.ABC": Layout(layout: "us", variant: nil, name: "U.S."),
+        "com.apple.keylayout.USExtended": Layout(layout: "us", variant: nil, name: "U.S."),
+        "com.apple.keylayout.USInternational-PC": Layout(layout: "us", variant: "intl", name: "U.S. International"),
+        "com.apple.keylayout.Dvorak": Layout(layout: "us", variant: "dvorak", name: "Dvorak"),
+        "com.apple.keylayout.Colemak": Layout(layout: "us", variant: "colemak", name: "Colemak"),
+        "com.apple.keylayout.British": Layout(layout: "gb", variant: "mac", name: "British"),
+        "com.apple.keylayout.British-PC": Layout(layout: "gb", variant: nil, name: "British"),
+        "com.apple.keylayout.Irish": Layout(layout: "ie", variant: nil, name: "Irish"),
+        "com.apple.keylayout.Canadian": Layout(layout: "us", variant: nil, name: "Canadian English"),
+        "com.apple.keylayout.Canadian-CSA": Layout(layout: "ca", variant: nil, name: "Canadian French"),
+        "com.apple.keylayout.French": Layout(layout: "fr", variant: "mac", name: "French"),
+        "com.apple.keylayout.French-PC": Layout(layout: "fr", variant: nil, name: "French"),
+        "com.apple.keylayout.French-numerical": Layout(layout: "fr", variant: "mac", name: "French"),
+        "com.apple.keylayout.Belgian": Layout(layout: "be", variant: nil, name: "Belgian"),
+        "com.apple.keylayout.German": Layout(layout: "de", variant: "mac", name: "German"),
+        "com.apple.keylayout.SwissGerman": Layout(layout: "ch", variant: "de_mac", name: "Swiss German"),
+        "com.apple.keylayout.SwissFrench": Layout(layout: "ch", variant: "fr_mac", name: "Swiss French"),
+        "com.apple.keylayout.Austrian": Layout(layout: "at", variant: "mac", name: "Austrian"),
+        "com.apple.keylayout.Spanish": Layout(layout: "es", variant: "mac", name: "Spanish"),
+        "com.apple.keylayout.Spanish-ISO": Layout(layout: "es", variant: "mac", name: "Spanish"),
+        "com.apple.keylayout.LatinAmerican": Layout(layout: "latam", variant: nil, name: "Latin American"),
+        "com.apple.keylayout.Italian": Layout(layout: "it", variant: "mac", name: "Italian"),
+        "com.apple.keylayout.Italian-Pro": Layout(layout: "it", variant: "mac", name: "Italian"),
+        "com.apple.keylayout.Portuguese": Layout(layout: "pt", variant: "mac", name: "Portuguese"),
+        "com.apple.keylayout.Brazilian": Layout(layout: "br", variant: nil, name: "Brazilian"),
+        "com.apple.keylayout.Brazilian-ABNT2": Layout(layout: "br", variant: nil, name: "Brazilian"),
+        "com.apple.keylayout.Dutch": Layout(layout: "us", variant: nil, name: "Dutch"),
+        "com.apple.keylayout.Danish": Layout(layout: "dk", variant: "mac", name: "Danish"),
+        "com.apple.keylayout.Swedish": Layout(layout: "se", variant: "mac", name: "Swedish"),
+        "com.apple.keylayout.Swedish-Pro": Layout(layout: "se", variant: "mac", name: "Swedish"),
+        "com.apple.keylayout.Norwegian": Layout(layout: "no", variant: "mac", name: "Norwegian"),
+        "com.apple.keylayout.Finnish": Layout(layout: "fi", variant: "mac", name: "Finnish"),
+        "com.apple.keylayout.Polish": Layout(layout: "pl", variant: nil, name: "Polish"),
+        "com.apple.keylayout.PolishPro": Layout(layout: "pl", variant: nil, name: "Polish"),
+        "com.apple.keylayout.Czech": Layout(layout: "cz", variant: nil, name: "Czech"),
+        "com.apple.keylayout.Czech-QWERTY": Layout(layout: "cz", variant: "qwerty", name: "Czech"),
+        "com.apple.keylayout.Hungarian": Layout(layout: "hu", variant: nil, name: "Hungarian"),
+        "com.apple.keylayout.Turkish": Layout(layout: "tr", variant: nil, name: "Turkish"),
+        "com.apple.keylayout.Turkish-QWERTY-PC": Layout(layout: "tr", variant: nil, name: "Turkish"),
+    ]
+
+    /// The current layout's mapping, or nil with the layout's own name.
+    @MainActor
+    static func current() -> (layout: Layout?, macName: String) {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue() else {
+            return (nil, "unknown")
+        }
+        func property(_ key: CFString) -> String? {
+            guard let raw = TISGetInputSourceProperty(source, key) else { return nil }
+            return Unmanaged<CFString>.fromOpaque(raw).takeUnretainedValue() as String
+        }
+        let id = property(kTISPropertyInputSourceID) ?? ""
+        let name = property(kTISPropertyLocalizedName) ?? id
+        return (table[id], name)
     }
 }
 
@@ -495,7 +611,7 @@ nonisolated final class UbuntuInstallPipeline {
           version: 1
           interactive-sections: []
           locale: en_US.UTF-8
-          keyboard: {layout: us}
+          keyboard: {layout: \(account.keyboardLayout ?? "us")\(account.keyboardVariant.map { ", variant: \($0)" } ?? "")}
           timezone: \(yamlQuoted(timeZone))
           source: {id: ubuntu-desktop}
           identity:
@@ -786,6 +902,11 @@ nonisolated final class UbuntuInstallPipeline {
                 throw UbuntuPipelineError.stageFailed(stage: .promote,
                                                      reason: "The file \(name) is missing or empty after finalizing.")
             }
+            // Owner-only (2026-10-25, privacy audit): install-avm.iso carries
+            // the password hash in its answer file, and the installer logs
+            // can land on autounattend.img. QEMU runs as the same user, so
+            // it still reads both.
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dst.path)
         }
         ubuntuLog("stagePromote: promoted install-avm.iso + autounattend.img to \(input.runtimeDir.path)")
     }
@@ -795,7 +916,7 @@ nonisolated final class UbuntuInstallPipeline {
     private static func makeScratchDir(for vmID: UUID) throws -> URL {
         let appSupport = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                      appropriateFor: nil, create: true)
-        let dir = appSupport.appendingPathComponent("AVM").appendingPathComponent("scratch")
+        let dir = appSupport.appendingPathComponent(AVMPaths.supportFolderName).appendingPathComponent("scratch")
             .appendingPathComponent(vmID.uuidString)
         try? FileManager.default.removeItem(at: dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
