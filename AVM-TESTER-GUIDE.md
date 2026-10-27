@@ -457,6 +457,10 @@ tell you why. While Windows is installing, Speak Status also says how
 long Setup has been running and how much it has written to the disk so
 far.
 
+**Copying and pasting.** Copy on the Mac, enter Windows, and paste. What
+you copy in Windows is ready to paste on the Mac at once. Each machine's
+Settings has a Share the clipboard switch to turn this off.
+
 **Force Stop asks first,** with Cancel as the default, wherever you find
 it, because it turns Windows off at once. It is also offered while Windows
 is shutting down, in case Windows stops answering.

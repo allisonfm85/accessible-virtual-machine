@@ -183,9 +183,18 @@ class FocusLockManager: ObservableObject {
                 self.unlock()
             }
         }
+        _ = activeObserver
     }
 
     private var resignObserver: NSObjectProtocol?
+
+    /// Back in AVM after copying something in another app: offer the
+    /// Mac's clipboard to the guest (AVMPasteboard, 2026-10-25).
+    private lazy var activeObserver: NSObjectProtocol = NotificationCenter.default.addObserver(
+        forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+    ) { _ in
+        MainActor.assumeIsolated { AVMPasteboard.shared.macPasteboardMayHaveChanged() }
+    }
 
     // MARK: - Capture view registration
     /// Called by SPICEKeyCaptureView from viewDidMoveToWindow — the moment
@@ -234,6 +243,8 @@ class FocusLockManager: ObservableObject {
         // remapper is silent on success and handles its own failure speech.
         CapsLockRemapper.shared.applyForLock()
         guestName = VMManager.currentGuestName
+        // Copied on the Mac before entering? Offer it to the guest now.
+        AVMPasteboard.shared.macPasteboardMayHaveChanged()
         Announcer.shared.announce("\(guestName) keyboard on", tone: .info)
         AVMLog.write("AVM: FocusLock.lock() — NOW LOCKED (isLocked=true).")
     }

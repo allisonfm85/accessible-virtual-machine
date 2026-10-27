@@ -65,6 +65,7 @@ final class VMConfigurationTests: XCTestCase {
         XCTAssertNil(config.windowsEdition)
         XCTAssertFalse(config.isStoredElsewhere)
         XCTAssertFalse(config.usesSecureBoot)
+        XCTAssertTrue(config.sharesClipboard)
         XCTAssertEqual(config.effectiveUSBMode, .ask)
     }
 

@@ -889,6 +889,124 @@ final class SPICEKeyCaptureView: MTKView {
 }
 
 // MARK: - Coordinator
+// MARK: - Clipboard sharing (2026-10-25)
+
+/// Connects CocoaSpice's clipboard sharing to the Mac's pasteboard.
+/// CocoaSpice already turns sharing on and the SPICE agent AVM installs in
+/// Windows speaks it, but with no pasteboard delegate nothing moved:
+/// copying between the Mac and Windows didn't work at all.
+///   - Windows to Mac: CocoaSpice calls setString/setData as soon as
+///     something is copied in the guest.
+///   - Mac to Windows: NSPasteboard has no change notification, so AVM
+///     checks its change count whenever the user enters the guest or comes
+///     back to AVM, and tells CocoaSpice when it moved; Windows then asks
+///     for the data when the user pastes.
+/// CocoaSpice calls this on its SPICE thread, so it touches no main-actor
+/// state: the VM's setting is copied in, behind a lock, by refreshEnabled.
+/// PRIVACY: clipboard contents are never logged, only that sharing ran.
+nonisolated final class AVMPasteboard: NSObject, CSPasteboardDelegate, @unchecked Sendable {
+    static let shared = AVMPasteboard()
+
+    private let lock = NSLock()
+    private var enabled = true
+    /// The pasteboard's change count when AVM last told the guest, or last
+    /// wrote it itself, so a guest copy isn't echoed back as a Mac change.
+    private var seenChangeCount = NSPasteboard.general.changeCount
+
+    private var isEnabled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return enabled
+    }
+
+    /// Reads the running VM's saved setting. Main actor: called on connect,
+    /// when Settings are saved, and before each change check.
+    @MainActor
+    func refreshEnabled() {
+        let id = VMSession.current?.configuration.id
+        let saved = id.flatMap { id in VMStore.shared?.configurations.first { $0.id == id } }
+        let on = saved?.sharesClipboard ?? true
+        lock.lock(); enabled = on; lock.unlock()
+    }
+
+    /// Tells CocoaSpice if the Mac's clipboard changed since AVM last
+    /// looked. Called on entering the guest and when AVM becomes active.
+    @MainActor
+    func macPasteboardMayHaveChanged() {
+        refreshEnabled()
+        guard isEnabled else { return }
+        let count = NSPasteboard.general.changeCount
+        lock.lock()
+        let changed = count != seenChangeCount
+        seenChangeCount = count
+        lock.unlock()
+        if changed {
+            AVMLog.write("AVM: Clipboard — the Mac's clipboard changed; offering it to the guest.")
+            NotificationCenter.default.post(name: .csPasteboardChanged, object: nil)
+        }
+    }
+
+    private static func macType(_ type: CSPasteboardType) -> NSPasteboard.PasteboardType? {
+        switch type {
+        case .string: return .string
+        case .png: return .png
+        case .tiff: return .tiff
+        case .html: return .html
+        case .rtf: return .rtf
+        case .rtfd: return .rtfd
+        case .pdf: return .pdf
+        case .URL: return .URL
+        case .fileURL: return .fileURL
+        case .jpg: return NSPasteboard.PasteboardType("public.jpeg")
+        case .bmp: return NSPasteboard.PasteboardType("com.microsoft.bmp")
+        case .tabularText: return .tabularText
+        default: return nil
+        }
+    }
+
+    func canReadItem(for type: CSPasteboardType) -> Bool {
+        guard isEnabled, let macType = Self.macType(type) else { return false }
+        return NSPasteboard.general.availableType(from: [macType]) != nil
+    }
+
+    func data(for type: CSPasteboardType) -> Data? {
+        guard isEnabled, let macType = Self.macType(type) else { return nil }
+        return NSPasteboard.general.data(forType: macType)
+    }
+
+    func setData(_ data: Data, for type: CSPasteboardType) {
+        guard isEnabled, let macType = Self.macType(type) else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setData(data, forType: macType)
+        noteOwnWrite()
+    }
+
+    func string() -> String? {
+        guard isEnabled else { return nil }
+        return NSPasteboard.general.string(forType: .string)
+    }
+
+    func setString(_ string: String) {
+        guard isEnabled else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(string, forType: .string)
+        noteOwnWrite()
+    }
+
+    func clearContents() {
+        guard isEnabled else { return }
+        NSPasteboard.general.clearContents()
+        noteOwnWrite()
+    }
+
+    private func noteOwnWrite() {
+        let count = NSPasteboard.general.changeCount
+        lock.lock(); seenChangeCount = count; lock.unlock()
+        AVMLog.write("AVM: Clipboard — the guest copied something; it's on the Mac's clipboard.")
+    }
+}
+
 final class SPICECoordinator: NSObject, CSConnectionDelegate {
     private var connection: CSConnection?
     private var renderer: CSMetalRenderer?
@@ -1833,6 +1951,13 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     // MARK: CSConnectionDelegate
     func spiceConnected(_ connection: CSConnection) {
         avmPublicLog("SPICE connected.")
+        // Clipboard sharing (2026-10-25): the delegate is weak in CocoaSpice,
+        // so the shared instance keeps it alive.
+        connection.session.pasteboardDelegate = AVMPasteboard.shared
+        Task { @MainActor in
+            AVMPasteboard.shared.refreshEnabled()
+            AVMPasteboard.shared.macPasteboardMayHaveChanged()
+        }
     }
     func spiceDisconnected(_ connection: CSConnection) {
         avmPublicLog("SPICE disconnected.")

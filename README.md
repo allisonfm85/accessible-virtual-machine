@@ -104,6 +104,14 @@ If BitLocker is on, Windows may ask for its recovery key after the switch.
 The firmware is UTM's Secure Boot build of edk2; its licences ship with
 it, in edk2-licenses.txt.
 
+## Copying between the Mac and Windows
+
+Copy something on the Mac, enter Windows, and paste: it's there. What you
+copy in Windows is ready to paste on the Mac straight away. This works for
+text, rich text and pictures, through the SPICE agent AVM installs in
+Windows. AVM never records what is copied. To keep the two clipboards
+apart, turn off Share the clipboard in that machine's Settings.
+
 ## When the Mac sleeps
 
 Before the Mac sleeps, AVM pauses a running machine. When the Mac wakes,

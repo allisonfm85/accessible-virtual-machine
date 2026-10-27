@@ -90,6 +90,13 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// get true from the setup wizard; existing ones change it in Settings.
     var secureBoot: Bool?
 
+    // MARK: - Clipboard (2026-10-25)
+
+    /// Share the clipboard with the guest, through the SPICE agent AVM
+    /// installs (AVMPasteboard). nil means on, the default; false keeps the
+    /// two clipboards apart. Read it through sharesClipboard.
+    var shareClipboard: Bool?
+
     // MARK: - Defaults
 
     init(
@@ -107,6 +114,7 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         windowsEditionName: String? = nil,
         storageFolderPath: String? = nil,
         secureBoot: Bool? = nil,
+        shareClipboard: Bool? = nil,
     ) {
         self.id = id
         self.name = name
@@ -122,11 +130,13 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         self.windowsEditionName = windowsEditionName
         self.storageFolderPath = storageFolderPath
         self.secureBoot = secureBoot
+        self.shareClipboard = shareClipboard
     }
 }
 
 extension VMConfiguration {
     var usesSecureBoot: Bool { secureBoot == true }
+    var sharesClipboard: Bool { shareClipboard ?? true }
 }
 
 // MARK: - Storage location

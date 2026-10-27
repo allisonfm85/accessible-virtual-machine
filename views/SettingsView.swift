@@ -122,6 +122,7 @@ struct SettingsView: View {
     @State private var usbMode: USBPlugMode = .ask
     @State private var rememberedDevices: [RememberedUSBDevice] = []
     @State private var secureBoot = false
+    @State private var shareClipboard = true
 
     // MARK: - Body
 
@@ -212,6 +213,19 @@ struct SettingsView: View {
                 .accessibilityElement(children: .combine)
                 .padding(.horizontal)
             }
+
+            // Clipboard (2026-10-25)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Clipboard")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                Toggle("Share the clipboard with \(guest)", isOn: $shareClipboard)
+                    .accessibilityHint("When on, text and images you copy on the Mac can be pasted in \(guest), and the other way round")
+                Text("Copy on the Mac, enter \(guest), and paste. What you copy in \(guest) is ready to paste on the Mac straight away. AVM never records what's copied.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal)
 
             // Secure Boot (Windows only)
             if configuration.guestOS == .windows {
@@ -358,6 +372,7 @@ struct SettingsView: View {
         usbMode = saved.effectiveUSBMode
         rememberedDevices = saved.usbRememberedDevices ?? []
         secureBoot = saved.usesSecureBoot
+        shareClipboard = saved.sharesClipboard
     }
 
     // MARK: - Save Settings
@@ -440,9 +455,12 @@ struct SettingsView: View {
             if let growTo {
                 updated.diskSizeGB = growTo
             }
+            updated.shareClipboard = shareClipboard ? nil : false
             updated.usbMode = usbMode.rawValue
             updated.usbRememberedDevices = rememberedDevices.isEmpty ? nil : rememberedDevices
             vmStore.save(updated)
+            // A running VM follows the clipboard setting straight away.
+            AVMPasteboard.shared.refreshEnabled()
 
             let message: String
             if let growTo {
