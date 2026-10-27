@@ -1040,3 +1040,164 @@ final class MachineArchiveTests: XCTestCase {
         XCTAssertFalse(MachineArchive.exportSkips("restore-points/avm-1/nvram.fd"))
     }
 }
+
+// MARK: - Fedora, the Ubuntu way (2026-10-26)
+
+final class FedoraInstallTests: XCTestCase {
+    private let account = UbuntuAccount(realName: "Amena O'Neil", userName: "amena", passwordHash: "$6$salt$hash",
+                                        signInAutomatically: true, keyboardLayout: "gb", keyboardVariant: "mac")
+
+    /// The aarch64 Everything netinstall's EFI menu (Fedora 44), cut down:
+    /// it starts on the media-check entry, after 60 seconds.
+    private let menu = """
+        set default="1"
+
+        set timeout=60
+        ### END /etc/grub.d/00_header ###
+
+        search --no-floppy --set=root -l 'Fedora-E-dvd-aarch64-44'
+
+        menuentry 'Install Fedora 44' --class red --class gnu-linux --class gnu --class os {
+        \tlinux /images/pxeboot/vmlinuz inst.stage2=hd:LABEL=Fedora-E-dvd-aarch64-44 ro
+        \tinitrd /images/pxeboot/initrd.img
+        }
+        menuentry 'Test this media & install Fedora 44' --class red --class gnu-linux --class gnu --class os {
+        \tlinux /images/pxeboot/vmlinuz inst.stage2=hd:LABEL=Fedora-E-dvd-aarch64-44 rd.live.check
+        \tinitrd /images/pxeboot/initrd.img
+        }
+        """
+
+    /// The answers go on the first entry only, that entry is the default,
+    /// the menu boots by itself, and the installed-machine guard comes first.
+    func testBootMenuEdit() throws {
+        let edited = try XCTUnwrap(UbuntuInstallPipeline.editedFedoraBootMenu(menu))
+        let arguments = UbuntuInstallPipeline.fedoraKernelArguments(volumeLabel: "Fedora-E-dvd-aarch64-44")
+        XCTAssertTrue(edited.hasPrefix(UbuntuInstallPipeline.markerGuardLine))
+        XCTAssertTrue(edited.contains("linux /images/pxeboot/vmlinuz \(arguments) inst.stage2=hd:LABEL=Fedora-E-dvd-aarch64-44 ro"))
+        XCTAssertTrue(arguments.contains("inst.ks=hd:LABEL=Fedora-E-dvd-aarch64-44:/nocloud/ks.cfg"))
+        XCTAssertTrue(edited.contains("set default=\"0\""))
+        XCTAssertFalse(edited.contains("set default=\"1\""))
+        XCTAssertTrue(edited.contains("set timeout=1\n"))
+        XCTAssertEqual(edited.components(separatedBy: "inst.ks=").count, 2, "only the first entry")
+        XCTAssertEqual(UbuntuInstallPipeline.fedoraVolumeLabel(inBootMenu: menu), "Fedora-E-dvd-aarch64-44")
+        XCTAssertNil(UbuntuInstallPipeline.editedFedoraBootMenu("menuentry 'x' { linux /install.a64/vmlinuz }"))
+        XCTAssertNil(UbuntuInstallPipeline.editedFedoraBootMenu("menuentry 'x' { linux /images/pxeboot/vmlinuz ro }"),
+                     "no label to find the kickstart by")
+    }
+
+    func testKickstartAnswersEverything() {
+        let ks = UbuntuInstallPipeline.fedoraKickstart(account: account, hostName: "amenas-fedora",
+                                                       timeZone: "America/Chicago", version: "44")
+        for line in ["text\n", "lang en_US.UTF-8\n", "keyboard --xlayouts='gb (mac)'\n",
+                     "timezone 'America/Chicago' --utc\n", "--hostname=amenas-fedora\n",
+                     "mirrorlist?repo=fedora-44&arch=aarch64", "repo=updates-released-f44&arch=aarch64",
+                     "ignoredisk --only-use=nvme0n1\n", "clearpart --all --initlabel --drives=nvme0n1\n",
+                     "rootpw --lock\n",
+                     "user --name=amena --gecos='Amena O'\"'\"'Neil' --groups=wheel --iscrypted --password='$6$salt$hash'\n",
+                     "firstboot --disable\n", "\npoweroff\n",
+                     "@^workstation-product-environment\n", "\norca\n", "\nspice-vdagent\n", "\nspice-webdavd\n",
+                     "\nqemu-guest-agent\n", "\n-gnome-tour\n",
+                     "%post --interpreter=/bin/bash --erroronfail --log=/root/avm-setup.log\n", "%onerror"] {
+            XCTAssertTrue(ks.contains(line), line)
+        }
+        // Every section is closed, and nothing reboots into the installer.
+        XCTAssertEqual(ks.components(separatedBy: "\n%end\n").count, 4)
+        XCTAssertFalse(ks.contains("\nreboot"))
+        // The release falls back to Anaconda's own when the disc didn't say.
+        let unknown = UbuntuInstallPipeline.fedoraKickstart(account: account, hostName: "h", timeZone: "UTC", version: "")
+        XCTAssertTrue(unknown.contains("repo=fedora-$releasever&"))
+        // A US keyboard has no variant.
+        var us = account
+        us.keyboardLayout = nil
+        us.keyboardVariant = nil
+        XCTAssertTrue(UbuntuInstallPipeline.fedoraKickstart(account: us, hostName: "h", timeZone: "UTC", version: "44")
+            .contains("keyboard --xlayouts='us'\n"))
+    }
+
+    /// Ubuntu's script, made Fedora's: every Ubuntu-only piece replaced,
+    /// the marker still the last act.
+    func testSetupScriptIsFedoras() throws {
+        let script = UbuntuInstallPipeline.fedoraSetupScript(account: account)
+        XCTAssertFalse(script.contains("curtin"))
+        XCTAssertFalse(script.contains("/target"))
+        XCTAssertFalse(script.contains("gdm3"))
+        XCTAssertFalse(script.contains("update-grub"))
+        XCTAssertFalse(script.contains("> $T/etc/dconf/profile/user"), "Fedora's own dconf profile is kept")
+        XCTAssertTrue(script.contains("\nT=\n"))
+        XCTAssertTrue(script.contains("\ndconf update\n"))
+        XCTAssertTrue(script.contains("/etc/gdm/custom.conf"))
+        XCTAssertTrue(script.contains("screen-reader-enabled=true"))
+        XCTAssertTrue(script.contains("keyboard-layout='laptop'"))
+        XCTAssertTrue(script.contains("grubby --update-kernel=ALL"))
+        let restore = try XCTUnwrap(script.range(of: "restorecon -R /etc /home/$U"))
+        let marker = try XCTUnwrap(script.range(of: "AVMDONE.TAG"))
+        XCTAssertLessThan(restore.lowerBound, marker.lowerBound, "SELinux labels before the marker")
+        XCTAssertTrue(script.contains("Fedora installed by AVM"))
+        // Nothing in it could end the kickstart's %post early.
+        XCTAssertFalse(script.components(separatedBy: "\n").contains("%end"))
+    }
+
+    func testFailureScriptWritesTheFailureMarker() {
+        let script = UbuntuInstallPipeline.fedoraFailureScript
+        XCTAssertTrue(script.contains("AVMFAIL.TAG"))
+        XCTAssertTrue(script.contains("/tmp/anaconda.log"))
+        XCTAssertTrue(script.contains("poweroff"))
+        XCTAssertFalse(script.contains("AVMDONE"))
+    }
+
+    // MARK: Identifying the disc
+
+    func testVolumeIDFromXorrisoReport() {
+        let report = """
+            Media summary: 1 session, 609220 data blocks, 1190m data, 1104g free
+            Volume id    : 'Fedora-E-dvd-aarch64-44'
+            xorriso : WARNING : Not found in ISO image: '/LiveOS'
+            """
+        XCTAssertEqual(UbuntuInstallPipeline.fedoraVolumeID(inXorrisoReport: report), "Fedora-E-dvd-aarch64-44")
+        XCTAssertNil(UbuntuInstallPipeline.fedoraVolumeID(inXorrisoReport: "Media summary: blank"))
+    }
+
+    func testEverythingNetinstallIsAccepted() {
+        let info = UbuntuInstallPipeline.fedoraISOInfo(volumeID: "Fedora-E-dvd-aarch64-44",
+                                                       discInfo: "1776864364.781600\n44\naarch64\n",
+                                                       hasInstallerKernel: true)
+        XCTAssertEqual(info.distro, .fedora)
+        XCTAssertEqual(info.version, "44")
+        XCTAssertTrue(info.isARM64)
+        XCTAssertFalse(info.isLiveImage)
+        XCTAssertEqual(info.spokenName, "Fedora 44")
+        XCTAssertNil(UbuntuInstallPipeline.problem(with: info))
+    }
+
+    func testWhatIsRefused() throws {
+        let intel = UbuntuInstallPipeline.fedoraISOInfo(volumeID: "Fedora-E-dvd-x86_64-44",
+                                                        discInfo: "1\n44\nx86_64\n", hasInstallerKernel: true)
+        XCTAssertTrue(try XCTUnwrap(UbuntuInstallPipeline.problem(with: intel)).contains("aarch64"))
+
+        let live = UbuntuInstallPipeline.fedoraISOInfo(volumeID: "Fedora-WS-Live-44", discInfo: "",
+                                                       hasInstallerKernel: false)
+        XCTAssertTrue(live.isLiveImage)
+        XCTAssertEqual(live.version, "44")
+        XCTAssertTrue(try XCTUnwrap(UbuntuInstallPipeline.problem(with: live)).contains("live image"))
+
+        let old = UbuntuInstallPipeline.fedoraISOInfo(volumeID: "Fedora-E-dvd-aarch64-43",
+                                                      discInfo: "1\n43\naarch64\n", hasInstallerKernel: true)
+        XCTAssertTrue(try XCTUnwrap(UbuntuInstallPipeline.problem(with: old)).contains("Fedora 44 or later"))
+
+        let rawhide = UbuntuInstallPipeline.fedoraISOInfo(volumeID: "Fedora-E-dvd-aarch64-rawh",
+                                                          discInfo: "1\nRawhide\naarch64\n", hasInstallerKernel: true)
+        XCTAssertTrue(try XCTUnwrap(UbuntuInstallPipeline.problem(with: rawhide)).contains("couldn't tell"))
+    }
+
+    func testFedoraIsLinux() {
+        XCTAssertTrue(GuestOS.fedora.isLinux)
+        XCTAssertEqual(GuestOS(rawValue: "fedora"), .fedora)
+        XCTAssertEqual(GuestOS.fedora.displayName, "Fedora")
+    }
+
+    func testFedoraUserNamesAreReserved() {
+        XCTAssertNotNil(UbuntuAccount.problem(withUserName: "chrony"))
+        XCTAssertNotNil(UbuntuAccount.problem(withUserName: "pipewire"))
+        XCTAssertNil(UbuntuAccount.problem(withUserName: "amena"))
+    }
+}

@@ -145,14 +145,19 @@ struct SetupView: View {
     @State private var windowsPassword: String = ""
     @State private var windowsPasswordConfirm: String = ""
 
-    /// "Ubuntu" or "Debian": the Linux the chosen installer is (2026-10-26).
+    /// "Ubuntu", "Debian" or "Fedora": the Linux the chosen installer is
+    /// (2026-10-26).
     private var linuxName: String {
-        if case .ubuntu(let info) = installerKind, info.distro == .debian { return "Debian" }
-        return "Ubuntu"
+        linuxGuestOS.displayName
     }
 
     private var linuxGuestOS: GuestOS {
-        linuxName == "Debian" ? .debian : .ubuntu
+        guard case .ubuntu(let info) = installerKind else { return .ubuntu }
+        switch info.distro {
+        case .ubuntu: return .ubuntu
+        case .debian: return .debian
+        case .fedora: return .fedora
+        }
     }
 
     private var isUbuntu: Bool {
@@ -234,7 +239,7 @@ struct SetupView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Installer Image")
                         .font(.headline)
-                    Text("Required: an ISO file with the Windows 11 for ARM installer, or Ubuntu Desktop for ARM.")
+                    Text("Required: an ISO file with the Windows 11 for ARM installer, Ubuntu Desktop for ARM, the Debian arm64 installer, or the Fedora Everything netinstall for aarch64.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -252,7 +257,7 @@ struct SetupView: View {
                         Button("Choose Installer Image") {
                             showingFilePicker = true
                         }
-                        .accessibilityHint("Opens a file picker to select your Windows or Ubuntu installer ISO")
+                        .accessibilityHint("Opens a file picker to select your Windows, Ubuntu, Debian or Fedora installer ISO")
 
                         // 2026-10-25, roadmap item 9.
                         Button("Download Windows 11 for ARM…") {
@@ -611,7 +616,7 @@ struct SetupView: View {
                 .accessibilityLabel("Confirm \(linuxName) password")
 
             Toggle("Sign in automatically", isOn: $ubuntuSignInAutomatically)
-                .accessibilityHint("When on, Ubuntu starts straight to the desktop with no password prompt")
+                .accessibilityHint("When on, \(linuxName) starts straight to the desktop with no password prompt")
         }
     }
 
@@ -658,7 +663,7 @@ struct SetupView: View {
                 }
                 installerKind = .ubuntu(info)
                 Announcer.shared.announce(
-                    "\(info.spokenName) installer selected. Fill in the \(info.distro == .debian ? "Debian" : "Ubuntu") account below.",
+                    "\(info.spokenName) installer selected. Fill in the \(linuxName) account below.",
                     tone: .info
                 )
             }

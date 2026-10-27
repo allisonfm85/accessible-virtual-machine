@@ -4,9 +4,9 @@ AVM is a macOS application that lets blind and low-vision users install
 and run Windows 11 ARM64 virtual machines entirely through VoiceOver —
 no sighted assistance required at any step. Every failure produces a
 spoken, specific, actionable announcement. It can also install Ubuntu
-Desktop for ARM or Debian with no installer questions, with the Orca
-screen reader speaking from the first boot (tester guide, section 16),
-and macOS itself, from Apple.
+Desktop for ARM, Debian or Fedora Workstation with no installer
+questions, with the Orca screen reader speaking from the first boot
+(tester guide, section 16), and macOS itself, from Apple.
 
 AVM is currently in early testing. It is distributed to testers as a
 notarized DMG.
@@ -201,6 +201,14 @@ to your Mac's apps.
 Choose a Debian arm64 installer (the netinst from debian.org works) in
 the setup wizard, and AVM installs Debian with GNOME and Orca exactly as
 it installs Ubuntu: no questions, Orca speaking from the first boot.
+
+## Fedora
+
+Choose the Fedora Everything netinstall ISO for aarch64, Fedora 44 or
+later, from fedoraproject.org, and AVM installs Fedora Workstation (GNOME
+and Orca) the same way, downloading it from Fedora's mirrors during the
+install. The Workstation live image is not used: AVM says so and names
+the download it needs (tester guide, section 16).
 
 ## Sharing a folder with Windows
 

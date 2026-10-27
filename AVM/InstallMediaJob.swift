@@ -6,9 +6,9 @@
 //
 //   AVM.app/Contents/MacOS/AVM --build-install-media --iso <Windows ISO>
 //       --out <folder> [--edition pro|home|homeSingleLanguage]
-//       [--screen-readers nvda,jaws] [--guest windows|ubuntu|debian]
+//       [--screen-readers nvda,jaws] [--guest windows|ubuntu|debian|fedora]
 //
-// For Ubuntu or Debian, <folder> must hold the account as the wizard
+// For Ubuntu, Debian or Fedora, <folder> must hold the account as the wizard
 // writes it (ubuntu-account.json); Tools/test-linux-install.sh does that.
 //
 // It runs the same ensureInstallMedia a real first start runs, into

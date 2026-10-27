@@ -270,6 +270,10 @@ enum GuestOS: String {
     /// Debian, installed the Ubuntu way: same account, Orca and markers,
     /// Debian's own preseed answers (UbuntuInstallPipeline.swift).
     case debian
+    /// Fedora Workstation, installed the Ubuntu way (2026-10-26): same
+    /// account, Orca and markers, Fedora's own kickstart answers, from the
+    /// Everything netinstall ISO (UbuntuInstallPipeline.swift).
+    case fedora
     /// Runs on Apple's Virtualization framework, not QEMU (MacGuest.swift).
     case macOS
 
@@ -280,13 +284,14 @@ enum GuestOS: String {
         case .windows: return "Windows"
         case .ubuntu: return "Ubuntu"
         case .debian: return "Debian"
+        case .fedora: return "Fedora"
         case .macOS: return "macOS"
         }
     }
 
-    /// Ubuntu or Debian: AVM's Linux install and run path (account, Orca,
-    /// install markers, stall watch).
-    var isLinux: Bool { self == .ubuntu || self == .debian }
+    /// Ubuntu, Debian or Fedora: AVM's Linux install and run path (account,
+    /// Orca, install markers, stall watch).
+    var isLinux: Bool { self == .ubuntu || self == .debian || self == .fedora }
 }
 
 extension VMConfiguration {

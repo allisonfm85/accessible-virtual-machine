@@ -908,8 +908,13 @@ final class VMManager: ObservableObject {
     /// done (UBUNTU INSTALL END, handleQEMUProcessExit).
     private func ensureUbuntuInstallMedia(configuration: VMConfiguration, sourceISO: String, runtimeDir: URL) async throws {
         avmLog("ensureUbuntuInstallMedia: building install media from \(sourceISO)")
-        appendConsole("AVM: Building unattended Ubuntu install media.\n")
-        installProgress = "Preparing the Ubuntu install media."
+        // The guest's own name in everything said (2026-10-26): Debian and
+        // Fedora machines were told "Ubuntu".
+        let guest = configuration.guestOS.displayName
+        // Debian's and Fedora's netinstalls download the desktop.
+        let duration = configuration.guestOS == .ubuntu ? "15 to 40" : "20 to 60"
+        appendConsole("AVM: Building unattended \(guest) install media.\n")
+        installProgress = "Preparing the \(guest) install media."
 
         let pipeline = UbuntuInstallPipeline()
         pipeline.onProgress = { [weak self] spoken, visible in
@@ -926,7 +931,7 @@ final class VMManager: ObservableObject {
             appendConsole("AVM: Install media ready.\n")
             installProgress = "Install media ready."
             Announcer.shared.announce(
-                "Install media ready. Ubuntu is installing now, with no questions. This takes about 15 to 40 minutes, and nothing speaks until it's done. AVM will tell you when Ubuntu is installed.",
+                "Install media ready. \(guest) is installing now, with no questions. This takes about \(duration) minutes, and nothing speaks until it's done. AVM will tell you when \(guest) is installed.",
                 tone: .success
             )
         } catch {
@@ -1527,6 +1532,7 @@ final class VMManager: ObservableObject {
         stopInstallWatchdog()
         let serialLog = runtimeDir.appendingPathComponent("firmware-serial.log").path
         let mdirURL = bundledBinaryURL(named: "mdir")
+        let guest = configuration.guestOS.displayName
         installWatchdogTask = Task { [weak self] in
             let sampleNanoseconds: UInt64 = 60_000_000_000   // 1 min
             let quietMinutesToAnnounce = 15
@@ -1568,9 +1574,9 @@ final class VMManager: ObservableObject {
                         avmLog("ubuntuStallWatch: AVMFAIL.TAG present and still running after 3 minutes — stopping the VM")
                         await MainActor.run {
                             self.forceStopVM()
-                            self.appendConsole("AVM: Ubuntu's installer stopped with an error. Its logs are on the virtual machine's UNATTEND disk.\n")
+                            self.appendConsole("AVM: \(guest)'s installer stopped with an error. Its logs are on the virtual machine's UNATTEND disk.\n")
                             Announcer.shared.announce(
-                                "Ubuntu's install stopped with an error, and AVM turned the virtual machine off. Next: press Start to try the install again. If it stops again, report it with the diagnostic log.",
+                                "\(guest)'s install stopped with an error, and AVM turned the virtual machine off. Next: press Start to try the install again. If it stops again, report it with the diagnostic log.",
                                 tone: .failure
                             )
                             // AVMFAIL.TAG is NOT removed here: QEMU may still
@@ -1596,9 +1602,9 @@ final class VMManager: ObservableObject {
                 if quietMinutes == quietMinutesToAnnounce {
                     avmLog("ubuntuStallWatch: STALL — no disk or serial activity for \(quietMinutes) minutes; announcing")
                     await MainActor.run {
-                        self.appendConsole("AVM: Ubuntu's install seems to have stopped: nothing has changed for 15 minutes.\n")
+                        self.appendConsole("AVM: \(guest)'s install seems to have stopped: nothing has changed for 15 minutes.\n")
                         Announcer.shared.announce(
-                            "Ubuntu's install seems to have stopped. Nothing has changed for 15 minutes. Next: save the diagnostic log from the File menu, then stop the virtual machine and start it again.",
+                            "\(guest)'s install seems to have stopped. Nothing has changed for 15 minutes. Next: save the diagnostic log from the File menu, then stop the virtual machine and start it again.",
                             tone: .failure
                         )
                     }
@@ -2283,8 +2289,9 @@ final class VMManager: ObservableObject {
     /// acting.
     private enum UbuntuInstallEnd {
         case notAnInstallEnd
-        case failed(runtimeDir: URL)
-        case installedButUserStopped
+        /// `guest`: the name to say, "Ubuntu", "Debian" or "Fedora".
+        case failed(runtimeDir: URL, guest: String)
+        case installedButUserStopped(guest: String)
         case installedRestart(VMConfiguration)
     }
 
@@ -2301,10 +2308,11 @@ final class VMManager: ObservableObject {
             avmLog("ubuntuInstallEnd: couldn't read the UNATTEND volume; nothing to do")
             return .notAnInstallEnd
         }
+        let guest = configuration.guestOS.displayName
         if names.contains("AVMDONE") {
-            return userStopped ? .installedButUserStopped : .installedRestart(configuration)
+            return userStopped ? .installedButUserStopped(guest: guest) : .installedRestart(configuration)
         }
-        return names.contains("AVMFAIL") ? .failed(runtimeDir: runtimeDir) : .notAnInstallEnd
+        return names.contains("AVMFAIL") ? .failed(runtimeDir: runtimeDir, guest: guest) : .notAnInstallEnd
     }
 
     /// UBUNTU INSTALL END (2026-10-19). Ubuntu's answer file ends with a
@@ -2340,20 +2348,20 @@ final class VMManager: ObservableObject {
         case .notAnInstallEnd:
             return
 
-        case .failed(let runtimeDir):
-            avmLog("handleUbuntuInstallEnd: AVMFAIL.TAG present — Ubuntu's installer reported an error")
-            appendConsole("AVM: Ubuntu's installer stopped with an error. Its logs are on the virtual machine's UNATTEND disk.\n")
+        case .failed(let runtimeDir, let guest):
+            avmLog("handleUbuntuInstallEnd: AVMFAIL.TAG present — \(guest)'s installer reported an error")
+            appendConsole("AVM: \(guest)'s installer stopped with an error. Its logs are on the virtual machine's UNATTEND disk.\n")
             Announcer.shared.announce(
-                "Ubuntu's install stopped with an error, and the virtual machine turned off. Next: press Start to try the install again. If it stops again, report it with the diagnostic log.",
+                "\(guest)'s install stopped with an error, and the virtual machine turned off. Next: press Start to try the install again. If it stops again, report it with the diagnostic log.",
                 tone: .failure
             )
             clearUbuntuFailureMarker(runtimeDir: runtimeDir)
 
-        case .installedButUserStopped:
+        case .installedButUserStopped(let guest):
             avmLog("handleUbuntuInstallEnd: install complete, but the user pressed Stop — not starting it")
-            appendConsole("AVM: Ubuntu is installed. It will start the next time you press Start.\n")
+            appendConsole("AVM: \(guest) is installed. It will start the next time you press Start.\n")
             Announcer.shared.announce(
-                "Ubuntu is installed. It will start the next time you press Start.",
+                "\(guest) is installed. It will start the next time you press Start.",
                 tone: .success
             )
 
@@ -2364,9 +2372,10 @@ final class VMManager: ObservableObject {
 
     private func restartAfterInstall(configuration: VMConfiguration) {
         avmLog("restartAfterInstall: Ubuntu install complete — starting the VM again")
-        appendConsole("AVM: Ubuntu is installed. Starting it.\n")
+        let guest = configuration.guestOS.displayName
+        appendConsole("AVM: \(guest) is installed. Starting it.\n")
         Announcer.shared.announce(
-            "Ubuntu is installed. Starting it now. Orca will speak when the desktop is ready, in about a minute. Orca's key is Caps Lock.",
+            "\(guest) is installed. Starting it now. Orca will speak when the desktop is ready, in about a minute. Orca's key is Caps Lock.",
             tone: .success
         )
         restartStoppedByUser = false
@@ -2410,7 +2419,7 @@ final class VMManager: ObservableObject {
                 self.restartingAfterInstall = false
                 avmLog("restartAfterInstall: start FAILED: \(error.localizedDescription)")
                 Announcer.shared.announce(
-                    "Ubuntu is installed, but AVM couldn't start it again. Reason: \(error.localizedDescription) Next: press Start.",
+                    "\(guest) is installed, but AVM couldn't start it again. Reason: \(error.localizedDescription) Next: press Start.",
                     tone: .failure
                 )
             }

@@ -11,6 +11,8 @@
 //                       the AVMDONE.TAG install-complete marker. The
 //                       REINSTALL GUARD (VMManager.checkInstallCompleteMarker)
 //                       reads it exactly as it does for Windows.
+// Debian (preseed) and Fedora (kickstart) installers go through the same
+// pipeline with their own answer files; see their MARK sections below.
 //
 // HOW UBUNTU INSTALLS WITH NO QUESTIONS (approach proven first in Parallels
 // Manager's install-ubuntu.sh, then in AVM's own QEMU set-up, 2026-10-19):
@@ -156,7 +158,12 @@ nonisolated struct UbuntuAccount: Codable, Equatable {
                                      "tss", "uuidd", "tcpdump", "usbmux", "whoopsie", "kernoops",
                                      "dnsmasq", "cups-pk-helper", "fwupd-refresh", "gnome-initial-setup",
                                      "speech-dispatcher", "nm-openvpn", "sssd", "landscape", "pollinate",
-                                     "snapd", "crontab", "ssl-cert", "bluetooth", "scanner", "wheel"]
+                                     "snapd", "crontab", "ssl-cert", "bluetooth", "scanner", "wheel",
+                                     // Fedora Workstation's own (2026-10-26).
+                                     "ftp", "halt", "shutdown", "dbus", "chrony", "pipewire", "flatpak",
+                                     "unbound", "rpc", "rpcuser", "usbmuxd", "abrt", "setroubleshoot",
+                                     "qemu", "brlapi", "pesign", "wsdd", "saslauth", "openvpn",
+                                     "nm-openconnect", "passim", "dhcpcd"]
         if reserved.contains(name) || name.hasPrefix("systemd-") {
             return "Ubuntu keeps the name \(name) for itself. Please choose another user name."
         }
@@ -309,11 +316,11 @@ enum UbuntuKeyboard {
 
 /// What AVM read off an installer ISO, used by the Setup Wizard to say what
 /// the user picked and by the pipeline's validation gate.
-/// Which Linux the installer is (2026-10-26): Ubuntu's autoinstall or
-/// Debian's preseed. Everything after the answers (the account, Orca, the
-/// marker, the stall watch) is shared.
+/// Which Linux the installer is (2026-10-26): Ubuntu's autoinstall,
+/// Debian's preseed or Fedora's kickstart. Everything after the answers
+/// (the account, Orca, the marker, the stall watch) is shared.
 nonisolated enum LinuxDistro: String, Equatable, Sendable {
-    case ubuntu, debian
+    case ubuntu, debian, fedora
 }
 
 nonisolated struct UbuntuISOInfo: Equatable {
@@ -324,11 +331,17 @@ nonisolated struct UbuntuISOInfo: Equatable {
     let isARM64: Bool
     let isDesktop: Bool
     var distro: LinuxDistro = .ubuntu
+    /// Fedora only (2026-10-26): a live image (Fedora Workstation Live),
+    /// not an installer AVM can give answers to. See identifyFedora.
+    var isLiveImage = false
 
     /// A spoken-friendly name, e.g. "Ubuntu 26.04.1 LTS desktop".
     var spokenName: String {
         if distro == .debian {
             return version.isEmpty ? "Debian" : "Debian \(version)"
+        }
+        if distro == .fedora {
+            return version.isEmpty ? "Fedora" : "Fedora \(version)"
         }
         var name = "Ubuntu"
         if !version.isEmpty { name += " \(version)" }
@@ -368,7 +381,7 @@ nonisolated enum UbuntuPipelineStage: Int, CaseIterable, Sendable {
         switch self {
         case .writeAnswers:     return "Writing the install answers"
         case .buildMarkerImage: return "Preparing the install-complete marker"
-        case .rebuildISO:       return "Adding the answers to the Ubuntu installer"
+        case .rebuildISO:       return "Adding the answers to the installer"
         case .promote:          return "Finalizing the install media"
         }
     }
@@ -474,7 +487,11 @@ nonisolated final class UbuntuInstallPipeline {
                 if let debian = await identifyDebian(isoPath: isoPath, xorriso: xorriso) {
                     return .ubuntu(debian)
                 }
-                ubuntuLog("identify: no /casper/vmlinuz or /install.a64/vmlinuz — not a Linux installer AVM knows")
+                // Fedora's keeps it in /images/pxeboot (2026-10-26).
+                if let fedora = await identifyFedora(isoPath: isoPath, xorriso: xorriso) {
+                    return .ubuntu(fedora)
+                }
+                ubuntuLog("identify: no /casper/vmlinuz, /install.a64/vmlinuz or Fedora disc — not a Linux installer AVM knows")
                 return .notUbuntu
             }
             ubuntuLog("identify: xorriso couldn't read the ISO (exit \(listing.code)): \(listing.output.suffix(300))")
@@ -549,6 +566,9 @@ nonisolated final class UbuntuInstallPipeline {
             }
             return nil
         }
+        if info.distro == .fedora {
+            return fedoraProblem(with: info)
+        }
         if !info.isARM64 {
             return "This is an Ubuntu installer for Intel and AMD PCs. This Mac needs the ARM version: on ubuntu.com, download Ubuntu Desktop for ARM."
         }
@@ -596,7 +616,8 @@ nonisolated final class UbuntuInstallPipeline {
             for stage in UbuntuPipelineStage.allCases {
                 await emit(stage)
                 switch stage {
-                case .writeAnswers:     try stageWriteAnswers(input: input, account: account, scratch: scratch, distro: distro)
+                case .writeAnswers:     try stageWriteAnswers(input: input, account: account, scratch: scratch, distro: distro,
+                                                              version: identity.info?.version ?? "")
                 case .buildMarkerImage: try await stageBuildMarkerImage(scratch: scratch)
                 case .rebuildISO:       try await stageRebuildISO(input: input, scratch: scratch, distro: distro)
                 case .promote:          try stagePromote(input: input, scratch: scratch)
@@ -621,7 +642,8 @@ nonisolated final class UbuntuInstallPipeline {
 
     // MARK: Stage 1 — the answer file
 
-    private func stageWriteAnswers(input: Input, account: UbuntuAccount, scratch: URL, distro: LinuxDistro) throws {
+    private func stageWriteAnswers(input: Input, account: UbuntuAccount, scratch: URL, distro: LinuxDistro,
+                                   version: String) throws {
         let nocloud = scratch.appendingPathComponent("nocloud")
         do {
             try FileManager.default.createDirectory(at: nocloud, withIntermediateDirectories: true)
@@ -631,6 +653,14 @@ nonisolated final class UbuntuInstallPipeline {
                     .write(to: nocloud.appendingPathComponent("preseed.cfg"), atomically: true, encoding: .utf8)
                 try Self.debianSetupScript(account: account)
                     .write(to: nocloud.appendingPathComponent("setup.sh"), atomically: true, encoding: .utf8)
+                return
+            }
+            if distro == .fedora {
+                // One file: the setup and failure scripts ride inside the
+                // kickstart, as its %post and %onerror sections.
+                try Self.fedoraKickstart(account: account, hostName: Self.hostName(fromVMName: input.vmName),
+                                         timeZone: TimeZone.current.identifier, version: version)
+                    .write(to: nocloud.appendingPathComponent("ks.cfg"), atomically: true, encoding: .utf8)
                 return
             }
             try Self.userData(account: account, hostName: Self.hostName(fromVMName: input.vmName),
@@ -876,6 +906,10 @@ nonisolated final class UbuntuInstallPipeline {
     // MARK: Stage 3 — the ISO
 
     private func stageRebuildISO(input: Input, scratch: URL, distro: LinuxDistro) async throws {
+        if distro == .fedora {
+            try await stageRebuildFedoraISO(input: input, scratch: scratch)
+            return
+        }
         let xorriso = try Self.toolURL(named: "xorriso")
         let grubDir = scratch.appendingPathComponent("grub")
         let grubURL = grubDir.appendingPathComponent("grub.cfg")
@@ -1017,6 +1051,358 @@ nonisolated final class UbuntuInstallPipeline {
             .replacingOccurrences(of: "/etc/gdm3/custom.conf", with: "/etc/gdm3/daemon.conf")
             .replacingOccurrences(of: "Ubuntu installed by AVM", with: "Debian installed by AVM")
             .replacingOccurrences(of: "at the end of Ubuntu's install", with: "at the end of Debian's install")
+    }
+
+    // MARK: Fedora (2026-10-26)
+    //
+    // Fedora's installer (Anaconda) reads a kickstart file. AVM installs from
+    // the Everything netinstall ISO (or the Server one), never the
+    // Workstation live image: the live image installs by copying itself
+    // (liveinst), where kickstart has no %packages, so the agents and Orca's
+    // settings could not be added the same way. The netinstall installs
+    // @workstation-product-environment from Fedora's mirrors instead, the
+    // same GNOME desktop the live image brings, with Orca. A live image is
+    // refused with a spoken reason (fedoraProblem).
+    //
+    // THE BOOT MENU IS IN TWO PLACES. The firmware boots the disc's El Torito
+    // image, /images/efiboot.img, a small FAT volume with its own copy of
+    // EFI/BOOT/grub.cfg, and GRUB reads that copy, not the one in the ISO's
+    // tree (Ubuntu's and Debian's EFI images only point GRUB at /boot/grub).
+    // Both copies are edited, the inner one with mcopy into a copy of the
+    // image, and xorriso's boot-record replay follows the replaced file.
+    // Proven on Fedora-Everything-netinst-aarch64-44-1.7.iso: the rebuilt
+    // disc's El Torito entry pointed at the new image, and its volume id
+    // was kept.
+    //
+    // THE VOLUME ID MUST STAY. The menu finds the installer's second stage by
+    // the disc's label (inst.stage2=hd:LABEL=Fedora-E-dvd-aarch64-44), and
+    // the kickstart is found the same way, on the same disc, so the label
+    // AVM adds is read from the menu itself, and the rebuilt disc's label is
+    // checked against it.
+    //
+    // THE REST IS UBUNTU'S. The kickstart's %post runs Ubuntu's setup script
+    // inside the new system (fedoraSetupScript), the account comes from the
+    // same ubuntu-account.json, and the last act is the same AVMDONE.TAG.
+    // %onerror is failureScript's counterpart: AVMFAIL.TAG, the end of
+    // Anaconda's logs, and a power-off. The marker guard heads the menu,
+    // and `poweroff` ends the install, as for Ubuntu.
+
+    /// Where the kickstart sits on the rebuilt disc.
+    static let fedoraKickstartPath = "/nocloud/ks.cfg"
+
+    /// The words the first menu entry gains. inst.ks finds the kickstart on
+    /// the disc the menu already finds its second stage on. inst.text: no
+    /// one is at the screen, and the text installer needs no graphics.
+    /// console=ttyAMA0 copies the boot to firmware-serial.log, as for
+    /// Ubuntu; console=tty0 after it keeps the screen the main console.
+    static func fedoraKernelArguments(volumeLabel: String) -> String {
+        "inst.ks=hd:LABEL=\(volumeLabel):\(fedoraKickstartPath) inst.text console=ttyAMA0 console=tty0"
+    }
+
+    /// The disc label Fedora's own menu boots the installer from, or nil.
+    static func fedoraVolumeLabel(inBootMenu menu: String) -> String? {
+        let prefix = "inst.stage2=hd:LABEL="
+        guard let range = menu.range(of: "inst\\.stage2=hd:LABEL=[^\\s]+", options: .regularExpression) else {
+            return nil
+        }
+        return String(menu[range].dropFirst(prefix.count))
+    }
+
+    /// The first installer entry boots by itself, with the answers, after a
+    /// second. Fedora's menu starts on its SECOND entry ("Test this media &
+    /// install", set default="1"), a media check that takes minutes, so the
+    /// default is moved to the first. The marker guard comes first, as for
+    /// Ubuntu.
+    static func editedFedoraBootMenu(_ original: String) -> String? {
+        guard let entry = original.range(of: "linux\\s+/images/pxeboot/vmlinuz", options: .regularExpression),
+              let label = fedoraVolumeLabel(inBootMenu: original) else {
+            return nil
+        }
+        var menu = original
+        menu.replaceSubrange(entry, with: "\(original[entry]) \(fedoraKernelArguments(volumeLabel: label))")
+        if let defaultEntry = menu.range(of: "(?m)^set default=.*$", options: .regularExpression) {
+            menu.replaceSubrange(defaultEntry, with: "set default=\"0\"")
+        } else {
+            menu = "set default=\"0\"\n" + menu
+        }
+        if let timeout = menu.range(of: "(?m)^set timeout=[0-9]+", options: .regularExpression) {
+            menu.replaceSubrange(timeout, with: "set timeout=1")
+        } else {
+            menu = "set timeout=1\n" + menu
+        }
+        return markerGuardLine + "\n" + menu
+    }
+
+    /// A kickstart argument, single-quoted. Anaconda splits kickstart lines
+    /// the way a POSIX shell does (shlex), so a name with a space or a quote
+    /// in it stays one argument.
+    static func kickstartQuoted(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
+    /// Fedora's answers. Installs onto the virtual disk (nvme0n1) only, never
+    /// the UNATTEND volume or the installer, from Fedora's mirrors with its
+    /// updates, with GNOME, Orca and the agents AVM uses (spice-webdavd is
+    /// the shared-folder service). `version` is the release the disc says it
+    /// is (.discinfo), so the mirrors serve that release; Anaconda's own
+    /// $releasever stands in when it is unknown. The welcome tour is left
+    /// out: it opens over the desktop at the first sign-in, as Ubuntu's did.
+    static func fedoraKickstart(account: UbuntuAccount, hostName: String, timeZone: String, version: String) -> String {
+        let release = version.isEmpty ? "$releasever" : version
+        let layout = account.keyboardLayout ?? "us"
+        let xkb = account.keyboardVariant.map { "\(layout) (\($0))" } ?? layout
+        return """
+        # Written by AVM. Fedora's installer (Anaconda) reads this and asks nothing.
+        text
+        lang en_US.UTF-8
+        keyboard --xlayouts=\(kickstartQuoted(xkb))
+        timezone \(kickstartQuoted(timeZone)) --utc
+        network --bootproto=dhcp --device=link --activate --hostname=\(hostName)
+        url --mirrorlist="https://mirrors.fedoraproject.org/mirrorlist?repo=fedora-\(release)&arch=aarch64"
+        repo --name=updates --mirrorlist="https://mirrors.fedoraproject.org/mirrorlist?repo=updates-released-f\(release)&arch=aarch64"
+        ignoredisk --only-use=nvme0n1
+        zerombr
+        clearpart --all --initlabel --drives=nvme0n1
+        autopart --type=btrfs
+        rootpw --lock
+        user --name=\(account.userName) --gecos=\(kickstartQuoted(account.realName)) --groups=wheel --iscrypted --password=\(kickstartQuoted(account.passwordHash))
+        firstboot --disable
+        poweroff
+
+        %packages
+        @^workstation-product-environment
+        orca
+        spice-vdagent
+        spice-webdavd
+        qemu-guest-agent
+        dconf
+        -gnome-tour
+        %end
+
+        %post --interpreter=/bin/bash --erroronfail --log=/root/avm-setup.log
+        \(fedoraSetupScript(account: account))
+        %end
+
+        %onerror --interpreter=/bin/bash
+        \(fedoraFailureScript)
+        %end
+
+        """
+    }
+
+    /// Ubuntu's setup script, for the kickstart's %post, which runs inside
+    /// the new system: no /target and no curtin, GDM's /etc/gdm in place of
+    /// /etc/gdm3, grubby in place of update-grub, and Fedora's own dconf
+    /// user profile kept (it already reads the local database, and also the
+    /// site and distro ones Fedora adds). Before the marker, the desktop as
+    /// the default target, the agents on, and SELinux labels on the files
+    /// written. It writes the same marker. The UNATTEND volume mounts from
+    /// inside the new system: Anaconda binds /dev into it, and vfat is
+    /// already loaded for the new system's EFI partition.
+    static func fedoraSetupScript(account: UbuntuAccount) -> String {
+        let fedoraExtras = """
+            # Fedora (2026-10-26): start to the desktop, with the agents on
+            # (their units also start themselves when their virtual ports
+            # appear). Then SELinux, which Fedora enforces: the files above
+            # get the labels its policy expects, not whatever the install
+            # left on them.
+            systemctl set-default graphical.target
+            systemctl enable spice-vdagentd.socket qemu-guest-agent.service || true
+            restorecon -R /etc /home/$U || true
+
+            """
+        return setupScript(account: account)
+            .replacingOccurrences(of: "at the end of Ubuntu's install", with: "at the end of Fedora's install, in its %post")
+            .replacingOccurrences(of: "(failed.sh)", with: "(%onerror)")
+            .replacingOccurrences(of: "T=/target", with: "T=")
+            .replacingOccurrences(of: "curtin in-target -- ", with: "")
+            .replacingOccurrences(of: "/etc/gdm3", with: "/etc/gdm")
+            .replacingOccurrences(of: "printf 'user-db:user\\nsystem-db:local\\n' > $T/etc/dconf/profile/user",
+                                  with: "# Fedora's own /etc/dconf/profile/user already reads the local database.")
+            .replacingOccurrences(of: "update-grub || true",
+                                  with: "grubby --update-kernel=ALL --remove-args=\"console=ttyAMA0 console=tty0\" || true")
+            .replacingOccurrences(of: "# The install-complete marker, last", with: fedoraExtras + "# The install-complete marker, last")
+            .replacingOccurrences(of: "Ubuntu is on the disk", with: "Fedora is on the disk")
+            .replacingOccurrences(of: "Ubuntu installed by AVM", with: "Fedora installed by AVM")
+    }
+
+    /// The kickstart's %onerror: runs in the installer when the install
+    /// fails, including a failed %post (--erroronfail). Without it Anaconda
+    /// waits on an error screen with nothing speaking, forever. The same
+    /// contract as failureScript: the end of the logs on the UNATTEND volume
+    /// (cut to fit its 8 MB), AVMFAIL.TAG, and a power-off.
+    static let fedoraFailureScript = """
+        # Written by AVM. Runs only if Fedora's install fails.
+        set -x
+        mkdir -p /run/avm-unattend
+        if mount -t vfat /dev/disk/by-label/UNATTEND /run/avm-unattend; then
+            for log in /tmp/anaconda.log /tmp/packaging.log /tmp/storage.log /tmp/program.log /mnt/sysroot/root/avm-setup.log; do
+                [ -f "$log" ] && tail -c 1200000 "$log" > "/run/avm-unattend/$(basename "$log" .log | cut -c1-8).log"
+            done
+            echo "Fedora install failed" > /run/avm-unattend/AVMFAIL.TAG
+            sync
+            umount /run/avm-unattend
+        fi
+        systemctl poweroff --force || poweroff -f
+        """
+
+    /// Fedora's installer: the disc label starts "Fedora", and /.discinfo
+    /// (a time stamp, the release, the architecture) and the installer's
+    /// kernel are there. A Fedora disc without them is a live image. -lsd,
+    /// unlike -find, reports a missing path as a warning and carries on, so
+    /// one call answers for all three.
+    @concurrent
+    static func identifyFedora(isoPath: String, xorriso: URL) async -> UbuntuISOInfo? {
+        let listing = await runTool(xorriso, [
+            "-indev", isoPath,
+            "-lsd", "/images/pxeboot/vmlinuz", "/.discinfo", "--"
+        ])
+        guard let volumeID = fedoraVolumeID(inXorrisoReport: listing.output), volumeID.hasPrefix("Fedora") else {
+            return nil
+        }
+        let found = Set(listing.output.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) })
+        var discInfo = ""
+        if found.contains("'/.discinfo'") {
+            let fm = FileManager.default
+            let probe = fm.temporaryDirectory.appendingPathComponent("avm-fedora-probe-\(UUID().uuidString)")
+            try? fm.createDirectory(at: probe, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: probe) }
+            let infoURL = probe.appendingPathComponent("discinfo")
+            await runTool(xorriso, ["-osirrox", "on", "-indev", isoPath, "-extract", "/.discinfo", infoURL.path])
+            discInfo = (try? String(contentsOf: infoURL, encoding: .utf8)) ?? ""
+        }
+        let info = fedoraISOInfo(volumeID: volumeID, discInfo: discInfo,
+                                 hasInstallerKernel: found.contains("'/images/pxeboot/vmlinuz'"))
+        ubuntuLog("identify: \(info.spokenName), arm64=\(info.isARM64), live=\(info.isLiveImage), volume id \"\(volumeID)\"")
+        return info
+    }
+
+    /// The disc label in xorriso's report on a disc it loaded, e.g.
+    /// "Volume id    : 'Fedora-E-dvd-aarch64-44'".
+    static func fedoraVolumeID(inXorrisoReport report: String) -> String? {
+        guard let line = report.range(of: "(?m)^Volume id\\s*:\\s*'[^']*'", options: .regularExpression) else {
+            return nil
+        }
+        let text = report[line]
+        guard let open = text.firstIndex(of: "'") else { return nil }
+        return String(text[text.index(after: open)...].dropLast())
+    }
+
+    /// What a Fedora disc is, from its label, its /.discinfo, and whether
+    /// the installer's kernel is there. The release falls back to the
+    /// label's last number (Fedora-WS-Live-44), so a live image is still
+    /// named in the spoken reason it can't be used.
+    static func fedoraISOInfo(volumeID: String, discInfo: String, hasInstallerKernel: Bool) -> UbuntuISOInfo {
+        let lines = discInfo.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
+        let release = lines.count > 1 ? lines[1] : ""
+        let arch = lines.count > 2 ? lines[2] : ""
+        var version = release.range(of: "^[0-9]+$", options: .regularExpression) != nil ? release : ""
+        if version.isEmpty, let match = volumeID.range(of: "[0-9]+$", options: .regularExpression) {
+            version = String(volumeID[match])
+        }
+        let isARM64 = arch.isEmpty ? volumeID.contains("aarch64") : arch == "aarch64"
+        let isInstaller = hasInstallerKernel && !arch.isEmpty
+        return UbuntuISOInfo(discInfo: volumeID, version: version, isARM64: isARM64, isDesktop: true,
+                             distro: .fedora, isLiveImage: !isInstaller)
+    }
+
+    /// Why AVM can't install from this Fedora disc, or nil when it can.
+    /// Fedora 44 or later: it brings Orca 50, which keeps the laptop layout
+    /// (Caps Lock as the Orca key, see the file header) where the setup
+    /// script writes it, the place proven on Ubuntu 26.04's Orca 50. An
+    /// older Orca would leave its key on Insert, which a Mac doesn't have.
+    static func fedoraProblem(with info: UbuntuISOInfo) -> String? {
+        if info.isLiveImage {
+            return "This is a Fedora live image. AVM installs Fedora from the Everything netinstall image instead, which brings the same Fedora Workstation desktop: on fedoraproject.org, download Fedora Everything for aarch64, the netinstall ISO."
+        }
+        if !info.isARM64 {
+            return "This is a Fedora installer for Intel and AMD PCs. This Mac needs the aarch64 one: on fedoraproject.org, download the Fedora Everything netinstall image for aarch64."
+        }
+        if info.majorVersion == 0 {
+            return "AVM couldn't tell which Fedora version this is. AVM needs Fedora 44 or later, from fedoraproject.org."
+        }
+        if info.majorVersion < 44 {
+            return "This is \(info.spokenName). AVM needs Fedora 44 or later."
+        }
+        return nil
+    }
+
+    /// Stage 3 for Fedora: both copies of the boot menu edited (see the
+    /// section header), the kickstart added, and the result read back.
+    private func stageRebuildFedoraISO(input: Input, scratch: URL) async throws {
+        let xorriso = try Self.toolURL(named: "xorriso")
+        let mcopy = try Self.toolURL(named: "mcopy")
+        let env = ["MTOOLS_SKIP_CHECK": "1"]
+        let fm = FileManager.default
+        let bootDir = scratch.appendingPathComponent("fedora-boot")
+        try? fm.createDirectory(at: bootDir, withIntermediateDirectories: true)
+        let grubURL = bootDir.appendingPathComponent("grub.cfg")
+        let efiURL = bootDir.appendingPathComponent("efiboot.img")
+
+        let extract = await Self.runTool(xorriso, ["-osirrox", "on", "-indev", input.sourceISOPath,
+                                                   "-extract", "/EFI/BOOT/grub.cfg", grubURL.path,
+                                                   "-extract", "/images/efiboot.img", efiURL.path])
+        guard extract.code == 0, let original = try? String(contentsOf: grubURL, encoding: .utf8),
+              fm.fileExists(atPath: efiURL.path) else {
+            throw UbuntuPipelineError.stageFailed(stage: .rebuildISO,
+                                                 reason: "Couldn't read the installer's boot menu. (xorriso exit \(extract.code))")
+        }
+        guard let edited = Self.editedFedoraBootMenu(original),
+              let label = Self.fedoraVolumeLabel(inBootMenu: original) else {
+            throw UbuntuPipelineError.stageFailed(stage: .rebuildISO,
+                                                 reason: "The installer's boot menu isn't in the form AVM knows, so the answers couldn't be added. This Fedora release may be newer than this version of AVM.")
+        }
+        do {
+            try? fm.removeItem(at: grubURL)
+            try edited.write(to: grubURL, atomically: true, encoding: .utf8)
+            // Extracted read-only, as it is on the disc.
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: efiURL.path)
+        } catch {
+            throw UbuntuPipelineError.stageFailed(stage: .rebuildISO,
+                                                 reason: "Couldn't write the edited boot menu. (\(error.localizedDescription))")
+        }
+        // -o: replace the image's own grub.cfg without asking.
+        let inner = await Self.runTool(mcopy, ["-o", "-i", efiURL.path, grubURL.path, "::/EFI/BOOT/grub.cfg"],
+                                       extraEnvironment: env)
+        guard inner.code == 0 else {
+            throw UbuntuPipelineError.stageFailed(stage: .rebuildISO,
+                                                 reason: "Couldn't edit the installer's EFI boot image. (mcopy exit \(inner.code): \(inner.output.prefix(300)))")
+        }
+
+        let output = scratch.appendingPathComponent("install-avm.iso")
+        let build = await Self.runTool(xorriso, [
+            "-indev", input.sourceISOPath,
+            "-outdev", output.path,
+            "-map", grubURL.path, "/EFI/BOOT/grub.cfg",
+            "-map", efiURL.path, "/images/efiboot.img",
+            "-map", scratch.appendingPathComponent("nocloud").path, "/nocloud",
+            "-boot_image", "any", "replay"
+        ])
+        guard build.code == 0 else {
+            throw UbuntuPipelineError.stageFailed(stage: .rebuildISO,
+                                                 reason: "Couldn't build the installer copy. Check that the Mac has about 5 GB free. (xorriso exit \(build.code): \(build.output.suffix(300)))")
+        }
+
+        // Postcondition: both menus are the edited one, the kickstart is on
+        // the copy, and the copy kept the label the menu finds it by.
+        let checkMenu = bootDir.appendingPathComponent("grub-check.cfg")
+        let checkImage = bootDir.appendingPathComponent("efiboot-check.img")
+        let checkInner = bootDir.appendingPathComponent("grub-inner-check.cfg")
+        let verify = await Self.runTool(xorriso, ["-osirrox", "on", "-indev", output.path,
+                                                  "-extract", "/EFI/BOOT/grub.cfg", checkMenu.path,
+                                                  "-extract", "/images/efiboot.img", checkImage.path,
+                                                  "-lsd", Self.fedoraKickstartPath, "--"])
+        let readInner = await Self.runTool(mcopy, ["-i", checkImage.path, "::/EFI/BOOT/grub.cfg", checkInner.path],
+                                           extraEnvironment: env)
+        let arguments = Self.fedoraKernelArguments(volumeLabel: label)
+        let menus = [checkMenu, checkInner].map { (try? String(contentsOf: $0, encoding: .utf8)) ?? "" }
+        guard verify.code == 0, readInner.code == 0,
+              menus.allSatisfy({ $0.hasPrefix(Self.markerGuardLine) && $0.contains(arguments) }),
+              Self.fedoraVolumeID(inXorrisoReport: verify.output) == label,
+              verify.output.contains("\n'\(Self.fedoraKickstartPath)'") else {
+            throw UbuntuPipelineError.stageFailed(stage: .rebuildISO,
+                                                 reason: "The installer copy didn't read back with the answers on it. (xorriso exit \(verify.code), mcopy exit \(readInner.code))")
+        }
     }
 
     static func editedBootMenu(_ original: String) -> String? {

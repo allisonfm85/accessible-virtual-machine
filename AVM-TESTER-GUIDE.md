@@ -1010,6 +1010,41 @@ If the install fails, the machine turns off and AVM says so:
   Ubuntu, the machine's startup log records the installer's own start-up
   messages, and the next start replaces it. Then please report it.
 
+### Fedora Workstation
+
+AVM can install **Fedora Workstation** the same way, Fedora 44 or later:
+the same account section (titled **Fedora Account**), the same
+announcements with "Fedora" in place of "Ubuntu", Orca on at the login
+screen and after with Caps Lock as its key, and everything listed under
+What AVM sets up in Ubuntu. Fedora 44 is the version this has been
+tested with, so far with AVM's unattended install test only: it
+installed and signed in to the desktop by itself, but Orca's speech has
+not yet been listened to in the app. Please report what you hear.
+
+**Getting the Fedora ISO.** On fedoraproject.org, go to Fedora
+Everything (under Other downloads, or Fedora's alternative downloads),
+choose **aarch64**, and download the **Netinstall ISO**. The file is
+named like `Fedora-Everything-netinst-aarch64-44-1.7.iso` and is about
+1.2 GB. Two other downloads look similar and will not work: the
+Workstation live image (its name has `Live` in it) and the version for
+Intel and AMD PCs (`x86_64`). If you choose either, AVM tells you which
+one you picked and which one it needs. The Fedora Server netinstall for
+aarch64 also works.
+
+**The install downloads Fedora.** The netinstall disc holds only the
+installer; the Workstation desktop, about 2 GB, comes from Fedora's
+mirrors with that day's updates. The Mac needs a working internet
+connection, and AVM says the install takes about 20 to 60 minutes.
+
+**How Fedora differs from Ubuntu:**
+
+- Your account can make changes with your password (it is in Fedora's
+  wheel group, Fedora's administrators); the root account is locked.
+- Fedora's welcome tour is not installed, and its first-run screens are
+  skipped.
+- SELinux stays on, as Fedora ships it.
+- A larger disk is not used automatically, as for Ubuntu.
+
 ---
 
 ## 17. macOS instead of Windows
