@@ -38,6 +38,12 @@
 // the parked VM-state menu dimming) because Sparkle itself provides the
 // observable; no new app-level state model is needed.
 //
+// SPOKEN POINTER (2026-10-26): when a check finds an update, AVM says so
+// once, briefly, and says where the window is. The prompt stays Sparkle's
+// own window, read at the user's pace, as above; the announcement exists
+// because that window can open unnoticed, behind the dashboard or while
+// Windows has the keyboard, and a background check has no other cue.
+//
 // import Combine is REQUIRED, not decorative: @Published, assign(to:), and
 // ObservableObject are Combine symbols, and this file uses all three.
 // Omitting it fails the build (proven 2026-08-16, first build of this file).
@@ -56,10 +62,13 @@ final class AVMUpdater: ObservableObject {
     /// start now. Drives the menu item's disabled state.
     @Published var canCheckForUpdates = false
 
+    /// Sparkle holds its delegate weakly, so the updater keeps it.
+    private let announcer = UpdateAnnouncer()
+
     init() {
         controller = SPUStandardUpdaterController(
             startingUpdater: true,
-            updaterDelegate: nil,
+            updaterDelegate: announcer,
             userDriverDelegate: nil
         )
         controller.updater.publisher(for: \.canCheckForUpdates)
@@ -73,5 +82,22 @@ final class AVMUpdater: ObservableObject {
     func checkForUpdates() {
         AVMLog.write("AVM: Check for Updates menu — invoking Sparkle user-initiated check.")
         controller.checkForUpdates(nil)
+    }
+}
+
+/// Says that an update was found and where its window is (header).
+final class UpdateAnnouncer: NSObject, SPUUpdaterDelegate {
+    nonisolated func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+        let version = item.displayVersionString
+        Task { @MainActor in
+            let inGuest = FocusLockManager.shared?.isLocked ?? false
+            AVMLog.write("AVM: Updates — found version \(version).")
+            Announcer.shared.announce(
+                inGuest
+                    ? "AVM \(version) is available. Leave Windows to read the update window."
+                    : "AVM \(version) is available. The update window is open.",
+                tone: .info
+            )
+        }
     }
 }
