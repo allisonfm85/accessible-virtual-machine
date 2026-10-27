@@ -525,6 +525,13 @@ dashboard's Start buttons work too.
 
 ---
 
+### Sharing a folder
+
+To open a Mac folder in Windows, open the machine's Settings and choose
+Choose Folder to Share. The next time Windows starts, the folder is a
+network drive in File Explorer. Turn on the read-only option if Windows
+should only read it.
+
 ### When the Mac sleeps
 
 If the Mac sleeps with Windows running, AVM pauses Windows first and

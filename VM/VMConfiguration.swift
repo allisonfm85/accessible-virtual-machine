@@ -39,8 +39,11 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
 
     // MARK: - Shared folder
 
-    /// Host path exposed to the guest via VirtFS / WebDAV.
+    /// A Mac folder the guest sees as a network drive, over SPICE WebDAV
+    /// (2026-10-26). nil shares nothing. Read it through sharedFolderURL.
     var sharedFolderPath: String?
+    /// true: the guest can read the shared folder but not change it.
+    var sharedFolderReadOnly: Bool?
 
     // MARK: - USB plug and play (increment 2b)
 
@@ -152,6 +155,15 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
 extension VMConfiguration {
     var usesSecureBoot: Bool { secureBoot == true }
     var sharesClipboard: Bool { shareClipboard ?? true }
+    /// The shared folder, if one is chosen and is a folder right now (an
+    /// unplugged drive shares nothing rather than failing the start).
+    var sharedFolderURL: URL? {
+        guard let path = sharedFolderPath, !path.isEmpty else { return nil }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+    var sharedFolderIsReadOnly: Bool { sharedFolderReadOnly == true }
     var usesLowAudioLatency: Bool { lowAudioLatency == true }
     /// Known screen readers only, in a fixed order; unknown words ignored.
     var windowsScreenReaders: [ScreenReader] {

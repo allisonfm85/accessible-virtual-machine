@@ -2058,6 +2058,17 @@ final class VMManager: ObservableObject {
             "-chardev", "spicevmc,id=vdagent,name=vdagent",
             "-device", "virtserialport,chardev=vdagent,name=com.redhat.spice.0"
         ]
+        // Shared folder (2026-10-26): the SPICE WebDAV channel, only when a
+        // folder is chosen. CocoaSpice shares ~/Documents/Public on any
+        // WebDAV channel unless told otherwise, so no channel, no sharing;
+        // VMView sets the chosen folder when SPICE connects.
+        if let shared = configuration.sharedFolderURL {
+            args += [
+                "-chardev", "spiceport,id=webdav0,name=org.spice-space.webdav.0",
+                "-device", "virtserialport,chardev=webdav0,name=org.spice-space.webdav.0"
+            ]
+            avmLog("buildQEMUArguments: sharing a folder (\(configuration.sharedFolderIsReadOnly ? "read only" : "read and write")): \(shared.path)")
+        }
 
         args += ["-chardev", "socket,id=char-qmp,path=\(qmpSocketPath),server=on,wait=off"]
         args += ["-qmp", "chardev:char-qmp"]

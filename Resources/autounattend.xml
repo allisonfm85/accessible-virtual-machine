@@ -170,6 +170,14 @@
           <Description>AVM: install JAWS from the install media</Description>
           <Path>cmd /c for %d in (D E F G H I J K L M) do @if exist %d:\AVMSR\JAWS.EXE %d:\AVMSR\JAWS.EXE /quiet /norestart</Path>
         </RunSynchronousCommand>
+        <!-- AVM SHARED FOLDER (2026-10-26). spice-webdavd, from AVMEXTRA\ on
+             the install DVD, shows the Mac folder chosen in AVM's Settings
+             as a network drive. With no folder shared it does nothing. -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>6</Order>
+          <Description>AVM: install the SPICE shared-folder service</Description>
+          <Path>cmd /c for %d in (D E F G H I J K L M) do @if exist %d:\AVMEXTRA\WEBDAVD.MSI msiexec /i %d:\AVMEXTRA\WEBDAVD.MSI /qn /norestart</Path>
+        </RunSynchronousCommand>
       </RunSynchronous>
     </component>
   </settings>

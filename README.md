@@ -129,6 +129,15 @@ matches the checksum its maker publishes. AVM keeps the downloads, so your next 
 them again. If a download fails, AVM says so and Windows installs
 without that screen reader.
 
+## Sharing a folder with Windows
+
+In a Windows machine's Settings, choose Choose Folder to Share. Windows
+shows that Mac folder in File Explorer as a network drive. You can let
+Windows only read it. The change takes effect the next time the machine
+starts. AVM installs the service that does this, spice-webdavd, during
+Windows setup. A Windows installed by an older AVM needs it installed
+from spice-space.org first.
+
 ## When the Mac sleeps
 
 Before the Mac sleeps, AVM pauses a running machine. When the Mac wakes,

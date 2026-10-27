@@ -95,6 +95,18 @@ final class VMConfigurationTests: XCTestCase {
         XCTAssertTrue(config.storageMissingMessage.contains("Backup Drive"))
     }
 
+    /// A missing folder (an unplugged drive) shares nothing, rather than
+    /// handing QEMU a path that isn't there.
+    func testSharedFolderOnlyWhenItExists() throws {
+        var config = VMConfiguration()
+        XCTAssertNil(config.sharedFolderURL)
+        config.sharedFolderPath = "/Volumes/Not Plugged In \(UUID().uuidString)"
+        XCTAssertNil(config.sharedFolderURL)
+        config.sharedFolderPath = NSTemporaryDirectory()
+        XCTAssertNotNil(config.sharedFolderURL)
+        XCTAssertFalse(config.sharedFolderIsReadOnly)
+    }
+
     /// The shorter audio path must keep the names spice-gtk looks up, or
     /// it would play nothing at all.
     func testLowLatencyPipelineKeepsSpiceGtksElementNames() {

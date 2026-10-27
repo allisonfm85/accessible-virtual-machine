@@ -1148,6 +1148,25 @@ nonisolated final class WindowsInstallPipeline {
 
         pipelineLog("stageDropVirtioDrivers: staged \(virtioRequiredFiles.map { $0.driver }.joined(separator: ", ")) into $WinPEDriver$ and verified required files")
 
+        // The shared-folder service (2026-10-26): spice-webdavd 2.4, x64
+        // (Windows on ARM runs it emulated, like the vdagent). 12 MB is too
+        // big for the 8 MB answer image, so it rides the DVD; the specialize
+        // pass installs it. Without a shared folder it just waits.
+        let extraDir = tree.appendingPathComponent("AVMEXTRA", isDirectory: true)
+        do {
+            try? fm.removeItem(at: extraDir)
+            try fm.createDirectory(at: extraDir, withIntermediateDirectories: true)
+            let webdavd = try resourceDirURL(named: "vdagent").appendingPathComponent("spice-webdavd-x64-2.4.msi")
+            guard fm.fileExists(atPath: webdavd.path) else {
+                throw PipelineError.stageFailed(stage: .dropVirtioDrivers, reason: "The bundled shared-folder service is missing from the app. This is a build problem, not something you did.")
+            }
+            try fm.copyItem(at: webdavd, to: extraDir.appendingPathComponent("WEBDAVD.MSI"))
+        } catch let error as PipelineError {
+            throw error
+        } catch {
+            throw PipelineError.stageFailed(stage: .dropVirtioDrivers, reason: "Couldn't copy the shared-folder service into the installer. (\(error.localizedDescription))")
+        }
+
         // Screen readers (2026-10-26). Copied, not linked: the rebuilt ISO
         // must carry the file itself.
         let readerDir = tree.appendingPathComponent("AVMSR", isDirectory: true)

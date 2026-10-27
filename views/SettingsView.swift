@@ -123,6 +123,8 @@ struct SettingsView: View {
     @State private var rememberedDevices: [RememberedUSBDevice] = []
     @State private var secureBoot = false
     @State private var shareClipboard = true
+    @State private var sharedFolderPath: String?
+    @State private var sharedFolderReadOnly = false
     @State private var lowAudioLatency = false
     @State private var restorePoints: [RestorePoint] = []
     @State private var restorePointsBusy = false
@@ -230,6 +232,11 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal)
+
+            // Shared folder (Windows only, 2026-10-26)
+            if configuration.guestOS == .windows {
+                sharedFolderSection
+            }
 
             // Sound (2026-10-26)
             VStack(alignment: .leading, spacing: 6) {
@@ -429,6 +436,50 @@ struct SettingsView: View {
 
     // MARK: - Shared Folder Section (2026-10-26)
 
+    private var sharedFolderSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Shared Folder")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Text(sharedFolderPath.map { "Sharing: \(($0 as NSString).abbreviatingWithTildeInPath)" } ?? "No folder is shared.")
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 12) {
+                Button(sharedFolderPath == nil ? "Choose Folder to Share…" : "Choose a Different Folder…") {
+                    chooseSharedFolder()
+                }
+                .accessibilityHint("Picks a folder on the Mac that \(guest) can open")
+                if sharedFolderPath != nil {
+                    Button("Stop Sharing") {
+                        sharedFolderPath = nil
+                    }
+                }
+            }
+            if sharedFolderPath != nil {
+                Toggle("\(guest) can only read it, not change it", isOn: $sharedFolderReadOnly)
+            }
+            Text("\(guest) shows the folder in File Explorer as a network drive. Changes take effect the next time \(guest) starts. Windows installed by this version of AVM is ready for it; for an older Windows, install spice-webdavd from spice-space.org in Windows first.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal)
+    }
+
+    private func chooseSharedFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Share"
+        panel.message = "Choose a folder for \(guest) to open."
+        if panel.runModal() == .OK, let url = panel.url {
+            sharedFolderPath = url.path
+        }
+    }
+
+    // MARK: - Secure Boot Section (2026-10-25)
+
     private var secureBootSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Secure Boot")
@@ -538,6 +589,8 @@ struct SettingsView: View {
         rememberedDevices = saved.usbRememberedDevices ?? []
         secureBoot = saved.usesSecureBoot
         shareClipboard = saved.sharesClipboard
+        sharedFolderPath = saved.sharedFolderPath
+        sharedFolderReadOnly = saved.sharedFolderIsReadOnly
         lowAudioLatency = saved.usesLowAudioLatency
     }
 
@@ -622,6 +675,8 @@ struct SettingsView: View {
                 updated.diskSizeGB = growTo
             }
             updated.shareClipboard = shareClipboard ? nil : false
+            updated.sharedFolderPath = sharedFolderPath
+            updated.sharedFolderReadOnly = sharedFolderReadOnly ? true : nil
             updated.lowAudioLatency = lowAudioLatency ? true : nil
             updated.usbMode = usbMode.rawValue
             updated.usbRememberedDevices = rememberedDevices.isEmpty ? nil : rememberedDevices
