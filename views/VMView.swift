@@ -1258,13 +1258,9 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         mtkView?.delegate = nil
         mtkView?.isPaused = true
 
-        // The keyboard for Windows back to the Mac (2026-10-26, keyboard
-        // audit): spiceInputUnavailable was its only release, and the line
-        // below silences that callback, so the helper could keep holding
-        // the keyboard after the machine's view was gone.
-        WindowsKeyboard.shared.stop()
-        WindowsKeyboard.shared.send = nil
-        WindowsKeyboard.shared.sendPause = nil
+        // The keyboard for Windows stays with Windows while the machine
+        // runs, whether or not this window is open (WindowsKeyboard.swift);
+        // VMManager gives it back when the machine stops.
 
         // Silence delegate callbacks immediately (plain property write; not a
         // context-bound CocoaSpice operation).
@@ -2150,25 +2146,19 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
 
         // The keyboard for Windows (2026-10-26, WindowsKeyboard.swift): its
         // keys go to this input channel whichever app is in front.
-        WindowsKeyboard.shared.send = { [weak input] code, down in
-            input?.send(down ? .press : .release, code: code)
-        }
-        // Pause through QEMU's own input, not SPICE (MEASURED 2026-10-26 by
-        // test-windows-install.sh --keyboard): CocoaSpice's sendPause
-        // gets Pause down to Windows but never up, so it repeated as if
-        // held. QMP's input-send-event sends both.
-        WindowsKeyboard.shared.sendPause = { down in
-            Task { @MainActor in
-                try? await VMManager.shared?.sendQMPCommand("input-send-event", arguments: [
-                    "events": [["type": "key", "data": ["down": down, "key": ["type": "qcode", "data": "pause"]]]],
-                ])
+        // The keyboard for Windows (WindowsKeyboard.swift) sends through
+        // QMP, so it doesn't depend on this connection; it's started here,
+        // on the main thread (this callback is on the SPICE thread), the
+        // first time the machine's keyboard channel opens.
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                let id = VMSession.current?.configuration.id
+                if let saved = id.flatMap({ id in VMStore.shared?.configurations.first { $0.id == id } }),
+                   let keyboardID = saved.windowsKeyboardID {
+                    WindowsKeyboard.shared.appleISO = saved.windowsKeyboardAppleISO == true
+                    WindowsKeyboard.shared.start(keyboardID: keyboardID, name: saved.windowsKeyboardName)
+                }
             }
-        }
-        let id = VMSession.current?.configuration.id
-        if let saved = id.flatMap({ id in VMStore.shared?.configurations.first { $0.id == id } }),
-           let keyboardID = saved.windowsKeyboardID {
-            WindowsKeyboard.shared.appleISO = saved.windowsKeyboardAppleISO == true
-            WindowsKeyboard.shared.start(keyboardID: keyboardID, name: saved.windowsKeyboardName)
         }
     }
 
@@ -2176,9 +2166,6 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         NSLog("AVM: SPICE input channel unavailable.")
         if self.input === input {
             self.input = nil
-            WindowsKeyboard.shared.stop()
-            WindowsKeyboard.shared.send = nil
-            WindowsKeyboard.shared.sendPause = nil
         }
     }
 

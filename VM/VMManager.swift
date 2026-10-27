@@ -859,6 +859,10 @@ final class VMManager: ObservableObject {
         let answers = WindowsSetupAnswers.load(fromVMDirectory: runtimeDir)
             ?? WindowsSetupAnswers.fromThisMac(computerName: nil)
         if let account = answers.localAccount, account.encodedPassword == nil {
+            // Said here: this is thrown before the pipeline's own spoken
+            // failures, and the dashboard only shows it (2026-10-26, code
+            // audit).
+            Announcer.shared.announce("\(configuration.name) can't install Windows: AVM no longer has the password for the account \(account.userName). Next: make a new virtual machine with the same installer.", tone: .failure)
             throw PipelineError.stageFailed(
                 stage: .buildAnswerImage,
                 reason: "AVM no longer has the password for the Windows account \(account.userName), which it forgets once the install media is built. Next: make a new virtual machine with the same installer."
@@ -978,6 +982,7 @@ final class VMManager: ObservableObject {
             let msg = "qemu-system-aarch64 was not found in AVM.app/Contents/Resources."
             avmLog("startVM: \(msg)")
             state = .error(msg)
+            Announcer.shared.announce("The virtual machine can't start: part of AVM is missing (QEMU). Next: install AVM again.", tone: .failure)
             throw AVMError.binaryNotFound("qemu-system-aarch64")
         }
         avmLog("startVM: found QEMU executable at \(qemuURL.path)")
@@ -2507,8 +2512,17 @@ final class VMManager: ObservableObject {
         avmLog("speakSetupReport: \(summary.complete ? "complete" : "incomplete"): \(read.output.split(whereSeparator: \.isNewline).joined(separator: ", "))")
         appendConsole("AVM: \(summary.message)\n")
         Announcer.shared.announce(summary.message, tone: summary.complete ? .success : .failure)
-        _ = mtools(["mren", "-i", "IMG", "::AVMSTATUS.TXT", "::AVMSTAT.OLD"], runtimeDir: runtimeDir)
-        return read.output.contains("first-sign-in-done")
+        // Retired only once the first sign-in has written its part
+        // (2026-10-26, code audit): retired earlier (the user stopped
+        // Windows during setup), the sign-in's lines went to a new report
+        // with no specialize lines, which never parsed, so NVDA's result was
+        // never said and no restore point was ever made.
+        let signedIn = read.output.contains("first-sign-in-done")
+        if signedIn {
+            _ = mtools(["mdel", "-i", "IMG", "::AVMSTAT.OLD"], runtimeDir: runtimeDir)
+            _ = mtools(["mren", "-i", "IMG", "::AVMSTATUS.TXT", "::AVMSTAT.OLD"], runtimeDir: runtimeDir)
+        }
+        return signedIn
     }
 
     /// A "Fresh install" restore point (2026-10-26): saved once, the first
@@ -2524,6 +2538,7 @@ final class VMManager: ObservableObject {
             Announcer.shared.announce("AVM saved a restore point called Fresh install, so you can return to a new Windows from Settings at any time.", tone: .info)
         } catch {
             avmLog("saveFreshInstallRestorePoint: \(error.localizedDescription)")
+            Announcer.shared.announce("AVM couldn't save the Fresh install restore point. Reason: \(error.localizedDescription)", tone: .failure)
         }
     }
 
@@ -2540,11 +2555,18 @@ final class VMManager: ObservableObject {
 
     private func saveWeeklyRestorePoint(configuration: VMConfiguration, runtimeDir: URL) async {
         guard let existing = try? await RestorePoints.list(vmDirectory: runtimeDir), !existing.isEmpty else { return }
-        let automatic = existing.filter { $0.label.hasPrefix(Self.automaticLabelPrefix) }
+        // Automatic points carry a marker file, not just a name (2026-10-26,
+        // code audit): a user's own point named "Automatic updates test"
+        // would otherwise be deleted by the weekly clean-up.
+        let marker = { (point: RestorePoint) in
+            runtimeDir.appendingPathComponent(RestorePoints.folderName).appendingPathComponent(point.tag).appendingPathComponent("automatic")
+        }
+        let automatic = existing.filter { FileManager.default.fileExists(atPath: marker($0).path) }
         if let newest = automatic.first, Date().timeIntervalSince(newest.date) < 7 * 24 * 3600 { return }
         let label = "\(Self.automaticLabelPrefix), \(Date().formatted(date: .abbreviated, time: .omitted))"
         do {
-            _ = try await RestorePoints.create(vmDirectory: runtimeDir, label: label, secureBoot: configuration.usesSecureBoot)
+            let point = try await RestorePoints.create(vmDirectory: runtimeDir, label: label, secureBoot: configuration.usesSecureBoot)
+            FileManager.default.createFile(atPath: marker(point).path, contents: nil)
             for old in automatic.dropFirst(1) {
                 try? await RestorePoints.delete(old, vmDirectory: runtimeDir)
             }
@@ -2552,6 +2574,7 @@ final class VMManager: ObservableObject {
             Announcer.shared.announce("AVM saved this week's automatic restore point, so this week's updates can be undone from Settings.", tone: .info)
         } catch {
             avmLog("saveWeeklyRestorePoint: \(error.localizedDescription)")
+            Announcer.shared.announce("AVM couldn't save this week's automatic restore point. Reason: \(error.localizedDescription)", tone: .failure)
         }
     }
 
@@ -2581,6 +2604,35 @@ final class VMManager: ObservableObject {
             }
         } catch {
             avmLog("removeAnswerFile: couldn't run mtools: \(error)")
+        }
+        Self.scrubAnswerFileBytes(imagePath: imgPath)
+    }
+
+    /// A FAT delete only unlinks the file: its bytes, the encoded password
+    /// among them, stayed in the image for good (2026-10-26, code audit).
+    /// Every copy of the answer file's text left in the image (from
+    /// "<?xml" to "</unattend>") is overwritten with zeros, in place; the
+    /// rest of the volume, the marker included, is untouched.
+    nonisolated static func scrubAnswerFileBytes(imagePath: String) {
+        guard var data = FileManager.default.contents(atPath: imagePath) else { return }
+        let start = Data("<?xml".utf8), end = Data("</unattend>".utf8)
+        var scrubbed = 0
+        var from = data.startIndex
+        while let open = data.range(of: start, in: from..<data.endIndex) {
+            let limit = min(data.endIndex, open.lowerBound + 1_048_576)
+            guard let close = data.range(of: end, in: open.lowerBound..<limit) else { break }
+            data.resetBytes(in: open.lowerBound..<close.upperBound)
+            scrubbed += 1
+            from = close.upperBound
+        }
+        guard scrubbed > 0 else { return }
+        do {
+            let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: imagePath))
+            try handle.write(contentsOf: data)
+            try handle.close()
+            AVMLog.write("AVM: removeAnswerFile — scrubbed \(scrubbed) copy(ies) of the answer file's text from the UNATTEND volume.")
+        } catch {
+            AVMLog.write("AVM: removeAnswerFile — couldn't scrub the UNATTEND volume: \(error.localizedDescription)")
         }
     }
 
@@ -3106,6 +3158,10 @@ final class VMManager: ObservableObject {
     // MARK: - Cleanup
 
     private func cleanUp() {
+        // The keyboard for Windows goes back to the Mac when the machine
+        // stops (WindowsKeyboard.swift), and only then: it doesn't follow
+        // the machine's window.
+        WindowsKeyboard.shared.stop()
         qmpConnected = false
         qmpReadSource?.cancel()
         qmpReadSource = nil

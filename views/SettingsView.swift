@@ -121,6 +121,9 @@ struct SettingsView: View {
     @State private var saveMessage: String? = nil
     @State private var usbMode: USBPlugMode = .ask
     @State private var rememberedDevices: [RememberedUSBDevice] = []
+    /// The list as it was when the sheet opened, to tell whether the user
+    /// changed it here.
+    @State private var rememberedDevicesAtOpen: [RememberedUSBDevice] = []
     @State private var secureBoot = false
     @State private var shareClipboard = true
     @State private var sharedFolderPath: String?
@@ -734,6 +737,7 @@ struct SettingsView: View {
         diskSizeGB = saved.diskSizeGB
         usbMode = saved.effectiveUSBMode
         rememberedDevices = saved.usbRememberedDevices ?? []
+        rememberedDevicesAtOpen = rememberedDevices
         secureBoot = saved.usesSecureBoot
         shareClipboard = saved.sharesClipboard
         sharedFolderPath = saved.sharedFolderPath
@@ -834,7 +838,12 @@ struct SettingsView: View {
             updated.windowsKeyboardName = windowsKeyboardID == nil ? nil : windowsKeyboardName
             updated.windowsKeyboardAppleISO = windowsKeyboardID != nil && windowsKeyboardAppleISO ? true : nil
             updated.usbMode = usbMode.rawValue
-            updated.usbRememberedDevices = rememberedDevices.isEmpty ? nil : rememberedDevices
+            // Only if changed here (2026-10-26, code audit): a device
+            // remembered from a plug-in prompt while this sheet was open
+            // was otherwise erased by Save.
+            if rememberedDevices != rememberedDevicesAtOpen {
+                updated.usbRememberedDevices = rememberedDevices.isEmpty ? nil : rememberedDevices
+            }
             vmStore.save(updated)
             // A running VM follows the clipboard setting straight away.
             AVMPasteboard.shared.refreshEnabled()

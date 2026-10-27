@@ -145,6 +145,10 @@ final class Announcer {
         // opens AVM's screens with no one at them; their announcements are
         // kept quiet so it never talks over the user's own VoiceOver.
         guard !Self.isMuted else { return }
+        // In the log as well (2026-10-26, code audit): the log's header
+        // promises spoken announcements, and a failure said without its own
+        // log line was missing from every diagnostic report.
+        AVMLog.write("AVM: said (\(tone)) — \(message)")
         switch tone {
         case .enterGuest: Self.enterSound?.play()
         case .leaveGuest: Self.leaveSound?.play()

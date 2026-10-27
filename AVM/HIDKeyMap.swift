@@ -14,6 +14,12 @@ nonisolated enum HIDKeyMap {
 
     static func scancode(forUsage usage: Int) -> Int? { table[usage] }
 
+    /// A scancode as QEMU's QMP "number" key takes it: set 1, with an
+    /// extended key's E0 prefix as 0x80 on its second byte (QEMU's qnum).
+    static func qemuNumber(forScancode code: Int) -> Int {
+        code & extended != 0 ? 0x80 | (code & 0x7F) : code
+    }
+
     private static let extended = 0x100
 
     /// An Apple keyboard's Fn key, as the helper passes it (not a page-7

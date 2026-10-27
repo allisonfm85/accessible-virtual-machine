@@ -650,6 +650,13 @@ final class KeyboardPathTests: XCTestCase {
         XCTAssertEqual(iso.translate(usage: 0x64, pressed: true), .key(0x29, down: true))
     }
 
+    func testQEMUNumbers() {
+        XCTAssertEqual(HIDKeyMap.qemuNumber(forScancode: 0x1E), 0x1E)    // a
+        XCTAssertEqual(HIDKeyMap.qemuNumber(forScancode: 0x153), 0xD3)   // Delete, E0 53
+        XCTAssertEqual(HIDKeyMap.qemuNumber(forScancode: 0x15B), 0xDB)   // left Windows, E0 5B
+        XCTAssertEqual(HIDKeyMap.qemuNumber(forScancode: 0x11D), 0x9D)   // right Control, E0 1D
+    }
+
     func testPauseGoesItsOwnWay() {
         var t = WindowsKeyTranslator()
         XCTAssertEqual(t.translate(usage: HIDKeyMap.pauseUsage, pressed: true), .pause(down: true))

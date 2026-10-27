@@ -10,14 +10,19 @@
 // The privileged helper holds the keyboard (macOS lets only a privileged
 // process take a keyboard over; AVMUSBHelper/KeyboardHold.swift) and
 // passes each key here as a HID usage. AVM turns it into the scancode a PC
-// keyboard sends (HIDKeyMap.swift) and sends it to Windows through SPICE,
-// the same way as the Mac keyboard's keys when Windows has the keyboard.
+// keyboard sends (HIDKeyMap.swift) and sends it to QEMU's own input
+// through its control connection (QMP input-send-event), in order.
 // Keys still down are released when the keyboard goes back to the Mac,
 // so none sticks in Windows.
 //
-// Starts when SPICE connects and the machine has a keyboard chosen in
-// Settings (VMConfiguration.windowsKeyboardID); stops when SPICE goes.
-// No key is ever logged or spoken.
+// THROUGH QMP, NOT SPICE (2026-10-26, code audit): the machine's window,
+// and with it SPICE, goes away whenever the user returns to the Mac, and
+// stopping with it broke "whichever app is in front". QMP is connected
+// for as long as the machine runs.
+//
+// Starts when the machine's keyboard channel first opens and it has a
+// keyboard chosen in Settings (VMConfiguration.windowsKeyboardID); stops
+// when the machine stops (VMManager). No key is ever logged or spoken.
 
 import Foundation
 
@@ -25,11 +30,27 @@ import Foundation
 final class WindowsKeyboard {
     static let shared = WindowsKeyboard()
 
-    /// Sends a scancode to the running guest; set by VMView's SPICE
-    /// coordinator while connected.
-    var send: ((Int32, Bool) -> Void)?
-    /// Sends Pause, which has no single scancode (HIDKeyMap.pauseUsage).
-    var sendPause: ((Bool) -> Void)?
+    /// Sends a scancode to the running guest, through QMP.
+    var send: ((Int32, Bool) -> Void)? = { code, down in
+        WindowsKeyboard.shared.sendThroughQMP(["type": "number", "data": HIDKeyMap.qemuNumber(forScancode: Int(code))], down: down)
+    }
+    /// Sends Pause, which has no single scancode (HIDKeyMap.pauseUsage);
+    /// QMP's qcode sends it down and up (CocoaSpice's never sent it up).
+    var sendPause: ((Bool) -> Void)? = { down in
+        WindowsKeyboard.shared.sendThroughQMP(["type": "qcode", "data": "pause"], down: down)
+    }
+
+    /// One after another: each key waits for the one before, so a release
+    /// can never overtake its press.
+    private var lastSend: Task<Void, Never>?
+    private func sendThroughQMP(_ key: [String: Any], down: Bool) {
+        let previous = lastSend
+        nonisolated(unsafe) let event: [String: Any] = ["type": "key", "data": ["down": down, "key": key]]
+        lastSend = Task { @MainActor in
+            await previous?.value
+            _ = try? await VMManager.shared?.sendQMPCommand("input-send-event", arguments: ["events": [event]])
+        }
+    }
     /// An Apple ISO keyboard: § and ` swapped back (HIDKeyMap.isoSwapped).
     var appleISO: Bool {
         get { translator.appleISO }
@@ -86,7 +107,7 @@ final class WindowsKeyboard {
         Announcer.shared.announce("\(keyboardName) types on the Mac for a moment: AVM's helper restarted. Asking for it again.", tone: .info)
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, self.send != nil, self.keyboardID == nil else { return }
+                guard let self, VMManager.shared != nil, self.keyboardID == nil else { return }
                 self.start(keyboardID: id, name: name)
             }
         }

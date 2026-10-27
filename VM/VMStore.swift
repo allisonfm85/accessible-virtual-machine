@@ -149,6 +149,8 @@ final class VMStore: ObservableObject {
     /// Sorted largest first: in a space-reclaiming list, the biggest win
     /// leads.
     func findOrphans() -> [OrphanedVMDirectory] {
+        // Every folder would look orphaned (see loadAll).
+        guard !loadFailed else { return [] }
         guard
             let container = try? vmsContainerURL,
             fileManager.fileExists(atPath: container.path)
@@ -230,6 +232,16 @@ final class VMStore: ObservableObject {
     // neutral" saveAll now speaks a .failure as well as logging it. A LOAD
     // failure stays log-only: it happens at launch, before anything could
     // be said usefully, and an empty list is already visible.
+    //
+    // AN UNREADABLE LIST IS KEPT, NEVER OVERWRITTEN (2026-10-26, code
+    // audit): loading used to fall back to an empty list, and the next save
+    // (any new machine or setting) wrote that over the file, losing every
+    // machine, while Reclaim then offered all their folders for the Trash.
+    // Now the file is copied aside first, Reclaim refuses while the list
+    // couldn't be read, and the user hears what happened and where the
+    // copy is.
+    private(set) var loadFailed = false
+
     private func loadAll() -> [VMConfiguration] {
         do {
             let url = try storeURL
@@ -238,6 +250,20 @@ final class VMStore: ObservableObject {
             return try JSONDecoder().decode([VMConfiguration].self, from: data)
         } catch {
             AVMLog.write("AVM: VMStore — FAILED to load configurations: \(error.localizedDescription)")
+            loadFailed = true
+            var kept = "it couldn't be copied aside"
+            if let url = try? storeURL, fileManager.fileExists(atPath: url.path) {
+                let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+                let aside = url.deletingLastPathComponent().appendingPathComponent("configurations-unreadable-\(stamp).json")
+                if (try? fileManager.copyItem(at: url, to: aside)) != nil {
+                    kept = "a copy is kept as \(aside.lastPathComponent), in AVM's folder in Application Support"
+                    AVMLog.write("AVM: VMStore — the unreadable list is kept as \(aside.lastPathComponent).")
+                }
+            }
+            let message = "AVM couldn't read your list of virtual machines, so it shows none; \(kept). Your machines' files are untouched. Next: report the problem from the Help menu, before making new machines."
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                MainActor.assumeIsolated { Announcer.shared.announce(message, tone: .failure) }
+            }
             return []
         }
     }
@@ -482,17 +508,36 @@ nonisolated enum RestorePoints {
         guard point.secureBoot == currentSecureBoot else {
             throw RestorePointError.secureBootMismatch(madeWithSecureBoot: point.secureBoot)
         }
-        _ = try await qemuImg(["snapshot", "-a", point.tag, disk(dir).path])
+        // ORDER (2026-10-26, code audit): this used to delete the live
+        // firmware settings and TPM, then copy the saved ones, after the
+        // disk was already rolled back; a failed copy (a full disk) left a
+        // rolled-back Windows with a new TPM, so BitLocker asked for its
+        // recovery key and Windows Hello PINs were gone. Now the saved
+        // copies are staged beside the live ones first; only once both are
+        // in hand is the disk rolled back and are they swapped in. A part
+        // the point has no copy of is left as it is.
         let fm = FileManager.default
         let folder = dir.appendingPathComponent(folderName).appendingPathComponent(point.tag)
-        for name in ["nvram.fd", "tpm-state"] {
-            let live = dir.appendingPathComponent(name)
-            let saved = folder.appendingPathComponent(name)
-            if fm.fileExists(atPath: live.path) {
-                try fm.removeItem(at: live)
+        var staged: [(live: URL, fresh: URL)] = []
+        do {
+            for name in ["nvram.fd", "tpm-state"] {
+                let saved = folder.appendingPathComponent(name)
+                guard fm.fileExists(atPath: saved.path) else { continue }
+                let fresh = dir.appendingPathComponent(".\(name).restoring")
+                try? fm.removeItem(at: fresh)
+                try fm.copyItem(at: saved, to: fresh)
+                staged.append((dir.appendingPathComponent(name), fresh))
             }
-            if fm.fileExists(atPath: saved.path) {
-                try fm.copyItem(at: saved, to: live)
+        } catch {
+            for item in staged { try? fm.removeItem(at: item.fresh) }
+            throw RestorePointError.tool("The restore point's firmware settings couldn't be copied, so nothing was changed: \(error.localizedDescription)")
+        }
+        _ = try await qemuImg(["snapshot", "-a", point.tag, disk(dir).path])
+        for item in staged {
+            if fm.fileExists(atPath: item.live.path) {
+                _ = try fm.replaceItemAt(item.live, withItemAt: item.fresh)
+            } else {
+                try fm.moveItem(at: item.fresh, to: item.live)
             }
         }
         AVMLog.write("AVM: RestorePoints — restored \(point.tag).")

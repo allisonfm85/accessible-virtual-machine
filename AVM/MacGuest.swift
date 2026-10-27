@@ -262,6 +262,12 @@ final class MacInstaller: NSObject, URLSessionDownloadDelegate {
         MainActor.assumeIsolated {
             guard let destination = downloadDestination else { return }
             do {
+                // Only a real download is kept (2026-10-26, code audit): an
+                // error page saved as the installer was "used" again every
+                // time after, and failed every time.
+                if let http = downloadTask.response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    throw MacGuestError("Apple's server answered \(http.statusCode) instead of sending macOS. Next: try again later.")
+                }
                 try? FileManager.default.removeItem(at: destination)
                 try FileManager.default.moveItem(at: location, to: destination)
                 downloadContinuation?.resume(returning: destination)
@@ -336,6 +342,8 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
     private var keyMonitor: Any?
     private var machine: VZVirtualMachine?
     private var files: MacGuestFiles?
+    /// New at every start, so timers from an earlier run can tell.
+    private var runToken = UUID()
     private var clipboard: MacClipboard?
     private var vzConfiguration: VZVirtualMachineConfiguration?
     private var window: NSWindow?
@@ -364,6 +372,7 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
             self.machine = machine
             self.vzConfiguration = vz
             runningID = config.id
+            runToken = UUID()
             name = config.name
             showWindow(for: machine, title: config.name)
             self.files = files
@@ -526,9 +535,13 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
         VMStore.shared?.save(updated)
         Announcer.shared.announce("When macOS's Setup Assistant is up, in about 3 minutes, AVM will ask you to press Command-F5 to turn on its VoiceOver.", tone: .info)
         let id = config.id
+        // This run's, not a later one's (2026-10-26, code audit): a machine
+        // stopped and started again inside 200 s had the first run's timer
+        // capture its keys mid-start.
+        let run = runToken
         DispatchQueue.main.asyncAfter(deadline: .now() + 200) { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, self.runningID == id else { return }
+                guard let self, self.runningID == id, self.runToken == run else { return }
                 guard self.keyboardInGuest else {
                     Announcer.shared.announce("Setup Assistant should be up in \(self.name). To turn on its VoiceOver, choose Turn On VoiceOver in macOS in its window.", tone: .info)
                     return
@@ -578,6 +591,17 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
         // Command-Return.
         whenModifiersReleased { [weak self] in
             guard let self, self.keyboardInGuest, let window = self.window, let machineView = self.machineView else { return }
+            // AVM wasn't let in front (2026-10-26, code audit: another app
+            // was in front as a start finished, and macOS 14's activation
+            // can refuse): keys would go to that app while AVM thinks macOS
+            // has them, with Control-Command-Escape taken system-wide.
+            guard window.isKeyWindow, NSApp.isActive else {
+                self.releaseFullControl()
+                self.setKeyboard(inGuest: false)
+                Announcer.shared.announce("\(self.guestName) didn't get the keyboard, because AVM isn't in front. To give it the keyboard, switch to AVM and choose Enter macOS.", tone: .leaveGuest)
+                AVMLog.write("AVM: MacGuest — keyboard NOT given to macOS: AVM's window isn't key.")
+                return
+            }
             window.makeFirstResponder(machineView)
             AVMLog.write("AVM: MacGuest — machine's screen is \(window.firstResponder === machineView ? "" : "NOT ")first responder; window is \(window.isKeyWindow ? "" : "NOT ")key; AVM is \(NSApp.isActive ? "" : "NOT ")active.")
         }
@@ -731,6 +755,13 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
         let status = RegisterEventHotKey(UInt32(kVK_Escape), UInt32(controlKey | cmdKey), Self.escapeHotKeyID,
                                          GetApplicationEventTarget(), 0, &hotKeyRef)
         AVMLog.write("AVM: MacGuest — Control-Command-Escape hotkey \(status == noErr ? "registered" : "not registered (\(status))").")
+        // Not registered: its handler goes too, or each later try installs
+        // another that is never removed (2026-10-26, code audit).
+        if status != noErr {
+            hotKeyRef = nil
+            if let hotKeyHandler { RemoveEventHandler(hotKeyHandler) }
+            hotKeyHandler = nil
+        }
     }
 
     /// Back to the Mac's own shortcuts, and the hotkey off.
@@ -1003,15 +1034,34 @@ enum MacVoiceOver {
         restoreAfterGuest()
     }
 
-    static func restoreAfterGuest() {
+    /// `beforeQuitting`: from applicationWillTerminate, where an
+    /// asynchronous launch can be lost as the process exits (2026-10-26,
+    /// code audit), so VoiceOver is opened with open(1) and waited for. The
+    /// flag is cleared only once VoiceOver is on its way, so a launch that
+    /// didn't happen is tried again at the next start (recoverAtLaunch).
+    static func restoreAfterGuest(beforeQuitting: Bool = false) {
         guard bringBack else { return }
-        bringBack = false
         if NSWorkspace.shared.isVoiceOverEnabled {
+            bringBack = false
             AVMLog.write("AVM: MacVoiceOver — still on on leaving macOS.")
             return
         }
         let app = URL(fileURLWithPath: "/System/Library/CoreServices/VoiceOver.app")
+        if beforeQuitting {
+            let open = Process()
+            open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            open.arguments = [app.path]
+            if (try? open.run()) != nil {
+                open.waitUntilExit()
+                if open.terminationStatus == 0 { bringBack = false }
+            }
+            NSLog("AVM: MacVoiceOver — opened before quitting (status \(open.terminationStatus)).")
+            return
+        }
         NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { if error == nil { bringBack = false } }
+            }
             AVMLog.write("AVM: MacVoiceOver — \(error == nil ? "turned back on" : "couldn't turn it back on: \(error!.localizedDescription)").")
         }
     }

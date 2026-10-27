@@ -23,6 +23,7 @@
 //  .info is dropped by default and was invisible in the first proof.
 //
 import Foundation
+import SystemConfiguration
 import Security
 import os.log
 // MARK: - Identity
@@ -216,6 +217,16 @@ final class DeviceRegistry {
             reply(false, "socket", "the helper could not tell which user asked")
             return
         }
+        // Only for the person at the screen (2026-10-26, security audit),
+        // as the keyboard hold already was: with fast user switching, a
+        // background user's AVM must not take a device the person at the
+        // screen just plugged in.
+        var consoleUID: uid_t = 0
+        guard SCDynamicStoreCopyConsoleUser(nil, &consoleUID, nil) != nil, consoleUID == uid else {
+            os_log("attach refused: the asking user isn't at the screen", log: log, type: .default)
+            reply(false, "console", "Only the person using this Mac's screen can send a USB device to a virtual machine.")
+            return
+        }
         if let problem = streamSocketProblem(streamSocketPath, uid: uid) {
             os_log("attach refused: %{public}@", log: log, type: .error, problem)
             reply(false, "socket", problem)
@@ -250,7 +261,7 @@ final class DeviceRegistry {
                    device.description, streamSocketPath)
             let stream = avm_usb_stream_attach(device.vendorID, device.productID,
                                                device.busNumber, device.deviceAddress,
-                                               streamSocketPath,
+                                               streamSocketPath, uid,
                                                verboseStreamLogging ? 1 : 0,
                                                streamEventCallback, context,
                                                &step, step.count, &detail, detail.count)

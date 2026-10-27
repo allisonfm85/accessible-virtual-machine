@@ -653,6 +653,8 @@ nonisolated final class UbuntuInstallPipeline {
                     .write(to: nocloud.appendingPathComponent("preseed.cfg"), atomically: true, encoding: .utf8)
                 try Self.debianSetupScript(account: account)
                     .write(to: nocloud.appendingPathComponent("setup.sh"), atomically: true, encoding: .utf8)
+                try Self.debianFailureScript
+                    .write(to: nocloud.appendingPathComponent("failed.sh"), atomically: true, encoding: .utf8)
                 return
             }
             if distro == .fedora {
@@ -958,7 +960,7 @@ nonisolated final class UbuntuInstallPipeline {
               readBack.contains(distro == .debian ? Self.debianKernelArguments : Self.kernelArguments),
               verify.output.contains(distro == .debian ? "\n'/nocloud/preseed.cfg'" : "\n'/nocloud/user-data'"),
               verify.output.contains("\n'/nocloud/setup.sh'"),
-              distro == .debian || verify.output.contains("\n'/nocloud/failed.sh'") else {
+              verify.output.contains("\n'/nocloud/failed.sh'") else {
             throw UbuntuPipelineError.stageFailed(stage: .rebuildISO,
                                                  reason: "The installer copy didn't read back with the answers on it. (xorriso exit \(verify.code))")
         }
@@ -1034,12 +1036,33 @@ nonisolated final class UbuntuInstallPipeline {
         popularity-contest popularity-contest/participate boolean false
         d-i grub-installer/only_debian boolean true
         d-i grub-installer/force-efi-extra-removable boolean true
-        d-i preseed/late_command string sh /cdrom/nocloud/setup.sh
+        d-i preseed/late_command string sh /cdrom/nocloud/setup.sh || sh /cdrom/nocloud/failed.sh
         d-i finish-install/reboot_in_progress note
         d-i debian-installer/exit/poweroff boolean true
 
         """
     }
+
+    /// Debian's failure script (2026-10-26, code audit: Debian alone had
+    /// none, so a failed setup step left its installer on an error screen
+    /// with nothing said). Run by late_command when setup.sh fails: the
+    /// end of the installer's log and AVMFAIL.TAG on the UNATTEND volume,
+    /// then power off, which VMManager announces. Debian's installer has
+    /// busybox and no systemd.
+    static let debianFailureScript = """
+        #!/bin/sh
+        # Written by AVM. Runs only if Debian's install fails.
+        set -x
+        mkdir -p /run/avm-unattend
+        if mount -t vfat /dev/disk/by-label/UNATTEND /run/avm-unattend; then
+            [ -f /var/log/syslog ] && tail -c 2000000 /var/log/syslog > /run/avm-unattend/syslog.log
+            echo "Debian install failed" > /run/avm-unattend/AVMFAIL.TAG
+            sync
+            umount /run/avm-unattend
+        fi
+        poweroff -f
+
+        """
 
     /// Ubuntu's setup script, for Debian's installer: its in-target in
     /// place of curtin's, GDM's daemon.conf in place of custom.conf, and

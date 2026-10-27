@@ -206,13 +206,16 @@ nonisolated final class AVMLog: @unchecked Sendable {
         // audit): the Ubuntu account's name defaults to the Mac short name
         // lowercased and its real name to the full name, and either can come
         // back in a guest's console log.
+        // The full name first (2026-10-26, code audit): the short name is
+        // often its first word ("amena" in "Amena Thomas"), and replacing
+        // that first left "~ Thomas", which the full name no longer matched.
         let user = NSUserName()
-        if user.count >= 4 {
-            out = out.replacingOccurrences(of: user, with: "~", options: .caseInsensitive)
-        }
         let fullName = NSFullUserName()
         if fullName.count >= 4, fullName != user {
             out = out.replacingOccurrences(of: fullName, with: "~", options: .caseInsensitive)
+        }
+        if user.count >= 4 {
+            out = out.replacingOccurrences(of: user, with: "~", options: .caseInsensitive)
         }
 
         return out

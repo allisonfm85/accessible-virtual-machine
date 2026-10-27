@@ -149,6 +149,9 @@ enum MachineArchive {
     /// Files import never copies, whatever a package holds: the manifest,
     /// a password hash, and anything transient.
     nonisolated static func importSkips(_ relativePath: String) -> Bool {
+        // Clipboard text in transit (MacClipboard.swift) never travels
+        // (2026-10-26, code audit).
+        if relativePath == "clipboard" || relativePath.hasPrefix("clipboard/") { return true }
         let name = (relativePath as NSString).lastPathComponent
         if name == UbuntuAccount.fileName || name == manifestName || name == "disk-reinstall.qcow2" {
             return true

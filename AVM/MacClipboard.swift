@@ -35,7 +35,11 @@ final class MacClipboard {
         folder = vmFolder.appendingPathComponent("clipboard", isDirectory: true)
         let fm = FileManager.default
         try fm.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        for file in [toMacOS, fromMacOS] where !fm.fileExists(atPath: file.path) {
+        // Emptied at every start, not only at a clean stop (2026-10-26, code
+        // audit): after Quit Now or a crash the last copied text stayed on
+        // disk and was pasted into macOS again at the next start.
+        for file in [toMacOS, fromMacOS] {
+            try? fm.removeItem(at: file)
             fm.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600])
         }
         let installer = folder.appendingPathComponent("Install Clipboard Sharing.command")
@@ -57,25 +61,48 @@ final class MacClipboard {
     func stop() {
         timer?.invalidate()
         timer = nil
-        try? Data().write(to: toMacOS)
-        try? Data().write(to: fromMacOS)
+        for file in [toMacOS, fromMacOS] {
+            try? FileManager.default.removeItem(at: file)
+        }
     }
+
+    /// Written fresh, never through what's there: macOS in the machine can
+    /// change the shared folder, and a link put in a file's place would
+    /// otherwise make AVM write over a file of the Mac's.
+    private func writeFresh(_ text: String, to file: URL) {
+        try? FileManager.default.removeItem(at: file)
+        FileManager.default.createFile(atPath: file.path, contents: Data(text.utf8), attributes: [.posixPermissions: 0o600])
+    }
+
+    /// A plain file's text, or nil for anything else (a link especially).
+    private func readPlain(_ file: URL) -> String? {
+        guard let type = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.type] as? FileAttributeType,
+              type == .typeRegular else { return nil }
+        return try? String(contentsOf: file, encoding: .utf8)
+    }
+
+    /// Copies password managers mark as secret or passing (the nspasteboard
+    /// .org conventions Passwords and 1Password follow) stay on the Mac.
+    private static let privateTypes: Set<NSPasteboard.PasteboardType> = [
+        NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"),
+        NSPasteboard.PasteboardType("org.nspasteboard.TransientType"),
+    ]
 
     private func sync() {
         let board = NSPasteboard.general
         // The Mac's clipboard changed: to macOS.
         if board.changeCount != lastChangeCount {
             lastChangeCount = board.changeCount
-            if let text = board.string(forType: .string) {
-                try? text.write(to: toMacOS, atomically: true, encoding: .utf8)
-                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: toMacOS.path)
+            let isPrivate = !(board.types.map(Set.init) ?? []).isDisjoint(with: Self.privateTypes)
+            if !isPrivate, let text = board.string(forType: .string) {
+                writeFresh(text, to: toMacOS)
             }
         }
         // macOS's clipboard changed: to the Mac.
         guard let modified = (try? FileManager.default.attributesOfItem(atPath: fromMacOS.path))?[.modificationDate] as? Date,
               modified != lastFromMacOS else { return }
         lastFromMacOS = modified
-        guard let text = try? String(contentsOf: fromMacOS, encoding: .utf8), !text.isEmpty,
+        guard let text = readPlain(fromMacOS), !text.isEmpty,
               text != board.string(forType: .string) else { return }
         board.clearContents()
         board.setString(text, forType: .string)
@@ -102,7 +129,9 @@ final class MacClipboard {
     last_theirs=""
     while true; do
         if [ -d "$SHARE" ]; then
-            theirs=$(stat -f %m "$SHARE/to-macos.txt" 2>/dev/null || echo "")
+            # By content, not modification time: two Mac copies in the same
+            # second share a time (2026-10-26, code audit).
+            theirs=$(shasum "$SHARE/to-macos.txt" 2>/dev/null | cut -c1-40)
             if [ -n "$theirs" ] && [ "$theirs" != "$last_theirs" ]; then
                 last_theirs="$theirs"
                 if [ -s "$SHARE/to-macos.txt" ]; then

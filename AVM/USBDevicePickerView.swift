@@ -110,8 +110,11 @@ struct USBDevicePickerView: View {
         }
         .padding(24)
         .frame(minWidth: 460)
+        // Nothing chosen until the user chooses (2026-10-26, code audit):
+        // with the first device preselected, Return could send the Mac's
+        // own USB keyboard to the machine.
         .onAppear {
-            selected = devices.first
+            selected = devices.count == 1 && mode == .detach ? devices.first : nil
         }
     }
 }

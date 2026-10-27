@@ -282,7 +282,11 @@ final class WindowsISODownloader: ObservableObject {
                 return
             }
             phase = .finished(iso)
-            Announcer.shared.announce("\(iso.lastPathComponent) is ready. \(verdict) Choose Use This Installer.", tone: .success)
+            // The success sound only for a checksum match (2026-10-26, code
+            // audit): a file matching nothing Microsoft publishes may be
+            // a corrupt download, and sounded exactly like a verified one.
+            let verified = verdict.hasPrefix("It matches")
+            Announcer.shared.announce("\(iso.lastPathComponent) is ready. \(verdict) Choose Use This Installer.", tone: verified ? .success : .info)
         } catch {
             guard !stopped else { return }
             let message = (error as? AssistantError)?.message ?? "AVM couldn't read the downloaded file: \(error.localizedDescription)"

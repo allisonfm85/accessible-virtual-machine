@@ -364,6 +364,20 @@ final class USBRedirectController: ObservableObject {
         return USBRedirectController.ports.first { !used.contains($0) }
     }
 
+    /// AVM's helper stopped (2026-10-26, code audit): the kernel has given
+    /// every device it held back to the Mac, so their ports go, and the
+    /// next plug-in attaches afresh instead of "already attached".
+    func helperLost() {
+        let devices = Array(portByDevice.keys)
+        guard !devices.isEmpty else { return }
+        Task { @MainActor in
+            for device in devices {
+                await releasePort(for: device, reason: "the helper stopped")
+            }
+            Announcer.shared.announce("USB devices sent to the virtual machine are back on the Mac: AVM's helper stopped. Plug them in again to send them.", tone: .failure)
+        }
+    }
+
     /// Called for every helper-reported ending. Idempotent: a device
     /// with no port here is already handled.
     private func handleDeviceEnded(_ device: AVMUSBDeviceIdentity, state: AVMUSBDeviceState) async {

@@ -128,7 +128,10 @@ enum KeyboardTestJob {
         for (usage, down) in [(HIDKeyMap.fnUsage, true), (0x2A, true), (0x2A, false), (HIDKeyMap.fnUsage, false),
                               (HIDKeyMap.pauseUsage, true), (HIDKeyMap.pauseUsage, false)] {
             switch translator.translate(usage: usage, pressed: down) {
-            case .key(let code, let isDown): send(input, Int(code), down: isDown)
+            case .key(let code, let isDown):
+                // The app sends these through QMP (WindowsKeyboard.swift).
+                qmp(#"{"execute":"input-send-event","arguments":{"events":[{"type":"key","data":{"down":\#(isDown),"key":{"type":"number","data":\#(HIDKeyMap.qemuNumber(forScancode: Int(code)))}}}]}}"#)
+                RunLoop.main.run(until: Date().addingTimeInterval(0.15))
             case .pause(let isDown):
                 pause(down: isDown)
                 RunLoop.main.run(until: Date().addingTimeInterval(0.15))

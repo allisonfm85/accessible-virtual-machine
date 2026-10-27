@@ -342,12 +342,14 @@ final class USBHelperClient: NSObject, ObservableObject {
                 self?.log("connection invalidated")
                 self?.connection = nil
                 self?.keyboardHelperLost()
+                self?.devicesHelperLost()
             }
         }
         c.interruptionHandler = { [weak self] in
             Task { @MainActor in
                 self?.log("connection interrupted (helper exited or crashed)")
                 self?.keyboardHelperLost()
+                self?.devicesHelperLost()
             }
         }
         c.resume()
@@ -460,6 +462,14 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// kernel has given the keyboard back to macOS, so Windows must let go
     /// of any key still down, and AVM asks again (2026-10-26, keyboard
     /// audit; this used to only log).
+    /// Devices the helper held are the Mac's again once it's gone.
+    private func devicesHelperLost() {
+        guard !attachedDevices.isEmpty || !pendingDevices.isEmpty else { return }
+        attachedDevices.removeAll()
+        pendingDevices.removeAll()
+        USBRedirectController.shared.helperLost()
+    }
+
     private func keyboardHelperLost() {
         guard keyboardActive else { return }
         keyboardActive = false

@@ -873,6 +873,11 @@ nonisolated final class WindowsInstallPipeline {
         }
 
         let info = parseWIMInfo(result.output)
+        // The disc's language, as soon as it's read (2026-10-26, code audit):
+        // set only on the OK path, every "proceed anyway" install got an
+        // English Setup language, which stops Setup at its first screen on
+        // any other language's disc.
+        setupLanguage = info.language ?? "en-US"
 
         // CERTAIN hard-stop: wrong architecture. An x64/x86 install.wim will never
         // boot on the aarch64 `virt` machine.
@@ -910,7 +915,6 @@ nonisolated final class WindowsInstallPipeline {
             }
         }
 
-        setupLanguage = info.language ?? "en-US"
         pipelineLog("validateISO: OK — arch \(info.architecture), \(info.images.count) edition(s), effective edition \"\(resolved.name)\" present, language \(info.language ?? "unread (using en-US)")")
         return .ok
     }
@@ -1629,6 +1633,11 @@ nonisolated final class WindowsInstallPipeline {
             try? fm.removeItem(at: dst)
             do {
                 try fm.moveItem(at: move.src, to: dst)
+                // Owner-only (2026-10-26, code audit), as Ubuntu's are: the
+                // answer volume holds the account's password, Windows-
+                // encoded, and a machine on an external drive is otherwise
+                // readable by every account on the Mac.
+                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dst.path)
             } catch {
                 throw PipelineError.stageFailed(
                     stage: .promote,

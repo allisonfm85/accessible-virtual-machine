@@ -178,6 +178,26 @@ struct MacSettingsView: View {
         (try? configuration.directoryURL()).map { MacGuestFiles(folder: $0) }
     }
     private var running: Bool { isRunning || MacGuestRunner.shared.runningID == configuration.id }
+    /// Saved with Save and Quit: its disk is mid-session, its memory in the
+    /// saved file (MacGuestRunner.saveAndStop).
+    private var saved: Bool {
+        files.map { FileManager.default.fileExists(atPath: $0.savedState.path) } ?? false
+    }
+
+    /// Asked at the moment of acting, not when the sheet opened (2026-10-26,
+    /// code audit): the machine can start while Settings is open, and a
+    /// restore under a running machine swaps its disk from under it.
+    private func refusedWhileRunningOrSaved() -> Bool {
+        if MacGuestRunner.shared.runningID == configuration.id {
+            say("Shut \(configuration.name) down first.", .failure)
+            return true
+        }
+        if saved {
+            say("\(configuration.name) is saved with its apps open, so its disk is mid-session. Start it and shut it down first.", .failure)
+            return true
+        }
+        return false
+    }
 
     private let maxCores = max(2, ProcessInfo.processInfo.processorCount / 2)
     private let maxMemoryGB = max(4, Int(ProcessInfo.processInfo.physicalMemory >> 30) / 2)
@@ -306,7 +326,7 @@ struct MacSettingsView: View {
     }
 
     private func takePoint() {
-        guard let files else { return }
+        guard let files, !refusedWhileRunningOrSaved() else { return }
         let trimmed = newPointName.trimmingCharacters(in: .whitespaces)
         let name = trimmed.isEmpty ? "Restore point" : trimmed
         do {
@@ -320,7 +340,7 @@ struct MacSettingsView: View {
     }
 
     private func restore(_ point: MacRestorePoint) {
-        guard let files else { return }
+        guard let files, !refusedWhileRunningOrSaved() else { return }
         let alert = NSAlert()
         alert.messageText = "Put \(configuration.name) back to \(point.name)?"
         alert.informativeText = "Everything done in \(configuration.name) since then is lost, unless you take a restore point of it first. The restore point itself is kept."
@@ -361,7 +381,27 @@ struct MacSettingsView: View {
     }
 
     private func save() {
-        var updated = configuration
+        guard MacGuestRunner.shared.runningID != configuration.id else {
+            Announcer.shared.announce("Shut \(configuration.name) down to change its settings.", tone: .failure)
+            return
+        }
+        // A saved machine resumes only on the configuration it was saved
+        // with (2026-10-26, code audit): asked first, and the saved session
+        // let go of, so the next Start is a plain start, not a failed resume.
+        let changesMachine = cpuCount != configuration.cpuCount || ramSizeGB != configuration.ramSizeGB
+            || sharedFolderPath != configuration.sharedFolderPath
+            || (sharedFolderReadOnly ? true : nil) != configuration.sharedFolderReadOnly
+            || shareClipboard != configuration.sharesClipboard
+        if saved && changesMachine, let files {
+            let alert = NSAlert()
+            alert.messageText = "\(configuration.name) is saved with its apps open. Change its settings anyway?"
+            alert.informativeText = "These changes mean it can't carry on where it was: its next Start is a normal start, as after a power cut, and anything unsaved in its apps is lost. To keep it, choose Cancel, start it, and shut it down from macOS first."
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Change Settings")
+            guard alert.runModal() == .alertSecondButtonReturn else { return }
+            try? FileManager.default.removeItem(at: files.savedState)
+        }
+        var updated = vmStore.configurations.first { $0.id == configuration.id } ?? configuration
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         updated.name = trimmed.isEmpty ? configuration.name : trimmed
         updated.cpuCount = cpuCount

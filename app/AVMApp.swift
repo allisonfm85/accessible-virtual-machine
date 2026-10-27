@@ -552,7 +552,7 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
             CapsLockRemapper.shared.restoreForTermination()
             // The Mac's VoiceOver back on if AVM turned it off for a macOS
             // machine (2026-10-26, MacVoiceOver in MacGuest.swift).
-            MacVoiceOver.restoreAfterGuest()
+            MacVoiceOver.restoreAfterGuest(beforeQuitting: true)
             // The focus lock's own teardown (2026-10-25): its hot key, its
             // focus enforcement, and the presentation options it sets.
             // cleanup() existed with no callers; this is the place the
@@ -694,14 +694,28 @@ enum QuitCoordinator {
                 alert.addButton(withTitle: "Save and Quit")
                 alert.informativeText += " Save and Quit keeps macOS as it is, open apps and all, and its next Start carries on from there in seconds."
             }
+            // BOTH KINDS RUNNING (2026-10-26, code audit): the macOS answer
+            // used to end the quit here, so a Windows or Linux machine
+            // running beside it was cut off unasked and its USB devices
+            // never given back. Now a Windows or Linux machine is asked
+            // about next: Quit Now goes on to that question, and Save and
+            // Quit saves macOS, then quits again, which asks it.
+            let otherActive = vmIsActive || !USBRedirectController.shared.portByDevice.isEmpty
             switch alert.runModal() {
             case .alertSecondButtonReturn:
-                return .terminateNow
+                if !otherActive { return .terminateNow }
+                MacGuestRunner.shared.forceStop()
             case .alertThirdButtonReturn where saveable:
-                MacGuestRunner.shared.saveAndStop { saved in
-                    NSApp.reply(toApplicationShouldTerminate: saved)
+                if !otherActive {
+                    MacGuestRunner.shared.saveAndStop { saved in
+                        NSApp.reply(toApplicationShouldTerminate: saved)
+                    }
+                    return .terminateLater
                 }
-                return .terminateLater
+                MacGuestRunner.shared.saveAndStop { saved in
+                    if saved { NSApp.terminate(nil) }
+                }
+                return .terminateCancel
             default:
                 return .terminateCancel
             }
