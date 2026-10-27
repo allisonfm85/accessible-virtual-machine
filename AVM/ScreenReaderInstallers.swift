@@ -192,18 +192,34 @@ nonisolated enum ScreenReaderInstallers {
                 continue
             }
             await say("Downloading \(reader.displayName) \(installer.version) from its maker.", false)
-            do {
-                try await download(installer, to: file, say: say)
-                guard try matches(file, installer.checksum) else {
-                    try? FileManager.default.removeItem(at: file)
-                    throw ScreenReaderInstallerError.checksum(reader.displayName)
+            // Tries more than once (2026-10-27, a tester's NVDA: "The request
+            // timed out" ended the only try, and Windows was installed with
+            // Narrator alone). A stalled or dropped download is tried again.
+            var lastError: Error?
+            for attempt in 1...downloadAttempts {
+                do {
+                    try await download(installer, to: file, say: say)
+                    guard try matches(file, installer.checksum) else {
+                        try? FileManager.default.removeItem(at: file)
+                        throw ScreenReaderInstallerError.checksum(reader.displayName)
+                    }
+                    AVMLog.write("AVM: ScreenReaders — downloaded and checked \(reader.displayName) \(installer.version)\(attempt > 1 ? " on try \(attempt)" : "").")
+                    got[reader] = file
+                    removeOlderCopies(of: reader, keeping: file, in: cache)
+                    lastError = nil
+                    break
+                } catch {
+                    lastError = error
+                    AVMLog.write("AVM: ScreenReaders — \(reader.displayName) try \(attempt) of \(downloadAttempts) failed: \(error.localizedDescription)")
+                    try? FileManager.default.removeItem(at: file.appendingPathExtension("part"))
+                    if attempt < downloadAttempts {
+                        await say("\(reader.displayName)'s download stopped. Trying again.", false)
+                        try? await Task.sleep(for: .seconds(5 * attempt))
+                    }
                 }
-                AVMLog.write("AVM: ScreenReaders — downloaded and checked \(reader.displayName) \(installer.version).")
-                got[reader] = file
-                removeOlderCopies(of: reader, keeping: file, in: cache)
-            } catch {
-                AVMLog.write("AVM: ScreenReaders — \(reader.displayName) failed: \(error.localizedDescription)")
-                await say("\(reader.displayName) couldn't be downloaded, so it won't be installed this time. Reason: \(error.localizedDescription) Windows still has Narrator.", true)
+            }
+            if let lastError {
+                await say("\(reader.displayName) couldn't be downloaded after \(downloadAttempts) tries, so it won't be installed this time. Reason: \(lastError.localizedDescription) Windows still has Narrator: in Windows, press Control Command Return to turn it on, then install \(reader.displayName) from its maker's website there.", true)
             }
         }
         return got
@@ -218,9 +234,23 @@ nonisolated enum ScreenReaderInstallers {
         }
     }
 
+    /// Tries per installer before giving up on it.
+    static let downloadAttempts = 3
+
+    /// Waits up to two minutes for more of an installer before a try gives
+    /// up (the system's default is one), and allows a whole hour per try:
+    /// JAWS is 1.5 GB.
+    private static let downloads: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 120
+        configuration.timeoutIntervalForResource = 3600
+        configuration.waitsForConnectivity = true
+        return URLSession(configuration: configuration)
+    }()
+
     private static func download(_ installer: ScreenReaderInstaller, to file: URL,
                                  say: @escaping @Sendable (String, Bool) async -> Void) async throws {
-        let (bytes, response) = try await URLSession.shared.bytes(from: installer.url)
+        let (bytes, response) = try await downloads.bytes(from: installer.url)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw ScreenReaderInstallerError.download("the server answered \((response as? HTTPURLResponse)?.statusCode ?? 0)")
         }
