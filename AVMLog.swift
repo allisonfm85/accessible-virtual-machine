@@ -100,6 +100,22 @@ enum AVMPaths {
         let id = Bundle.main.bundleIdentifier ?? "com.alllisonmeloy.AVM"
         return id == "com.alllisonmeloy.AVM" ? "AVM" : id
     }()
+
+    /// A stand-in for Application Support/<supportFolderName> (2026-10-26),
+    /// set only by the accessibility audit (AccessibilityAudit.swift)
+    /// before anything reads or writes, so its sample machines, their
+    /// files and its log lines all go to a temporary folder and the
+    /// user's real machine list is never opened. nil in every normal run.
+    nonisolated(unsafe) static var supportDirectoryOverride: URL?
+
+    /// Application Support/<supportFolderName>, or the audit's stand-in.
+    /// Not created here; callers that need it create it, as before.
+    nonisolated static func supportDirectory() throws -> URL {
+        if let override = supportDirectoryOverride { return override }
+        return try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                           appropriateFor: nil, create: true)
+            .appendingPathComponent(supportFolderName, isDirectory: true)
+    }
 }
 
 nonisolated final class AVMLog: @unchecked Sendable {
@@ -156,10 +172,7 @@ nonisolated final class AVMLog: @unchecked Sendable {
 
     /// Directory holding the kept log files.
     static var logDirectory: URL? {
-        FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first?
-            .appendingPathComponent(AVMPaths.supportFolderName, isDirectory: true)
+        (try? AVMPaths.supportDirectory())?
             .appendingPathComponent("logs", isDirectory: true)
     }
 

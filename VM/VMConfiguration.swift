@@ -208,14 +208,7 @@ extension VMConfiguration {
     /// has it (the lowercase "vms" some older code used is the same folder
     /// on a case-insensitive disk).
     static func defaultVMsContainer() throws -> URL {
-        try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        .appendingPathComponent(AVMPaths.supportFolderName)
-        .appendingPathComponent("VMs")
+        try AVMPaths.supportDirectory().appendingPathComponent("VMs")
     }
 
     /// The folder that holds every file belonging to this VM. Computed

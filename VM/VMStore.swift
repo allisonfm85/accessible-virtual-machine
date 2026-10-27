@@ -43,13 +43,9 @@ final class VMStore: ObservableObject {
     /// configurations store, and (2026-08-15) the per-VM directories.
     private var avmDirectory: URL {
         get throws {
-            let appSupport = try fileManager.url(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask,
-                appropriateFor: nil,
-                create: true
-            )
-            let avmDirectory = appSupport.appendingPathComponent(AVMPaths.supportFolderName)
+            // Through AVMPaths (2026-10-26), so the accessibility audit's
+            // stand-in folder applies here too.
+            let avmDirectory = try AVMPaths.supportDirectory()
             try fileManager.createDirectory(
                 at: avmDirectory,
                 withIntermediateDirectories: true

@@ -161,8 +161,10 @@ final class MacInstaller: NSObject, URLSessionDownloadDelegate {
     /// Where downloaded macOS restore images are kept, so a second machine
     /// doesn't download one again.
     static var cacheFolder: URL {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return support.appendingPathComponent(AVMPaths.supportFolderName).appendingPathComponent("macos-restore-images")
+        let support = (try? AVMPaths.supportDirectory())
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                .appendingPathComponent(AVMPaths.supportFolderName)
+        return support.appendingPathComponent("macos-restore-images")
     }
 
     /// Installs macOS into `config`'s folder: from `ipsw` if given, else

@@ -44,19 +44,36 @@ struct MacSetupView: View {
                     .textFieldStyle(.roundedBorder)
                     .focused($nameFocused)
                     .accessibilityLabel("Virtual machine name")
-                Stepper("Cores: \(cpuCount)", value: $cpuCount, in: 2...maxCores)
-                Stepper("Memory: \(ramSizeGB) GB", value: $ramSizeGB, in: 4...maxMemoryGB, step: 2)
-                Stepper("Disk: \(diskSizeGB) GB", value: $diskSizeGB, in: 64...1000, step: 16)
-                    .accessibilityHint("The disk file takes only the space macOS uses, up to this size.")
+                // Each stepper said its words twice (2026-10-26, accessibility
+                // audit): SwiftUI shows a stepper's title as text and also
+                // names the stepper with it ("Cores: 4", then "Cores: 4, 4,
+                // stepper"). The text keeps the number; the stepper is named
+                // without it, and gigabytes are said in full, as in the
+                // Setup Wizard.
+                Stepper(value: $cpuCount, in: 2...maxCores) { Text("Cores: \(cpuCount)") }
+                    .accessibilityLabel("Cores")
+                Stepper(value: $ramSizeGB, in: 4...maxMemoryGB, step: 2) {
+                    Text("Memory: \(ramSizeGB) GB").accessibilityLabel("Memory: \(ramSizeGB) gigabytes")
+                }
+                .accessibilityLabel("Memory in gigabytes")
+                Stepper(value: $diskSizeGB, in: 64...1000, step: 16) {
+                    Text("Disk: \(diskSizeGB) GB").accessibilityLabel("Disk: \(diskSizeGB) gigabytes")
+                }
+                .accessibilityLabel("Disk size in gigabytes")
+                .accessibilityHint("The disk file takes only the space macOS uses, up to this size.")
 
+                // The radio group is named by its own title (2026-10-26,
+                // accessibility audit): an accessibilityLabel repeating it
+                // was said twice, and so was this text just before it,
+                // which stays on screen but is hidden from VoiceOver.
                 Text("Where macOS comes from")
+                    .accessibilityHidden(true)
                 Picker("Where macOS comes from", selection: $useIPSW) {
                     Text("Download the newest macOS this Mac supports, from Apple").tag(false)
                     Text("Use a macOS installer file (IPSW) I have").tag(true)
                 }
                 .pickerStyle(.radioGroup)
                 .labelsHidden()
-                .accessibilityLabel("Where macOS comes from")
                 if useIPSW {
                     HStack {
                         Button("Choose IPSW File…") { chooseIPSW() }
@@ -177,8 +194,13 @@ struct MacSettingsView: View {
             TextField("Name", text: $name)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Virtual machine name")
-            Stepper("Cores: \(cpuCount)", value: $cpuCount, in: 2...maxCores)
-            Stepper("Memory: \(ramSizeGB) GB", value: $ramSizeGB, in: 4...maxMemoryGB, step: 2)
+            // Named once, as in New macOS Virtual Machine (2026-10-26).
+            Stepper(value: $cpuCount, in: 2...maxCores) { Text("Cores: \(cpuCount)") }
+                .accessibilityLabel("Cores")
+            Stepper(value: $ramSizeGB, in: 4...maxMemoryGB, step: 2) {
+                Text("Memory: \(ramSizeGB) GB").accessibilityLabel("Memory: \(ramSizeGB) gigabytes")
+            }
+            .accessibilityLabel("Memory in gigabytes")
 
             Text("Shared Folder")
                 .font(.headline)

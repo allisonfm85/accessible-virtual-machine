@@ -183,7 +183,7 @@ Shortcuts for a shortcut using that key, and turn it off.
 The first thing you meet is the dashboard. With VoiceOver's heading
 navigation it reads in this order:
 
-- **AVM** is the app title, a level-one heading.
+- **Accessible Virtual Machine** is the app title, a level-one heading.
 - **Each virtual machine's name** is a level-two heading. Under each name is
   a plain line of specifications (cores, memory, disk size) and its
   buttons, each labeled with that machine's name: Start, Settings, Export

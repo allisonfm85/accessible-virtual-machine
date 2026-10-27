@@ -128,6 +128,9 @@ final class Announcer {
 
     private init() {}
 
+    /// Set only by the accessibility audit, before any screen opens.
+    nonisolated(unsafe) static var isMuted = false
+
     /// True while the system voice is speaking or has lines waiting.
     /// USBPlugPrompt waits on this so a plug-in alert doesn't appear
     /// while "Mac keyboard on" is still being spoken.
@@ -138,6 +141,10 @@ final class Announcer {
     /// nothing is cut off or silently eaten. See INTERRUPTION POLICY in
     /// the header (revised 2026-10-18).
     func announce(_ message: String, tone: Tone) {
+        // The accessibility audit (AccessibilityAudit.swift, 2026-10-26)
+        // opens AVM's screens with no one at them; their announcements are
+        // kept quiet so it never talks over the user's own VoiceOver.
+        guard !Self.isMuted else { return }
         switch tone {
         case .enterGuest: Self.enterSound?.play()
         case .leaveGuest: Self.leaveSound?.play()

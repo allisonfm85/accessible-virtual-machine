@@ -159,10 +159,14 @@ struct SettingsView: View {
                     Text("CPU Cores: \(cpuCount)")
                         .font(.headline)
                         .accessibilityLabel("CPU cores: \(cpuCount)")
-                    Stepper("CPU Cores", value: $cpuCount, in: 2...maxCPUCount)
+                    // Labelled once (2026-10-26, accessibility audit): SwiftUI
+                    // speaks a stepper's hidden title and then its
+                    // accessibilityLabel, which made "CPU Cores, CPU cores";
+                    // the label is now the title. accessibilityValue went:
+                    // SwiftUI on macOS doesn't pass it on for a stepper, which
+                    // VoiceOver reads as its number, so the unit is in the label.
+                    Stepper(value: $cpuCount, in: 2...maxCPUCount) { Text("CPU cores") }
                         .labelsHidden()
-                        .accessibilityLabel("CPU cores")
-                        .accessibilityValue("\(cpuCount) cores")
                         .accessibilityHint("Adjust with arrow keys. Minimum 2, maximum \(maxCPUCount). \(timingSentence)")
                 }
 
@@ -171,10 +175,8 @@ struct SettingsView: View {
                     Text("Memory: \(ramSizeGB) GB")
                         .font(.headline)
                         .accessibilityLabel("Memory: \(ramSizeGB) gigabytes")
-                    Stepper("Memory", value: $ramSizeGB, in: 4...maxMemoryInGB, step: 2)
+                    Stepper(value: $ramSizeGB, in: 4...maxMemoryInGB, step: 2) { Text("Memory in gigabytes") }
                         .labelsHidden()
-                        .accessibilityLabel("Memory in gigabytes")
-                        .accessibilityValue("\(ramSizeGB) gigabytes")
                         .accessibilityHint("Adjust with arrow keys. Minimum 4 GB, maximum \(maxMemoryInGB) GB. \(timingSentence)")
                 }
 
@@ -192,10 +194,8 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
-                        Stepper("Disk Size", value: $diskSizeGB, in: currentDiskGB...diskGrowthCeilingGB, step: 10)
+                        Stepper(value: $diskSizeGB, in: currentDiskGB...diskGrowthCeilingGB, step: 10) { Text("Disk size in gigabytes") }
                             .labelsHidden()
-                            .accessibilityLabel("Disk size in gigabytes")
-                            .accessibilityValue("\(diskSizeGB) gigabytes")
                             .accessibilityHint("Adjust with arrow keys. The disk can grow but never shrink. Minimum \(currentDiskGB) GB, maximum \(diskGrowthCeilingGB) GB. \(diskGrowthFollowUp)")
                     }
                 }

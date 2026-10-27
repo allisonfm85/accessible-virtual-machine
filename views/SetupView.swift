@@ -125,6 +125,28 @@ struct SetupView: View {
     }
 
     @State private var installerKind: InstallerKind = .none
+
+    /// The installer a screen opens with (2026-10-26). Always .none in the
+    /// app; the accessibility audit (AccessibilityAudit.swift) also opens
+    /// the wizard as it is once a Windows or an Ubuntu ISO is chosen, so
+    /// the sections that only appear then are checked too. The file is
+    /// never read: the kind is given, as identifyInstaller would find it.
+    enum AuditInstaller { case none, windows, ubuntu }
+
+    init(auditInstaller: AuditInstaller = .none) {
+        switch auditInstaller {
+        case .none:
+            break
+        case .windows:
+            _installerURL = State(initialValue: URL(fileURLWithPath: "/Audit/Win11_25H2_English_Arm64.iso"))
+            _installerKind = State(initialValue: .windows)
+        case .ubuntu:
+            _installerURL = State(initialValue: URL(fileURLWithPath: "/Audit/ubuntu-26.04-desktop-arm64.iso"))
+            _installerKind = State(initialValue: .ubuntu(UbuntuISOInfo(
+                discInfo: "Ubuntu 26.04 LTS - Release arm64", version: "26.04", isARM64: true, isDesktop: true)))
+        }
+    }
+
     @State private var ubuntuRealName: String = NSFullUserName()
     @State private var ubuntuUserName: String = UbuntuAccount.suggestedUserName()
     @State private var ubuntuPassword: String = ""
@@ -194,10 +216,14 @@ struct SetupView: View {
                     Text("CPU Cores: \(cpuCount)")
                         .font(.headline)
                         .accessibilityLabel("CPU cores: \(cpuCount)")
-                    Stepper("CPU Cores", value: $cpuCount, in: 2...maxCPUCount)
+                    // Labelled once (2026-10-26, accessibility audit): SwiftUI
+                    // speaks a stepper's hidden title and then its
+                    // accessibilityLabel, which made "CPU Cores, CPU cores";
+                    // the label is now the title. accessibilityValue went:
+                    // SwiftUI on macOS doesn't pass it on for a stepper, which
+                    // VoiceOver reads as its number, so the unit is in the label.
+                    Stepper(value: $cpuCount, in: 2...maxCPUCount) { Text("CPU cores") }
                         .labelsHidden()
-                        .accessibilityLabel("CPU cores")
-                        .accessibilityValue("\(cpuCount) cores")
                         .accessibilityHint("Adjust with arrow keys. Minimum 2, maximum \(maxCPUCount)")
                 }
 
@@ -206,10 +232,8 @@ struct SetupView: View {
                     Text("Memory: \(ramSizeGB) GB")
                         .font(.headline)
                         .accessibilityLabel("Memory: \(ramSizeGB) gigabytes")
-                    Stepper("Memory", value: $ramSizeGB, in: 4...maxMemoryInGB, step: 2)
+                    Stepper(value: $ramSizeGB, in: 4...maxMemoryInGB, step: 2) { Text("Memory in gigabytes") }
                         .labelsHidden()
-                        .accessibilityLabel("Memory in gigabytes")
-                        .accessibilityValue("\(ramSizeGB) gigabytes")
                         .accessibilityHint("Adjust with arrow keys. Minimum 4 GB, maximum \(maxMemoryInGB) GB")
                 }
 
@@ -218,10 +242,8 @@ struct SetupView: View {
                     Text("Disk Size: \(diskSizeGB) GB")
                         .font(.headline)
                         .accessibilityLabel("Disk size: \(diskSizeGB) gigabytes")
-                    Stepper("Disk Size", value: $diskSizeGB, in: 40...maxDiskInGB, step: 10)
+                    Stepper(value: $diskSizeGB, in: 40...maxDiskInGB, step: 10) { Text("Disk size in gigabytes") }
                         .labelsHidden()
-                        .accessibilityLabel("Disk size in gigabytes")
-                        .accessibilityValue("\(diskSizeGB) gigabytes")
                         .accessibilityHint("Adjust with arrow keys. Minimum 40 GB, maximum \(maxDiskInGB) GB based on available space")
                 }
 
@@ -413,6 +435,11 @@ struct SetupView: View {
             Text("Choose the edition your Windows license is for. If you're not sure, choose Pro. AVM checks that the installer has it before installing.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            // The picker's own title names it (2026-10-26, accessibility
+            // audit): with labelsHidden SwiftUI still speaks the title, and
+            // an accessibilityLabel that repeats it was said twice
+            // ("Windows edition, Windows edition"). Same for Privacy and
+            // Windows account below.
             Picker("Windows edition", selection: $windowsEdition) {
                 ForEach(WindowsEdition.allCases) { edition in
                     Text(edition.imageName).tag(edition)
@@ -420,7 +447,6 @@ struct SetupView: View {
             }
             .pickerStyle(.radioGroup)
             .labelsHidden()
-            .accessibilityLabel("Windows edition")
         }
     }
 
@@ -500,25 +526,28 @@ struct SetupView: View {
                 .accessibilityLabel("Computer name")
                 .accessibilityHint("Up to 15 letters, digits and hyphens. Leave it empty for \(suggestedComputerName).")
 
+            // The shown words, hidden from VoiceOver (2026-10-26,
+            // accessibility audit): the radio group just after has the
+            // same name, so VoiceOver said it twice in a row.
             Text("Privacy")
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilityHidden(true)
             Picker("Privacy", selection: $windowsPrivacy) {
                 Text("Most private: send Microsoft no optional data").tag(WindowsSetupAnswers.Privacy.mostPrivate)
                 Text("Windows' recommended settings").tag(WindowsSetupAnswers.Privacy.recommended)
             }
             .pickerStyle(.radioGroup)
             .labelsHidden()
-            .accessibilityLabel("Privacy")
 
             Text("Windows account")
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilityHidden(true)
             Picker("Windows account", selection: $windowsLocalAccount) {
                 Text("Microsoft account: sign in during setup").tag(false)
                 Text("Local account on this PC: no sign-in screens").tag(true)
             }
             .pickerStyle(.radioGroup)
             .labelsHidden()
-            .accessibilityLabel("Windows account")
 
             if windowsLocalAccount {
                 TextField("Your name", text: $windowsDisplayName)

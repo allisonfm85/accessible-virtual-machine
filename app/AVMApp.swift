@@ -60,8 +60,11 @@ struct AVMApp: App {
 
     /// --build-install-media (InstallMediaJob.swift) builds install media
     /// with no window and exits before anything else starts; any other
-    /// launch carries on as always.
+    /// launch carries on as always. --audit-accessibility
+    /// (AccessibilityAudit.swift, 2026-10-26) checks AVM's own screens the
+    /// same way, window-less as far as the user can tell, and exits.
     init() {
+        AccessibilityAudit.runIfAsked()
         InstallMediaJob.runIfAsked()
         MacTestJob.runIfAsked()
         KeyboardTestJob.runIfAsked()
