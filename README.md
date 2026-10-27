@@ -118,6 +118,13 @@ Before the Mac sleeps, AVM pauses a running machine. When the Mac wakes,
 AVM resumes it and tells you. A machine you paused yourself stays
 paused. Windows' clock may take a minute to catch up.
 
+## Sound
+
+If speech from Windows starts to lag behind your keys during a long
+session, turn on Shorter speech delay in the machine's Settings. It
+keeps less sound waiting on the Mac: 70 ms instead of 220 ms on the
+Mac's side. It's experimental, so turn it off again if sound crackles.
+
 ## Restore points
 
 A restore point saves a virtual machine as it is, so you can put it back

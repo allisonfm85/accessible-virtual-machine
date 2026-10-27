@@ -95,6 +95,15 @@ final class VMConfigurationTests: XCTestCase {
         XCTAssertTrue(config.storageMissingMessage.contains("Backup Drive"))
     }
 
+    /// The shorter audio path must keep the names spice-gtk looks up, or
+    /// it would play nothing at all.
+    func testLowLatencyPipelineKeepsSpiceGtksElementNames() {
+        XCTAssertTrue(SpiceAudioPipeline.lowLatency.hasPrefix("appsrc "))
+        XCTAssertTrue(SpiceAudioPipeline.lowLatency.contains(#"name="appsrc""#))
+        XCTAssertTrue(SpiceAudioPipeline.lowLatency.contains(#"name="audiosink""#))
+        XCTAssertFalse(VMConfiguration().usesLowAudioLatency, "off unless chosen")
+    }
+
     func testStoredHereByDefault() throws {
         let config = VMConfiguration()
         XCTAssertNil(config.storageDriveName)

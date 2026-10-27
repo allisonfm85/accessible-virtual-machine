@@ -561,6 +561,12 @@ Announcements you may hear, and what they mean:
 
 ---
 
+### If speech lags behind your keys
+
+Turn on Shorter speech delay in the machine's Settings, then start the
+machine again. It keeps less sound waiting on the Mac. It is
+experimental: if the sound crackles, turn it off, and please tell us.
+
 ## 13. When something seems wrong
 
 ### Your keystrokes stop reaching Windows

@@ -1175,6 +1175,10 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         // VM is restarted. The teardown rules in this file keep AVM's main
         // thread (and QMP-based Stop) alive when that happens.
         conn.audioEnabled = true
+        // The shorter audio path, if chosen (2026-10-26, experimental; see
+        // SpiceAudioPipeline). Read when playback starts, so set it first.
+        let savedForAudio = VMSession.current.flatMap { session in VMStore.shared?.configurations.first { $0.id == session.configuration.id } }
+        SpiceAudioPipeline.apply(lowLatency: savedForAudio?.usesLowAudioLatency ?? false)
         self.connection = conn
 
         guard conn.connect() else {

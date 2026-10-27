@@ -97,6 +97,12 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// two clipboards apart. Read it through sharesClipboard.
     var shareClipboard: Bool?
 
+    // MARK: - Sound (2026-10-26)
+
+    /// true: the experimental shorter audio path (SpiceAudioPipeline).
+    /// Read it through usesLowAudioLatency.
+    var lowAudioLatency: Bool?
+
     // MARK: - Defaults
 
     init(
@@ -137,6 +143,7 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
 extension VMConfiguration {
     var usesSecureBoot: Bool { secureBoot == true }
     var sharesClipboard: Bool { shareClipboard ?? true }
+    var usesLowAudioLatency: Bool { lowAudioLatency == true }
 }
 
 // MARK: - Storage location
@@ -333,3 +340,31 @@ nonisolated enum QEMUOption {
     }
 }
 
+/// The guest's sound on the Mac (2026-10-26). spice-gtk plays it through a
+/// GStreamer pipeline with no ceiling on buffering: about a second can
+/// pile up in its queues, plus 200 ms in the Mac output's ring buffer, and
+/// over a long session the guest's and the Mac's audio clocks drift apart,
+/// so speech can end up audibly late. spice-gtk lets the app replace the
+/// pipeline (the SPICE_GST_AUDIOSINK environment variable, read in-process
+/// when playback starts). This one is the same chain with ceilings: at
+/// most 50 ms queued and a 50 ms output buffer, dropping the oldest audio
+/// rather than falling behind. The guest always sends 48 kHz stereo here:
+/// this spice-server is built with Opus, and Opus playback is 48 kHz.
+/// Experimental: a busy Mac may crackle. Measure with
+/// Tools/measure-speech-latency.sh, on and off.
+nonisolated enum SpiceAudioPipeline {
+    static let environmentName = "SPICE_GST_AUDIOSINK"
+    static let lowLatency =
+        #"appsrc is-live=1 do-timestamp=0 format=time caps="audio/x-raw,format=S16LE,channels=2,rate=48000,layout=interleaved" name="appsrc" max-bytes=19200 leaky-type=downstream ! "#
+        + "queue max-size-buffers=0 max-size-bytes=0 max-size-time=50000000 leaky=downstream ! "
+        + #"audioconvert ! audioresample ! osxaudiosink name="audiosink" buffer-time=50000 latency-time=10000"#
+
+    /// Sets or clears the variable for the next SPICE connection.
+    static func apply(lowLatency on: Bool) {
+        if on {
+            setenv(environmentName, lowLatency, 1)
+        } else {
+            unsetenv(environmentName)
+        }
+    }
+}
