@@ -682,7 +682,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				AVM_SYSROOT = "$(HOME)/Developer/sysroot-macos-arm64/sysroot-macOS-arm64";
 				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = AVM/AVM.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "AVM/AVM-Release.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 4;
