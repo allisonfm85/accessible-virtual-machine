@@ -18,6 +18,11 @@
 //   AVM.app/Contents/MacOS/AVM --test-printers --vm <folder> --guest <os>
 //   AVM.app/Contents/MacOS/AVM --test-camera --vm <folder> --guest <os>
 //   AVM.app/Contents/MacOS/AVM --test-3d --vm <folder> --guest <linux os>
+//   AVM.app/Contents/MacOS/AVM --test-camera-save --vm <folder> --guest <linux os>
+//
+// --test-camera-save: a Linux machine saved while an app in it reads the
+// camera (GStreamer, numbering each frame), then resumed: the same app
+// carries on getting frames, and the Mac's camera comes back on.
 //
 // --test-3d: starts a Linux machine with 3D Graphics (gpu3D), checks its
 // kernel found virgl and that OpenGL there is drawn by virgl (on the
@@ -93,7 +98,7 @@ enum SaveResumeTestJob {
                 || arguments.contains("--test-duplicate") || arguments.contains("--test-send-file")
                 || arguments.contains("--test-linux-share") || arguments.contains("--test-ctl")
                 || arguments.contains("--test-disk-info") || arguments.contains("--run-in-guest")
-                || arguments.contains("--test-printers") || arguments.contains("--test-camera") || arguments.contains("--test-3d") else { return }
+                || arguments.contains("--test-printers") || arguments.contains("--test-camera") || arguments.contains("--test-3d") || arguments.contains("--test-camera-save") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -110,6 +115,44 @@ enum SaveResumeTestJob {
                 let guest2 = GuestOS(rawValue: value("--guest2") ?? "windows") ?? .windows
                 let passed = await twoMachines(folderURL, guest, URL(fileURLWithPath: second, isDirectory: true), guest2)
                 print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+            }
+            if arguments.contains("--test-camera-save") {
+                var manager = VMManager()
+                var config = configuration(folder: folderURL, guest: guest)
+                config.shareCamera = true
+                guard await start(manager, config), let agent = manager.guestAgentSocketPath,
+                      await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                try? await Task.sleep(for: .seconds(20))
+                let lastFrame = #"""
+                export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+                ls /tmp/avm-cam 2>/dev/null | sort | tail -1 | tr -dc 0-9; echo; pgrep -c gst-launch
+                """#
+                _ = await exec(agent, program: "/bin/sh", args: ["-c", #"""
+                    export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+                    rm -rf /tmp/avm-cam; mkdir -p /tmp/avm-cam
+                    dev=$(for d in /sys/class/video4linux/video*; do grep -q 'Mac Camera' $d/name && echo /dev/$(basename $d) && break; done)
+                    setsid nohup gst-launch-1.0 -q v4l2src device=$dev ! video/x-raw,format=YUY2,width=640,height=480 ! multifilesink location=/tmp/avm-cam/f%07d max-files=3 >/tmp/avm-cam.log 2>&1 </dev/null &
+                    sleep 6
+                    """#])
+                let before = (await exec(agent, program: "/bin/sh", args: ["-c", lastFrame]) ?? "").split(whereSeparator: \.isNewline)
+                let frameBefore = Int(before.first ?? "") ?? 0
+                print("   frames read before the save: \(frameBefore)")
+                check("an app in the machine is reading the camera", frameBefore > 10)
+                let saved = await manager.saveStateAndStop()
+                check("it was saved while the camera was in use", saved)
+                guard saved else { await shutDown(manager); print("FAILED"); exit(1) }
+                manager = VMManager()
+                guard await start(manager, config), let agent2 = manager.guestAgentSocketPath,
+                      await waitForAgent(agent2, seconds: 60) else { check("it carried on", false); print("FAILED"); exit(1) }
+                try? await Task.sleep(for: .seconds(8))
+                let after = (await exec(agent2, program: "/bin/sh", args: ["-c", lastFrame]) ?? "").split(whereSeparator: \.isNewline)
+                let frameAfter = Int(after.first ?? "") ?? 0
+                print("   frames read after the resume: \(frameAfter), GStreamer processes: \(after.dropFirst().first ?? "?")")
+                check("the same app carried on getting frames", frameAfter > frameBefore + 10 && after.dropFirst().first == "1")
+                check("the Mac's camera came back on", manager.consoleOutput.contains("usb-camera: the Mac's camera ("))
+                _ = await exec(agent2, program: "/bin/sh", args: ["-c", "pkill gst-launch; rm -rf /tmp/avm-cam"])
+                await shutDown(manager)
+                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
             }
             if arguments.contains("--test-3d") {
                 let manager = VMManager()
@@ -293,7 +336,8 @@ enum SaveResumeTestJob {
             guestOSName: guest == .windows ? nil : guest.rawValue,
             storageFolderPath: folder.path,
             secureBoot: guest == .windows ? true : nil)
-        configuration.diskBus = "virtio"
+        // --nvme: a test machine installed before the virtio disk (2026-10-27).
+        configuration.diskBus = CommandLine.arguments.contains("--nvme") ? nil : "virtio"
         // --camera: any test with the Mac's camera attached (2026-10-27),
         // as --test-save-resume --camera, which checks it can be saved.
         if CommandLine.arguments.contains("--camera") { configuration.shareCamera = true }
