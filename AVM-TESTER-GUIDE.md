@@ -185,8 +185,13 @@ navigation it reads in this order:
 
 - **AVM** is the app title, a level-one heading.
 - **Each virtual machine's name** is a level-two heading. Under each name is
-  a plain line of specifications (cores, memory, disk size) and two buttons,
-  Start and Delete, each labeled with that machine's name.
+  a plain line of specifications (cores, memory, disk size) and its
+  buttons, each labeled with that machine's name: Start, Settings, Export
+  and Delete while it's shut down. While it runs, the row says how it is
+  ("Running", "Running, keyboard in Windows", "Paused", "Shutting down")
+  and has **Enter** and **Shut Down** instead. macOS machines' rows also
+  say **"Saved"** when the machine was saved with Save and Quit (section
+  17).
 - **Status** is a level-three heading, below the machine list. It describes
   what AVM is currently doing.
 
@@ -205,8 +210,43 @@ command. It looks for machine folders on disk that no longer appear in
 your list, tells you how much space each one holds, and moves the ones you
 pick to the Trash.
 
+**Export and Import: backing a machine up, or moving it.** Shut the
+machine down, then press its **Export** button, or choose **Export Virtual
+Machine…** in the Virtual Machine menu (with several machines it is a
+submenu of their names). Pick a folder or an external drive; AVM saves
+the machine there as one folder named after it, ending in **.avmvm**. AVM
+says how big the copy is when it starts, how far along it is every 10
+percent for anything over 2 gigabytes, and when it has finished. To bring
+it back, on this Mac or another, choose **Import Virtual Machine…** in
+the same menu, or the button of that name on the dashboard, and pick the
+.avmvm folder. The machine comes back as a new entry in your list, so
+importing next to the original, or twice, is safe; if the name is taken,
+AVM adds a number and says so.
+
+Things to know:
+
+- AVM refuses, and says why, if the machine is running, if a macOS machine
+  is **saved** rather than shut down (start it and shut it down from
+  macOS first), if Windows or Linux hasn't finished installing (start it
+  once, let it reach the desktop, shut it down), or if the drive doesn't
+  have room. It checks the space before it copies anything.
+- No passwords travel. The Windows account password AVM kept for setup,
+  and the Ubuntu or Debian password, are left out.
+- On an external drive formatted **ExFAT** or **MS-DOS (FAT)**, a disk
+  takes its full size, even the parts Windows or macOS haven't used, so
+  the copy can be much bigger than the machine is on your Mac. A drive
+  formatted **APFS** or **Mac OS Extended** keeps it small.
+- For a macOS machine with restore points, AVM asks whether to include
+  them: on another drive each one is a full copy of the disk.
+- An imported macOS machine is the same Mac to macOS as the original.
+  AVM says so if the original is on this Mac too: run only one of them at
+  a time.
+- While the copy runs, that machine's Start, Settings and Delete say to
+  wait. Quitting AVM asks first.
+
 Your machines live in your Library folder, under Application Support, in a
-folder named AVM. You do not need to go there, but that is where the space
+folder named AVM, unless you chose another folder or drive for one in the
+Setup Wizard. You do not need to go there, but that is where the space
 is going.
 
 ---
@@ -229,10 +269,48 @@ The window reads top to bottom:
   10. The minimum is 40. The maximum is based on your free disk space, and
   it always leaves your Mac roughly 20 gigabytes of headroom. Remember, the
   disk file starts small and grows as Windows uses it.
+- **Where to Store It** is a heading, followed by where the machine will
+  live: "On this Mac" unless you change it. **Choose a Folder or Drive**
+  opens a folder picker, so you can keep the machine on an external drive
+  instead. AVM makes a folder called "AVM Virtual Machines" there. The
+  dashboard then says which drive each machine is on, and, if that drive
+  isn't connected, says so; Start and Delete refuse, out loud, until you
+  connect it. During installation AVM still needs about 8 gigabytes free
+  on your Mac for a short while, to build the install disc.
 - **Windows installer image** reads "No installer selected" until you
   choose one. The **Choose Installer Image** button opens a standard file
   picker. Navigate to your ISO and choose it. The wizard then reads back
   the file's name so you know what it took.
+- **Download Windows 11 for ARM** opens a window that opens Microsoft's
+  download page in your browser. You still choose the download on
+  Microsoft's page (section 2 walks through it), and AVM watches your
+  Downloads folder: it says how the download is going every gigabyte,
+  checks the file when it's done, and **Use This Installer** picks it for
+  you. **Speak Progress**, Command-P, says how far it has got at any time.
+- **Windows Edition** appears once you've chosen a Windows ISO: Pro, Home,
+  or Home Single Language, as radio buttons. Choose the edition your
+  Windows license is for. Pro is chosen to start with.
+- **Screen Readers**: checkboxes for NVDA (checked to start with) and
+  JAWS for ARM. AVM downloads them from their makers and installs them
+  with Windows. With NVDA checked, **NVDA uses its laptop keyboard
+  layout** is checked too: on a Mac keyboard, NVDA's key is then Caps
+  Lock.
+- **Windows Setup Answers**: what Windows Setup won't ask you, because
+  AVM writes it into this machine's answer file. Each one is filled in
+  from your Mac; choose **Let Windows ask** on any of them to answer it in
+  Windows instead.
+  - **Region**, **Keyboard** and **Time zone** are pop-up menus. Type a
+    few letters to jump to a choice.
+  - **Computer name** is a text field. Leave it empty to use the name
+    shown, made from the machine's name.
+  - **Privacy**: radio buttons for the most private choice (the default)
+    or Windows' recommended settings.
+  - **Windows account**: radio buttons. **Microsoft account** means you
+    sign in during setup, as before. **Local account on this PC** asks
+    for your name, a user name and a password (it can be empty), and
+    Windows then skips its sign-in screens and signs in by itself the
+    first time, so NVDA installs and starts with nothing for you to do.
+    You can add a Microsoft account later in Windows' Settings.
 - **Cancel** and **Create Virtual Machine**. Escape cancels, and
   Command-Return creates. While the machine is being created the button
   reads "Creating virtual machine, please wait". It takes a moment,
@@ -308,15 +386,15 @@ they fight over the same keystrokes, and neither one works right.
    machine's Start button.
 3. As soon as the Windows view appears, your keyboard is in Windows. You
    don't have to do anything else. You will hear the system voice say
-   **"Windows keyboard on."** You'll hear it even with VoiceOver off —
-   that's how you know the handover happened.
+   **"Entering Windows"**, after two rising notes. You'll hear it even
+   with VoiceOver off — that's how you know the handover happened.
 
 From here, every keystroke goes to Windows.
 
 ### Leaving Windows
 
 1. Press **Control-Command-Escape**. This is the escape hatch.
-2. You will hear **"Mac keyboard on."**
+2. You will hear two falling notes and **"Entering Mac."**
 3. Press **Command-F5** to turn VoiceOver back on.
 
 ### Going back into Windows
@@ -356,10 +434,13 @@ the opposite of what you expected.
 
 ## 9. Screen readers in Windows
 
-Most people's journey looks the same: use Narrator to get through Windows
-setup, because it is built in and needs no download. Then install JAWS or
-NVDA once Windows is yours. Both work in AVM. Use whichever screen reader
-you use.
+Narrator gets you through Windows setup, because it is built in. When
+you make the machine, AVM can also install NVDA, JAWS for ARM, or both,
+so one of them is talking when you first sign in. NVDA is on by default.
+JAWS needs your own license; without one it runs for 40 minutes at a
+time. If you choose both, NVDA starts at sign-in, and you can start JAWS
+yourself. You can also install either one yourself later. Use whichever
+screen reader you use.
 
 ### Narrator
 
@@ -419,6 +500,10 @@ of this is AVM.
   Windows automatically once the machine's view appears.
 - **Command-Shift-E** is Enter Windows. It returns the keyboard to a
   running machine after the escape hatch.
+- **Command-Shift-I** is Speak Status. AVM says which machine is
+  running, paused, or stopped, whether your keyboard is on the Mac or in
+  Windows, and which USB devices are attached. It speaks in the system
+  voice, so it works with VoiceOver off.
 - **Command-Shift-D** sends Control-Alt-Delete to Windows.
 - **Command-Shift-R** resets the virtual machine (see section 13).
 - **Control-Command-Escape** is the escape hatch. It brings the keyboard
@@ -426,10 +511,36 @@ of this is AVM.
 - **Command-F5** turns VoiceOver on and off. This is macOS, not AVM, but
   it is half the routine.
 
+Commands that can't do anything right now are dimmed in the Virtual
+Machine menu, and VoiceOver reads them as "dimmed": Enter Windows when
+nothing is running, Send Control-Alt-Delete and Reset when Windows isn't
+running, Detach USB Device when nothing is attached. Pressing a dimmed
+command's keys only beeps. Speak Status is never dimmed, so it can always
+tell you why. While Windows is installing, Speak Status also says how
+long Setup has been running and how much it has written to the disk so
+far.
+
+**Copying and pasting.** Copy on the Mac, enter Windows, and paste. What
+you copy in Windows is ready to paste on the Mac at once. Each machine's
+Settings has a Share the clipboard switch to turn this off.
+
+**Force Stop asks first,** with Cancel as the default, wherever you find
+it, because it turns Windows off at once. It is also offered while Windows
+is shutting down, in case Windows stops answering.
+
+**Quitting with Windows running.** If you quit AVM, or close its window,
+while Windows is running, AVM asks first. Cancel is the default, so Return keeps you where
+you are. **Shut Down Windows and Quit** shuts Windows down properly and
+quits AVM when it has finished; you can keep using AVM meanwhile. **Quit
+Now** turns Windows off at once, like pulling the plug. Either way, any
+USB devices go back to your Mac first.
+
 Note on Command-Shift-S: in this build it starts a machine only when you
 have exactly one machine configured and nothing is running. With no
 machines, or more than one, you get a beep and an explanation instead of a
-guess. Use the dashboard's Start button in that case.
+guess. With more than one machine, the Virtual Machine menu has a Start
+submenu that lists each machine by name; choose the one you want. The
+dashboard's Start buttons work too.
 
 ### Mac keys inside Windows
 
@@ -450,6 +561,17 @@ guess. Use the dashboard's Start button in that case.
 
 - **USB keyboards work now.** Type on whatever keyboard you like. AVM
   forwards keys the same way no matter which keyboard you use.
+- **A keyboard for Windows.** In a Windows machine's Settings, Keyboard for
+  Windows, you can choose a second keyboard, USB or Bluetooth, that types
+  only into Windows while it runs, whichever app is in front. Your Mac's
+  own keyboard stays with the Mac and VoiceOver, so there's nothing to
+  switch. AVM never takes the Mac's built-in keyboard or its only one,
+  and gives the keyboard back if your Mac's other keyboard goes away.
+  Pause works, and on an Apple keyboard, Fn with Backspace, the arrows or
+  Return gives Delete, Page Up and Down, Home, End and keypad Enter, as on
+  a Mac. For an Apple keyboard with a § key, turn on "It's an Apple
+  keyboard with a § key (ISO)", so § and ` come out where they're
+  printed.
 - **Mice and trackpads work now.** On machines installed with AVM 0.1.1
   or later, the Windows pointer follows your finger exactly and clicks
   land where the pointer is, from the very first boot. Machines
@@ -474,15 +596,31 @@ guess. Use the dashboard's Start button in that case.
 
 ---
 
+### Sharing a folder
+
+To open a Mac folder in Windows, open the machine's Settings and choose
+Choose Folder to Share. The next time Windows starts, the folder is a
+network drive in File Explorer. Turn on the read-only option if Windows
+should only read it.
+
+### When the Mac sleeps
+
+If the Mac sleeps with Windows running, AVM pauses Windows first and
+resumes it when the Mac wakes, and tells you. Give Windows' clock a
+minute to catch up.
+
 ## 12. Sounds and announcements
 
-AVM speaks in the Mac's system voice and plays three sounds:
+AVM speaks in the Mac's system voice and plays these sounds:
 
 - **Glass** means something succeeded.
 - **Basso** means something failed.
 - **Tink** is a neutral change of state, or guidance. It is not a verdict,
-  just information: the keyboard changed sides, or a form needs one more
-  field.
+  just information: a form needs one more field, say.
+- **Two rising notes** mean the keyboard just went to a virtual machine.
+- **Two falling notes** mean it just came back to the Mac. These two are
+  AVM's own, so you can tell where the keyboard is even while a screen
+  reader is talking over the words.
 
 The sound always plays immediately. Speech may wait its turn. If two
 announcements land within a second of each other, the second one queues
@@ -495,8 +633,9 @@ Announcements you may hear, and what they mean:
 - **"Install media ready. Starting the virtual machine."** The media
   build finished, and the VM is booting.
 - **"Windows Setup is underway…"** The milestone in section 7.
-- **"Windows keyboard on." / "Mac keyboard on."** The keyboard changed
-  sides.
+- **"Entering Windows" / "Entering Mac"** (or the name of the machine's
+  system: "Entering Ubuntu", "Entering macOS"). The keyboard changed
+  sides; the rising or falling notes say which way.
 - **"Another window took the keyboard. Turn VoiceOver on to check."** See
   section 13.
 - **"Keyboard back in Windows."** The window that took the keyboard went
@@ -506,6 +645,12 @@ Announcements you may hear, and what they mean:
   the virtual machine is stuck during installation. See section 13.
 
 ---
+
+### If speech lags behind your keys
+
+Turn on Shorter speech delay in the machine's Settings, then start the
+machine again. It keeps less sound waiting on the Mac. It is
+experimental: if the sound crackles, turn it off, and please tell us.
 
 ## 13. When something seems wrong
 
@@ -597,6 +742,57 @@ its own commands), run it a second time with AVM in place of qemu-system.
 
 Then force-quit and report what happened.
 
+### Secure Boot and Insider builds
+
+Machines made with this version have Secure Boot, with Microsoft's keys,
+which Windows needs before it offers Insider preview builds. For a machine
+made earlier, stop it, open its Settings, turn on **Secure Boot**, and
+choose Save Settings. AVM asks first, because it resets the machine's
+firmware settings, keeping a copy. Windows normally starts again on its
+own. If BitLocker or device encryption is on in Windows, it may ask for
+your recovery key, so have it ready. Turning Secure Boot off again puts
+the old settings back. If Windows doesn't start after the switch, turn
+Secure Boot off and report it, with a diagnostic log.
+
+### Restore points
+
+Before something risky, such as a big update or Insider builds, shut the
+machine down, open its Settings, and choose **Save a Restore Point**. Give
+it a name you'll recognize. If things go wrong, shut down again and
+choose **Restore** beside it. AVM asks first, with Cancel as the default,
+because everything since that restore point is lost. The disk, the
+firmware settings and the TPM all go back together, so BitLocker and
+Windows Hello keep working. A restore point made with Secure Boot on can
+only be restored with Secure Boot on, and the other way round; AVM says
+so if they differ.
+
+AVM saves a restore point called **Fresh install** by itself, the first
+time you start a machine after Windows is set up. Restoring it gives you a
+brand-new Windows in a minute or two.
+
+AVM also saves an **Automatic** restore point by itself, at most once a
+week, as the machine starts, and keeps the two newest; your own restore
+points are never touched. If a Windows update breaks something, a
+screen reader most often, the automatic point from before it is at most a
+week old. (Restore points need Windows shut down, and Windows installs
+updates while it runs and as it shuts down, so AVM can't take one at the
+exact moment before an update. A point taken at Start is always from
+before the updates installed after it.)
+
+To start over completely, choose **Reinstall Windows…** in Settings while
+the machine is shut down. AVM asks first (it erases everything in Windows
+on that machine), asks for the Windows password again if you chose a
+local account, and installs Windows again from the same installer the
+next time you choose Start.
+
+### Telling us about a problem
+
+Choose **Report a Problem…** from the Help menu. AVM copies a short report
+to the clipboard (your AVM, macOS and Mac versions, and the end of the
+diagnostic log, which never has your user name or anything you typed) and
+opens a new GitHub issue. Write what happened, paste the report with
+Command-V, and submit. Nothing is sent until you do.
+
 ### Resetting a virtual machine
 
 **Command-Shift-R** resets the machine. It is the equivalent of the reset
@@ -685,18 +881,20 @@ files can be deleted afterward.
   number, and each machine has its own Start button. The limit is only
   in the Command-Shift-S shortcut: it starts a machine only when exactly
   one is configured, because with several it would have to guess which
-  one you meant. With more than one machine, use the dashboard's Start
-  buttons. A smarter shortcut is planned.
-- **Windows edition.** The installer selects a single edition. Choosing
-  between Home, Home Single Language and Pro is planned but not exposed
-  yet.
+  one you meant. With more than one machine, use the Start submenu in
+  the Virtual Machine menu, which names each machine, or the dashboard's
+  Start buttons.
 - **Out-of-box setup is stock Windows.** AVM does not script your account
   creation. You go through Microsoft's own setup with Narrator.
-- **No ISO downloader.** You supply the Windows image yourself.
+- **The ISO download is still yours to start.** AVM opens Microsoft's
+  page and does everything around it, but Microsoft's page itself is
+  where you choose the download.
 
-USB passthrough is here, except for USB drives. Next is firmware work:
-stopping Windows Update from blocking updates over the TPM and processor
-checks (issues 16 and 17), and Secure Boot. After that comes graphics
+USB passthrough is here, except for USB drives. New machines now have
+Secure Boot, and existing ones can turn it on in Settings (see section
+13). Next is the rest of the firmware work: stopping Windows Update from
+blocking updates over the TPM and processor checks (issues 16 and 17).
+After that comes graphics
 acceleration. If a USB device you need doesn't work in Windows, please
 report it, with its name and a diagnostic log.
 
@@ -808,13 +1006,105 @@ If the install fails, the machine turns off and AVM says so:
   > minutes. Next: save the diagnostic log from the File menu, then stop
   > the virtual machine and start it again.
 
-  Save the log while the machine is still running (section 17): for
+  Save the log while the machine is still running (section 18): for
   Ubuntu, the machine's startup log records the installer's own start-up
   messages, and the next start replaces it. Then please report it.
 
+### Fedora Workstation
+
+AVM can install **Fedora Workstation** the same way, Fedora 44 or later:
+the same account section (titled **Fedora Account**), the same
+announcements with "Fedora" in place of "Ubuntu", Orca on at the login
+screen and after with Caps Lock as its key, and everything listed under
+What AVM sets up in Ubuntu. Fedora 44 is the version this has been
+tested with, so far with AVM's unattended install test only: it
+installed and signed in to the desktop by itself, but Orca's speech has
+not yet been listened to in the app. Please report what you hear.
+
+**Getting the Fedora ISO.** On fedoraproject.org, go to Fedora
+Everything (under Other downloads, or Fedora's alternative downloads),
+choose **aarch64**, and download the **Netinstall ISO**. The file is
+named like `Fedora-Everything-netinst-aarch64-44-1.7.iso` and is about
+1.2 GB. Two other downloads look similar and will not work: the
+Workstation live image (its name has `Live` in it) and the version for
+Intel and AMD PCs (`x86_64`). If you choose either, AVM tells you which
+one you picked and which one it needs. The Fedora Server netinstall for
+aarch64 also works.
+
+**The install downloads Fedora.** The netinstall disc holds only the
+installer; the Workstation desktop, about 2 GB, comes from Fedora's
+mirrors with that day's updates. The Mac needs a working internet
+connection, and AVM says the install takes about 20 to 60 minutes.
+
+**How Fedora differs from Ubuntu:**
+
+- Your account can make changes with your password (it is in Fedora's
+  wheel group, Fedora's administrators); the root account is locked.
+- Fedora's welcome tour is not installed, and its first-run screens are
+  skipped.
+- SELinux stays on, as Fedora ships it.
+- A larger disk is not used automatically, as for Ubuntu.
+
 ---
 
-## 17. The diagnostic log, your privacy, and reporting a problem
+## 17. macOS instead of Windows
+
+AVM can run macOS too, on Apple's own virtualization. Choose **New macOS
+Virtual Machine…** on the dashboard. AVM downloads the newest macOS your
+Mac supports from Apple (about 26 GB, kept for the next one), or uses an
+installer file (IPSW) you have, and installs it in a few minutes, saying
+how far it has got.
+
+### The keyboard
+
+A macOS machine opens in its own window, with a bar VoiceOver can read
+above the machine's screen: where the keyboard is, **Give macOS the
+Keyboard**, **Turn On VoiceOver in macOS**, and **Shut Down**.
+
+- **Command-Shift-E** (Virtual Machine > Enter macOS) gives macOS the
+  keyboard; you hear the rising notes and "Entering macOS".
+- **Control-Command-Escape** gives it back to the Mac.
+- Command-Tab and Command-F5 stay your Mac's.
+
+**Your Mac's VoiceOver and macOS's.** With both on, they fight over your
+keys. When you enter macOS with your Mac's VoiceOver on, AVM asks you to
+press Command-F5 to turn it off; AVM can't do that for you (macOS starts
+VoiceOver again by itself if a program stops it). When you return to the
+Mac, AVM turns your Mac's VoiceOver back on by itself, and if AVM ever
+quits unexpectedly while you're in macOS, it turns it back on the next
+time it opens.
+
+### Turning on VoiceOver inside macOS
+
+Command-F5 is your Mac's, so to start macOS's own VoiceOver, use **Turn On
+VoiceOver in macOS** on the bar, or **Command-Option-Shift-V**. AVM asks
+you to press Command-F5 and sends that one to macOS. For those few
+seconds every key goes to macOS, so Control-Command-Escape waits until
+AVM says Command-F5 is your Mac's again, within 10 seconds. A new
+machine's first start does this by itself, about three minutes in, when
+Setup Assistant is up. macOS keeps VoiceOver on afterwards.
+
+### Saving, restore points and the clipboard
+
+- **Save and Quit / Save and Close.** Quitting AVM, or closing the
+  machine's window, offers to save the machine as it is, open apps and
+  all. Its next Start carries on from there in seconds instead of a
+  three-minute start.
+- **Restore points.** In a macOS machine's Settings, with it shut down:
+  **Take Restore Point**, then **Restore** or **Delete** beside each one.
+  They are instant and use space only for what changes afterwards. Every
+  new machine has a **Fresh install** point.
+- **Copy and paste.** With Share the clipboard on in its Settings (it is
+  by default), text copied on the Mac can be pasted in macOS and the other
+  way round. Once, in macOS: open Finder, Locations, My Shared Files, AVM
+  Clipboard, and open **Install Clipboard Sharing**. It says when it's
+  on. Text only, for now.
+- **Shared folder.** A folder shared in Settings appears in macOS's Finder
+  under Locations, My Shared Files.
+
+---
+
+## 18. The diagnostic log, your privacy, and reporting a problem
 
 ### What AVM records, and what it never records
 
@@ -827,15 +1117,14 @@ tilde wherever a file path would have contained it. You can check both
 claims by reading the log yourself. It is plain text, and you are
 encouraged to.
 
-One honest exception exists: a diagnostic keyboard mode used during
-development, off by default, that can only be switched on deliberately
-with a Terminal command. Turning it on announces itself in the log. If you
-never run that command, it never runs.
+A diagnostic keyboard mode exists for development, but only in developer
+builds of AVM. In the build you are testing it does not exist at all, and
+no setting or command can turn it on.
 
 During installation, AVM also samples the guest's screen image, but only
-to detect a frozen installer. No image is kept. Each frame is reduced to a
-checksum and deleted. A frame is kept only if the watchdog declares a
-failure, and the log says so when that happens.
+to detect a frozen installer. Each sample replaces the previous one in the
+machine's folder, and the last one is deleted when the watching ends. No
+sample goes into the diagnostic log.
 
 One cosmetic note: if your Mac user name happens to be an ordinary English
 word, the privacy scrubber may occasionally replace that word with a tilde
