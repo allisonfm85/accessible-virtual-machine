@@ -33,10 +33,16 @@ final class VMSession: ObservableObject {
 
     // MARK: - Init
 
+    /// The session for the VM that is running now, for code outside the
+    /// view tree: quitting AVM shuts it down through here (2026-10-25).
+    /// Weak, like VMManager.shared: ContentView owns the session.
+    static weak var current: VMSession?
+
     init(configuration: VMConfiguration) {
         self.configuration = configuration
         self.manager = VMManager()
         VMManager.shared = self.manager
+        VMSession.current = self
         bindManager()
     }
 
