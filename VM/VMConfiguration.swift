@@ -160,6 +160,12 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// the machine doesn't come up. nil otherwise.
     var diskBusSwitch: String?
 
+    // MARK: - Templates (2026-10-27)
+
+    /// true: a template, kept as it is; its row offers New Machine from
+    /// Template (a duplicate) instead of Start. Read it through isATemplate.
+    var isTemplate: Bool?
+
     // MARK: - Defaults
 
     init(
@@ -215,6 +221,7 @@ extension VMConfiguration {
     var sharedFolderIsReadOnly: Bool { sharedFolderReadOnly == true }
     var usesLowAudioLatency: Bool { lowAudioLatency == true }
     var usesVirtioDisk: Bool { diskBus == "virtio" }
+    var isATemplate: Bool { isTemplate == true }
     /// Known screen readers only, in a fixed order; unknown words ignored.
     var windowsScreenReaders: [ScreenReader] {
         let chosen = Set(windowsScreenReaderNames ?? [])

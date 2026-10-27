@@ -131,6 +131,7 @@ struct SettingsView: View {
     @State private var secureBoot = false
     @State private var shareClipboard = true
     @State private var shareMicrophone = false
+    @State private var isTemplate = false
     @State private var sharedFolderPath: String?
     @State private var sharedFolderReadOnly = false
     @State private var brailleFollowsBack = true
@@ -227,6 +228,20 @@ struct SettingsView: View {
                 .accessibilityElement(children: .combine)
                 .padding(.horizontal)
             }
+
+            // Template (2026-10-27)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Template")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                Toggle("Use as a template", isOn: $isTemplate)
+                    .accessibilityHint("When on, this machine stays as it is, and its row makes new machines from it instead of starting it")
+                Text("Set up a machine the way you like, with your screen reader and apps, then make it a template: each new machine from it starts out just like it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal)
 
             // Microphone (2026-10-27)
             VStack(alignment: .leading, spacing: 6) {
@@ -794,6 +809,7 @@ struct SettingsView: View {
         secureBoot = saved.usesSecureBoot
         shareClipboard = saved.sharesClipboard
         shareMicrophone = saved.sharesMicrophone
+        isTemplate = saved.isATemplate
         sharedFolderPath = saved.sharedFolderPath
         sharedFolderReadOnly = saved.sharedFolderIsReadOnly
         brailleFollowsBack = saved.brailleFollowsBack
@@ -907,6 +923,7 @@ struct SettingsView: View {
             }
             updated.shareClipboard = shareClipboard ? nil : false
             updated.shareMicrophone = shareMicrophone ? true : nil
+            updated.isTemplate = isTemplate ? true : nil
             updated.sharedFolderPath = sharedFolderPath
             updated.sharedFolderReadOnly = sharedFolderReadOnly ? true : nil
             updated.brailleFollowThrough = brailleFollowsBack ? nil : "ask"

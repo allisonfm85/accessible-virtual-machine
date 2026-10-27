@@ -431,11 +431,15 @@ private struct DashboardContent: View {
                                         .font(.caption)
                                         .accessibilityLabel("\(config.name): Saved. Start carries on where you left it")
                                 }
-                                Button("Start") {
-                                    startVM(config: config)
+                                if config.isATemplate {
+                                    templateButton(config)
+                                } else {
+                                    Button("Start") {
+                                        startVM(config: config)
+                                    }
+                                    .accessibilityLabel("Start \(config.name)")
+                                    .accessibilityHint(QEMUSavedState.looksSaved(config) ? "Carries on from where it was saved" : "Starts this virtual machine")
                                 }
-                                .accessibilityLabel("Start \(config.name)")
-                                .accessibilityHint(QEMUSavedState.looksSaved(config) ? "Carries on from where it was saved" : "Starts this virtual machine")
 
                                 Button("Settings") {
                                     openSettings(config)
@@ -444,6 +448,7 @@ private struct DashboardContent: View {
                                 .accessibilityHint("Opens settings for this virtual machine")
 
                                 exportButton(config)
+                                duplicateButton(config)
 
                                 Button("Delete") {
                                     confirmDelete(config: config)
@@ -685,17 +690,47 @@ private struct DashboardContent: View {
             Button("Shut Down") { macGuest.shutDown() }
                 .accessibilityLabel("Shut down \(config.name)")
         } else {
-            Button("Start") { startVM(config: config) }
-                .accessibilityLabel("Start \(config.name)")
-                .accessibilityHint("Starts this macOS virtual machine in its own window")
-                .disabled(macGuest.runningID != nil)
+            if config.isATemplate {
+                templateButton(config)
+            } else {
+                Button("Start") { startVM(config: config) }
+                    .accessibilityLabel("Start \(config.name)")
+                    .accessibilityHint("Starts this macOS virtual machine in its own window")
+                    .disabled(macGuest.runningID != nil)
+            }
             Button("Settings") { openSettings(config) }
                 .accessibilityLabel("Settings for \(config.name)")
             exportButton(config)
+            duplicateButton(config)
             Button("Delete") { confirmDelete(config: config) }
                 .accessibilityLabel("Delete \(config.name)")
                 .accessibilityHint("Moves this virtual machine and all of its files to the Trash. Asks for confirmation first.")
         }
+    }
+
+    // MARK: Duplicate and templates (2026-10-27)
+
+    /// Duplicate…, in every shut-down machine's row (MachineArchiveController).
+    private func duplicateButton(_ config: VMConfiguration) -> some View {
+        Button("Duplicate…") {
+            MachineArchiveController.shared.duplicate(config, isRunning: false, into: vmStore)
+        }
+        .accessibilityLabel("Duplicate \(config.name)")
+        .accessibilityHint("Makes a second machine just like this one, which can run at the same time. Asks for its name.")
+    }
+
+    /// A template's row: it says so, and makes new machines from it
+    /// instead of starting.
+    @ViewBuilder
+    private func templateButton(_ config: VMConfiguration) -> some View {
+        Text("Template")
+            .font(.caption)
+            .accessibilityLabel("\(config.name) is a template")
+        Button("New Machine from Template…") {
+            MachineArchiveController.shared.duplicate(config, isRunning: false, into: vmStore)
+        }
+        .accessibilityLabel("New machine from \(config.name)")
+        .accessibilityHint("Makes a new machine just like this template, which stays as it is. Asks for its name. To change the template itself, turn off Use as a Template in its Settings.")
     }
 
     // MARK: Export (2026-10-26)

@@ -171,6 +171,7 @@ struct MacSettingsView: View {
     @State private var sharedFolderReadOnly = false
     @State private var shareClipboard = true
     @State private var shareMicrophone = false
+    @State private var isTemplate = false
     @State private var restorePoints: [MacRestorePoint] = []
     @State private var newPointName = ""
     @State private var restoreMessage: String?
@@ -242,6 +243,14 @@ struct MacSettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            Text("Template")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Toggle("Use as a template", isOn: $isTemplate)
+            Text("When on, \(configuration.name) stays as it is, and its row makes new machines from it instead of starting it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             Text("Microphone")
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
@@ -279,6 +288,7 @@ struct MacSettingsView: View {
             sharedFolderReadOnly = configuration.sharedFolderIsReadOnly
             shareClipboard = configuration.sharesClipboard
             shareMicrophone = configuration.sharesMicrophone
+            isTemplate = configuration.isATemplate
             reloadPoints()
         }
     }
@@ -421,6 +431,7 @@ struct MacSettingsView: View {
         updated.sharedFolderReadOnly = sharedFolderReadOnly ? true : nil
         updated.shareClipboard = shareClipboard ? nil : false
         updated.shareMicrophone = shareMicrophone ? true : nil
+        updated.isTemplate = isTemplate ? true : nil
         vmStore.save(updated)
         Announcer.shared.announce("Settings saved.", tone: .success)
         dismiss()

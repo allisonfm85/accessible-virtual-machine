@@ -22,6 +22,7 @@
 // name, never a password, and paths only through AVMLog's sanitizer.
 
 import AppKit
+import Virtualization
 import Combine
 
 @MainActor
@@ -158,6 +159,115 @@ final class MachineArchiveController: ObservableObject {
             case .failure(let error):
                 AVMLog.write("AVM: Export — FAILED for '\(name)': \(error.localizedDescription)")
                 Announcer.shared.announce("Exporting \(name) failed, and nothing half-written was left on \(place). \(name) itself is untouched. Reason: \(error.localizedDescription) Next: check the drive is connected and has room, then export again.", tone: .failure)
+            }
+        }
+    }
+
+    // MARK: - Duplicate (2026-10-27)
+
+    /// A second machine just like this one, as Hyper-V's and VMware's
+    /// clones are: every file cloned (APFS, so nearly free on the same
+    /// disk until either changes), with a new id, so its identity, sockets
+    /// and files are its own and both can run at once. A macOS copy gets a
+    /// new machine identifier and network address, so macOS sees a
+    /// different Mac. Asks for its name; spoken.
+    func duplicate(_ config: VMConfiguration, isRunning: Bool, into store: VMStore, name proposed: String? = nil) {
+        let name = config.name
+        if let activity {
+            refuse("AVM is already \(activity). Next: try again when it's done.", log: "another copy is running")
+            return
+        }
+        if isRunning {
+            refuse("\(name) is running. Next: shut it down, then duplicate it.", log: "'\(name)' is running")
+            return
+        }
+        let dir: URL
+        do {
+            dir = try config.directoryURL()
+        } catch {
+            refuse("AVM can't find \(name)'s folder. Reason: \(error.localizedDescription)", log: "no folder for '\(name)'")
+            return
+        }
+        if let problem = MachineArchive.exportProblem(for: config, vmDirectory: dir) {
+            refuse(problem.replacingOccurrences(of: "export", with: "duplicate") + " Nothing was duplicated.", log: "'\(name)' can't be duplicated now")
+            return
+        }
+        if QEMUSavedState.looksSaved(config) {
+            refuse("\(name) is saved with its apps open. Next: start it, shut it down, then duplicate it.", log: "'\(name)' is saved")
+            return
+        }
+
+        let suggested = MachineArchive.uniqueName("\(name) copy", existing: store.configurations.map(\.name))
+        let newName: String
+        if let proposed {
+            newName = MachineArchive.uniqueName(proposed, existing: store.configurations.map(\.name))
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "Duplicate \(name)?"
+            alert.informativeText = "The copy is a second machine just like \(name) now, with its own settings and files; both can run at once. On this Mac it takes almost no extra space until one of them changes."
+            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+            field.stringValue = suggested
+            field.setAccessibilityLabel("Name of the copy")
+            alert.accessoryView = field
+            alert.addButton(withTitle: "Duplicate")
+            alert.addButton(withTitle: "Cancel")
+            alert.window.initialFirstResponder = field
+            guard alert.runModal() == .alertFirstButtonReturn else {
+                AVMLog.write("AVM: Duplicate — cancelled for '\(name)'.")
+                return
+            }
+            let typed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            newName = MachineArchive.uniqueName(typed.isEmpty ? suggested : typed, existing: store.configurations.map(\.name))
+        }
+
+        let plan: MachineFileCopier.Plan
+        let container: URL
+        do {
+            plan = try MachineFileCopier.plan(source: dir) { relative in
+                let file = (relative as NSString).lastPathComponent
+                return MachineArchive.importSkips(relative)
+                    || [QEMUSavedState.hintFile, QEMUSavedState.loadedMarker, QEMUSavedState.resumeFile, VMManager.probeFile].contains(file)
+            }
+            container = try VMConfiguration.defaultVMsContainer()
+        } catch {
+            refuse("AVM couldn't read \(name)'s files, so nothing was duplicated. Reason: \(error.localizedDescription)", log: "plan failed for '\(name)'")
+            return
+        }
+        let needed = MachineFileCopier.bytesNeeded(plan, from: dir, to: container)
+        if let free = MachineFileCopier.availableBytes(at: container), free < needed + Self.spareBytes {
+            refuse("There isn't room on your Mac for a copy of \(name). It needs \(MachineArchive.spokenSize(needed)), and \(MachineArchive.spokenSize(free)) is free. Nothing was duplicated.", log: "not enough space to duplicate '\(name)'")
+            return
+        }
+
+        let id = UUID()
+        begin("duplicating \(name)", id: config.id)
+        AVMLog.write("AVM: Duplicate — '\(name)' as '\(newName)', \(plan.entries.count) items, \(needed) bytes needed.")
+        Announcer.shared.announce("Duplicating \(name) as \(newName).", tone: .info)
+        let ticker = ProgressTicker(verb: "Duplicating", name: name, speaks: needed >= Self.speakProgressFrom)
+        Task { @MainActor in
+            let result = await Task.detached(priority: .userInitiated) { () throws -> URL in
+                try MachineArchive.copyIn(plan: plan, from: dir, container: container, id: id) { done, total in
+                    ticker.report(done, of: total)
+                }
+            }.result
+            self.end()
+            switch result {
+            case .success(let folder):
+                var copy = MachineArchive.importedConfiguration(config, id: id, folder: folder, existingNames: store.configurations.map(\.name))
+                copy.name = newName
+                copy.isTemplate = nil
+                if copy.guestOS == .macOS {
+                    // Its own Mac to macOS: a new identifier and address.
+                    let files = MacGuestFiles(folder: folder)
+                    try? VZMacMachineIdentifier().dataRepresentation.write(to: files.machineIdentifier)
+                    try? FileManager.default.removeItem(at: files.macAddress)
+                }
+                store.save(copy)
+                AVMLog.write("AVM: Duplicate — '\(newName)' added to the list.")
+                Announcer.shared.announce("\(newName) is ready, a copy of \(name). It's in your list of virtual machines.", tone: .success)
+            case .failure(let error):
+                AVMLog.write("AVM: Duplicate — FAILED for '\(name)': \(error.localizedDescription)")
+                Announcer.shared.announce("Duplicating \(name) failed. Nothing was added, and \(name) is untouched. Reason: \(error.localizedDescription)", tone: .failure)
             }
         }
     }

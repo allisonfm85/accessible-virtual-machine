@@ -9,6 +9,11 @@
 //   AVM.app/Contents/MacOS/AVM --test-save-resume --vm <folder> [--guest windows|debian|ubuntu|fedora] [--convert]
 //   AVM.app/Contents/MacOS/AVM --test-microphone --vm <folder> [--guest ...]
 //   AVM.app/Contents/MacOS/AVM --test-two-machines --vm <folder> --guest <os> --vm2 <folder> --guest2 <os>
+//   AVM.app/Contents/MacOS/AVM --test-duplicate --vm <folder> --guest <os>
+//
+// --test-duplicate: duplicates the machine as Duplicate… does, in a
+// temporary AVM folder (the user's machine list is never opened), then
+// runs the original and the copy at once, and deletes the copy.
 //
 // --test-two-machines: both machines run at once through MachineSessions
 // (with no windows): each answers, each is the current machine in turn,
@@ -40,7 +45,8 @@ enum SaveResumeTestJob {
     static let flag = "--test-save-resume"
 
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
-        guard arguments.contains(flag) || arguments.contains("--test-microphone") || arguments.contains("--test-two-machines") else { return }
+        guard arguments.contains(flag) || arguments.contains("--test-microphone") || arguments.contains("--test-two-machines")
+                || arguments.contains("--test-duplicate") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -56,6 +62,10 @@ enum SaveResumeTestJob {
             if arguments.contains("--test-two-machines"), let second = value("--vm2") {
                 let guest2 = GuestOS(rawValue: value("--guest2") ?? "windows") ?? .windows
                 let passed = await twoMachines(folderURL, guest, URL(fileURLWithPath: second, isDirectory: true), guest2)
+                print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+            }
+            if arguments.contains("--test-duplicate") {
+                let passed = await duplicate(folderURL, guest)
                 print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
             }
             if arguments.contains("--test-microphone") {
@@ -151,6 +161,55 @@ enum SaveResumeTestJob {
         check("the guest recorded", frames > 48_000)
         check("the recording isn't silence (the Mac's microphone reached it)", level > 0)
         await shutDown(manager)
+        return ok
+    }
+
+    private static func duplicate(_ folder: URL, _ guest: GuestOS) async -> Bool {
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent("avm-duplicate-test-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        AVMPaths.supportDirectoryOverride = support
+        defer { try? FileManager.default.removeItem(at: support) }
+        let store = VMStore()
+        var original = configuration(folder: folder, guest: guest)
+        original.name = "Original"
+        store.save(original)
+
+        print("== Duplicating")
+        let started = Date()
+        MachineArchiveController.shared.duplicate(original, isRunning: false, into: store, name: "The copy")
+        try? await Task.sleep(for: .milliseconds(200))
+        for _ in 0..<1200 where MachineArchiveController.shared.activity != nil {
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        print(String(format: "   took %.1f s", Date().timeIntervalSince(started)))
+        guard let copy = store.configurations.first(where: { $0.name == "The copy" }) else {
+            check("the copy is in the list", false); return false
+        }
+        check("the copy is in the list, with its own id", copy.id != original.id)
+        let copyFolder = try? copy.directoryURL()
+        check("its folder is its own", copyFolder.map { $0.standardizedFileURL != folder.standardizedFileURL } ?? false)
+        check("it has a disk", FileManager.default.fileExists(atPath: copy.diskImagePath))
+
+        print("== Running the original and the copy at once")
+        let machines = MachineSessions.shared
+        let a = machines.start(original, vmStore: nil, focusLock: nil)
+        let b = machines.start(copy, vmStore: nil, focusLock: nil)
+        for _ in 0..<600 where !(a.vmState == .running && b.vmState == .running) {
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        check("both are running", a.vmState == .running && b.vmState == .running)
+        if let agentA = a.manager.guestAgentSocketPath, let agentB = b.manager.guestAgentSocketPath {
+            check("the original answers", await waitForAgent(agentA, seconds: 300))
+            check("the copy answers", await waitForAgent(agentB, seconds: 300))
+        }
+        print("== Shutting both down, and deleting the copy")
+        try? await a.stopGracefully()
+        try? await b.stopGracefully()
+        for _ in 0..<60 where !machines.sessions.isEmpty {
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        check("both ended", machines.sessions.isEmpty)
+        if let copyFolder { try? FileManager.default.removeItem(at: copyFolder) }
         return ok
     }
 
