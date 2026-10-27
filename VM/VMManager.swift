@@ -383,6 +383,50 @@ final class VMManager: ObservableObject {
     /// (Also mirrored to the console in visible form.)
     @Published private(set) var installProgress: String = ""
 
+    // MARK: Install status, for Speak Status (2026-10-25)
+
+    /// When this run booted from install media; nil when the VM started an
+    /// installed system. Windows Setup and Ubuntu's installer report no
+    /// progress of their own, so Speak Status says what AVM does know:
+    /// how long the install has run, whether Windows Setup has reached the
+    /// stage the install watchdog detects, and how much the virtual disk
+    /// holds so far.
+    private(set) var installStartedAt: Date?
+
+    /// When the install watchdog saw Windows Setup write its marker (Setup
+    /// is underway, Windows is on the disk). nil before that.
+    private(set) var setupUnderwaySince: Date?
+
+    /// One or two sentences on the install, or nil when none is running.
+    func spokenInstallStatus() -> String? {
+        if case .starting = state, !installProgress.isEmpty {
+            return installProgress
+        }
+        guard let started = installStartedAt, isRunningOrPausedState,
+              let configuration = activeConfiguration else { return nil }
+        let guest = configuration.guestOS.displayName
+        let installer = configuration.guestOS == .windows ? "Windows Setup" : "The \(guest) installer"
+        var sentences: [String] = []
+        let minutes = Int(Date().timeIntervalSince(started) / 60)
+        let howLong = minutes < 1 ? "less than a minute" : (minutes == 1 ? "1 minute" : "\(minutes) minutes")
+        if setupUnderwaySince != nil {
+            sentences.append("\(installer) is underway and has been running for \(howLong). It restarts the virtual machine a few times before it finishes.")
+        } else {
+            sentences.append("\(installer) has been running for \(howLong).")
+        }
+        if let disk = sampleDiskActivity(path: configuration.diskImagePath) {
+            let gb = Double(disk.size) / 1_000_000_000
+            if gb >= 1 {
+                sentences.append("About \(Int(gb.rounded())) gigabytes have been written to the virtual disk so far.")
+            }
+        }
+        return sentences.joined(separator: " ")
+    }
+
+    private var isRunningOrPausedState: Bool {
+        state == .running || state == .paused
+    }
+
     // MARK: Public read-only properties
 
     private(set) var spiceSocketPath: String = ""
@@ -1044,7 +1088,15 @@ final class VMManager: ObservableObject {
         // prompt is the other half of the reinstall hazard.
         if installComplete {
             avmLog("startVM: boot keypress task NOT started (install-complete marker present)")
+            // An installed system (2026-10-25, code audit): after AVM's
+            // restart following an Ubuntu install, this is the same manager,
+            // so Speak Status would still describe the finished install.
+            installStartedAt = nil
+            setupUnderwaySince = nil
+            installProgress = ""
         } else {
+            installStartedAt = Date()
+            setupUnderwaySince = nil
             if configuration.guestOS == .ubuntu {
                 // Neither applies to Ubuntu. Its boot menu starts on its own
                 // after one second (UbuntuInstallPipeline.editedBootMenu), so
@@ -1329,6 +1381,7 @@ final class VMManager: ObservableObject {
                 if markerPresent {
                     avmLog("installWatchdog: install-complete marker PRESENT — standing down; announcing Setup-underway milestone")
                     await MainActor.run {
+                        self.setupUnderwaySince = Date()
                         self.appendConsole("AVM: Windows Setup is underway and will restart the virtual machine a few times. This takes a while. Windows will not speak on its own — when Setup is done, enter Windows and press Control Command Return to turn on Narrator.\n")
                         Announcer.shared.announce(
                             "Windows Setup is underway and will restart the virtual machine a few times. This takes a while. Windows will not speak on its own. When Setup is done, enter Windows and press Control Command Return to turn on Narrator.",

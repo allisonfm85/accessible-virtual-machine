@@ -230,6 +230,16 @@ struct AVMApp: App {
             //    USBHelperClient's. Placed after their own Divider: they
             //    change what the guest can see, not the machine's state.
             //
+            // 8. Speak Status (Cmd-Shift-I) — ADDED 2026-10-25. Speaks, in
+            //    the system voice, which machine is in which state, which
+            //    side the keyboard is on, and which USB devices are
+            //    attached. The non-visual glance at the dashboard: it works
+            //    with VoiceOver asleep (the VO-OFF ritual in item 2) and
+            //    without leaving where you are. It gets a combo because it
+            //    is asked during normal use, not maintenance. Posts
+            //    .avmSpeakStatusFromMenu; ContentView answers, since the
+            //    session and the machine list live there.
+            //
             // Debug menu — DEBUG BUILDS ONLY. Test instruments for the USB
             // helper scaffold (2026-09-07). Nothing here ships. The version
             // probe is the first end-to-end proof of the privileged path:
@@ -299,6 +309,11 @@ struct AVMApp: App {
                 .keyboardShortcut("e", modifiers: [.command, .shift])
                 .disabled(!activity.isRunningOrPaused)
 
+                Button("Speak Status") {
+                    AVMLog.write("AVM: Speak Status menu — posting request to ContentView.")
+                    NotificationCenter.default.post(name: .avmSpeakStatusFromMenu, object: nil)
+                }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
 
                 Divider()
 

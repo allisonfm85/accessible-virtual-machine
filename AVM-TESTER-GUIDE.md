@@ -419,6 +419,10 @@ of this is AVM.
   Windows automatically once the machine's view appears.
 - **Command-Shift-E** is Enter Windows. It returns the keyboard to a
   running machine after the escape hatch.
+- **Command-Shift-I** is Speak Status. AVM says which machine is
+  running, paused, or stopped, whether your keyboard is on the Mac or in
+  Windows, and which USB devices are attached. It speaks in the system
+  voice, so it works with VoiceOver off.
 - **Command-Shift-D** sends Control-Alt-Delete to Windows.
 - **Command-Shift-R** resets the virtual machine (see section 13).
 - **Control-Command-Escape** is the escape hatch. It brings the keyboard
@@ -430,7 +434,10 @@ Commands that can't do anything right now are dimmed in the Virtual
 Machine menu, and VoiceOver reads them as "dimmed": Enter Windows when
 nothing is running, Send Control-Alt-Delete and Reset when Windows isn't
 running, Detach USB Device when nothing is attached. Pressing a dimmed
-command's keys only beeps.
+command's keys only beeps. Speak Status is never dimmed, so it can always
+tell you why. While Windows is installing, Speak Status also says how
+long Setup has been running and how much it has written to the disk so
+far.
 
 **Force Stop asks first,** with Cancel as the default, wherever you find
 it, because it turns Windows off at once. It is also offered while Windows
