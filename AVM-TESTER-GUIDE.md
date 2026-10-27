@@ -242,6 +242,12 @@ The window reads top to bottom:
   choose one. The **Choose Installer Image** button opens a standard file
   picker. Navigate to your ISO and choose it. The wizard then reads back
   the file's name so you know what it took.
+- **Download Windows 11 for ARM** opens a window that opens Microsoft's
+  download page in your browser. You still choose the download on
+  Microsoft's page (section 2 walks through it), and AVM watches your
+  Downloads folder: it says how the download is going every gigabyte,
+  checks the file when it's done, and **Use This Installer** picks it for
+  you. **Speak Progress**, Command-P, says how far it has got at any time.
 - **Windows Edition** appears once you've chosen a Windows ISO: Pro, Home,
   or Home Single Language, as radio buttons. Choose the edition your
   Windows license is for. Pro is chosen to start with.
@@ -746,7 +752,9 @@ files can be deleted afterward.
   Start buttons.
 - **Out-of-box setup is stock Windows.** AVM does not script your account
   creation. You go through Microsoft's own setup with Narrator.
-- **No ISO downloader.** You supply the Windows image yourself.
+- **The ISO download is still yours to start.** AVM opens Microsoft's
+  page and does everything around it, but Microsoft's page itself is
+  where you choose the download.
 
 USB passthrough is here, except for USB drives. New machines now have
 Secure Boot, and existing ones can turn it on in Settings (see section

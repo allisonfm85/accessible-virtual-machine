@@ -93,6 +93,7 @@ struct SetupView: View {
     /// user chose, usually on an external drive; AVM makes an "AVM Virtual
     /// Machines" folder inside it, and one folder per VM inside that.
     @State private var storageFolder: URL? = nil
+    @State private var showingISODownload = false
 
     // MARK: - Ubuntu (2026-10-19)
     //
@@ -215,10 +216,18 @@ struct SetupView: View {
                             .accessibilityLabel("No installer image selected")
                     }
 
-                    Button("Choose Installer Image") {
-                        showingFilePicker = true
+                    HStack {
+                        Button("Choose Installer Image") {
+                            showingFilePicker = true
+                        }
+                        .accessibilityHint("Opens a file picker to select your Windows or Ubuntu installer ISO")
+
+                        // 2026-10-25, roadmap item 9.
+                        Button("Download Windows 11 for ARM…") {
+                            showingISODownload = true
+                        }
+                        .accessibilityHint("Opens Microsoft's download page, then tells you how the download is going and picks the file for you")
                     }
-                    .accessibilityHint("Opens a file picker to select your Windows or Ubuntu installer ISO")
                 }
 
                 if installerKind == .windows {
@@ -274,6 +283,12 @@ struct SetupView: View {
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 isNameFieldFocused = true
+            }
+        }
+        .sheet(isPresented: $showingISODownload) {
+            ISODownloadView { url in
+                installerURL = url
+                identifyInstaller(url)
             }
         }
         .fileImporter(

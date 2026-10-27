@@ -29,8 +29,10 @@
 		06CFA2F92FD4F721004426E1 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06CFA2F82FD4F721004426E1 /* ContentView.swift */; };
 		06DAFA0A30316C16007B2495 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 06DAFA0930316C16007B2495 /* Sparkle */; };
 		06E772052FEE3ABE00220B01 /* WindowsInstallPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06E772042FEE3ABE00220B01 /* WindowsInstallPipeline.swift */; };
-		0A1B2C3D2F60000100000101 /* SHA512Crypt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D2F60000100000001 /* SHA512Crypt.swift */; };
 		0A1B2C3D2F60000100000100 /* UbuntuInstallPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D2F60000100000000 /* UbuntuInstallPipeline.swift */; };
+		0A1B2C3D2F60000100000101 /* SHA512Crypt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D2F60000100000001 /* SHA512Crypt.swift */; };
+		0A1B2C3D2F60000100000102 /* WindowsISODownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D2F60000100000002 /* WindowsISODownloader.swift */; };
+		0A1B2C3D2F60000100000103 /* ISODownloadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D2F60000100000003 /* ISODownloadView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -90,9 +92,11 @@
 		06CFA2F62FD4F651004426E1 /* AVMApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVMApp.swift; sourceTree = "<group>"; };
 		06CFA2F82FD4F721004426E1 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		06E772042FEE3ABE00220B01 /* WindowsInstallPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowsInstallPipeline.swift; sourceTree = "<group>"; };
-		0A1B2C3D2F60000100000001 /* SHA512Crypt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SHA512Crypt.swift; sourceTree = "<group>"; };
-		0A1B2C3D2F60000100000000 /* UbuntuInstallPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UbuntuInstallPipeline.swift; sourceTree = "<group>"; };
 		06F4CAF5304F3A3F0033A29C /* AVMUSBHelper */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = AVMUSBHelper; sourceTree = BUILT_PRODUCTS_DIR; };
+		0A1B2C3D2F60000100000000 /* UbuntuInstallPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UbuntuInstallPipeline.swift; sourceTree = "<group>"; };
+		0A1B2C3D2F60000100000001 /* SHA512Crypt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SHA512Crypt.swift; sourceTree = "<group>"; };
+		0A1B2C3D2F60000100000002 /* WindowsISODownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowsISODownloader.swift; sourceTree = "<group>"; };
+		0A1B2C3D2F60000100000003 /* ISODownloadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ISODownloadView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -164,6 +168,7 @@
 				064BD7132FD50C59008025D4 /* VMManager.swift */,
 				06E772042FEE3ABE00220B01 /* WindowsInstallPipeline.swift */,
 				0A1B2C3D2F60000100000001 /* SHA512Crypt.swift */,
+				0A1B2C3D2F60000100000002 /* WindowsISODownloader.swift */,
 				0A1B2C3D2F60000100000000 /* UbuntuInstallPipeline.swift */,
 				064BD7152FD50EA8008025D4 /* VMSession.swift */,
 				06430F272FD57CCC00F5FAEA /* VMStore.swift */,
@@ -195,6 +200,7 @@
 				064BD71D2FD51AF3008025D4 /* SettingsView.swift */,
 				06430F292FD5814B00F5FAEA /* VMView.swift */,
 				0682D889303135840028EE63 /* ReclaimView.swift */,
+				0A1B2C3D2F60000100000003 /* ISODownloadView.swift */,
 			);
 			path = views;
 			sourceTree = "<group>";
@@ -389,6 +395,8 @@
 				062C1F9D300348D40086E56B /* Announcer.swift in Sources */,
 				06E772052FEE3ABE00220B01 /* WindowsInstallPipeline.swift in Sources */,
 				0A1B2C3D2F60000100000101 /* SHA512Crypt.swift in Sources */,
+				0A1B2C3D2F60000100000102 /* WindowsISODownloader.swift in Sources */,
+				0A1B2C3D2F60000100000103 /* ISODownloadView.swift in Sources */,
 				0A1B2C3D2F60000100000100 /* UbuntuInstallPipeline.swift in Sources */,
 				063A4A113024CEC600C47BD8 /* DiagnosticLogExporter.swift in Sources */,
 				06CFA2F92FD4F721004426E1 /* ContentView.swift in Sources */,
