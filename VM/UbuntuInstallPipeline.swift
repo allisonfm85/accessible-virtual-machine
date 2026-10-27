@@ -425,6 +425,10 @@ nonisolated final class UbuntuInstallPipeline {
         let vmName: String
         let sourceISOPath: String
         let runtimeDir: URL
+        /// The disk the installer installs onto, as Linux names it: vda on
+        /// a virtio disk (machines made since 2026-10-27), nvme0n1 on NVMe.
+        /// Debian and Fedora's answers name it; Ubuntu's take the only disk.
+        var diskName = "nvme0n1"
     }
 
     /// (spoken, visible). Invoked ON the main actor, before each stage.
@@ -649,7 +653,7 @@ nonisolated final class UbuntuInstallPipeline {
             try FileManager.default.createDirectory(at: nocloud, withIntermediateDirectories: true)
             if distro == .debian {
                 try Self.debianPreseed(account: account, hostName: Self.hostName(fromVMName: input.vmName),
-                                       timeZone: TimeZone.current.identifier)
+                                       timeZone: TimeZone.current.identifier, disk: input.diskName)
                     .write(to: nocloud.appendingPathComponent("preseed.cfg"), atomically: true, encoding: .utf8)
                 try Self.debianSetupScript(account: account)
                     .write(to: nocloud.appendingPathComponent("setup.sh"), atomically: true, encoding: .utf8)
@@ -661,7 +665,7 @@ nonisolated final class UbuntuInstallPipeline {
                 // One file: the setup and failure scripts ride inside the
                 // kickstart, as its %post and %onerror sections.
                 try Self.fedoraKickstart(account: account, hostName: Self.hostName(fromVMName: input.vmName),
-                                         timeZone: TimeZone.current.identifier, version: version)
+                                         timeZone: TimeZone.current.identifier, version: version, disk: input.diskName)
                     .write(to: nocloud.appendingPathComponent("ks.cfg"), atomically: true, encoding: .utf8)
                 return
             }
@@ -1064,7 +1068,7 @@ nonisolated final class UbuntuInstallPipeline {
     /// never the UNATTEND volume, with GNOME, Orca and the agents AVM uses,
     /// then runs setup.sh, and powers off as Ubuntu's install does, so
     /// AVM's restart-after-install takes over.
-    static func debianPreseed(account: UbuntuAccount, hostName: String, timeZone: String) -> String {
+    static func debianPreseed(account: UbuntuAccount, hostName: String, timeZone: String, disk: String = "nvme0n1") -> String {
         """
         # Written by AVM. Debian's installer reads this and asks nothing.
         d-i debian-installer/locale string en_US.UTF-8
@@ -1087,7 +1091,7 @@ nonisolated final class UbuntuInstallPipeline {
         d-i clock-setup/utc boolean true
         d-i time/zone string \(timeZone)
         d-i clock-setup/ntp boolean true
-        d-i partman-auto/disk string /dev/nvme0n1
+        d-i partman-auto/disk string /dev/\(disk)
         d-i partman-auto/method string regular
         d-i partman-auto/choose_recipe select atomic
         d-i partman-partitioning/confirm_write_new_label boolean true
@@ -1256,7 +1260,8 @@ nonisolated final class UbuntuInstallPipeline {
     /// is (.discinfo), so the mirrors serve that release; Anaconda's own
     /// $releasever stands in when it is unknown. The welcome tour is left
     /// out: it opens over the desktop at the first sign-in, as Ubuntu's did.
-    static func fedoraKickstart(account: UbuntuAccount, hostName: String, timeZone: String, version: String) -> String {
+    static func fedoraKickstart(account: UbuntuAccount, hostName: String, timeZone: String, version: String,
+                                disk: String = "nvme0n1") -> String {
         let release = version.isEmpty ? "$releasever" : version
         let layout = account.keyboardLayout ?? "us"
         let xkb = account.keyboardVariant.map { "\(layout) (\($0))" } ?? layout
@@ -1269,9 +1274,9 @@ nonisolated final class UbuntuInstallPipeline {
         network --bootproto=dhcp --device=link --activate --hostname=\(hostName)
         url --mirrorlist="https://mirrors.fedoraproject.org/mirrorlist?repo=fedora-\(release)&arch=aarch64"
         repo --name=updates --mirrorlist="https://mirrors.fedoraproject.org/mirrorlist?repo=updates-released-f\(release)&arch=aarch64"
-        ignoredisk --only-use=nvme0n1
+        ignoredisk --only-use=\(disk)
         zerombr
-        clearpart --all --initlabel --drives=nvme0n1
+        clearpart --all --initlabel --drives=\(disk)
         autopart --type=btrfs
         rootpw --lock
         user --name=\(account.userName) --gecos=\(kickstartQuoted(account.realName)) --groups=wheel --iscrypted --password=\(kickstartQuoted(account.passwordHash))

@@ -14,6 +14,15 @@
       <UILanguage>AVM_SETUP_LANGUAGE</UILanguage>
       <UserLocale>AVM_SETUP_LANGUAGE</UserLocale>
     </component>
+    <!-- The virtio disk's driver (2026-10-27): Setup loads it in this pass, before
+         the disk step, from the boot image (X:), where AVM's pipeline puts it. -->
+    <component name="Microsoft-Windows-PnpCustomizationsWinPE" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <DriverPaths>
+        <PathAndCredentials wcm:action="add" wcm:keyValue="1">
+          <Path>X:\AVM\viostor</Path>
+        </PathAndCredentials>
+      </DriverPaths>
+    </component>
     <component name="Microsoft-Windows-Setup" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
       <UserData>
         <AcceptEula>true</AcceptEula>
@@ -51,7 +60,7 @@
       </RunSynchronous>
       <DiskConfiguration>
         <Disk wcm:action="add">
-          <DiskID>0</DiskID>
+          <DiskID>AVM_DISK_ID</DiskID>
           <WillWipeDisk>true</WillWipeDisk>
           <CreatePartitions>
             <CreatePartition wcm:action="add">
@@ -100,7 +109,7 @@
             </MetaData>
           </InstallFrom>
           <InstallTo>
-            <DiskID>0</DiskID>
+            <DiskID>AVM_DISK_ID</DiskID>
             <PartitionID>3</PartitionID>
           </InstallTo>
         </OSImage>

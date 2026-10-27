@@ -427,6 +427,9 @@ nonisolated struct RestorePoint: Identifiable, Hashable, Sendable {
     let label: String
     let date: Date
     let secureBoot: Bool
+    /// Taken while the machine ran (2026-10-27): its memory is in the
+    /// snapshot too, and restoring it carries on with open apps.
+    var withMemory = false
     var id: String { tag }
 }
 
@@ -466,15 +469,33 @@ nonisolated enum RestorePoints {
             let label = (try? String(contentsOf: folder.appendingPathComponent("label.txt"), encoding: .utf8))?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let secure = FileManager.default.fileExists(atPath: folder.appendingPathComponent("secure-boot").path)
+            let memory = (snap["vm-state-size"] as? Double ?? 0) > 0
             return RestorePoint(tag: tag, label: (label?.isEmpty == false ? label! : "Restore point"),
-                                date: Date(timeIntervalSince1970: seconds), secureBoot: secure)
+                                date: Date(timeIntervalSince1970: seconds), secureBoot: secure, withMemory: memory)
         }
         .sorted { $0.date > $1.date }
     }
 
     static func create(vmDirectory dir: URL, label: String, secureBoot: Bool) async throws -> RestorePoint {
-        let tag = "avm-\(Int(Date().timeIntervalSince1970 * 1000))"
+        let tag = newTag()
         _ = try await qemuImg(["snapshot", "-c", tag, disk(dir).path])
+        do {
+            try writeFolder(vmDirectory: dir, tag: tag, label: label, secureBoot: secureBoot)
+        } catch {
+            // Half a restore point is worse than none: take the snapshot back.
+            _ = try? await qemuImg(["snapshot", "-d", tag, disk(dir).path])
+            throw error
+        }
+        AVMLog.write("AVM: RestorePoints — created \(tag).")
+        return RestorePoint(tag: tag, label: label, date: Date(), secureBoot: secureBoot)
+    }
+
+    static func newTag() -> String { "avm-\(Int(Date().timeIntervalSince1970 * 1000))" }
+
+    /// The restore point's folder: copies of the firmware settings and the
+    /// TPM, its label, and whether Secure Boot was on. A folder that
+    /// couldn't be finished is removed, and that's thrown.
+    static func writeFolder(vmDirectory dir: URL, tag: String, label: String, secureBoot: Bool) throws {
         let fm = FileManager.default
         let folder = dir.appendingPathComponent(folderName).appendingPathComponent(tag)
         do {
@@ -492,13 +513,13 @@ nonisolated enum RestorePoints {
                 fm.createFile(atPath: folder.appendingPathComponent("secure-boot").path, contents: nil)
             }
         } catch {
-            // Half a restore point is worse than none: take the snapshot back.
-            _ = try? await qemuImg(["snapshot", "-d", tag, disk(dir).path])
             try? fm.removeItem(at: folder)
             throw RestorePointError.tool("The restore point could not be saved: \(error.localizedDescription)")
         }
-        AVMLog.write("AVM: RestorePoints — created \(tag).")
-        return RestorePoint(tag: tag, label: label, date: Date(), secureBoot: secureBoot)
+    }
+
+    static func removeFolder(vmDirectory dir: URL, tag: String) {
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent(folderName).appendingPathComponent(tag))
     }
 
     /// Puts the disk, firmware settings and TPM back as they were. The
@@ -533,6 +554,15 @@ nonisolated enum RestorePoints {
             throw RestorePointError.tool("The restore point's firmware settings couldn't be copied, so nothing was changed: \(error.localizedDescription)")
         }
         _ = try await qemuImg(["snapshot", "-a", point.tag, disk(dir).path])
+        // With memory (2026-10-27): the next Start loads it and carries on
+        // from that moment (QEMUSavedState.resumeTag). Without, any note
+        // left by an earlier restore goes.
+        let resume = dir.appendingPathComponent(QEMUSavedState.resumeFile)
+        if point.withMemory {
+            try point.tag.write(to: resume, atomically: true, encoding: .utf8)
+        } else {
+            try? fm.removeItem(at: resume)
+        }
         for item in staged {
             if fm.fileExists(atPath: item.live.path) {
                 _ = try fm.replaceItemAt(item.live, withItemAt: item.fresh)
@@ -564,7 +594,7 @@ nonisolated enum RestorePoints {
 
     /// Runs the bundled qemu-img off the main thread; stdout on success,
     /// a spoken-ready error with qemu-img's own words on failure.
-    private static func qemuImg(_ arguments: [String]) async throws -> String {
+    static func qemuImg(_ arguments: [String]) async throws -> String {
         guard let tool = Bundle.main.resourceURL?.appendingPathComponent("qemu-img"),
               FileManager.default.isExecutableFile(atPath: tool.path) else {
             throw RestorePointError.tool("qemu-img is missing from AVM, so restore points can't be used.")

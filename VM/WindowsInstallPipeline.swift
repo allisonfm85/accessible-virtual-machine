@@ -382,6 +382,11 @@ nonisolated struct PipelineInput {
     /// The wizard's answers for Windows Setup (WindowsSetupAnswers.swift);
     /// the default leaves Windows to ask everything but privacy.
     var answers = WindowsSetupAnswers()
+    /// The disk Windows installs onto, as Setup numbers it (2026-10-27):
+    /// 0 on NVMe, whose driver is built in and finds it first; 1 on the
+    /// virtio disk, whose driver Setup loads after the USB answer-file disk
+    /// has taken 0 (MEASURED: "could not clean disk 0 ... does not exist").
+    var setupDiskID = 0
 }
 
 /// The verified artifacts the pipeline produces, living in the VM runtime dir.
@@ -462,7 +467,10 @@ nonisolated final class WindowsInstallPipeline {
     /// extra files — .pdb, helper .exe — which are harmless and simply copied).
     private let virtioRequiredFiles: [(driver: String, required: [String])] = [
         ("NetKVM",  ["netkvm.inf", "netkvm.sys", "netkvm.cat", "netkvmp.exe"]),
-        ("Balloon", ["balloon.inf", "balloon.sys", "balloon.cat"])
+        ("Balloon", ["balloon.inf", "balloon.sys", "balloon.cat"]),
+        // The virtio disk's driver (2026-10-27): Setup must see the disk to
+        // install onto it, and Windows boots from it afterwards.
+        ("viostor", ["viostor.inf", "viostor.sys", "viostor.cat"])
     ]
 
     /// The guest-agent payload Stage 4 copies into the FAT answer image
@@ -1039,6 +1047,18 @@ nonisolated final class WindowsInstallPipeline {
         // Generate winpeshl.ini with CRLF line endings. The [LaunchApps] section
         // forces legacy Setup; %SYSTEMDRIVE%\sources\setup.exe is WinPE's path to
         // the installer at boot. (Verified contents — see header.)
+        //
+        //
+        // THE VIRTIO DISK (2026-10-27, MEASURED): a machine on the virtio disk
+        // needs viostor before Setup's disk step. In $WinPEDriver$ alone it
+        // came too late ("Windows could not clean disk 0. The specified disk
+        // does not exist", 0x80300025), and so did drvload from this file.
+        // So viostor rides inside this image, at \AVM\viostor, where the
+        // answer file's PnpCustomizationsWinPE DriverPaths (X:\AVM\viostor)
+        // has Setup load it in the windowsPE pass. $WinPEDriver$ still puts
+        // it into the installed Windows.
+        let viostor = try? resourceDirURL(named: "virtio").appendingPathComponent("viostor", isDirectory: true)
+        let addViostor = viostor.map { FileManager.default.fileExists(atPath: $0.appendingPathComponent("viostor.inf").path) } ?? false
         let winpeshlContents = "[LaunchApps]\r\n%SYSTEMDRIVE%\\sources\\setup.exe, /legacy\r\n"
         let winpeshlURL = scratch.appendingPathComponent("winpeshl.ini")
         do {
@@ -1082,6 +1102,22 @@ nonisolated final class WindowsInstallPipeline {
                 stage: .injectWinpeshl,
                 reason: "The setup configuration didn't take effect inside the boot image."
             )
+        }
+
+        if addViostor, let viostor {
+            let addDriver = "add \"\(viostor.path)\" \"/AVM/viostor\""
+            let driverResult = await runTool(wimlib, [
+                "update", bootWim.path, "\(setupBootWimImageIndex)",
+                "--command=\(addDriver)"
+            ])
+            let check = await runTool(wimlib, ["dir", bootWim.path, "\(setupBootWimImageIndex)", "--path=/AVM/viostor"])
+            guard driverResult.code == 0, check.output.lowercased().contains("viostor.inf") else {
+                throw PipelineError.stageFailed(
+                    stage: .injectWinpeshl,
+                    reason: "Couldn't add the virtio disk driver to the boot image. (wimlib exit \(driverResult.code): \(driverResult.output.suffix(300)))"
+                )
+            }
+            pipelineLog("stageInjectWinpeshl: viostor added at /AVM/viostor, for the answer file's DriverPaths")
         }
 
         pipelineLog("stageInjectWinpeshl: winpeshl.ini injected into boot.wim image \(setupBootWimImageIndex) and verified")
@@ -1337,13 +1373,14 @@ nonisolated final class WindowsInstallPipeline {
             .replacingOccurrences(of: editionToken, with: resolved.name)
             .replacingOccurrences(of: productKeyToken, with: resolved.key)
             .replacingOccurrences(of: "AVM_SETUP_LANGUAGE", with: setupLanguage)
+            .replacingOccurrences(of: "AVM_DISK_ID", with: "\(input.setupDiskID)")
         for (marker, section) in input.answers.answerFileSections {
             filled = filled.replacingOccurrences(of: marker, with: section)
         }
         // The wizard's answers went in as text (2026-10-26): the result must
         // still be well-formed XML, with every marker filled, or Windows
         // Setup would stop on a screen the user can't read.
-        let unfilled = Array(input.answers.answerFileSections.keys) + [editionToken, productKeyToken, "AVM_SETUP_LANGUAGE"]
+        let unfilled = Array(input.answers.answerFileSections.keys) + [editionToken, productKeyToken, "AVM_SETUP_LANGUAGE", "AVM_DISK_ID"]
         guard !unfilled.contains(where: { filled.contains($0) }), XMLParser(data: Data(filled.utf8)).parse() else {
             throw PipelineError.stageFailed(
                 stage: .buildAnswerImage,

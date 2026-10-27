@@ -828,7 +828,7 @@ struct SetupView: View {
             return
         }
 
-        let config = VMConfiguration(
+        var config = VMConfiguration(
             id: vmID,
             name: vmName,
             cpuCount: cpuCount,
@@ -845,6 +845,8 @@ struct SetupView: View {
             secureBoot: isUbuntu ? nil : true,
             windowsScreenReaderNames: isUbuntu ? nil : chosenScreenReaders
         )
+        // A disk QEMU can save while the machine runs (2026-10-27).
+        config.diskBus = "virtio"
 
         isCreating = true
         notices = []

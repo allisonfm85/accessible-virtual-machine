@@ -1219,3 +1219,38 @@ final class FedoraInstallTests: XCTestCase {
         XCTAssertNil(UbuntuAccount.problem(withUserName: "amena"))
     }
 }
+
+// MARK: - The virtio disk (2026-10-27)
+
+final class VirtioDiskTests: XCTestCase {
+    private let account = UbuntuAccount(realName: "Amena", userName: "amena", passwordHash: "$6$salt$hash", signInAutomatically: true)
+
+    func testOlderMachinesStayOnNVMe() {
+        let older = VMConfiguration()
+        XCTAssertFalse(older.usesVirtioDisk, "machines made before the virtio disk keep NVMe")
+        XCTAssertNil(older.diskBusSwitch)
+        var newer = VMConfiguration()
+        newer.diskBus = "virtio"
+        XCTAssertTrue(newer.usesVirtioDisk)
+    }
+
+    func testLinuxAnswersNameTheVirtioDisk() {
+        let preseed = UbuntuInstallPipeline.debianPreseed(account: account, hostName: "h", timeZone: "UTC", disk: "vda")
+        XCTAssertTrue(preseed.contains("d-i partman-auto/disk string /dev/vda"))
+        XCTAssertFalse(preseed.contains("nvme0n1"))
+        let ks = UbuntuInstallPipeline.fedoraKickstart(account: account, hostName: "h", timeZone: "UTC", version: "44", disk: "vda")
+        XCTAssertTrue(ks.contains("ignoredisk --only-use=vda"))
+        XCTAssertTrue(ks.contains("clearpart --all --initlabel --drives=vda"))
+    }
+
+    /// Setup numbers the virtio disk 1 (its driver loads after the USB
+    /// answer-file disk), so the template's disk number is filled in.
+    func testTheAnswerFileLeavesTheDiskNumberToAVM() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../../Resources/autounattend.xml").standardizedFileURL
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertEqual(text.components(separatedBy: "<DiskID>AVM_DISK_ID</DiskID>").count - 1, 2)
+        XCTAssertFalse(text.contains("<DiskID>0</DiskID>"))
+        XCTAssertTrue(text.contains(#"<Path>X:\AVM\viostor</Path>"#))
+    }
+}

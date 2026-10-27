@@ -7,6 +7,8 @@
 //   AVM.app/Contents/MacOS/AVM --build-install-media --iso <Windows ISO>
 //       --out <folder> [--edition pro|home|homeSingleLanguage]
 //       [--screen-readers nvda,jaws] [--guest windows|ubuntu|debian|fedora]
+//       [--disk virtio|nvme]   (the disk the answers install onto; default
+//                               virtio, as new machines have since 2026-10-27)
 //
 // For Ubuntu, Debian or Fedora, <folder> must hold the account as the wizard
 // writes it (ubuntu-account.json); Tools/test-linux-install.sh does that.
@@ -55,6 +57,7 @@ enum InstallMediaJob {
                                             windowsEditionName: guest == .windows ? edition : nil)
         configuration.windowsScreenReaderNames = value("--screen-readers")?
             .split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+        configuration.diskBus = value("--disk") == "nvme" ? nil : "virtio"
 
         final class Outcome { var code: Int32? }
         let outcome = Outcome()

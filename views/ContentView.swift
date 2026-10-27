@@ -585,11 +585,17 @@ private struct DashboardContent: View {
                             } else if let session = observedSession, session.configuration.id == config.id {
                                 qemuRowControls(config, session: session)
                             } else if activeSession == nil {
+                                // Saved (2026-10-27): its Start carries on.
+                                if QEMUSavedState.looksSaved(config) {
+                                    Text("Saved: Start carries on where you left it")
+                                        .font(.caption)
+                                        .accessibilityLabel("\(config.name): Saved. Start carries on where you left it")
+                                }
                                 Button("Start") {
                                     startVM(config: config)
                                 }
                                 .accessibilityLabel("Start \(config.name)")
-                                .accessibilityHint("Starts this virtual machine")
+                                .accessibilityHint(QEMUSavedState.looksSaved(config) ? "Carries on from where it was saved" : "Starts this virtual machine")
 
                                 Button("Settings") {
                                     openSettings(config)
@@ -671,6 +677,20 @@ private struct DashboardContent: View {
                             }
                         }
                         .accessibilityHint("Resumes the paused virtual machine")
+                    }
+
+                    if session.canSave {
+                        Button("Save \(guest)") {
+                            Task { await session.saveAndStop() }
+                        }
+                        .accessibilityHint("Keeps \(guest) as it is, open apps and all, and stops it. The next Start carries on from there in seconds.")
+                    }
+
+                    if session.canSave {
+                        Button("Save Restore Point…") {
+                            askRestorePointName(session)
+                        }
+                        .accessibilityHint("Saves \(guest) as it is now, open apps and all, as a restore point you can go back to from Settings. \(guest) keeps running.")
                     }
 
                     if session.vmState == .running || session.vmState == .paused {
@@ -936,6 +956,11 @@ private struct DashboardContent: View {
             Button("Enter \(guest)") { focusLock.lock() }
                 .accessibilityLabel("Enter \(config.name)")
                 .accessibilityHint("Gives \(guest) the keyboard. Control-Command-Escape returns to your Mac.")
+            if session.canSave {
+                Button("Save") { Task { await session.saveAndStop() } }
+                    .accessibilityLabel("Save \(config.name)")
+                    .accessibilityHint("Keeps it as it is, open apps and all, and stops it. The next Start carries on from there in seconds.")
+            }
             Button("Shut Down") { shutDown(session) }
                 .accessibilityLabel("Shut down \(config.name)")
         }
@@ -1020,6 +1045,28 @@ private struct DashboardContent: View {
             }
         }
     }
+}
+
+// MARK: - Restore point while running (2026-10-27)
+
+/// Asks for a name, then takes a restore point of the running machine,
+/// memory and all (VMManager.createRunningRestorePoint). Spoken.
+@MainActor
+func askRestorePointName(_ session: VMSession) {
+    let alert = NSAlert()
+    alert.messageText = "Save a restore point for \(session.configuration.name)?"
+    alert.informativeText = "It keeps open apps too, and \(session.configuration.guestOS.displayName) keeps running. Give it a name you'll recognize, such as Before the October update."
+    let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+    field.stringValue = "Restore point from \(Date().formatted(date: .long, time: .shortened))"
+    field.setAccessibilityLabel("Restore point name")
+    alert.accessoryView = field
+    alert.addButton(withTitle: "Save")
+    alert.addButton(withTitle: "Cancel")
+    alert.window.initialFirstResponder = field
+    guard alert.runModal() == .alertFirstButtonReturn else { return }
+    let typed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    let name = typed.isEmpty ? "Restore point from \(Date().formatted(date: .long, time: .shortened))" : typed
+    Task { await session.saveRunningRestorePoint(label: name) }
 }
 
 // MARK: - Force Stop confirmation (2026-10-25)

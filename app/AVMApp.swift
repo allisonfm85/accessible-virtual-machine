@@ -69,6 +69,7 @@ struct AVMApp: App {
         MacTestJob.runIfAsked()
         KeyboardTestJob.runIfAsked()
         KeyboardTestJob.playAudioIfAsked()
+        SaveResumeTestJob.runIfAsked()
     }
 
     var body: some Scene {
@@ -749,9 +750,26 @@ enum QuitCoordinator {
                 alert.addButton(withTitle: "Shut Down \(guest) and Quit")
             }
             alert.addButton(withTitle: "Quit Now")
+            // Save and Quit (2026-10-27): the machine kept as it is and
+            // carried on at its next Start (VMManager.saveStateAndStop).
+            let saveable = !starting && VMSession.current?.canSave == true
+            if saveable {
+                alert.addButton(withTitle: "Save \(guest) and Quit")
+                alert.informativeText += " Save \(guest) and Quit keeps \(guest) as it is, open apps and all, and its next Start carries on from there in seconds."
+            }
             let choice = alert.runModal()
             let shutDown = !starting && choice == .alertSecondButtonReturn
             let quitNow = starting ? choice == .alertSecondButtonReturn : choice == .alertThirdButtonReturn
+            let saveAndQuit = saveable && choice.rawValue == NSApplication.ModalResponse.alertThirdButtonReturn.rawValue + 1
+            if saveAndQuit, let session = VMSession.current {
+                AVMLog.write("AVM: Quit — Save and Quit chosen.")
+                Task { @MainActor in
+                    await releaseUSBDevices()
+                    let saved = await session.saveAndStop()
+                    NSApp.reply(toApplicationShouldTerminate: saved)
+                }
+                return .terminateLater
+            }
             if shutDown {
                 AVMLog.write("AVM: Quit — Shut Down and Quit chosen.")
                 beginShutDownThenQuit(guest: guest)

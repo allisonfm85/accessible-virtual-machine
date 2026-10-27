@@ -216,13 +216,6 @@ private struct QMPGreeting: Decodable {
     let QMP: QMP
 }
 
-private struct QMPReturn: Decodable {
-    let returnValue: AnyCodable
-    enum CodingKeys: String, CodingKey {
-        case returnValue = "return"
-    }
-}
-
 private struct QMPError: Decodable {
     struct ErrorDetail: Decodable {
         let `class`: String
@@ -237,37 +230,6 @@ private struct QMPEvent: Decodable {
     struct QMPTimestamp: Decodable {
         let seconds: Int
         let microseconds: Int
-    }
-}
-
-private struct AnyCodable: Decodable {
-    let value: Any
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let dict = try? container.decode([String: AnyCodableLeaf].self) {
-            value = dict
-        } else if let arr = try? container.decode([AnyCodableLeaf].self) {
-            value = arr
-        } else if let str = try? container.decode(String.self) {
-            value = str
-        } else if let int = try? container.decode(Int.self) {
-            value = int
-        } else if let bool = try? container.decode(Bool.self) {
-            value = bool
-        } else {
-            value = ()
-        }
-    }
-}
-
-private struct AnyCodableLeaf: Decodable {
-    let value: Any
-    init(from decoder: Decoder) throws {
-        let c = try decoder.singleValueContainer()
-        if let s = try? c.decode(String.self) { value = s }
-        else if let i = try? c.decode(Int.self) { value = i }
-        else if let b = try? c.decode(Bool.self) { value = b }
-        else { value = () }
     }
 }
 
@@ -347,6 +309,9 @@ final class VMManager: ObservableObject {
     /// (the install-complete marker). USB 2c: during setup, start-time
     /// devices wait for the SPICE agent, with no fallback.
     private(set) var installCompleteAtStart = false
+    /// How a move to the virtio disk went this run (2026-10-27): "ready",
+    /// "switched", "nvme" or "failed"; nil if none. For the test job.
+    @Published var diskSwitchResult: String?
 
     /// Starts the USB hot-plug watcher when the VM reaches running and
     /// stops it at stopped or error. State is set in about a dozen places,
@@ -883,6 +848,7 @@ final class VMManager: ObservableObject {
                 return await self.handleInstallWarning(reason)
             }
         )
+        input.setupDiskID = configuration.usesVirtioDisk ? 1 : 0
         input.screenReaderInstallers = readerFiles
         // The wizard's answers (2026-10-26); a machine made before the wizard
         // asked gets the Mac's region, keyboard and time zone, and a
@@ -961,7 +927,8 @@ final class VMManager: ObservableObject {
                 vmID: configuration.id,
                 vmName: configuration.name,
                 sourceISOPath: sourceISO,
-                runtimeDir: runtimeDir
+                runtimeDir: runtimeDir,
+                diskName: configuration.usesVirtioDisk ? "vda" : "nvme0n1"
             ))
             appendConsole("AVM: Install media ready.\n")
             installProgress = "Install media ready."
@@ -1066,6 +1033,14 @@ final class VMManager: ObservableObject {
         let installComplete = checkInstallCompleteMarker(configuration: configuration, runtimeDir: runtimeDir)
         // USB 2c: start-time devices wait for setup to finish (2026-10-18).
         installCompleteAtStart = installComplete
+        // SAVED STATE (2026-10-27): an installed machine on the virtio disk
+        // that was saved carries on from there (QEMUSavedState). No
+        // restore point is taken at such a Start: its disk is mid-session.
+        let resumePlan = installComplete && configuration.usesVirtioDisk
+            ? await QEMUSavedState.plan(configuration: configuration, runtimeDir: runtimeDir)
+            : nil
+        let resuming = resumePlan != nil
+        if let resumePlan { avmLog("startVM: this Start carries on from \(resumePlan.tag)") }
 
         if installComplete {
             avmLog("startVM: install-complete marker PRESENT — skipping media build/attach and boot keypress")
@@ -1075,7 +1050,9 @@ final class VMManager: ObservableObject {
             } else {
                 let signedIn = speakSetupReport(configuration: configuration, runtimeDir: runtimeDir)
                 removeFinishedWindowsMedia(runtimeDir: runtimeDir)
-                if signedIn {
+                if resuming {
+                    avmLog("startVM: no restore point at this Start (carrying on from a saved state)")
+                } else if signedIn {
                     await saveFreshInstallRestorePoint(configuration: configuration, runtimeDir: runtimeDir)
                 } else {
                     await saveWeeklyRestorePoint(configuration: configuration, runtimeDir: runtimeDir)
@@ -1138,7 +1115,7 @@ final class VMManager: ObservableObject {
             throw error
         }
 
-        let args = buildQEMUArguments(
+        var args = buildQEMUArguments(
             configuration: configuration,
             spiceSocketPath: spicePath,
             qmpSocketPath: qmpPath,
@@ -1147,6 +1124,10 @@ final class VMManager: ObservableObject {
             runtimeDir: runtimeDir,
             attachInstallMedia: !installComplete
         )
+        // Paused until the saved state is loaded into it.
+        if resuming { args.append("-S") }
+        // A pending move to the virtio disk (Settings, 2026-10-27).
+        args += diskSwitchArguments(configuration: configuration, runtimeDir: runtimeDir)
         avmLog("startVM: built QEMU args: \(args.joined(separator: " "))")
         // STAGE C (2026-08-03): the full argument list no longer floods the
         // in-app console — it is unsanitized (home paths) and noisy for
@@ -1167,9 +1148,17 @@ final class VMManager: ObservableObject {
         try await performQMPHandshake()
         avmLog("startVM: handshake complete, VM is running")
 
+        if let resumePlan {
+            await resumeSavedState(resumePlan, configuration: configuration, runtimeDir: runtimeDir)
+        }
+
         state = .running
         appendConsole("AVM: VM is running.\n")
         beginQMPEventMonitoring()
+
+        if installComplete, configuration.diskBusSwitch != nil {
+            Task { [weak self] in await self?.continueDiskSwitch(configuration: configuration) }
+        }
 
         // Tap Enter across the boot window to satisfy Windows' "Press any key to
         // boot from CD or DVD..." prompt (REQUIRED — see startBootKeypressTask).
@@ -2004,13 +1993,19 @@ final class VMManager: ObservableObject {
         args += ["-device", "usb-kbd,bus=usb.0,port=1"]
         args += ["-device", "usb-tablet,bus=usb.0,port=2,display=gpu0"]
 
-        // INSTALL DISK: nvme (target disk Windows installs onto). bootindex=1 so
-        // the install media (bootindex=0) boots first.
+        // INSTALL DISK: the disk the guest installs onto. bootindex=1 so the
+        // install media (bootindex=0) boots first. virtio-blk for machines
+        // made since 2026-10-27, which QEMU can save while they run; NVMe
+        // for older ones (QEMU 10's NVMe can't be saved). Windows carries
+        // viostor from its install media for the virtio disk.
         if !configuration.diskImagePath.isEmpty {
+            let disk = configuration.usesVirtioDisk
+                ? "virtio-blk-pci,drive=disk0,serial=avmdisk0,bootindex=1"
+                : "nvme,drive=disk0,serial=avmdisk0,bootindex=1"
             args += [
                 "-drive",
                 "if=none,id=disk0,file=\(Self.qemuOptionValue(configuration.diskImagePath)),format=qcow2,cache=writeback,discard=unmap,detect-zeroes=unmap",
-                "-device", "nvme,drive=disk0,serial=avmdisk0,bootindex=1"
+                "-device", disk
             ]
         }
 
@@ -2888,8 +2883,13 @@ final class VMManager: ObservableObject {
             throw AVMError.qmpCommandFailed(errorResponse.error.desc)
         }
 
-        if let returnResponse = try? JSONDecoder().decode(QMPReturn.self, from: responseData) {
-            return returnResponse.returnValue.value
+        // The whole reply, nested as QEMU sent it (2026-10-27): the decoder
+        // used before read one level only, so query-status's "running",
+        // query-block's devices and query-jobs' jobs all came back as empty
+        // placeholders, and nothing reading them could work.
+        if let object = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+           let value = object["return"] {
+            return value
         }
 
         return nil
@@ -3401,6 +3401,346 @@ extension VMManager {
         } catch {
             AVMLog.write("AVM: GuestAgent — couldn't set the guest clock (\(error.localizedDescription)); Windows will correct it at its next time sync.")
             return false
+        }
+    }
+}
+
+// MARK: - Saved state (2026-10-27; AVM/QEMUSavedState.swift)
+
+extension VMManager {
+    /// True when the running machine can be saved: an installed machine
+    /// on the virtio disk.
+    var canSaveState: Bool {
+        guard state == .running || state == .paused,
+              let configuration = activeConfiguration,
+              configuration.usesVirtioDisk, installCompleteAtStart else { return false }
+        return true
+    }
+
+    /// The disk's top node, which snapshot-save and snapshot-load name.
+    private func diskNodeName() async throws -> String {
+        let blocks = try await sendQMPCommand("query-block", arguments: nil) as? [[String: Any]] ?? []
+        guard let disk = blocks.first(where: { $0["device"] as? String == "disk0" }),
+              let inserted = disk["inserted"] as? [String: Any],
+              let node = inserted["node-name"] as? String else {
+            throw AVMError.qmpCommandFailed("QEMU didn't say where the machine's disk is")
+        }
+        return node
+    }
+
+    /// Runs a QMP job (snapshot-save, -load, -delete) and waits for it to
+    /// end, at most `limit`. Throws the job's own error.
+    private func runQMPJob(_ command: String, id: String, arguments: [String: Any],
+                           limit: Duration = .seconds(600)) async throws {
+        var args = arguments
+        args["job-id"] = id
+        _ = try await sendQMPCommand(command, arguments: args)
+        let clock = ContinuousClock()
+        let deadline = clock.now + limit
+        while true {
+            try await Task.sleep(for: .milliseconds(200))
+            let jobs = try await sendQMPCommand("query-jobs", arguments: nil) as? [[String: Any]] ?? []
+            guard let job = jobs.first(where: { $0["id"] as? String == id }) else {
+                throw AVMError.qmpCommandFailed("QEMU lost track of the \(command) job")
+            }
+            if job["status"] as? String == "concluded" {
+                _ = try? await sendQMPCommand("job-dismiss", arguments: ["id": id])
+                if let error = job["error"] as? String { throw AVMError.qmpCommandFailed(error) }
+                return
+            }
+            if clock.now > deadline {
+                _ = try? await sendQMPCommand("job-cancel", arguments: ["id": id])
+                throw AVMError.qmpCommandFailed("\(command) took longer than \(limit)")
+            }
+        }
+    }
+
+    /// A restore point taken while the machine runs (2026-10-27), memory
+    /// and all: restoring it carries on from this moment, open apps too.
+    /// The machine pauses while it's written (about a second, measured).
+    func createRunningRestorePoint(label: String) async throws -> RestorePoint {
+        guard canSaveState, let configuration = activeConfiguration, let runtimeDir = vmRuntimeDir else {
+            throw AVMError.qmpCommandFailed("this machine can't take a restore point while it runs")
+        }
+        let tag = RestorePoints.newTag()
+        try RestorePoints.writeFolder(vmDirectory: runtimeDir, tag: tag, label: label, secureBoot: configuration.usesSecureBoot)
+        do {
+            let node = try await diskNodeName()
+            try await runQMPJob("snapshot-save", id: "avm-point",
+                                arguments: ["tag": tag, "vmstate": node, "devices": [node]])
+        } catch {
+            RestorePoints.removeFolder(vmDirectory: runtimeDir, tag: tag)
+            throw error
+        }
+        avmLog("createRunningRestorePoint: \(tag) taken with memory")
+        return RestorePoint(tag: tag, label: label, date: Date(), secureBoot: configuration.usesSecureBoot, withMemory: true)
+    }
+
+    /// Saves the machine as it is and stops it; its next Start carries on
+    /// from there. Returns true if it was saved. Spoken either way.
+    @discardableResult
+    func saveStateAndStop() async -> Bool {
+        guard canSaveState, let configuration = activeConfiguration, let runtimeDir = vmRuntimeDir else { return false }
+        let guest = configuration.guestOS.displayName
+        // A USB device passed through was added after the start; a fresh
+        // QEMU wouldn't have it to load into, so it goes back to the Mac.
+        for device in USBRedirectController.shared.redirectedDevices {
+            await USBRedirectController.shared.detach(device)
+        }
+        Announcer.shared.announce("Saving \(guest).", tone: .info)
+        avmLog("saveStateAndStop: saving \(configuration.name)")
+        let started = Date()
+        do {
+            let node = try await diskNodeName()
+            try await runQMPJob("snapshot-save", id: "avm-save",
+                                arguments: ["tag": QEMUSavedState.tag, "vmstate": node, "devices": [node]])
+        } catch {
+            avmLog("saveStateAndStop: save failed: \(error.localizedDescription)")
+            // snapshot-save lets a running machine go again by itself; a
+            // paused one stays paused.
+            Announcer.shared.announce("\(guest) couldn't be saved, so it's still running. Reason: \(error.localizedDescription)", tone: .failure)
+            return false
+        }
+        avmLog("saveStateAndStop: saved in \(String(format: "%.1f", Date().timeIntervalSince(started))) s; quitting QEMU")
+        try? "Saved \(Date())\n".write(to: QEMUSavedState.hint(in: runtimeDir), atomically: true, encoding: .utf8)
+        state = .stopping
+        _ = try? await sendQMPCommand("quit", arguments: nil)
+        for _ in 0..<100 where state != .stopped {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        if state != .stopped { forceStopVM() }
+        Announcer.shared.announce("\(guest) is saved. Start it to carry on where you left it.", tone: .success)
+        return true
+    }
+
+    /// Carries on from the saved state: QEMU was started paused (-S).
+    /// Spoken. On a failed load the machine starts from its disk instead,
+    /// as after a power cut, and that is said.
+    func resumeSavedState(_ plan: QEMUSavedState.Plan, configuration: VMConfiguration, runtimeDir: URL) async {
+        let guest = configuration.guestOS.displayName
+        let fm = FileManager.default
+        let marker = runtimeDir.appendingPathComponent(QEMUSavedState.loadedMarker)
+        Announcer.shared.announce(plan.isSavedState ? "Resuming \(guest) where you left it." : "Resuming \(guest) at its restore point.", tone: .info)
+        let started = Date()
+        var node = ""
+        do {
+            node = try await diskNodeName()
+            if plan.isSavedState { fm.createFile(atPath: marker.path, contents: nil) }
+            try await runQMPJob("snapshot-load", id: "avm-load",
+                                arguments: ["tag": plan.tag, "vmstate": node, "devices": [node]])
+            _ = try await sendQMPCommand("cont", arguments: nil)
+            avmLog("resumeSavedState: carried on in \(String(format: "%.1f", Date().timeIntervalSince(started))) s")
+            Announcer.shared.announce("\(guest) is running again.", tone: .success)
+        } catch {
+            avmLog("resumeSavedState: load failed: \(error.localizedDescription); starting from the disk")
+            _ = try? await sendQMPCommand("system_reset", arguments: nil)
+            _ = try? await sendQMPCommand("cont", arguments: nil)
+            Announcer.shared.announce("\(guest) couldn't carry on from where it was saved, so it's starting fresh. Anything that wasn't saved inside \(guest) is lost. Reason: \(error.localizedDescription)", tone: .failure)
+        }
+        // A restore point stays a restore point; its note is spent.
+        try? fm.removeItem(at: runtimeDir.appendingPathComponent(QEMUSavedState.resumeFile))
+        // A saved state is spent either way: deleted now, so it's never
+        // carried on twice.
+        if plan.isSavedState, !node.isEmpty {
+            do {
+                try await runQMPJob("snapshot-delete", id: "avm-delete",
+                                    arguments: ["tag": QEMUSavedState.tag, "devices": [node]])
+                try? fm.removeItem(at: marker)
+            } catch {
+                avmLog("resumeSavedState: couldn't delete the saved state (\(error.localizedDescription)); the marker makes the next Start delete it")
+            }
+        }
+        try? fm.removeItem(at: QEMUSavedState.hint(in: runtimeDir))
+        // The guest's clock stopped while it was saved.
+        try? await Task.sleep(for: .seconds(2))
+        await setGuestClock()
+    }
+}
+
+// MARK: - Moving an older machine to the virtio disk (2026-10-27)
+
+/// Settings' Turn On Save with Open Apps, for machines made before the
+/// virtio disk. Windows needs viostor installed for a device that exists
+/// before it will load it at boot (MEASURED 2026-10-27: pnputil with no
+/// virtio disk present stages it but makes no boot service), so the
+/// pending Start attaches a small extra virtio disk (`probeFile`), and the
+/// guest agent installs the driver for it. Linux needs virtio_blk in its
+/// start-up image (Fedora's is made for the disk it was installed on) and
+/// a fallback boot file, since the firmware's entry names the NVMe disk.
+/// The first Start on the virtio disk then waits for the guest agent and
+/// switches back to NVMe if it never answers.
+extension VMManager {
+    static let probeFile = "virtio-probe.qcow2"
+    static let diskSwitchLimit: Duration = .seconds(600)
+
+    /// The extra disk a pending Windows switch starts with.
+    func diskSwitchArguments(configuration: VMConfiguration, runtimeDir: URL) -> [String] {
+        let probe = runtimeDir.appendingPathComponent(Self.probeFile)
+        guard configuration.diskBusSwitch == "pending", !configuration.usesVirtioDisk,
+              configuration.guestOS == .windows else {
+            try? FileManager.default.removeItem(at: probe)
+            return []
+        }
+        if !FileManager.default.fileExists(atPath: probe.path), let tool = bundledBinaryURL(named: "qemu-img") {
+            let process = Process()
+            process.executableURL = tool
+            process.arguments = ["create", "-q", "-f", "qcow2", probe.path, "64M"]
+            try? process.run()
+            process.waitUntilExit()
+        }
+        guard FileManager.default.fileExists(atPath: probe.path) else { return [] }
+        return ["-drive", "if=none,id=probe,file=\(Self.qemuOptionValue(probe.path)),format=qcow2",
+                "-device", "virtio-blk-pci,drive=probe,serial=avmprobe"]
+    }
+
+    /// Called once the machine runs: does the pending step, or watches the
+    /// first Start on the virtio disk. Spoken; saves the configuration.
+    func continueDiskSwitch(configuration: VMConfiguration) async {
+        switch configuration.diskBusSwitch {
+        case "pending" where !configuration.usesVirtioDisk:
+            await prepareForVirtioDisk(configuration: configuration)
+        case "firstBoot" where configuration.usesVirtioDisk:
+            await watchFirstVirtioStart(configuration: configuration)
+        default:
+            break
+        }
+    }
+
+    private func storeDiskSwitch(_ configuration: VMConfiguration, bus: String?, step: String?) {
+        var updated = VMStore.shared?.configurations.first { $0.id == configuration.id } ?? configuration
+        updated.diskBus = bus
+        updated.diskBusSwitch = step
+        VMStore.shared?.save(updated)
+        if activeConfiguration?.id == configuration.id {
+            activeConfiguration?.diskBus = bus
+            activeConfiguration?.diskBusSwitch = step
+        }
+        diskSwitchResult = step == "firstBoot" ? "ready" : (bus == "virtio" ? "switched" : "nvme")
+    }
+
+    private func waitForGuestAgent(limit: Duration) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now + limit
+        while clock.now < deadline {
+            guard state == .running || state == .paused || state == .starting else { return false }
+            if let path = guestAgentSocketPath,
+               let replies = try? await Task.detached(operation: { try GuestAgent.run([#"{"execute":"guest-ping"}"#], socketPath: path) }).value,
+               replies.first?.contains(#""return""#) == true {
+                return true
+            }
+            try? await Task.sleep(for: .seconds(3))
+        }
+        return false
+    }
+
+    /// One guest-agent command; its "return", or throws its error.
+    private func agentCall(_ command: [String: Any], timeout: TimeInterval = 10) async throws -> Any? {
+        guard let path = guestAgentSocketPath else { throw AVMError.qmpCommandFailed("no guest agent") }
+        let data = try JSONSerialization.data(withJSONObject: command)
+        let line = String(decoding: data, as: UTF8.self)
+        let reply = try await Task.detached(operation: { try GuestAgent.run([line], socketPath: path, timeout: timeout) }).value.first ?? ""
+        let object = try JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any]
+        if let error = object?["error"] as? [String: Any] {
+            throw AVMError.qmpCommandFailed(error["desc"] as? String ?? "the guest agent refused")
+        }
+        return object?["return"]
+    }
+
+    /// Runs a program in the guest, waiting at most `limit`; its output.
+    private func agentRun(_ program: String, _ args: [String], limit: Duration = .seconds(300)) async throws -> String {
+        let started = try await agentCall(["execute": "guest-exec",
+                                           "arguments": ["path": program, "arg": args, "capture-output": true]])
+        guard let pid = (started as? [String: Any])?["pid"] as? Int else {
+            throw AVMError.qmpCommandFailed("the guest didn't start \(program)")
+        }
+        let clock = ContinuousClock()
+        let deadline = clock.now + limit
+        while clock.now < deadline {
+            try await Task.sleep(for: .seconds(1))
+            let status = try await agentCall(["execute": "guest-exec-status", "arguments": ["pid": pid]]) as? [String: Any]
+            if status?["exited"] as? Bool == true {
+                let out = (status?["out-data"] as? String).flatMap { Data(base64Encoded: $0) } ?? Data()
+                let err = (status?["err-data"] as? String).flatMap { Data(base64Encoded: $0) } ?? Data()
+                return String(decoding: out + err, as: UTF8.self)
+            }
+        }
+        throw AVMError.qmpCommandFailed("\(program) took too long in the guest")
+    }
+
+    private func agentWrite(_ file: URL, to guestPath: String) async throws {
+        let data = try Data(contentsOf: file)
+        guard let handle = try await agentCall(["execute": "guest-file-open", "arguments": ["path": guestPath, "mode": "wb"]]) as? Int else {
+            throw AVMError.qmpCommandFailed("the guest couldn't make \(guestPath)")
+        }
+        _ = try await agentCall(["execute": "guest-file-write", "arguments": ["handle": handle, "buf-b64": data.base64EncodedString()]], timeout: 30)
+        _ = try await agentCall(["execute": "guest-file-close", "arguments": ["handle": handle]])
+    }
+
+    private func prepareForVirtioDisk(configuration: VMConfiguration) async {
+        let guest = configuration.guestOS.displayName
+        guard await waitForGuestAgent(limit: Self.diskSwitchLimit) else {
+            avmLog("diskSwitch: the guest agent never answered; still pending")
+            Announcer.shared.announce("AVM couldn't turn on Save with open apps yet: \(guest)'s guest agent didn't answer. It tries again at the next Start.", tone: .info)
+            return
+        }
+        do {
+            if configuration.guestOS == .windows {
+                guard let source = bundledBinaryURL(named: "virtio")?.appendingPathComponent("viostor") else {
+                    throw AVMError.binaryNotFound("virtio/viostor")
+                }
+                _ = try await agentRun("cmd.exe", ["/c", "mkdir C:\\ProgramData\\AVM\\viostor"])
+                for name in ["viostor.inf", "viostor.sys", "viostor.cat"] {
+                    try await agentWrite(source.appendingPathComponent(name), to: "C:\\ProgramData\\AVM\\viostor\\\(name)")
+                }
+                let installed = try await agentRun("pnputil.exe", ["/add-driver", "C:\\ProgramData\\AVM\\viostor\\viostor.inf", "/install"])
+                avmLog("diskSwitch: pnputil said: \(installed.replacingOccurrences(of: "\r\n", with: " | "))")
+                let service = try await agentRun("reg.exe", ["query", "HKLM\\SYSTEM\\CurrentControlSet\\Services\\viostor", "/v", "Start"])
+                guard service.contains("0x0") else {
+                    throw AVMError.qmpCommandFailed("Windows didn't set the virtio disk driver to load at start-up")
+                }
+            } else {
+                let script = """
+                set -e
+                if [ -d /etc/initramfs-tools ]; then
+                  grep -qx virtio_blk /etc/initramfs-tools/modules || echo virtio_blk >> /etc/initramfs-tools/modules
+                  update-initramfs -u -k all
+                fi
+                if command -v dracut >/dev/null && [ ! -d /etc/initramfs-tools ]; then
+                  echo 'add_drivers+=" virtio_blk virtio_pci "' > /etc/dracut.conf.d/avm-virtio.conf
+                  dracut -f --regenerate-all
+                fi
+                if [ -d /boot/efi/EFI ] && [ ! -e /boot/efi/EFI/BOOT/BOOTAA64.EFI ]; then
+                  grub-install --target=arm64-efi --efi-directory=/boot/efi --removable --no-nvram
+                fi
+                echo avm-virtio-ready
+                """
+                let out = try await agentRun("/bin/sh", ["-c", script], limit: .seconds(600))
+                avmLog("diskSwitch: setup said: \(out.suffix(500))")
+                guard out.contains("avm-virtio-ready") else {
+                    throw AVMError.qmpCommandFailed(String(out.suffix(200)))
+                }
+            }
+        } catch {
+            avmLog("diskSwitch: failed: \(error.localizedDescription)")
+            Announcer.shared.announce("AVM couldn't turn on Save with open apps for \(guest). Nothing was changed. Reason: \(error.localizedDescription)", tone: .failure)
+            diskSwitchResult = "failed"
+            return
+        }
+        storeDiskSwitch(configuration, bus: "virtio", step: "firstBoot")
+        avmLog("diskSwitch: ready; the next Start uses the virtio disk")
+        Announcer.shared.announce("\(guest) is ready for Save with open apps. It turns on the next time \(guest) starts: shut it down and start it again when it suits you.", tone: .success)
+    }
+
+    private func watchFirstVirtioStart(configuration: VMConfiguration) async {
+        let guest = configuration.guestOS.displayName
+        if await waitForGuestAgent(limit: Self.diskSwitchLimit) {
+            storeDiskSwitch(configuration, bus: "virtio", step: nil)
+            avmLog("diskSwitch: first Start on the virtio disk came up")
+            Announcer.shared.announce("\(guest) started with its new disk setting. Save now keeps open apps.", tone: .success)
+        } else if state == .running || state == .paused {
+            storeDiskSwitch(configuration, bus: nil, step: nil)
+            avmLog("diskSwitch: no guest agent \(Self.diskSwitchLimit) after the first virtio Start; switched back to NVMe")
+            Announcer.shared.announce("\(guest) didn't come up with its new disk setting, so AVM has switched it back. Use Force Stop, then start it again.", tone: .failure)
         }
     }
 }

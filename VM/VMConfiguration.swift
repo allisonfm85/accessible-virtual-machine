@@ -141,6 +141,21 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// through windowsScreenReaders.
     var windowsScreenReaderNames: [String]?
 
+    // MARK: - Disk controller (2026-10-27)
+
+    /// "virtio": the disk is a virtio-blk device, which QEMU can save with
+    /// the machine running (Save and Close, restore points with memory).
+    /// nil: NVMe, as every machine made before this; QEMU 10's NVMe device
+    /// refuses to be saved ("non-migratable device"). New machines get
+    /// "virtio". Read it through usesVirtioDisk.
+    var diskBus: String?
+    /// Moving an older machine to the virtio disk (2026-10-27), chosen in
+    /// Settings: "pending" until the guest agent has made it ready (the
+    /// driver for Windows, the start-up image for Linux); "firstBoot" for
+    /// the first Start on the virtio disk, which switches back to NVMe if
+    /// the machine doesn't come up. nil otherwise.
+    var diskBusSwitch: String?
+
     // MARK: - Defaults
 
     init(
@@ -194,6 +209,7 @@ extension VMConfiguration {
     }
     var sharedFolderIsReadOnly: Bool { sharedFolderReadOnly == true }
     var usesLowAudioLatency: Bool { lowAudioLatency == true }
+    var usesVirtioDisk: Bool { diskBus == "virtio" }
     /// Known screen readers only, in a fixed order; unknown words ignored.
     var windowsScreenReaders: [ScreenReader] {
         let chosen = Set(windowsScreenReaderNames ?? [])

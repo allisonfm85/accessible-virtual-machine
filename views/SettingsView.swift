@@ -261,6 +261,11 @@ struct SettingsView: View {
             // Restore Points (2026-10-25)
             restorePointsSection
 
+            // Save with open apps (2026-10-27)
+            if configuration.guestOS != .macOS {
+                saveWithAppsSection
+            }
+
             // Reinstall Windows (2026-10-26)
             if configuration.guestOS == .windows {
                 reinstallSection
@@ -298,6 +303,39 @@ struct SettingsView: View {
 
     /// Saving and using restore points (RestorePoints in VMStore.swift).
     /// Only while the VM is stopped, and not while its drive is missing.
+    /// Save and restore points with open apps need the virtio disk
+    /// (VMManager's disk switch); older machines can move to it here.
+    @ViewBuilder
+    private var saveWithAppsSection: some View {
+        let guest = configuration.guestOS.displayName
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Save with Open Apps")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            if saved.usesVirtioDisk && saved.diskBusSwitch == nil {
+                Text("On. Save keeps \(guest) as it is, open apps and all, and restore points taken while it runs keep open apps too.")
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if saved.diskBusSwitch != nil {
+                Text(saved.usesVirtioDisk
+                     ? "Turning on: the next Start of \(guest) finishes it."
+                     : "Turning on: the next Start of \(guest) gets it ready, which takes a minute once \(guest) is up. The Start after that turns it on.")
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Off for this machine, which was made before AVM could save open apps. Turning it on moves its disk to a faster connection that QEMU can save. AVM does it over the next two Starts, and switches back by itself if \(guest) doesn't start.")
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Turn On Save with Open Apps") {
+                    var updated = saved
+                    updated.diskBusSwitch = "pending"
+                    vmStore.save(updated)
+                    Announcer.shared.announce("Save with open apps turns on over the next two Starts of \(guest).", tone: .info)
+                }
+                .accessibilityHint("Gets \(guest) ready at its next Start, and turns it on at the Start after")
+                .disabled(isRunning)
+            }
+        }
+        .padding(.horizontal)
+    }
+
     private var restorePointsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Restore Points")
@@ -320,11 +358,11 @@ struct SettingsView: View {
                 }
                 ForEach(restorePoints) { point in
                     HStack {
-                        Text("\(point.label), \(restorePointDate(point.date))")
+                        Text("\(point.label), \(restorePointDate(point.date))\(point.withMemory ? ", with open apps" : "")")
                         Spacer()
                         Button("Restore") { restoreTo(point) }
                             .accessibilityLabel("Restore \(point.label)")
-                            .accessibilityHint("Puts the virtual machine back as it was then. Asks first.")
+                            .accessibilityHint(point.withMemory ? "Puts the virtual machine back as it was then, open apps and all; its next Start carries on from there. Asks first." : "Puts the virtual machine back as it was then. Asks first.")
                             .disabled(restorePointsBusy)
                         Button("Delete") { deleteRestorePoint(point) }
                             .accessibilityLabel("Delete restore point \(point.label)")
@@ -357,6 +395,12 @@ struct SettingsView: View {
     }
 
     private func saveRestorePoint() {
+        // A saved machine's disk is mid-session (2026-10-27), as on macOS
+        // machines: a restore point of it would start as after a power cut.
+        if QEMUSavedState.looksSaved(saved) {
+            Announcer.shared.announce("\(saved.name) is saved with its apps open, so its disk is mid-session. Start it and shut it down first.", tone: .failure)
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "Save a restore point for \(saved.name)?"
         alert.informativeText = "Give it a name you'll recognize, such as Before the October update."
@@ -510,6 +554,10 @@ struct SettingsView: View {
         let alert = NSAlert()
         alert.messageText = "Put \(saved.name) back to \(point.label)?"
         alert.informativeText = "Everything since \(restorePointDate(point.date)) is lost: files, settings and installed updates. AVM keeps the restore point, so you can use it again."
+        let wasSaved = QEMUSavedState.looksSaved(saved)
+        if wasSaved {
+            alert.informativeText += " \(saved.name) is saved with its apps open; that is lost too."
+        }
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Restore")
@@ -518,6 +566,7 @@ struct SettingsView: View {
         restorePointsBusy = true
         Task { @MainActor in
             do {
+                if wasSaved { await QEMUSavedState.discard(configuration: saved) }
                 try await RestorePoints.restore(point, vmDirectory: dir, currentSecureBoot: saved.usesSecureBoot)
                 // The disk's size comes back with it, if it has grown since.
                 var sizeNote = ""

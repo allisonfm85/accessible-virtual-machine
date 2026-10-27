@@ -174,6 +174,27 @@ final class VMSession: ObservableObject {
         try await manager.pauseVM()
     }
 
+    /// Saves the machine as it is and stops it; the next Start carries on
+    /// from there (VMManager.saveStateAndStop, 2026-10-27). Spoken.
+    @discardableResult
+    func saveAndStop() async -> Bool {
+        await manager.saveStateAndStop()
+    }
+
+    /// Whether Save is offered: an installed machine on the virtio disk.
+    var canSave: Bool { manager.canSaveState }
+
+    /// A restore point taken while it runs, with its memory. Spoken.
+    func saveRunningRestorePoint(label: String) async {
+        Announcer.shared.announce("Saving the restore point.", tone: .info)
+        do {
+            _ = try await manager.createRunningRestorePoint(label: label)
+            Announcer.shared.announce("Restore point saved: \(label). It keeps open apps too.", tone: .success)
+        } catch {
+            Announcer.shared.announce("The restore point was not saved. Reason: \(error.localizedDescription)", tone: .failure)
+        }
+    }
+
     func resume() async throws {
         try await manager.resumeVM()
     }

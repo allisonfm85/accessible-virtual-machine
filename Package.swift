@@ -33,6 +33,7 @@ let package = Package(
                 "VM/SHA512Crypt.swift",
                 "VM/VMConfiguration.swift",
                 "VM/VMStore.swift",
+                "AVM/QEMUSavedState.swift",
                 "VM/UbuntuInstallPipeline.swift",
                 "AVMUSBHelper/StreamSocketCheck.swift",
                 "AVM/ScreenReaderInstallers.swift",

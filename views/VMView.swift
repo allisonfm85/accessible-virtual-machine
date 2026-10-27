@@ -614,6 +614,13 @@ struct VMView: View {
                 // resumes a paused VM, speaks the shutdown, and its failure
                 // is spoken here. The session ends by itself when the VM
                 // reaches Stopped (SessionGate).
+                if session.canSave {
+                    Button("Save \(guest)") {
+                        focusLock.unlock()
+                        Task { await session.saveAndStop() }
+                    }
+                    .accessibilityHint("Keeps \(guest) as it is, open apps and all, and stops it. The next Start carries on from there in seconds.")
+                }
                 Button("Stop \(guest)") {
                     focusLock.unlock()
                     Task {
