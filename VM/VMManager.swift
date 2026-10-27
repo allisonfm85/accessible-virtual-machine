@@ -711,13 +711,34 @@ final class VMManager: ObservableObject {
     /// said Setup was underway (2026-10-26, code audit). The setup report
     /// is read every 5 minutes; with no first sign-in 60 minutes on, it's
     /// said once.
-    private func watchForFirstSignIn(configuration: VMConfiguration, runtimeDir: URL) async {
+    ///
+    /// Until then it says how it's going every 10 minutes, and when the
+    /// first sign-in is done, that Windows is installed (2026-10-27, tester
+    /// feedback: the silence read as AVM not working). With a Microsoft
+    /// account, Windows stops at its sign-in pages for the user, so those
+    /// updates say so.
+    private func watchForFirstSignIn(configuration: VMConfiguration, runtimeDir: URL, installStart: Date) async {
         let since = Date()
+        var lastProgress = Date()
+        let microsoftAccount = WindowsSetupAnswers.load(fromVMDirectory: runtimeDir)?.localAccount == nil
         while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 300_000_000_000)
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
             guard state == .running || state == .paused else { return }
             let report = mtools(["mtype", "-i", "IMG", "::AVMSTATUS.TXT"], runtimeDir: runtimeDir)?.output ?? ""
-            if report.contains("first-sign-in-done") { return }
+            if report.contains("first-sign-in-done") {
+                let talking = report.contains("nvda-installed")
+                    ? " NVDA is talking in it."
+                    : " Enter Windows and press Control Command Return to turn on Narrator."
+                Announcer.shared.announce("Windows is installed and signed in.\(talking)", tone: .success)
+                return
+            }
+            if state == .running, Date().timeIntervalSince(lastProgress) >= Self.installProgressInterval {
+                lastProgress = Date()
+                let minutes = Int(Date().timeIntervalSince(installStart) / 60)
+                Announcer.shared.announce(microsoftAccount
+                    ? "Windows is still setting up, \(minutes) minutes so far. With a Microsoft account, it stops at its sign-in pages for you: enter Windows and press Control Command Return for Narrator to hear where it is."
+                    : "Windows is still setting up, \(minutes) minutes so far.", tone: .info)
+            }
             if Date().timeIntervalSince(since) > 60 * 60 {
                 avmLog("installWatchdog: no first sign-in 60 minutes after the marker")
                 Announcer.shared.announce("Windows has been setting up for an hour without reaching its first sign-in; one of its steps may be waiting. Next: enter Windows and turn on Narrator with Control Command Return to hear where it is.", tone: .failure)
@@ -725,6 +746,9 @@ final class VMManager: ObservableObject {
             }
         }
     }
+
+    /// How often a Windows install says how it's going.
+    static let installProgressInterval: TimeInterval = 10 * 60
 
     /// More than 4 GB actually written to the disk: an installed system,
     /// not a fresh one (a new qcow2 is a few hundred kilobytes).
@@ -884,8 +908,10 @@ final class VMManager: ObservableObject {
             WindowsSetupAnswers.forgetPassword(inVMDirectory: runtimeDir)
             appendConsole("AVM: Install media ready.\n")
             installProgress = "Install media ready."
+            // What to expect, said before the silence starts (2026-10-27,
+            // tester feedback: minutes of nothing read as broken).
             Announcer.shared.announce(
-                "Install media ready. Starting the virtual machine.",
+                "Install media ready. Windows Setup is starting, and it runs by itself: about 20 to 40 minutes, with a few restarts. Windows doesn't speak while it installs, so long silences are normal. AVM will tell you how it's going every 10 minutes.",
                 tone: .success
             )
         } catch {
@@ -943,7 +969,7 @@ final class VMManager: ObservableObject {
             appendConsole("AVM: Install media ready.\n")
             installProgress = "Install media ready."
             Announcer.shared.announce(
-                "Install media ready. \(guest) is installing now, with no questions. This takes about \(duration) minutes, and nothing speaks until it's done. AVM will tell you when \(guest) is installed.",
+                "Install media ready. \(guest) is installing now, with no questions. This takes about \(duration) minutes, and \(guest) doesn't speak until it's done, so long silences are normal. AVM will tell you how it's going every 10 minutes, and when \(guest) is installed.",
                 tone: .success
             )
         } catch {
@@ -1460,6 +1486,7 @@ final class VMManager: ObservableObject {
             // without the marker (the normal install reaches it in minutes).
             let watchStart = Date()
             var announcedSlow = false
+            var lastProgress = Date()
             // The last frame sample is removed when the watchdog ends
             // (2026-10-25, privacy audit): it is a picture of the guest's
             // screen, and the tester guide promises frames aren't kept.
@@ -1506,8 +1533,15 @@ final class VMManager: ObservableObject {
                             tone: .success
                         )
                     }
-                    await self.watchForFirstSignIn(configuration: configuration, runtimeDir: runtimeDir)
+                    await self.watchForFirstSignIn(configuration: configuration, runtimeDir: runtimeDir, installStart: watchStart)
                     return
+                }
+                if Date().timeIntervalSince(lastProgress) >= Self.installProgressInterval {
+                    lastProgress = Date()
+                    let minutes = Int(Date().timeIntervalSince(watchStart) / 60)
+                    await MainActor.run {
+                        Announcer.shared.announce("Windows is still installing, \(minutes) minutes so far.", tone: .info)
+                    }
                 }
                 if !announcedSlow, Date().timeIntervalSince(watchStart) > 75 * 60 {
                     announcedSlow = true
@@ -1611,6 +1645,8 @@ final class VMManager: ObservableObject {
             var previous: String? = nil
             var quietMinutes = 0
             var minutesSinceFailureMarker: Int? = nil
+            // How it's going, every 10 minutes (2026-10-27, tester feedback).
+            var runningMinutes = 0
             avmLog("ubuntuStallWatch: started (1 min samples; \(quietMinutesToAnnounce) quiet minutes = stalled)")
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: sampleNanoseconds)
@@ -1619,7 +1655,12 @@ final class VMManager: ObservableObject {
                 let current = await MainActor.run { self.state }
                 switch current {
                 case .running:
-                    break
+                    runningMinutes += 1
+                    if runningMinutes % Int(Self.installProgressInterval / 60) == 0 {
+                        await MainActor.run {
+                            Announcer.shared.announce("\(guest) is still installing, \(runningMinutes) minutes so far.", tone: .info)
+                        }
+                    }
                 case .paused:
                     // A paused VM is quiet by choice; start counting afresh.
                     quietMinutes = 0

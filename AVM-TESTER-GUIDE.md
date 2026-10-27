@@ -341,7 +341,10 @@ virtual machine. The build is fast, just seconds on a fast Mac.
 
 **First announcement, spoken in the system voice:**
 
-> Install media ready. Starting the virtual machine.
+> Install media ready. Windows Setup is starting, and it runs by itself:
+> about 20 to 40 minutes, with a few restarts. Windows doesn't speak while
+> it installs, so long silences are normal. AVM will tell you how it's
+> going every 10 minutes.
 
 These announcements use the Mac's system voice instead of VoiceOver, on
 purpose. You will hear them whether VoiceOver is on or off, and whether or
@@ -357,6 +360,14 @@ Read that last sentence carefully, because it is the part people get wrong:
 **Windows does not start talking by itself.** Silence after this point is
 normal and expected. It does not mean the install failed. Your Mac's fans
 may run hard the whole time. That is also normal.
+
+**Every 10 minutes AVM says how it's going**, for example "Windows is
+still installing, 20 minutes so far." With a Microsoft account, Windows
+stops at its sign-in pages and waits for you, so once Setup is underway
+those updates also say to enter Windows and turn on Narrator to hear
+where it is. When Windows reaches its first sign-in, AVM says "Windows is
+installed and signed in," and then either that NVDA is talking, or how
+to turn on Narrator.
 
 **How long is "a while"?** It varies a lot between Macs. On fast hardware
 it has been under a minute. On slower machines it can be much longer. Do
@@ -635,9 +646,14 @@ because a stale success announcement after a failure would mislead you.
 
 Announcements you may hear, and what they mean:
 
-- **"Install media ready. Starting the virtual machine."** The media
+- **"Install media ready. Windows Setup is starting…"** The media
   build finished, and the VM is booting.
 - **"Windows Setup is underway…"** The milestone in section 7.
+- **"Windows is still installing, 20 minutes so far."** Said every 10
+  minutes until Windows is installed, so a silent install never sounds
+  like a stuck one.
+- **"Windows is installed and signed in."** Windows reached its first
+  sign-in.
 - **"Entering Windows" / "Entering Mac"** (or the name of the machine's
   system: "Entering Ubuntu", "Entering macOS"). The keyboard changed
   sides; the rising or falling notes say which way.
@@ -954,10 +970,11 @@ Start the machine. AVM builds the install media in a few seconds, then
 says:
 
 > Install media ready. Ubuntu is installing now, with no questions. This
-> takes about 15 to 40 minutes, and nothing speaks until it's done. AVM
-> will tell you when Ubuntu is installed.
+> takes about 15 to 40 minutes, and Ubuntu doesn't speak until it's done,
+> so long silences are normal. AVM will tell you how it's going every 10
+> minutes, and when Ubuntu is installed.
 
-Silence after that is expected. The installer runs with no screen reader,
+Silence between those updates is expected. The installer runs with no screen reader,
 because there is nothing to answer. When it finishes, the virtual machine
 turns itself off, and AVM says:
 
