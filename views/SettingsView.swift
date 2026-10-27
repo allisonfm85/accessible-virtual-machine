@@ -820,6 +820,27 @@ struct SettingsView: View {
 
         let growTo: Int? = (!isRunning && diskSizeGB > currentDiskGB) ? diskSizeGB : nil
 
+        // A saved machine carries on only with the memory, cores and disk it
+        // was saved with (2026-10-27, code audit), as on macOS machines:
+        // asked first, and the saved session let go of, so the next Start is
+        // a plain start, not a failed resume. A larger disk can't take a
+        // snapshot along anyway.
+        let changesMachine = cpuCount != saved.cpuCount || ramSizeGB != saved.ramSizeGB || growTo != nil
+            || secureBoot != saved.usesSecureBoot || shareMicrophone != saved.sharesMicrophone
+        var discardSaved: VMConfiguration?
+        if !isRunning, changesMachine, QEMUSavedState.looksSaved(saved) {
+            let alert = NSAlert()
+            alert.messageText = "\(saved.name) is saved with its apps open. Change its settings anyway?"
+            alert.informativeText = "These changes mean it can't carry on where it was: its next Start is a normal start, as after a power cut, and anything unsaved in its apps is lost. To keep it, choose Cancel, start it, and shut it down first."
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Change Settings")
+            guard alert.runModal() == .alertSecondButtonReturn else {
+                isSaving = false
+                return
+            }
+            discardSaved = saved
+        }
+
         // The disk can't grow on a drive that isn't connected (2026-10-25).
         if growTo != nil, configuration.storageIsMissing {
             let message = "\(configuration.storageMissingMessage) Nothing was saved."
@@ -846,6 +867,8 @@ struct SettingsView: View {
         }
 
         Task { @MainActor in
+            // Before the disk is touched, so the two never run at once.
+            if let discardSaved { await QEMUSavedState.discard(configuration: discardSaved) }
             if let growTo {
                 do {
                     let diskPath = try vmStore.vmDirectoryURL(for: configuration)

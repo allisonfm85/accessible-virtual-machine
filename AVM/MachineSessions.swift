@@ -94,10 +94,15 @@ final class MachineSessions: ObservableObject {
         VMManager.shared = session.manager
         VMActivity.shared.follow(session.manager.state)
         FocusLockManager.shared?.guestName = session.configuration.name
-        // A USB device plugged in now is offered to this machine.
-        if session.vmState == .running {
+        // A USB device plugged in is offered to the machine being watched
+        // for; it moves to this one only when that machine has stopped, so
+        // switching windows never drops a pending question (2026-10-27,
+        // code audit: restarting the watcher drops them).
+        let watched = USBHotPlugWatcher.shared.vmID
+        if session.vmState == .running, watched == nil || watched.flatMap({ sessions[$0] }) == nil {
             USBHotPlugWatcher.shared.start(vmID: id)
         }
+        AVMPasteboard.shared.refreshEnabled()
         if let view = windows[id]?.captureView {
             FocusLockManager.shared?.registerCaptureView(view)
         }
@@ -146,6 +151,7 @@ final class MachineSessions: ObservableObject {
         sessions[id] = nil
         begun.remove(id)
         AVMLog.write("AVM: MachineSessions — a machine ended; \(sessions.count) still running.")
+        AVMPasteboard.shared.refreshEnabled()
         if currentID == id {
             currentID = nil
             if let next = sessions.keys.first {
@@ -210,7 +216,9 @@ final class MachineWindow: NSObject, NSWindowDelegate {
 
     /// The first time the machine runs: its window opens in front, and its
     /// screen is made then, not before: the screen connects to QEMU and
-    /// takes the keyboard as it appears (VMView.onAppear).
+    /// takes the keyboard as it appears (VMView.onAppear). Not while the
+    /// keyboard is in another machine (2026-10-27, code audit): the window
+    /// waits behind, and Enter brings it forward.
     func showFirstTime() {
         guard !shownOnce else { return }
         shownOnce = true
@@ -221,7 +229,13 @@ final class MachineWindow: NSObject, NSWindowDelegate {
         if window.frameAutosaveName.isEmpty || !window.setFrameUsingName(window.frameAutosaveName) {
             window.center()
         }
-        show()
+        let elsewhere = focusLock.isLocked && MachineSessions.shared.currentID != session.configuration.id
+        if elsewhere {
+            window.orderBack(nil)
+            Announcer.shared.announce("\(session.configuration.name) is running. Enter it from AVM's list when you're ready.", tone: .info)
+        } else {
+            show()
+        }
     }
 
     func show() {

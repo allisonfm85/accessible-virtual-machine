@@ -413,10 +413,11 @@ final class USBRedirectController: ObservableObject {
         await removeQEMUPort(port, for: device, on: machine)
     }
 
-    /// The device's own machine's port; a device recorded before machines
-    /// were tracked goes to the current one.
+    /// The device's own machine's port. A machine that's gone took its
+    /// ports with it: never the current machine's port of the same number
+    /// (2026-10-27, code audit), which belongs to another device.
     private func removeQEMUPort(_ port: Int, for device: AVMUSBDeviceIdentity, on machine: VMManager?) async {
-        guard let manager = machine ?? VMManager.shared, case .running = manager.state else {
+        guard let manager = machine, case .running = manager.state else {
             log("VM not running; port \(port) forgotten without QMP")
             return
         }

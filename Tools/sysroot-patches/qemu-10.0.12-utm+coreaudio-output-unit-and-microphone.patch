@@ -22,7 +22,8 @@ its input side on, at the microphone's own rate and channel count; QEMU's
 audio core converts to the guest's. The microphone is opened when the
 guest starts recording and closed when it stops, so macOS's microphone
 indicator is on only then, and the default microphone is looked up each
-time.
+time. If its rate changed since the voice was set up (AirPods switch to
+hands-free when recording starts), an AudioConverter converts it.
 Sound the guest hasn't produced yet plays as silence. AudioToolbox joins
 CoreAudio in the backend's frameworks.
 
@@ -282,16 +283,11 @@ CoreAudio in the backend's frameworks.
 -        coreaudio_playback_logerr (status,
 -                                   "Could not get default output Device\n");
 -        return status;
-+    /* what the guest hasn't produced yet is silence */
-+    if (copied < len) {
-+        memset(out + copied, 0, len - copied);
-     }
+-    }
 -    if (deviceID == kAudioDeviceUnknown) {
 -        dolog ("Could not initialize playback - Unknown Audiodevice\n");
 -        return status;
-+    if (copied == 0) {
-+        *ioActionFlags |= kAudioUnitRenderAction_OutputIsSilence;
-     }
+-    }
 -
 -    /* get minimum and maximum buffer frame sizes */
 -    status = coreaudio_get_framesizerange(deviceID, &frameRange);
@@ -302,7 +298,10 @@ CoreAudio in the backend's frameworks.
 -        coreaudio_playback_logerr (status,
 -                                    "Could not get device buffer frame range\n");
 -        return status;
--    }
++    /* what the guest hasn't produced yet is silence */
++    if (copied < len) {
++        memset(out + copied, 0, len - copied);
+     }
 -
 -    if (frameRange.mMinimum > core->frameSizeSetting) {
 -        audioDevicePropertyBufferFrameSize = (UInt32) frameRange.mMinimum;
@@ -312,7 +311,9 @@ CoreAudio in the backend's frameworks.
 -        dolog ("warning: Downsizing Buffer Frames to %f\n", frameRange.mMaximum);
 -    } else {
 -        audioDevicePropertyBufferFrameSize = core->frameSizeSetting;
--    }
++    if (copied == 0) {
++        *ioActionFlags |= kAudioUnitRenderAction_OutputIsSilence;
+     }
 -
 -    /* set Buffer Frame Size */
 -    status = coreaudio_set_framesize(deviceID,
@@ -545,6 +546,8 @@ CoreAudio in the backend's frameworks.
 -            coreaudio_playback_logerr(status,
 -                                      "Could not remove voice property change listener\n");
 -        }
+-
+-        return -1;
 +    format = (AudioStreamBasicDescription) {
 +        .mSampleRate = hw->info.freq,
 +        .mFormatID = kAudioFormatLinearPCM,
@@ -561,9 +564,8 @@ CoreAudio in the backend's frameworks.
 +    if (status != noErr) {
 +        coreaudio_playback_logerr(status, "Could not set the stream format\n");
 +        goto fail;
-+    }
+     }
  
--        return -1;
 +    callback = (AURenderCallbackStruct) {
 +        .inputProc = audioUnitRender,
 +        .inputProcRefCon = core
@@ -575,8 +577,8 @@ CoreAudio in the backend's frameworks.
 +    if (status != noErr) {
 +        coreaudio_playback_logerr(status, "Could not set the render callback\n");
 +        goto fail;
-     }
- 
++    }
++
 +    /*
 +     * The device's buffer for this process only, as long as the buffer
 +     * QEMU was asked for: the device counts it in its own frames, at its
@@ -646,14 +648,14 @@ CoreAudio in the backend's frameworks.
      /* destroy mutex */
      err = pthread_mutex_destroy(&core->buf_mutex);
      if (err) {
-@@ -642,9 +439,301 @@
+@@ -642,9 +439,374 @@
      coreaudioVoiceOut *core = (coreaudioVoiceOut *) hw;
  
      core->enabled = enable;
 -    update_device_playback_state(core);
 +    update_playback_state(core);
-+}
-+
+ }
+ 
 +/*
 + * Recording (AVM, 2026-10-27): the Mac's default microphone, through a HAL
 + * output unit with only its input side on. QEMU's coreaudio backend had no
@@ -669,10 +671,37 @@ CoreAudio in the backend's frameworks.
 +    AudioUnit unit;
 +    AudioBufferList *capture;
 +    UInt32 captureFrames;
++    /*
++     * The microphone's rate can change after the voice is set up (AirPods
++     * switch to hands-free when recording starts): its sound is then
++     * converted to the voice's rate.
++     */
++    AudioConverterRef converter;
++    AudioBufferList *converted;
++    UInt32 convertedFrames;
++    UInt32 pendingFrames;
 +    int frameSizeSetting;
 +    uint32_t bufferCount;
 +    bool running;
 +} coreaudioVoiceIn;
++
++/* Hands the converter the frames just recorded, once. */
++static OSStatus feedConverter(AudioConverterRef converter, UInt32 *ioNumberDataPackets,
++                              AudioBufferList *ioData, AudioStreamPacketDescription **outDescriptions,
++                              void *voice)
++{
++    coreaudioVoiceIn *core = voice;
++
++    if (core->pendingFrames == 0) {
++        *ioNumberDataPackets = 0;
++        return 1; /* no more for now; not an error to the caller */
++    }
++    ioData->mNumberBuffers = 1;
++    ioData->mBuffers[0] = core->capture->mBuffers[0];
++    *ioNumberDataPackets = core->pendingFrames;
++    core->pendingFrames = 0;
++    return noErr;
++}
 +
 +static OSStatus audioUnitInput(
 +    void *voice,
@@ -699,6 +728,20 @@ CoreAudio in the backend's frameworks.
 +    }
 +    in = core->capture->mBuffers[0].mData;
 +    len = core->capture->mBuffers[0].mDataByteSize;
++
++    if (core->converter) {
++        UInt32 frames = core->convertedFrames;
++
++        core->pendingFrames = inNumberFrames;
++        core->converted->mBuffers[0].mDataByteSize = core->convertedFrames * hw->info.bytes_per_frame;
++        status = AudioConverterFillComplexBuffer(core->converter, feedConverter, core,
++                                                 &frames, core->converted, NULL);
++        if (status != noErr && status != 1) {
++            return 0;
++        }
++        in = core->converted->mBuffers[0].mData;
++        len = frames * hw->info.bytes_per_frame;
++    }
 +
 +    if (pthread_mutex_lock(&core->buf_mutex)) {
 +        return 0;
@@ -729,7 +772,13 @@ CoreAudio in the backend's frameworks.
 +    AudioUnitUninitialize(core->unit);
 +    AudioComponentInstanceDispose(core->unit);
 +    core->unit = NULL;
++    if (core->converter) {
++        AudioConverterDispose(core->converter);
++        core->converter = NULL;
++    }
 +}
++
++static Float64 input_rate(void);
 +
 +/* Opens the default microphone, at the format the voice was set up for. */
 +static int open_input(coreaudioVoiceIn *core)
@@ -748,9 +797,10 @@ CoreAudio in the backend's frameworks.
 +    };
 +    AudioDeviceID device = kAudioDeviceUnknown;
 +    UInt32 size = sizeof(device), on = 1, off = 0, frames;
-+    AudioStreamBasicDescription format;
++    AudioStreamBasicDescription format, recorded;
 +    AURenderCallbackStruct callback = { .inputProc = audioUnitInput, .inputProcRefCon = core };
 +    OSStatus status;
++    Float64 rate = input_rate();
 +
 +    if (!component || AudioComponentInstanceNew(component, &core->unit) != noErr) {
 +        core->unit = NULL;
@@ -778,10 +828,23 @@ CoreAudio in the backend's frameworks.
 +        .mChannelsPerFrame = hw->info.nchannels,
 +        .mBitsPerChannel = hw->info.bits
 +    };
-+    status = AudioUnitSetProperty(core->unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1, &format, sizeof(format));
++    /* Recorded at the microphone's rate now, converted if it changed. */
++    recorded = format;
++    if (rate > 0) {
++        recorded.mSampleRate = rate;
++    }
++    status = AudioUnitSetProperty(core->unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1, &recorded, sizeof(recorded));
 +    if (status != noErr) {
 +        coreaudio_logerr(status, "Could not set the microphone's format\n");
 +        goto fail;
++    }
++    if (recorded.mSampleRate != format.mSampleRate) {
++        status = AudioConverterNew(&recorded, &format, &core->converter);
++        if (status != noErr) {
++            coreaudio_logerr(status, "Could not convert the microphone's rate\n");
++            core->converter = NULL;
++            goto fail;
++        }
 +    }
 +    frames = core->frameSizeSetting;
 +    AudioUnitSetProperty(core->unit, kAudioDevicePropertyBufferFrameSize, kAudioUnitScope_Global, 0, &frames, sizeof(frames));
@@ -799,8 +862,8 @@ CoreAudio in the backend's frameworks.
 +fail:
 +    close_input(core);
 +    return -1;
- }
- 
++}
++
 +/* The default microphone's rate, which the voice records at. */
 +static Float64 input_rate(void)
 +{
@@ -880,6 +943,13 @@ CoreAudio in the backend's frameworks.
 +    core->capture->mBuffers[0].mNumberChannels = hw->info.nchannels;
 +    core->capture->mBuffers[0].mDataByteSize = core->captureFrames * hw->info.bytes_per_frame;
 +    core->capture->mBuffers[0].mData = g_malloc0(core->capture->mBuffers[0].mDataByteSize);
++    /* Room for a render converted up to 4x (8 kHz to 32 kHz and less). */
++    core->convertedFrames = core->captureFrames * 4;
++    core->converted = g_malloc0(sizeof(AudioBufferList));
++    core->converted->mNumberBuffers = 1;
++    core->converted->mBuffers[0].mNumberChannels = hw->info.nchannels;
++    core->converted->mBuffers[0].mDataByteSize = core->convertedFrames * hw->info.bytes_per_frame;
++    core->converted->mBuffers[0].mData = g_malloc0(core->converted->mBuffers[0].mDataByteSize);
 +
 +    hw->samples = (core->bufferCount + 1) * core->frameSizeSetting;
 +    hw->size_emul = hw->samples * hw->info.bytes_per_frame;
@@ -897,6 +967,11 @@ CoreAudio in the backend's frameworks.
 +        g_free(core->capture->mBuffers[0].mData);
 +        g_free(core->capture);
 +        core->capture = NULL;
++    }
++    if (core->converted) {
++        g_free(core->converted->mBuffers[0].mData);
++        g_free(core->converted);
++        core->converted = NULL;
 +    }
 +    pthread_mutex_destroy(&core->buf_mutex);
 +}
@@ -949,7 +1024,7 @@ CoreAudio in the backend's frameworks.
  static void *coreaudio_audio_init(Audiodev *dev, Error **errp)
  {
      return dev;
-@@ -665,7 +754,17 @@
+@@ -665,7 +827,17 @@
      .get_buffer_out = coreaudio_get_buffer_out,
    /* wrapper for audio_generic_put_buffer_out */
      .put_buffer_out = coreaudio_put_buffer_out,
@@ -968,7 +1043,7 @@ CoreAudio in the backend's frameworks.
  };
  
  static struct audio_driver coreaudio_audio_driver = {
-@@ -675,9 +774,9 @@
+@@ -675,9 +847,9 @@
      .fini           = coreaudio_audio_fini,
      .pcm_ops        = &coreaudio_pcm_ops,
      .max_voices_out = 1,

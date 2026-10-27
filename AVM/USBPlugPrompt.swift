@@ -457,7 +457,12 @@ final class USBPlugPrompt {
             await USBRedirectController.shared.releaseStale(device)
             // To the machine the question was about (2026-10-27, several
             // machines at once), if it's still running.
-            let machine = MachineSessions.shared.session(for: gate.question.vmID)?.manager
+            // A machine that has stopped meanwhile gets nothing; never the
+            // current machine instead (2026-10-27, code audit).
+            guard let machine = MachineSessions.shared.session(for: gate.question.vmID)?.manager else {
+                finishGate(key, .stopped)
+                return
+            }
             let accepted = await USBRedirectController.shared.attach(device, to: machine, quiet: true)
             log("send gate: attempt \(gate.attempts) of \(Self.maxAttempts) for \(device): \(accepted ? "helper accepted" : "refused")")
             await settle(key)

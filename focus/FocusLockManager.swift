@@ -204,6 +204,14 @@ class FocusLockManager: ObservableObject {
     /// (auto-lock fired before the view landed in the window), start
     /// enforcement now.
     func registerCaptureView(_ view: NSView) {
+        // While the keyboard is in one machine, another machine's screen
+        // appearing doesn't take it (2026-10-27, code audit: several
+        // machines). Entering that machine unlocks first, then registers.
+        if isLocked, let existing = captureView, existing !== view,
+           let window = existing.window, window.isVisible, window !== view.window {
+            AVMLog.write("AVM: FocusLock — another machine's screen appeared while locked; keeping the keyboard where it is.")
+            return
+        }
         captureView = view
         AVMLog.write("AVM: FocusLock — capture view registered (window=\(view.window != nil ? "present" : "nil")).")
         if isLocked {

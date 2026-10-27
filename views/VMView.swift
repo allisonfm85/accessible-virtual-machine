@@ -586,7 +586,9 @@ struct VMView: View {
         .onDisappear {
             // Safety: if the VM view goes away while still locked (e.g. the VM
             // stopped), make sure we don't leave the Mac in a locked state.
-            if focusLock.isLocked {
+            // Only if the keyboard is in this machine (2026-10-27, code
+            // audit): another machine's screen closing mustn't take it.
+            if focusLock.isLocked, MachineSessions.shared.currentID == nil || MachineSessions.shared.currentID == session.configuration.id {
                 NSLog("AVM: VMView onDisappear — unlocking focus (view went away while locked).")
                 focusLock.unlock()
             }
@@ -944,9 +946,15 @@ nonisolated final class AVMPasteboard: NSObject, CSPasteboardDelegate, @unchecke
     /// when Settings are saved, and before each change check.
     @MainActor
     func refreshEnabled() {
-        let id = VMSession.current?.configuration.id
-        let saved = id.flatMap { id in VMStore.shared?.configurations.first { $0.id == id } }
-        let on = saved?.sharesClipboard ?? true
+        // Every running machine gets what's offered (CocoaSpice sends it to
+        // every connection), so it's shared only if every one of them
+        // shares (2026-10-27, code audit): one machine with sharing off
+        // must never receive the Mac's clipboard.
+        let ids = MachineSessions.shared.sessions.isEmpty
+            ? [VMSession.current?.configuration.id].compactMap { $0 }
+            : Array(MachineSessions.shared.sessions.keys)
+        let configs = ids.compactMap { id in VMStore.shared?.configurations.first { $0.id == id } }
+        let on = configs.isEmpty ? true : configs.allSatisfy(\.sharesClipboard)
         lock.lock(); enabled = on; lock.unlock()
     }
 
