@@ -419,6 +419,10 @@ of this is AVM.
   Windows automatically once the machine's view appears.
 - **Command-Shift-E** is Enter Windows. It returns the keyboard to a
   running machine after the escape hatch.
+- **Command-Shift-I** is Speak Status. AVM says which machine is
+  running, paused, or stopped, whether your keyboard is on the Mac or in
+  Windows, and which USB devices are attached. It speaks in the system
+  voice, so it works with VoiceOver off.
 - **Command-Shift-D** sends Control-Alt-Delete to Windows.
 - **Command-Shift-R** resets the virtual machine (see section 13).
 - **Control-Command-Escape** is the escape hatch. It brings the keyboard
@@ -426,10 +430,32 @@ of this is AVM.
 - **Command-F5** turns VoiceOver on and off. This is macOS, not AVM, but
   it is half the routine.
 
+Commands that can't do anything right now are dimmed in the Virtual
+Machine menu, and VoiceOver reads them as "dimmed": Enter Windows when
+nothing is running, Send Control-Alt-Delete and Reset when Windows isn't
+running, Detach USB Device when nothing is attached. Pressing a dimmed
+command's keys only beeps. Speak Status is never dimmed, so it can always
+tell you why. While Windows is installing, Speak Status also says how
+long Setup has been running and how much it has written to the disk so
+far.
+
+**Force Stop asks first,** with Cancel as the default, wherever you find
+it, because it turns Windows off at once. It is also offered while Windows
+is shutting down, in case Windows stops answering.
+
+**Quitting with Windows running.** If you quit AVM, or close its window,
+while Windows is running, AVM asks first. Cancel is the default, so Return keeps you where
+you are. **Shut Down Windows and Quit** shuts Windows down properly and
+quits AVM when it has finished; you can keep using AVM meanwhile. **Quit
+Now** turns Windows off at once, like pulling the plug. Either way, any
+USB devices go back to your Mac first.
+
 Note on Command-Shift-S: in this build it starts a machine only when you
 have exactly one machine configured and nothing is running. With no
 machines, or more than one, you get a beep and an explanation instead of a
-guess. Use the dashboard's Start button in that case.
+guess. With more than one machine, the Virtual Machine menu has a Start
+submenu that lists each machine by name; choose the one you want. The
+dashboard's Start buttons work too.
 
 ### Mac keys inside Windows
 
@@ -473,6 +499,12 @@ guess. Use the dashboard's Start button in that case.
   plug one in.
 
 ---
+
+### When the Mac sleeps
+
+If the Mac sleeps with Windows running, AVM pauses Windows first and
+resumes it when the Mac wakes, and tells you. Give Windows' clock a
+minute to catch up.
 
 ## 12. Sounds and announcements
 
@@ -597,6 +629,18 @@ its own commands), run it a second time with AVM in place of qemu-system.
 
 Then force-quit and report what happened.
 
+### Secure Boot and Insider builds
+
+Machines made with this version have Secure Boot, with Microsoft's keys,
+which Windows needs before it offers Insider preview builds. For a machine
+made earlier, stop it, open its Settings, turn on **Secure Boot**, and
+choose Save Settings. AVM asks first, because it resets the machine's
+firmware settings, keeping a copy. Windows normally starts again on its
+own. If BitLocker or device encryption is on in Windows, it may ask for
+your recovery key, so have it ready. Turning Secure Boot off again puts
+the old settings back. If Windows doesn't start after the switch, turn
+Secure Boot off and report it, with a diagnostic log.
+
 ### Resetting a virtual machine
 
 **Command-Shift-R** resets the machine. It is the equivalent of the reset
@@ -685,8 +729,9 @@ files can be deleted afterward.
   number, and each machine has its own Start button. The limit is only
   in the Command-Shift-S shortcut: it starts a machine only when exactly
   one is configured, because with several it would have to guess which
-  one you meant. With more than one machine, use the dashboard's Start
-  buttons. A smarter shortcut is planned.
+  one you meant. With more than one machine, use the Start submenu in
+  the Virtual Machine menu, which names each machine, or the dashboard's
+  Start buttons.
 - **Windows edition.** The installer selects a single edition. Choosing
   between Home, Home Single Language and Pro is planned but not exposed
   yet.
@@ -694,9 +739,11 @@ files can be deleted afterward.
   creation. You go through Microsoft's own setup with Narrator.
 - **No ISO downloader.** You supply the Windows image yourself.
 
-USB passthrough is here, except for USB drives. Next is firmware work:
-stopping Windows Update from blocking updates over the TPM and processor
-checks (issues 16 and 17), and Secure Boot. After that comes graphics
+USB passthrough is here, except for USB drives. New machines now have
+Secure Boot, and existing ones can turn it on in Settings (see section
+13). Next is the rest of the firmware work: stopping Windows Update from
+blocking updates over the TPM and processor checks (issues 16 and 17).
+After that comes graphics
 acceleration. If a USB device you need doesn't work in Windows, please
 report it, with its name and a diagnostic log.
 
@@ -827,15 +874,14 @@ tilde wherever a file path would have contained it. You can check both
 claims by reading the log yourself. It is plain text, and you are
 encouraged to.
 
-One honest exception exists: a diagnostic keyboard mode used during
-development, off by default, that can only be switched on deliberately
-with a Terminal command. Turning it on announces itself in the log. If you
-never run that command, it never runs.
+A diagnostic keyboard mode exists for development, but only in developer
+builds of AVM. In the build you are testing it does not exist at all, and
+no setting or command can turn it on.
 
 During installation, AVM also samples the guest's screen image, but only
-to detect a frozen installer. No image is kept. Each frame is reduced to a
-checksum and deleted. A frame is kept only if the watchdog declares a
-failure, and the log says so when that happens.
+to detect a frozen installer. Each sample replaces the previous one in the
+machine's folder, and the last one is deleted when the watching ends. No
+sample goes into the diagnostic log.
 
 One cosmetic note: if your Mac user name happens to be an ordinary English
 word, the privacy scrubber may occasionally replace that word with a tilde

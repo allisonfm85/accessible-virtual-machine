@@ -29,6 +29,11 @@ extension Notification.Name {
     /// controller's live map. Empty answers are spoken, not shown.
     static let avmAttachUSBFromMenu = Notification.Name("avmAttachUSBFromMenu")
     static let avmDetachUSBFromMenu = Notification.Name("avmDetachUSBFromMenu")
+
+    /// Posted by the Virtual Machine menu's "Speak Status" item
+    /// (Cmd-Shift-I, 2026-10-25). ContentView answers because the active
+    /// session and the machine list live here.
+    static let avmSpeakStatusFromMenu = Notification.Name("avmSpeakStatusFromMenu")
 }
 
 /// One open of the USB picker sheet: which mode, which devices. Identity
@@ -100,6 +105,10 @@ struct ContentView: View {
         // type FocusLockManager found" crashes in nested views.
         .environmentObject(vmStore)
         .environmentObject(focusLock)
+        // Closing the window while a VM runs asks first (MainWindowCloseGuard).
+        .background(WindowAccessor { window in
+            MainWindowCloseGuard.shared.install(on: window)
+        })
         // Start Virtual Machine from the menu (Cmd-Shift-S). Honest scope:
         // starts the VM only when exactly ONE is configured and nothing is
         // running. Zero or multiple configurations: beep + explanatory status
@@ -112,11 +121,29 @@ struct ContentView: View {
         // "did nothing" is a classic field report, and these lines record
         // which gate answered. Privacy check: configuration names and counts
         // only, same as VMManager already writes to the file log.
-        .onReceive(NotificationCenter.default.publisher(for: .avmStartVMFromMenu)) { _ in
+        //
+        // START SUBMENU (2026-10-25): a request carrying a machine's ID comes
+        // from the Start submenu, which names the machine, so there is no
+        // guessing to refuse. It goes through the same already-running guard.
+        // A machine deleted while the menu was open is spoken, not ignored.
+        .onReceive(NotificationCenter.default.publisher(for: .avmStartVMFromMenu)) { note in
             guard activeSession == nil else {
                 AVMLog.write("AVM: Start-from-menu — a session is already active; beeping.")
                 NSSound.beep()
                 errorMessage = "A virtual machine is already running."
+                return
+            }
+            if let id = note.object as? UUID {
+                guard let config = vmStore.configurations.first(where: { $0.id == id }) else {
+                    AVMLog.write("AVM: Start-from-menu — requested machine \(id) is no longer configured; announcing.")
+                    Announcer.shared.announce(
+                        "That virtual machine is no longer in your list. Nothing was started.",
+                        tone: .failure
+                    )
+                    return
+                }
+                AVMLog.write("AVM: Start-from-menu — starting '\(config.name)' (named in the Start submenu).")
+                startVM(config: config)
                 return
             }
             let configs = vmStore.configurations
@@ -125,7 +152,7 @@ struct ContentView: View {
                 NSSound.beep()
                 errorMessage = configs.isEmpty
                     ? "No virtual machine is set up yet. Use the Setup Wizard first."
-                    : "More than one virtual machine is configured. Use the Start button next to the machine you want."
+                    : "More than one virtual machine is configured. Choose the one you want from Start in the Virtual Machine menu, or use the Start button next to it."
                 return
             }
             AVMLog.write("AVM: Start-from-menu — starting '\(config.name)'.")
@@ -209,9 +236,69 @@ struct ContentView: View {
         .sheet(item: $usbPicker) { request in
             USBDevicePickerView(mode: request.mode, devices: request.devices)
         }
+        // Speak Status (Cmd-Shift-I, 2026-10-25). Always .info: asking is
+        // not an outcome, so no verdict sound, even when the answer is an
+        // error state. Privacy check: machine names, states and USB product
+        // names only, the same things the file log already records.
+        .onReceive(NotificationCenter.default.publisher(for: .avmSpeakStatusFromMenu)) { _ in
+            let status = spokenStatus()
+            AVMLog.write("AVM: Speak Status — \(status)")
+            Announcer.shared.announce(status, tone: .info)
+        }
     }
 
     // MARK: - Helpers
+
+    /// The words for Speak Status: the machine and its state, then where
+    /// the keyboard is, then USB. Without a session, how many machines are
+    /// set up, so "nothing running" is never confused with "nothing exists".
+    private func spokenStatus() -> String {
+        guard let session = activeSession else {
+            switch vmStore.configurations.count {
+            case 0:
+                return "No virtual machine is set up yet. Use the Setup Wizard first."
+            case 1:
+                return "No virtual machine is running. \(vmStore.configurations[0].name) is ready to start."
+            case let n:
+                return "No virtual machine is running. \(n) virtual machines are set up."
+            }
+        }
+
+        let name = session.configuration.name
+        let guest = session.configuration.guestOS.displayName
+        var parts: [String] = []
+        switch session.vmState {
+        case .stopped:            parts.append("\(name) is stopped.")
+        case .starting:
+            parts.append("\(name) is starting.")
+            if let install = session.manager.spokenInstallStatus() {
+                parts.append(install)
+            }
+        case .running:            parts.append("\(name) is running.")
+        case .paused:             parts.append("\(name) is paused.")
+        case .stopping:           parts.append("\(name) is shutting down.")
+        case .error(let message): parts.append("\(name) stopped with an error: \(message)")
+        }
+
+        switch session.vmState {
+        case .running, .paused:
+            if let install = session.manager.spokenInstallStatus() {
+                parts.append(install)
+            }
+            parts.append(focusLock.isLocked
+                ? "The keyboard is in \(guest)."
+                : "The keyboard is on the Mac.")
+            let devices = USBRedirectController.shared.redirectedDevices.map(\.displayName)
+            switch devices.count {
+            case 0:  parts.append("No USB devices are attached.")
+            case 1:  parts.append("One USB device is attached: \(devices[0]).")
+            default: parts.append("\(devices.count) USB devices are attached: \(devices.joined(separator: ", ")).")
+            }
+        default:
+            break
+        }
+        return parts.joined(separator: " ")
+    }
 
     /// Same start path as the dashboard's per-VM Start button (see
     /// DashboardContent.startVM). Duplicated here because the menu-driven
@@ -550,12 +637,22 @@ private struct DashboardContent: View {
                         }
                         .accessibilityHint("Gracefully shuts down \(guest)")
                         .keyboardShortcut(".", modifiers: .command)
+                    }
 
+                    // Force Stop is offered while shutting down too
+                    // (2026-10-25, code audit): a guest that ignores the power
+                    // button, such as the firmware screen or an installer, would
+                    // otherwise leave nothing to press, though the two-minute
+                    // reminder tells the user to use Force Stop. It asks first,
+                    // Cancel the default: it is the same plug-pull as Quit Now.
+                    if session.vmState == .running || session.vmState == .paused || session.vmState == .stopping {
                         Button("Force Stop") {
-                            session.forceStop()
-                            activeSession = nil
+                            if confirmForceStop(guest: guest) {
+                                session.forceStop()
+                                activeSession = nil
+                            }
                         }
-                        .accessibilityHint("Immediately terminates the virtual machine without a graceful shutdown")
+                        .accessibilityHint("Turns the virtual machine off at once, without shutting down. Asks first.")
                     }
                 }
             }
@@ -725,4 +822,19 @@ private struct DashboardContent: View {
             }
         }
     }
+}
+
+// MARK: - Force Stop confirmation (2026-10-25)
+
+    /// The Force Stop question, shared with the VM window's overlay.
+func confirmForceStop(guest: String) -> Bool {
+    let alert = NSAlert()
+    alert.messageText = "Force stop \(guest)?"
+    alert.informativeText = "This turns \(guest) off at once, like pulling the plug. Unsaved work in \(guest) is lost, and if \(guest) is installing or updating, it can be damaged."
+    alert.alertStyle = .warning
+    alert.addButton(withTitle: "Cancel")
+    alert.addButton(withTitle: "Force Stop")
+    let confirmed = alert.runModal() == .alertSecondButtonReturn
+    AVMLog.write("AVM: Force Stop \(confirmed ? "confirmed" : "cancelled").")
+    return confirmed
 }
