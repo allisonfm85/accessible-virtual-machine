@@ -1006,8 +1006,27 @@ nonisolated final class AVMPasteboard: NSObject, CSPasteboardDelegate, @unchecke
 
     func clearContents() {
         guard isEnabled else { return }
+        // Only while the Mac's clipboard still holds the guest's own copy
+        // (2026-10-26, code audit): a Windows password manager clearing its
+        // clipboard after 30 seconds otherwise erased whatever the user had
+        // copied on the Mac since.
+        lock.lock(); let ours = NSPasteboard.general.changeCount == seenChangeCount; lock.unlock()
+        guard ours else { return }
         NSPasteboard.general.clearContents()
         noteOwnWrite()
+    }
+
+    /// The Mac's clipboard offered to the guest whether or not it changed
+    /// since AVM last looked (2026-10-26, code audit): every earlier look
+    /// (entering Windows, AVM coming to the front) happened before a SPICE
+    /// session or the guest's agent existed, so the change was marked seen
+    /// and never offered. Called when the agent connects, the first moment
+    /// a guest can take it.
+    @MainActor func offerToNewGuest() {
+        refreshEnabled()
+        guard isEnabled, NSPasteboard.general.string(forType: .string) != nil else { return }
+        lock.lock(); seenChangeCount = NSPasteboard.general.changeCount; lock.unlock()
+        NotificationCenter.default.post(name: .csPasteboardChanged, object: nil)
     }
 
     private func noteOwnWrite() {
@@ -2171,6 +2190,9 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
 
     func spiceAgentConnected(_ connection: CSConnection, supportingFeatures features: CSConnectionAgentFeature) {
         NSLog("AVM: SPICE agent connected, features: \(features.rawValue)")
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { AVMPasteboard.shared.offerToNewGuest() }
+        }
         // In AVM's own log for USB 2c timing (2026-10-18). NSLog lines
         // never showed up in the unified log.
         AVMLog.write("VMView: SPICE agent connected, features \(features.rawValue)", category: "USBHotPlug")

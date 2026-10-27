@@ -326,6 +326,9 @@ struct SetupView: View {
                 Button("Cancel") {
                     dismiss()
                 }
+                // Not while creating (2026-10-26, code audit): the machine
+                // was made anyway after the window closed.
+                .disabled(isCreating)
                 .accessibilityHint("Closes this window without creating a virtual machine")
                 .keyboardShortcut(.escape, modifiers: [])
 
@@ -837,11 +840,26 @@ struct SetupView: View {
             } catch {
                 reportFailure(error.localizedDescription)
                 isCreating = false
+                // Nothing left behind (2026-10-26, code audit): the folder
+                // already holds the setup answers, the Windows password among
+                // them.
+                if let folder = try? config.directoryURL() {
+                    if config.isStoredElsewhere {
+                        // The user's own folder: only AVM's answer files go.
+                        for name in [WindowsSetupAnswers.fileName, UbuntuAccount.fileName] {
+                            try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))
+                        }
+                    } else {
+                        try? FileManager.default.removeItem(at: folder)
+                    }
+                }
                 return
             }
 
             vmStore.save(config)
             isCreating = false
+            // Said, as failures are (2026-10-26, code audit).
+            Announcer.shared.announce("\(config.name) is ready. Choose Start on the dashboard to install \(config.guestOS.displayName).", tone: .success)
             dismiss()
         }
     }

@@ -241,7 +241,15 @@ enum DiagnosticLogExporter {
         // it rather than failing on "file exists". It goes to the Trash
         // (2026-10-25, code audit), like everything else AVM replaces: a
         // folder that happened to share the name used to be deleted outright.
+        // Only an earlier diagnostic log is replaced (2026-10-26, code
+        // audit): typing an existing folder's name, Documents say, and
+        // confirming Replace sent that whole folder to the Trash, with
+        // nothing said.
         if fm.fileExists(atPath: destination.path) {
+            guard destination.lastPathComponent.hasPrefix("AVM Diagnostic Log") else {
+                throw NSError(domain: "AVM.DiagnosticLog", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                    "Something called \(destination.lastPathComponent) is already there, and AVM only replaces an earlier diagnostic log. Next: save it under another name."])
+            }
             try fm.trashItem(at: destination, resultingItemURL: nil)
         }
         try fm.createDirectory(at: destination, withIntermediateDirectories: true)

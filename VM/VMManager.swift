@@ -708,24 +708,55 @@ final class VMManager: ObservableObject {
             return false
         }
 
+        // FAILING SAFE (2026-10-26, code audit): a marker that can't be
+        // read used to count as absent, which rebuilds the install media and
+        // runs Setup again: on an installed machine, that erases the disk.
+        // Now a disk with an installed system's worth of data on it counts
+        // as installed (it boots from the disk; nothing is erased), and only
+        // a near-empty one as new.
         guard let mdirURL = bundledBinaryURL(named: "mdir") else {
-            avmLog("checkInstallCompleteMarker: WARNING — mdir not found in bundle; cannot check marker; treating as absent")
-            appendConsole("AVM: WARNING — could not check whether \(configuration.guestOS.displayName) is already installed (mdir missing from the app bundle). Proceeding as a new install.\n")
-            return false
+            let installed = diskLooksInstalled(runtimeDir: runtimeDir)
+            avmLog("checkInstallCompleteMarker: WARNING — mdir not found in bundle; cannot check marker; disk \(installed ? "has data: treating as installed" : "is near empty: treating as new")")
+            return installed
         }
 
-        guard let listing = unattendListing(mdirURL: mdirURL, imgPath: imgPath) else {
-            avmLog("checkInstallCompleteMarker: mdir failed to launch — treating marker as absent")
-            return false
-        }
-        if listing.status != 0 {
-            avmLog("checkInstallCompleteMarker: mdir exited \(listing.status); output: \(listing.output) — treating marker as absent")
-            return false
+        guard let listing = unattendListing(mdirURL: mdirURL, imgPath: imgPath), listing.status == 0 else {
+            let installed = diskLooksInstalled(runtimeDir: runtimeDir)
+            avmLog("checkInstallCompleteMarker: mdir failed — disk \(installed ? "has data: treating as installed" : "is near empty: treating as new")")
+            return installed
         }
 
         let found = listing.output.uppercased().contains("AVMDONE")
         avmLog("checkInstallCompleteMarker: marker \(found ? "PRESENT" : "absent") on \(imgPath)")
         return found
+    }
+
+    /// After the marker: Windows' own steps run with no time limit, so a
+    /// waiting installer would sit at "Getting ready" for good after AVM
+    /// said Setup was underway (2026-10-26, code audit). The setup report
+    /// is read every 5 minutes; with no first sign-in 60 minutes on, it's
+    /// said once.
+    private func watchForFirstSignIn(configuration: VMConfiguration, runtimeDir: URL) async {
+        let since = Date()
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 300_000_000_000)
+            guard state == .running || state == .paused else { return }
+            let report = mtools(["mtype", "-i", "IMG", "::AVMSTATUS.TXT"], runtimeDir: runtimeDir)?.output ?? ""
+            if report.contains("first-sign-in-done") { return }
+            if Date().timeIntervalSince(since) > 60 * 60 {
+                avmLog("installWatchdog: no first sign-in 60 minutes after the marker")
+                Announcer.shared.announce("Windows has been setting up for an hour without reaching its first sign-in; one of its steps may be waiting. Next: enter Windows and turn on Narrator with Control Command Return to hear where it is.", tone: .failure)
+                return
+            }
+        }
+    }
+
+    /// More than 4 GB actually written to the disk: an installed system,
+    /// not a fresh one (a new qcow2 is a few hundred kilobytes).
+    private func diskLooksInstalled(runtimeDir: URL) -> Bool {
+        let disk = runtimeDir.appendingPathComponent("disk.qcow2")
+        let values = try? disk.resourceValues(forKeys: [.totalFileAllocatedSizeKey])
+        return (values?.totalFileAllocatedSize ?? 0) > 4 << 30
     }
 
     /// The UNATTEND volume's root listing, from the bundled mdir. nil when
@@ -1253,6 +1284,14 @@ final class VMManager: ObservableObject {
     func pauseVM() async throws {
         guard case .running = state else { return }
         try await sendQMPCommand("stop", arguments: nil)
+        // Still running when the pause lands (2026-10-26, code audit): a
+        // Stop chosen meanwhile set .stopping and sent the power button;
+        // marking it paused over that left Stop waiting on a guest frozen
+        // by the pause. The guest is let go again so it can shut down.
+        guard case .running = state else {
+            _ = try? await sendQMPCommand("cont", arguments: nil)
+            return
+        }
         state = .paused
         appendConsole("AVM: VM paused.\n")
     }
@@ -1401,6 +1440,12 @@ final class VMManager: ObservableObject {
             var previousDiskSize: UInt64? = nil
             var consecutiveWedgeSamples = 0
             var announcedThisRun = false
+            // A SETUP THAT JUST WAITS (2026-10-26, code audit): the wedge
+            // test needs a busy CPU, so an error dialog in Windows' first
+            // stage, at idle, was never said. Said once after 75 minutes
+            // without the marker (the normal install reaches it in minutes).
+            let watchStart = Date()
+            var announcedSlow = false
             // The last frame sample is removed when the watchdog ends
             // (2026-10-25, privacy audit): it is a picture of the guest's
             // screen, and the tester guide promises frames aren't kept.
@@ -1447,7 +1492,15 @@ final class VMManager: ObservableObject {
                             tone: .success
                         )
                     }
+                    await self.watchForFirstSignIn(configuration: configuration, runtimeDir: runtimeDir)
                     return
+                }
+                if !announcedSlow, Date().timeIntervalSince(watchStart) > 75 * 60 {
+                    announcedSlow = true
+                    avmLog("installWatchdog: no marker after 75 minutes")
+                    await MainActor.run {
+                        Announcer.shared.announce("Windows Setup hasn't reached its installing stage after 75 minutes; it's probably stopped on a screen with a question or an error. Next: enter Windows and turn on Narrator with Control Command Return to hear it, or report the problem from the Help menu.", tone: .failure)
+                    }
                 }
 
                 // Sample the frame, the CPU, and the disk.
