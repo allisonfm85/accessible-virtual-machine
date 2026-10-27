@@ -2181,6 +2181,15 @@ final class VMManager: ObservableObject {
         // recording side (the Mac's default microphone, opened only while
         // the guest records). Off unless chosen in Settings: no recording
         // voice at all, so the guest's microphone is silent.
+        // THE CAMERA (2026-10-27): AVM's QEMU patch adds usb-camera, a UVC
+        // webcam fed by the Mac's camera, which Windows and Linux drive
+        // with their own drivers. It opens the Mac's camera only while
+        // something in the guest reads it. Root port 3 is the install
+        // media's, free once installed; a camera is only offered then.
+        if configuration.sharesCamera, !attachInstallMedia {
+            args += ["-device", "usb-camera,id=camera0,bus=usb.0,port=3"]
+            avmLog("buildQEMUArguments: the Mac's camera as a USB camera on port 3")
+        }
         let microphone = configuration.sharesMicrophone
             ? "in.frequency=48000,in.buffer-length=10000,in.buffer-count=2"
             : "in.voices=0"
@@ -2305,6 +2314,7 @@ final class VMManager: ObservableObject {
                 avmLog("QEMU stderr: \(text)")
                 Task { @MainActor [weak self] in
                     self?.appendConsole("QEMU: \(text)")
+                    if text.contains("usb-camera:") { self?.announceCamera(text) }
                 }
             }
         }
@@ -3998,5 +4008,26 @@ extension VMManager {
         guard !added.isEmpty else { return }
         let list = ListFormatter.localizedString(byJoining: added)
         Announcer.shared.announce("\(machine) can print to your Mac's \(added.count == 1 ? "printer" : "printers") \(list). In \(machine) \(added.count == 1 ? "it's" : "they're") named with (Mac) at the end.", tone: .success)
+    }
+}
+
+// MARK: - The Mac's camera in the machine (2026-10-27; AVM's QEMU usb-camera)
+
+extension VMManager {
+    /// Says what QEMU's camera reports: the camera light is something a
+    /// VoiceOver user can't see, so on and off are spoken too.
+    func announceCamera(_ text: String) {
+        let machine = activeConfiguration?.name ?? "The machine"
+        if text.contains("camera access was not allowed") {
+            Announcer.shared.announce("\(machine) can't use your Mac's camera: macOS hasn't allowed AVM to. Turn on AVM in System Settings, Privacy and Security, Camera, then quit and reopen AVM.", tone: .failure)
+        } else if text.contains("the Mac has no camera") {
+            Announcer.shared.announce("\(machine) asked for the camera, but your Mac has no camera connected.", tone: .failure)
+        } else if text.contains("could not be opened") {
+            Announcer.shared.announce("\(machine) couldn't open your Mac's camera. Another app may be using it.", tone: .failure)
+        } else if text.contains("camera is off") {
+            Announcer.shared.announce("\(machine) stopped using your Mac's camera.", tone: .info)
+        } else if text.contains(") is on at") {
+            Announcer.shared.announce("\(machine) is using your Mac's camera.", tone: .info)
+        }
     }
 }

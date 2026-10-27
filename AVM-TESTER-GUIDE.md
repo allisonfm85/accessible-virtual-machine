@@ -588,8 +588,11 @@ dashboard's Start buttons work too.
   macOS may ask you to allow it, or it may not. If it asks, the request
   reads fine with VoiceOver. If you aren't an administrator on your Mac,
   allowing it may need an administrator's name and password.
-- **The Mac's own microphone doesn't reach Windows yet** (issue 12). A USB
-  microphone sent to Windows does work.
+- **Your Mac's own microphone and camera can reach Windows.** Turn each
+  on in the machine's Settings, under Microphone and Camera; they take
+  effect at the next Start. Each is only on while an app in Windows uses
+  it, and AVM says when the camera turns on and off. In Windows the
+  camera is called Mac Camera. macOS asks once for permission for each.
 - **Thumb drives and other USB storage don't reach Windows yet.** macOS 27
   blocks it, and I'm working with Apple on a fix. AVM tells you when you
   plug one in.

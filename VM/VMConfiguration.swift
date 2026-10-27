@@ -104,6 +104,11 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// unless chosen. Read it through sharesMicrophone.
     var shareMicrophone: Bool?
 
+    /// true: the machine has a USB camera fed by the Mac's camera
+    /// (2026-10-27, AVM's QEMU usb-camera). Off unless chosen. Read it
+    /// through sharesCamera.
+    var shareCamera: Bool?
+
     // MARK: - Braille display follow-through (2026-10-26)
 
     /// What happens when a braille display comes back within a minute of
@@ -234,6 +239,7 @@ extension VMConfiguration {
     var isATemplate: Bool { isTemplate == true }
     var startsWithoutWindow: Bool { noWindow == true }
     var sharesPrinters: Bool { sharePrinters == true }
+    var sharesCamera: Bool { shareCamera == true }
     /// Known screen readers only, in a fixed order; unknown words ignored.
     var windowsScreenReaders: [ScreenReader] {
         let chosen = Set(windowsScreenReaderNames ?? [])

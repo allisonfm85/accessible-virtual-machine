@@ -134,6 +134,7 @@ struct SettingsView: View {
     @State private var isTemplate = false
     @State private var noWindow = false
     @State private var sharePrinters = false
+    @State private var shareCamera = false
     @State private var sharedFolderPath: String?
     @State private var sharedFolderReadOnly = false
     @State private var brailleFollowsBack = true
@@ -281,6 +282,20 @@ struct SettingsView: View {
                 Toggle("Let \(guest) use your Mac's microphone", isOn: $shareMicrophone)
                     .accessibilityHint("When on, \(guest) hears your Mac's microphone while an app in it records")
                 Text("For dictation, calls and recordings in \(guest). The microphone is only open while something in \(guest) records, and macOS asks once for permission. Takes effect at the next Start.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal)
+
+            // Camera (2026-10-27)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Camera")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                Toggle("Let \(guest) use your Mac's camera", isOn: $shareCamera)
+                    .accessibilityHint("When on, \(guest) has a camera that shows what your Mac's camera sees, while an app in it uses it")
+                Text("For video calls and apps that read with the camera in \(guest), where it's called Mac Camera. Your Mac's camera is only on while an app in \(guest) uses it, and AVM says when it turns on and off. macOS asks once for permission. Takes effect at the next Start.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -844,6 +859,7 @@ struct SettingsView: View {
         isTemplate = saved.isATemplate
         noWindow = saved.startsWithoutWindow
         sharePrinters = saved.sharesPrinters
+        shareCamera = saved.sharesCamera
         sharedFolderPath = saved.sharedFolderPath
         sharedFolderReadOnly = saved.sharedFolderIsReadOnly
         brailleFollowsBack = saved.brailleFollowsBack
@@ -877,6 +893,7 @@ struct SettingsView: View {
         // snapshot along anyway.
         let changesMachine = cpuCount != saved.cpuCount || ramSizeGB != saved.ramSizeGB || growTo != nil
             || secureBoot != saved.usesSecureBoot || shareMicrophone != saved.sharesMicrophone
+            || shareCamera != saved.sharesCamera
         var discardSaved: VMConfiguration?
         if !isRunning, changesMachine, QEMUSavedState.looksSaved(saved) {
             let alert = NSAlert()
@@ -960,6 +977,7 @@ struct SettingsView: View {
             updated.isTemplate = isTemplate ? true : nil
             updated.noWindow = noWindow ? true : nil
             updated.sharePrinters = sharePrinters ? true : nil
+            updated.shareCamera = shareCamera ? true : nil
             updated.sharedFolderPath = sharedFolderPath
             updated.sharedFolderReadOnly = sharedFolderReadOnly ? true : nil
             updated.brailleFollowThrough = brailleFollowsBack ? nil : "ask"

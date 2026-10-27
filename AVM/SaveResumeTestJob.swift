@@ -6,7 +6,7 @@
 // (--keep), through AVM's own code (VMManager.startVM, saveStateAndStop,
 // and the resume in startVM):
 //
-//   AVM.app/Contents/MacOS/AVM --test-save-resume --vm <folder> [--guest windows|debian|ubuntu|fedora] [--convert]
+//   AVM.app/Contents/MacOS/AVM --test-save-resume --vm <folder> [--guest windows|debian|ubuntu|fedora] [--convert] [--camera]
 //   AVM.app/Contents/MacOS/AVM --test-microphone --vm <folder> [--guest ...]
 //   AVM.app/Contents/MacOS/AVM --test-two-machines --vm <folder> --guest <os> --vm2 <folder> --guest2 <os>
 //   AVM.app/Contents/MacOS/AVM --test-duplicate --vm <folder> --guest <os>
@@ -16,6 +16,14 @@
 //   AVM.app/Contents/MacOS/AVM --test-disk-info --vm <folder> --guest <os>
 //   AVM.app/Contents/MacOS/AVM --run-in-guest <command> --vm <folder> --guest <os>
 //   AVM.app/Contents/MacOS/AVM --test-printers --vm <folder> --guest <os>
+//   AVM.app/Contents/MacOS/AVM --test-camera --vm <folder> --guest <os>
+//
+// --test-camera: starts the machine with the Mac's camera (shareCamera),
+// checks the machine has a working camera called Mac Camera, takes a
+// picture with it there (GStreamer on Linux, Windows' MediaCapture on
+// Windows), and that the Mac's camera went on, then off once the picture
+// was taken. Run it with `open` so AVM, not the shell, asks macOS for the
+// camera.
 //
 // --test-printers: adds the Mac's network printers in the machine as a
 // Start does (sharePrinters) and lists them there. Prints nothing.
@@ -79,7 +87,7 @@ enum SaveResumeTestJob {
                 || arguments.contains("--test-duplicate") || arguments.contains("--test-send-file")
                 || arguments.contains("--test-linux-share") || arguments.contains("--test-ctl")
                 || arguments.contains("--test-disk-info") || arguments.contains("--run-in-guest")
-                || arguments.contains("--test-printers") else { return }
+                || arguments.contains("--test-printers") || arguments.contains("--test-camera") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -96,6 +104,63 @@ enum SaveResumeTestJob {
                 let guest2 = GuestOS(rawValue: value("--guest2") ?? "windows") ?? .windows
                 let passed = await twoMachines(folderURL, guest, URL(fileURLWithPath: second, isDirectory: true), guest2)
                 print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+            }
+            if arguments.contains("--test-camera") {
+                let manager = VMManager()
+                var config = configuration(folder: folderURL, guest: guest)
+                config.shareCamera = true
+                guard await start(manager, config), let agent = manager.guestAgentSocketPath,
+                      await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                try? await Task.sleep(for: .seconds(30))
+                let out: String?
+                if guest == .windows {
+                    let script = #"""
+                    $ErrorActionPreference = 'Stop'
+                    Get-PnpDevice -PresentOnly | Where-Object FriendlyName -like '*Mac Camera*' | ForEach-Object { 'device: ' + $_.FriendlyName + ' | ' + $_.Class + ' | ' + $_.Status }
+                    try {
+                      Add-Type -AssemblyName System.Runtime.WindowsRuntime
+                      $ext = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 }
+                      $action = $ext | Where-Object { $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncAction' } | Select-Object -First 1
+                      function Wait-Action($op) { $t = $action.Invoke($null, @($op)); if (-not $t.Wait(60000)) { throw 'timed out' } }
+                      $null = [Windows.Media.Capture.MediaCapture, Windows.Media.Capture, ContentType = WindowsRuntime]
+                      $null = [Windows.Storage.Streams.InMemoryRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime]
+                      $mc = New-Object Windows.Media.Capture.MediaCapture
+                      $settings = New-Object Windows.Media.Capture.MediaCaptureInitializationSettings
+                      $settings.StreamingCaptureMode = 'Video'
+                      Wait-Action ($mc.InitializeAsync($settings))
+                      'camera: ' + $mc.MediaCaptureSettings.VideoDeviceId
+                      $stream = New-Object Windows.Storage.Streams.InMemoryRandomAccessStream
+                      Wait-Action ($mc.CapturePhotoToStreamAsync([Windows.Media.MediaProperties.ImageEncodingProperties]::CreateJpeg(), $stream))
+                      'picture bytes: ' + $stream.Size
+                      $mc.Dispose()
+                    } catch { 'capture failed: ' + $_.Exception.Message }
+                    """#
+                    out = await exec(agent, program: "powershell.exe", args: ["-NoProfile", "-Command", script])
+                } else {
+                    let script = #"""
+                    for d in /sys/class/video4linux/video*; do echo "device: $(basename $d) | $(cat $d/name)"; done
+                    dev=$(for d in /sys/class/video4linux/video*; do grep -q 'Mac Camera' $d/name && echo /dev/$(basename $d) && break; done)
+                    # A test machine: GStreamer's tools are put in when missing.
+                    command -v gst-launch-1.0 >/dev/null || { command -v apt-get >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -q gstreamer1.0-tools gstreamer1.0-plugins-good >/dev/null 2>&1; } \
+                        || { command -v dnf >/dev/null && dnf install -y -q gstreamer1-plugins-good gstreamer1 >/dev/null 2>&1; }
+                    if command -v gst-launch-1.0 >/dev/null; then
+                      timeout 90 gst-launch-1.0 -q v4l2src device=$dev num-buffers=20 ! video/x-raw,format=YUY2,width=640,height=480 ! filesink location=/tmp/avm-camera.yuv && \
+                        echo "picture bytes: $(stat -c %s /tmp/avm-camera.yuv)" && \
+                        python3 -c "import sys; b=open('/tmp/avm-camera.yuv','rb').read()[-614400::2]; print('average brightness:', sum(b)//len(b))"
+                      rm -f /tmp/avm-camera.yuv
+                    else echo "capture failed: no gst-launch-1.0"; fi
+                    """#
+                    out = await exec(agent, program: "/bin/sh", args: ["-c", script])
+                }
+                let text = out ?? ""
+                print(text.split(whereSeparator: \.isNewline).map { "   machine: " + $0 }.joined(separator: "\n"))
+                check("the machine has a camera called Mac Camera", text.contains("Mac Camera"))
+                check("it took a picture", text.contains("picture bytes: ") && !text.contains("picture bytes: 0"))
+                check("the Mac's camera went on", manager.consoleOutput.contains("usb-camera: the Mac's camera ("))
+                try? await Task.sleep(for: .seconds(6))
+                check("and off again once the picture was taken", manager.consoleOutput.contains("usb-camera: the Mac's camera is off"))
+                await shutDown(manager)
+                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
             }
             if arguments.contains("--test-printers") {
                 let found = await Task.detached { MacPrinters.find() }.value
@@ -198,6 +263,9 @@ enum SaveResumeTestJob {
             storageFolderPath: folder.path,
             secureBoot: guest == .windows ? true : nil)
         configuration.diskBus = "virtio"
+        // --camera: any test with the Mac's camera attached (2026-10-27),
+        // as --test-save-resume --camera, which checks it can be saved.
+        if CommandLine.arguments.contains("--camera") { configuration.shareCamera = true }
         return configuration
     }
 
