@@ -1032,8 +1032,11 @@ final class VMManager: ObservableObject {
             if configuration.guestOS == .ubuntu {
                 removeFinishedUbuntuMedia(runtimeDir: runtimeDir)
             } else {
-                speakSetupReport(configuration: configuration, runtimeDir: runtimeDir)
+                let signedIn = speakSetupReport(configuration: configuration, runtimeDir: runtimeDir)
                 removeFinishedWindowsMedia(runtimeDir: runtimeDir)
+                if signedIn {
+                    await saveFreshInstallRestorePoint(configuration: configuration, runtimeDir: runtimeDir)
+                }
             }
         } else {
             // Build the unattended install media FIRST if this VM has an install ISO
@@ -2480,16 +2483,35 @@ final class VMManager: ObservableObject {
 
     /// The first start after Windows is installed: say what setup installed
     /// (SetupReport.swift), then rename the report so it is said once.
-    private func speakSetupReport(configuration: VMConfiguration, runtimeDir: URL) {
+    /// Returns true when the report says the first sign-in has finished.
+    @discardableResult
+    private func speakSetupReport(configuration: VMConfiguration, runtimeDir: URL) -> Bool {
         guard let read = mtools(["mtype", "-i", "IMG", "::AVMSTATUS.TXT"], runtimeDir: runtimeDir), read.status == 0,
               let summary = SetupReport.summary(
                 reportText: read.output.replacingOccurrences(of: "\r", with: ""),
                 expectsJAWS: configuration.windowsScreenReaders.contains(.jaws),
-                expectsNVDA: configuration.windowsScreenReaders.contains(.nvda)) else { return }
+                expectsNVDA: configuration.windowsScreenReaders.contains(.nvda)) else { return false }
         avmLog("speakSetupReport: \(summary.complete ? "complete" : "incomplete"): \(read.output.split(whereSeparator: \.isNewline).joined(separator: ", "))")
         appendConsole("AVM: \(summary.message)\n")
         Announcer.shared.announce(summary.message, tone: summary.complete ? .success : .failure)
         _ = mtools(["mren", "-i", "IMG", "::AVMSTATUS.TXT", "::AVMSTAT.OLD"], runtimeDir: runtimeDir)
+        return read.output.contains("first-sign-in-done")
+    }
+
+    /// A "Fresh install" restore point (2026-10-26): saved once, the first
+    /// time the machine starts after Windows' first sign-in finished, if it
+    /// has no restore points yet, so a clean Windows is minutes away rather
+    /// than an hour's reinstall. The VM is stopped here, as restore points
+    /// need; it is an internal disk snapshot, so it takes a moment.
+    private func saveFreshInstallRestorePoint(configuration: VMConfiguration, runtimeDir: URL) async {
+        guard let existing = try? await RestorePoints.list(vmDirectory: runtimeDir), existing.isEmpty else { return }
+        do {
+            _ = try await RestorePoints.create(vmDirectory: runtimeDir, label: "Fresh install", secureBoot: configuration.usesSecureBoot)
+            appendConsole("AVM: Saved a restore point called Fresh install.\n")
+            Announcer.shared.announce("AVM saved a restore point called Fresh install, so you can return to a new Windows from Settings at any time.", tone: .info)
+        } catch {
+            avmLog("saveFreshInstallRestorePoint: \(error.localizedDescription)")
+        }
     }
 
     /// The answer file on the UNATTEND volume holds the local account's
