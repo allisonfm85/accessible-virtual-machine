@@ -92,13 +92,13 @@ struct SettingsView: View {
     /// has drive C extended by hand (the README explains how); Ubuntu's
     /// main partition has to be made larger in the same way.
     private var diskGrowthFollowUp: String {
-        configuration.guestOS == .ubuntu
+        configuration.guestOS.isLinux
             ? "After it grows, make Ubuntu's main partition larger to use the new space."
             : "After it grows, extend drive C inside Windows to use the new space."
     }
 
     private func savedDiskMessage(_ growTo: Int) -> String {
-        configuration.guestOS == .ubuntu
+        configuration.guestOS.isLinux
             ? "Settings saved. The disk is now \(growTo) GB. The next time you start Ubuntu, make its main partition larger to use the new space."
             : "Settings saved. The disk is now \(growTo) GB. The next time you start Windows, extend drive C to use the new space. The README explains how."
     }

@@ -6,7 +6,10 @@
 //
 //   AVM.app/Contents/MacOS/AVM --build-install-media --iso <Windows ISO>
 //       --out <folder> [--edition pro|home|homeSingleLanguage]
-//       [--screen-readers nvda,jaws]
+//       [--screen-readers nvda,jaws] [--guest windows|ubuntu|debian]
+//
+// For Ubuntu or Debian, <folder> must hold the account as the wizard
+// writes it (ubuntu-account.json); Tools/test-linux-install.sh does that.
 //
 // It runs the same ensureInstallMedia a real first start runs, into
 // <folder>, with the setup answers found there (windows-setup.json, as the
@@ -41,7 +44,14 @@ enum InstallMediaJob {
         let folder = URL(fileURLWithPath: out, isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 
-        var configuration = VMConfiguration(name: "Install test", installISOPath: iso, windowsEditionName: edition)
+        let guest = GuestOS(rawValue: value("--guest") ?? "windows") ?? .windows
+        guard guest != .macOS else {
+            print("macOS machines are made with New macOS Virtual Machine, not from an ISO.")
+            exit(64)
+        }
+        var configuration = VMConfiguration(name: "Install test", installISOPath: iso,
+                                            guestOSName: guest == .windows ? nil : guest.rawValue,
+                                            windowsEditionName: guest == .windows ? edition : nil)
         configuration.windowsScreenReaderNames = value("--screen-readers")?
             .split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
 

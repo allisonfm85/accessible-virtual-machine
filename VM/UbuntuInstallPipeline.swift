@@ -309,6 +309,13 @@ enum UbuntuKeyboard {
 
 /// What AVM read off an installer ISO, used by the Setup Wizard to say what
 /// the user picked and by the pipeline's validation gate.
+/// Which Linux the installer is (2026-10-26): Ubuntu's autoinstall or
+/// Debian's preseed. Everything after the answers (the account, Orca, the
+/// marker, the stall watch) is shared.
+nonisolated enum LinuxDistro: String, Equatable, Sendable {
+    case ubuntu, debian
+}
+
 nonisolated struct UbuntuISOInfo: Equatable {
     /// From /.disk/info, e.g. "Ubuntu 26.04.1 LTS \"Resolute Raccoon\" - Release arm64".
     let discInfo: String
@@ -316,9 +323,13 @@ nonisolated struct UbuntuISOInfo: Equatable {
     let version: String
     let isARM64: Bool
     let isDesktop: Bool
+    var distro: LinuxDistro = .ubuntu
 
     /// A spoken-friendly name, e.g. "Ubuntu 26.04.1 LTS desktop".
     var spokenName: String {
+        if distro == .debian {
+            return version.isEmpty ? "Debian" : "Debian \(version)"
+        }
         var name = "Ubuntu"
         if !version.isEmpty { name += " \(version)" }
         if discInfo.contains("LTS") { name += " LTS" }
@@ -459,7 +470,11 @@ nonisolated final class UbuntuInstallPipeline {
             // gate speaks to a wrong file.
             let readable = FileManager.default.isReadableFile(atPath: isoPath)
             if readable && listing.output.contains("Cannot find path '/casper/vmlinuz'") {
-                ubuntuLog("identify: no /casper/vmlinuz — not an Ubuntu installer")
+                // Debian's ARM installer keeps its kernel in /install.a64.
+                if let debian = await identifyDebian(isoPath: isoPath, xorriso: xorriso) {
+                    return .ubuntu(debian)
+                }
+                ubuntuLog("identify: no /casper/vmlinuz or /install.a64/vmlinuz — not a Linux installer AVM knows")
                 return .notUbuntu
             }
             ubuntuLog("identify: xorriso couldn't read the ISO (exit \(listing.code)): \(listing.output.suffix(300))")
@@ -492,9 +507,47 @@ nonisolated final class UbuntuInstallPipeline {
 
     /// Why AVM can't install from this ISO, or nil when it can. The same
     /// words serve the Setup Wizard and the pipeline's gate.
+    /// Debian's ARM64 installer (netinst or DVD), or nil.
+    @concurrent
+    static func identifyDebian(isoPath: String, xorriso: URL) async -> UbuntuISOInfo? {
+        let listing = await runTool(xorriso, [
+            "-indev", isoPath,
+            "-find", "/install.a64/vmlinuz", "--",
+            "-find", "/EFI/boot", "--"
+        ])
+        let found = Set(listing.output.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) })
+        guard found.contains("'/install.a64/vmlinuz'") else { return nil }
+        let fm = FileManager.default
+        let probe = fm.temporaryDirectory.appendingPathComponent("avm-debian-probe-\(UUID().uuidString)")
+        try? fm.createDirectory(at: probe, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: probe) }
+        let infoURL = probe.appendingPathComponent("info")
+        await runTool(xorriso, ["-osirrox", "on", "-indev", isoPath, "-extract", "/.disk/info", infoURL.path])
+        let discInfo = ((try? String(contentsOf: infoURL, encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        var version = ""
+        if let match = discInfo.range(of: "[0-9]+(\\.[0-9]+)*", options: .regularExpression) {
+            version = String(discInfo[match])
+        }
+        // The netinst installs the desktop from the network, so every Debian
+        // installer counts as a desktop one.
+        let info = UbuntuISOInfo(discInfo: discInfo, version: version,
+                                 isARM64: found.contains("'/EFI/boot/bootaa64.efi'"), isDesktop: true, distro: .debian)
+        ubuntuLog("identify: \(info.spokenName), arm64=\(info.isARM64), disc info \"\(discInfo)\"")
+        return info
+    }
+
     static func problem(with info: UbuntuISOInfo?) -> String? {
         guard let info else {
             return "This ISO isn't an Ubuntu installer AVM recognizes."
+        }
+        if info.distro == .debian {
+            if !info.isARM64 {
+                return "This is a Debian installer for Intel and AMD PCs. This Mac needs the arm64 one: on debian.org, download the arm64 netinst image."
+            }
+            if info.majorVersion != 0 && info.majorVersion < 12 {
+                return "This is \(info.spokenName). AVM needs Debian 12 or later."
+            }
+            return nil
         }
         if !info.isARM64 {
             return "This is an Ubuntu installer for Intel and AMD PCs. This Mac needs the ARM version: on ubuntu.com, download Ubuntu Desktop for ARM."
@@ -531,6 +584,7 @@ nonisolated final class UbuntuInstallPipeline {
             ubuntuLog("run: validation HARD-STOP: \(problem)")
             throw UbuntuPipelineError.notAnUbuntuInstaller(problem)
         }
+        let distro = identity.info?.distro ?? .ubuntu
         guard let account = UbuntuAccount.load(fromVMDirectory: input.runtimeDir) else {
             ubuntuLog("run: no \(UbuntuAccount.fileName) in the VM folder")
             throw UbuntuPipelineError.accountMissing
@@ -542,9 +596,9 @@ nonisolated final class UbuntuInstallPipeline {
             for stage in UbuntuPipelineStage.allCases {
                 await emit(stage)
                 switch stage {
-                case .writeAnswers:     try stageWriteAnswers(input: input, account: account, scratch: scratch)
+                case .writeAnswers:     try stageWriteAnswers(input: input, account: account, scratch: scratch, distro: distro)
                 case .buildMarkerImage: try await stageBuildMarkerImage(scratch: scratch)
-                case .rebuildISO:       try await stageRebuildISO(input: input, scratch: scratch)
+                case .rebuildISO:       try await stageRebuildISO(input: input, scratch: scratch, distro: distro)
                 case .promote:          try stagePromote(input: input, scratch: scratch)
                 }
             }
@@ -567,10 +621,18 @@ nonisolated final class UbuntuInstallPipeline {
 
     // MARK: Stage 1 — the answer file
 
-    private func stageWriteAnswers(input: Input, account: UbuntuAccount, scratch: URL) throws {
+    private func stageWriteAnswers(input: Input, account: UbuntuAccount, scratch: URL, distro: LinuxDistro) throws {
         let nocloud = scratch.appendingPathComponent("nocloud")
         do {
             try FileManager.default.createDirectory(at: nocloud, withIntermediateDirectories: true)
+            if distro == .debian {
+                try Self.debianPreseed(account: account, hostName: Self.hostName(fromVMName: input.vmName),
+                                       timeZone: TimeZone.current.identifier)
+                    .write(to: nocloud.appendingPathComponent("preseed.cfg"), atomically: true, encoding: .utf8)
+                try Self.debianSetupScript(account: account)
+                    .write(to: nocloud.appendingPathComponent("setup.sh"), atomically: true, encoding: .utf8)
+                return
+            }
             try Self.userData(account: account, hostName: Self.hostName(fromVMName: input.vmName),
                               timeZone: TimeZone.current.identifier)
                 .write(to: nocloud.appendingPathComponent("user-data"), atomically: true, encoding: .utf8)
@@ -813,7 +875,7 @@ nonisolated final class UbuntuInstallPipeline {
 
     // MARK: Stage 3 — the ISO
 
-    private func stageRebuildISO(input: Input, scratch: URL) async throws {
+    private func stageRebuildISO(input: Input, scratch: URL, distro: LinuxDistro) async throws {
         let xorriso = try Self.toolURL(named: "xorriso")
         let grubDir = scratch.appendingPathComponent("grub")
         let grubURL = grubDir.appendingPathComponent("grub.cfg")
@@ -825,7 +887,7 @@ nonisolated final class UbuntuInstallPipeline {
             throw UbuntuPipelineError.stageFailed(stage: .rebuildISO,
                                                  reason: "Couldn't read the installer's boot menu. (xorriso exit \(extract.code))")
         }
-        guard let edited = Self.editedBootMenu(original) else {
+        guard let edited = distro == .debian ? Self.editedDebianBootMenu(original) : Self.editedBootMenu(original) else {
             throw UbuntuPipelineError.stageFailed(stage: .rebuildISO,
                                                  reason: "The installer's boot menu isn't in the form AVM knows, so the answers couldn't be added. This Ubuntu release may be newer than this version of AVM.")
         }
@@ -859,10 +921,10 @@ nonisolated final class UbuntuInstallPipeline {
         let readBack = (try? String(contentsOf: check, encoding: .utf8)) ?? ""
         guard verify.code == 0,
               readBack.hasPrefix(Self.markerGuardLine),
-              readBack.contains(Self.kernelArguments),
-              verify.output.contains("\n'/nocloud/user-data'"),
+              readBack.contains(distro == .debian ? Self.debianKernelArguments : Self.kernelArguments),
+              verify.output.contains(distro == .debian ? "\n'/nocloud/preseed.cfg'" : "\n'/nocloud/user-data'"),
               verify.output.contains("\n'/nocloud/setup.sh'"),
-              verify.output.contains("\n'/nocloud/failed.sh'") else {
+              distro == .debian || verify.output.contains("\n'/nocloud/failed.sh'") else {
             throw UbuntuPipelineError.stageFailed(stage: .rebuildISO,
                                                  reason: "The installer copy didn't read back with the answers on it. (xorriso exit \(verify.code))")
         }
@@ -871,6 +933,92 @@ nonisolated final class UbuntuInstallPipeline {
     /// The installer's boot menu with the marker guard first, a one-second
     /// timeout, and the autoinstall words on the first entry. nil when the
     /// menu has no `linux /casper/vmlinuz` line to edit.
+    // MARK: Debian (2026-10-26)
+
+    /// Debian's installer reads a preseed file instead of autoinstall. The
+    /// arguments go before "---" (what follows it is for the installed
+    /// system); priority=critical means no question is asked.
+    static let debianKernelArguments = "auto=true priority=critical preseed/file=/cdrom/nocloud/preseed.cfg"
+
+    /// The first installer entry boots by itself, with the answers, after a
+    /// second; the marker guard keeps an installed machine off the
+    /// installer, as for Ubuntu.
+    static func editedDebianBootMenu(_ original: String) -> String? {
+        guard let entry = original.range(of: "linux\\s+/install\\.a64/vmlinuz", options: .regularExpression) else {
+            return nil
+        }
+        var menu = original
+        menu.replaceSubrange(entry, with: "\(original[entry]) \(debianKernelArguments)")
+        if let timeout = menu.range(of: "(?m)^set timeout=[0-9]+", options: .regularExpression) {
+            menu.replaceSubrange(timeout, with: "set timeout=1")
+        } else {
+            menu = "set timeout=1\nset default=0\n" + menu
+        }
+        return markerGuardLine + "\n" + menu
+    }
+
+    /// Debian's answers. Installs onto the virtual disk (nvme0n1) only,
+    /// never the UNATTEND volume, with GNOME, Orca and the agents AVM uses,
+    /// then runs setup.sh, and powers off as Ubuntu's install does, so
+    /// AVM's restart-after-install takes over.
+    static func debianPreseed(account: UbuntuAccount, hostName: String, timeZone: String) -> String {
+        """
+        # Written by AVM. Debian's installer reads this and asks nothing.
+        d-i debian-installer/locale string en_US.UTF-8
+        d-i keyboard-configuration/xkb-keymap select \(account.keyboardLayout ?? "us")
+        \(account.keyboardVariant.map { "d-i keyboard-configuration/variant select \($0)" } ?? "")
+        d-i hw-detect/load_firmware boolean false
+        d-i netcfg/choose_interface select auto
+        d-i netcfg/get_hostname string \(hostName)
+        d-i netcfg/get_domain string local
+        d-i netcfg/hostname string \(hostName)
+        d-i mirror/country string manual
+        d-i mirror/http/hostname string deb.debian.org
+        d-i mirror/http/directory string /debian
+        d-i mirror/http/proxy string
+        d-i passwd/root-login boolean false
+        d-i passwd/user-fullname string \(account.realName)
+        d-i passwd/username string \(account.userName)
+        d-i passwd/user-password-crypted password \(account.passwordHash)
+        d-i clock-setup/utc boolean true
+        d-i time/zone string \(timeZone)
+        d-i clock-setup/ntp boolean true
+        d-i partman-auto/disk string /dev/nvme0n1
+        d-i partman-auto/method string regular
+        d-i partman-auto/choose_recipe select atomic
+        d-i partman-partitioning/confirm_write_new_label boolean true
+        d-i partman/choose_partition select finish
+        d-i partman/confirm boolean true
+        d-i partman/confirm_nooverwrite boolean true
+        d-i partman-efi/non_efi_system boolean true
+        d-i apt-setup/cdrom/set-first boolean false
+        d-i apt-setup/disable-cdrom-entries boolean true
+        d-i apt-setup/non-free-firmware boolean true
+        tasksel tasksel/first multiselect standard, gnome-desktop
+        d-i pkgsel/include string orca spice-vdagent qemu-guest-agent spice-webdavd dconf-cli
+        d-i pkgsel/upgrade select safe-upgrade
+        popularity-contest popularity-contest/participate boolean false
+        d-i grub-installer/only_debian boolean true
+        d-i grub-installer/force-efi-extra-removable boolean true
+        d-i preseed/late_command string sh /cdrom/nocloud/setup.sh
+        d-i finish-install/reboot_in_progress note
+        d-i debian-installer/exit/poweroff boolean true
+
+        """
+    }
+
+    /// Ubuntu's setup script, for Debian's installer: its in-target in
+    /// place of curtin's, GDM's daemon.conf in place of custom.conf, and
+    /// sh (Debian's installer has no bash). It writes the same marker.
+    static func debianSetupScript(account: UbuntuAccount) -> String {
+        setupScript(account: account)
+            .replacingOccurrences(of: "#!/bin/bash", with: "#!/bin/sh")
+            .replacingOccurrences(of: "curtin in-target -- ", with: "in-target ")
+            .replacingOccurrences(of: "/etc/gdm3/custom.conf", with: "/etc/gdm3/daemon.conf")
+            .replacingOccurrences(of: "Ubuntu installed by AVM", with: "Debian installed by AVM")
+            .replacingOccurrences(of: "at the end of Ubuntu's install", with: "at the end of Debian's install")
+    }
+
     static func editedBootMenu(_ original: String) -> String? {
         guard let entry = original.range(of: "linux\\s+/casper/vmlinuz", options: .regularExpression) else {
             return nil

@@ -799,7 +799,7 @@ final class VMManager: ObservableObject {
             return
         }
 
-        if configuration.guestOS == .ubuntu {
+        if configuration.guestOS.isLinux {
             try await ensureUbuntuInstallMedia(configuration: configuration, sourceISO: iso, runtimeDir: runtimeDir)
             return
         }
@@ -1029,7 +1029,7 @@ final class VMManager: ObservableObject {
         if installComplete {
             avmLog("startVM: install-complete marker PRESENT — skipping media build/attach and boot keypress")
             appendConsole("AVM: \(configuration.guestOS.displayName) is already installed on this VM. Booting from the installed disk; install media will not be attached.\n")
-            if configuration.guestOS == .ubuntu {
+            if configuration.guestOS.isLinux {
                 removeFinishedUbuntuMedia(runtimeDir: runtimeDir)
             } else {
                 let signedIn = speakSetupReport(configuration: configuration, runtimeDir: runtimeDir)
@@ -1046,7 +1046,7 @@ final class VMManager: ObservableObject {
             // A failure marker left by an earlier run (Force Stop, or the
             // stall watch stopping a failed install) must not count against
             // this one. Removed here, before QEMU opens the volume.
-            if configuration.guestOS == .ubuntu {
+            if configuration.guestOS.isLinux {
                 clearUbuntuFailureMarker(runtimeDir: runtimeDir)
             }
             do {
@@ -1144,7 +1144,7 @@ final class VMManager: ObservableObject {
         } else {
             installStartedAt = Date()
             setupUnderwaySince = nil
-            if configuration.guestOS == .ubuntu {
+            if configuration.guestOS.isLinux {
                 // Neither applies to Ubuntu. Its boot menu starts on its own
                 // after one second (UbuntuInstallPipeline.editedBootMenu), so
                 // there is no "press any key" prompt. And the watchdog's
@@ -2122,7 +2122,7 @@ final class VMManager: ObservableObject {
         // Windows keeps the hardware clock in local time; Linux keeps it in
         // UTC, and a local-time clock would put Ubuntu hours off until its
         // network time sync caught up.
-        if configuration.guestOS == .ubuntu {
+        if configuration.guestOS.isLinux {
             args += ["-rtc", "base=utc,clock=host"]
         } else {
             args += ["-rtc", "base=localtime,clock=host"]
@@ -2290,7 +2290,7 @@ final class VMManager: ObservableObject {
     /// published (see handleQEMUProcessExit).
     private func ubuntuInstallEnd(userStopped: Bool) -> UbuntuInstallEnd {
         guard let configuration = activeConfiguration,
-              configuration.guestOS == .ubuntu,
+              configuration.guestOS.isLinux,
               !installCompleteAtStart,
               let runtimeDir = vmRuntimeDir else {
             return .notAnInstallEnd

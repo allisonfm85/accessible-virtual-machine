@@ -145,6 +145,16 @@ struct SetupView: View {
     @State private var windowsPassword: String = ""
     @State private var windowsPasswordConfirm: String = ""
 
+    /// "Ubuntu" or "Debian": the Linux the chosen installer is (2026-10-26).
+    private var linuxName: String {
+        if case .ubuntu(let info) = installerKind, info.distro == .debian { return "Debian" }
+        return "Ubuntu"
+    }
+
+    private var linuxGuestOS: GuestOS {
+        linuxName == "Debian" ? .debian : .ubuntu
+    }
+
     private var isUbuntu: Bool {
         if case .ubuntu = installerKind { return true }
         return false
@@ -568,21 +578,21 @@ struct SetupView: View {
 
     private var ubuntuAccountSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Ubuntu Account")
+            Text("\(linuxName) Account")
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
-            Text("Ubuntu installs with no questions, so it needs your account now. Orca, Ubuntu's screen reader, will be on when Ubuntu starts.")
+            Text("\(linuxName) installs with no questions, so it needs your account now. Orca, the screen reader, will be on when \(linuxName) starts.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             TextField("Your name", text: $ubuntuRealName)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Your name")
-                .accessibilityHint("Shown at the Ubuntu login screen")
+                .accessibilityHint("Shown at the \(linuxName) login screen")
 
             TextField("User name", text: $ubuntuUserName)
                 .textFieldStyle(.roundedBorder)
-                .accessibilityLabel("Ubuntu user name")
+                .accessibilityLabel("\(linuxName) user name")
                 .accessibilityHint("Lower-case letters, digits, hyphens and underscores, starting with a letter")
 
             // The keyboard Ubuntu gets (2026-10-25): the password must type
@@ -593,12 +603,12 @@ struct SetupView: View {
 
             SecureField("Password", text: $ubuntuPassword)
                 .textFieldStyle(.roundedBorder)
-                .accessibilityLabel("Ubuntu password")
-                .accessibilityHint("Used to sign in and to make changes to Ubuntu. AVM keeps only a scrambled form of it, until Ubuntu is installed.")
+                .accessibilityLabel("\(linuxName) password")
+                .accessibilityHint("Used to sign in and to make changes to \(linuxName). AVM keeps only a scrambled form of it, until \(linuxName) is installed.")
 
             SecureField("Confirm password", text: $ubuntuPasswordConfirm)
                 .textFieldStyle(.roundedBorder)
-                .accessibilityLabel("Confirm Ubuntu password")
+                .accessibilityLabel("Confirm \(linuxName) password")
 
             Toggle("Sign in automatically", isOn: $ubuntuSignInAutomatically)
                 .accessibilityHint("When on, Ubuntu starts straight to the desktop with no password prompt")
@@ -608,9 +618,9 @@ struct SetupView: View {
     private var ubuntuKeyboardNote: String {
         let current = UbuntuKeyboard.current()
         if let layout = current.layout {
-            return "Ubuntu's keyboard will be \(layout.name), to match your Mac, so your password types the same in Ubuntu."
+            return "\(linuxName)'s keyboard will be \(layout.name), to match your Mac, so your password types the same in \(linuxName)."
         }
-        return "Your Mac's keyboard, \(current.macName), isn't one AVM can match, so Ubuntu will use a U.S. keyboard. Choose a password that types the same on a U.S. keyboard, such as one made of letters and digits that sit in the same places."
+        return "Your Mac's keyboard, \(current.macName), isn't one AVM can match, so \(linuxName) will use a U.S. keyboard. Choose a password that types the same on a U.S. keyboard, such as one made of letters and digits that sit in the same places."
     }
 
     /// The installer's kind, as shown and spoken after the file name.
@@ -648,7 +658,7 @@ struct SetupView: View {
                 }
                 installerKind = .ubuntu(info)
                 Announcer.shared.announce(
-                    "\(info.spokenName) installer selected. Fill in the Ubuntu account below.",
+                    "\(info.spokenName) installer selected. Fill in the \(info.distro == .debian ? "Debian" : "Ubuntu") account below.",
                     tone: .info
                 )
             }
@@ -710,11 +720,11 @@ struct SetupView: View {
                 return
             }
             guard !ubuntuPassword.isEmpty else {
-                reportGuidance("Please enter a password for the Ubuntu account.")
+                reportGuidance("Please enter a password for the \(linuxName) account.")
                 return
             }
             guard ubuntuPassword == ubuntuPasswordConfirm else {
-                reportGuidance("The two Ubuntu passwords don't match. Please type them again.")
+                reportGuidance("The two \(linuxName) passwords don't match. Please type them again.")
                 return
             }
             let keyboard = UbuntuKeyboard.current().layout
@@ -772,7 +782,7 @@ struct SetupView: View {
             diskSizeGB: diskSizeGB,
             diskImagePath: diskPath,
             installISOPath: installerURL.path,
-            guestOSName: isUbuntu ? GuestOS.ubuntu.rawValue : nil,
+            guestOSName: isUbuntu ? linuxGuestOS.rawValue : nil,
             windowsEditionName: isUbuntu ? nil : windowsEdition.rawValue,
             storageFolderPath: storagePath,
             // Secure Boot for every new Windows VM (2026-10-25): with the

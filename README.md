@@ -4,8 +4,9 @@ AVM is a macOS application that lets blind and low-vision users install
 and run Windows 11 ARM64 virtual machines entirely through VoiceOver —
 no sighted assistance required at any step. Every failure produces a
 spoken, specific, actionable announcement. It can also install Ubuntu
-Desktop for ARM with no installer questions, with the Orca screen reader
-speaking from the first boot (tester guide, section 16).
+Desktop for ARM or Debian with no installer questions, with the Orca
+screen reader speaking from the first boot (tester guide, section 16),
+and macOS itself, from Apple.
 
 AVM is currently in early testing. It is distributed to testers as a
 notarized DMG.
@@ -155,6 +156,37 @@ NVDA starts with its laptop keyboard layout, since a Mac keyboard has
 no Insert key or number pad; the wizard has a checkbox for it. The first
 time a machine starts after Windows is installed, AVM says what setup
 installed, or names anything that didn't install and how to install it.
+
+## A keyboard for Windows
+
+If you have a second keyboard, USB or Bluetooth, you can give it to
+Windows: choose it under **Keyboard for Windows** in the machine's
+Settings. While Windows runs, that keyboard types only into Windows,
+whichever app is in front, and your Mac's keyboard stays with the Mac
+and VoiceOver, so there is nothing to switch. macOS lets only a
+privileged process take a keyboard over, so AVM's helper (the one that
+connects USB devices) holds it and passes its keys to AVM alone; it never
+takes the built-in keyboard or your only keyboard, gives it back when
+Windows stops or AVM quits, takes it again if it disconnects and comes
+back, and never records a key.
+
+## macOS virtual machines
+
+**New macOS Virtual Machine…** on the dashboard makes a macOS machine:
+AVM gets the newest macOS your Mac supports from Apple (or uses an IPSW
+file you have), downloads and installs it, and says how far it has got
+throughout. macOS runs on Apple's own Virtualization framework, in its
+own window with sound and a shared folder (My Shared Files in its
+Finder). macOS's Setup Assistant offers VoiceOver itself: press Escape
+when it speaks. To use VoiceOver inside the machine, turn your Mac's
+VoiceOver off with Command-F5 while you work there; Command-Tab returns
+to your Mac's apps.
+
+## Debian
+
+Choose a Debian arm64 installer (the netinst from debian.org works) in
+the setup wizard, and AVM installs Debian with GNOME and Orca exactly as
+it installs Ubuntu: no questions, Orca speaking from the first boot.
 
 ## Sharing a folder with Windows
 

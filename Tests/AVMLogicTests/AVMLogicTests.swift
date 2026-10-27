@@ -611,3 +611,62 @@ final class HIDKeyMapTests: XCTestCase {
         }
     }
 }
+
+// MARK: - Debian, the Ubuntu way
+
+final class DebianInstallTests: XCTestCase {
+    private let account = UbuntuAccount(realName: "Amena T", userName: "amena", passwordHash: "$6$salt$hash",
+                                        signInAutomatically: true, keyboardLayout: "gb", keyboardVariant: "mac")
+
+    /// The arm64 netinst's menu: the answers go before "---", the menu
+    /// boots by itself, and the installed-machine guard comes first.
+    func testBootMenuEdit() throws {
+        let menu = """
+        if loadfont $prefix/font.pf2 ; then
+          set gfxmode=800x600
+        fi
+        menuentry --hotkey=i 'Install' {
+            set background_color=black
+            linux    /install.a64/vmlinuz  --- quiet
+            initrd   /install.a64/initrd.gz
+        }
+        menuentry --hotkey=g 'Graphical install' {
+            linux    /install.a64/vmlinuz vga=788 --- quiet
+        }
+        """
+        let edited = try XCTUnwrap(UbuntuInstallPipeline.editedDebianBootMenu(menu))
+        XCTAssertTrue(edited.hasPrefix(UbuntuInstallPipeline.markerGuardLine))
+        XCTAssertTrue(edited.contains("linux    /install.a64/vmlinuz \(UbuntuInstallPipeline.debianKernelArguments)  --- quiet"))
+        XCTAssertTrue(edited.contains("set timeout=1"))
+        XCTAssertEqual(edited.components(separatedBy: UbuntuInstallPipeline.debianKernelArguments).count, 2, "only the first entry")
+        XCTAssertNil(UbuntuInstallPipeline.editedDebianBootMenu("menuentry 'x' { linux /casper/vmlinuz }"))
+    }
+
+    func testPreseedAnswersEverything() {
+        let preseed = UbuntuInstallPipeline.debianPreseed(account: account, hostName: "amenas-debian", timeZone: "America/Chicago")
+        for line in ["d-i passwd/username string amena", "d-i passwd/user-password-crypted password $6$salt$hash",
+                     "d-i keyboard-configuration/xkb-keymap select gb", "d-i partman-auto/disk string /dev/nvme0n1",
+                     "d-i time/zone string America/Chicago", "orca spice-vdagent qemu-guest-agent spice-webdavd",
+                     "d-i preseed/late_command string sh /cdrom/nocloud/setup.sh",
+                     "d-i debian-installer/exit/poweroff boolean true"] {
+            XCTAssertTrue(preseed.contains(line), line)
+        }
+    }
+
+    func testSetupScriptIsDebians() {
+        let script = UbuntuInstallPipeline.debianSetupScript(account: account)
+        XCTAssertTrue(script.hasPrefix("#!/bin/sh"))
+        XCTAssertFalse(script.contains("curtin"))
+        XCTAssertTrue(script.contains("in-target dconf update"))
+        XCTAssertTrue(script.contains("/etc/gdm3/daemon.conf"))
+        XCTAssertTrue(script.contains("AVMDONE.TAG"))
+        XCTAssertTrue(script.contains("screen-reader-enabled=true"))
+    }
+
+    func testDebianIsLinux() {
+        XCTAssertTrue(GuestOS.debian.isLinux)
+        XCTAssertTrue(GuestOS.ubuntu.isLinux)
+        XCTAssertFalse(GuestOS.windows.isLinux)
+        XCTAssertFalse(GuestOS.macOS.isLinux)
+    }
+}

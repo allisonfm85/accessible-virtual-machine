@@ -259,6 +259,9 @@ extension VMConfiguration {
 enum GuestOS: String {
     case windows
     case ubuntu
+    /// Debian, installed the Ubuntu way: same account, Orca and markers,
+    /// Debian's own preseed answers (UbuntuInstallPipeline.swift).
+    case debian
     /// Runs on Apple's Virtualization framework, not QEMU (MacGuest.swift).
     case macOS
 
@@ -268,9 +271,14 @@ enum GuestOS: String {
         switch self {
         case .windows: return "Windows"
         case .ubuntu: return "Ubuntu"
+        case .debian: return "Debian"
         case .macOS: return "macOS"
         }
     }
+
+    /// Ubuntu or Debian: AVM's Linux install and run path (account, Orca,
+    /// install markers, stall watch).
+    var isLinux: Bool { self == .ubuntu || self == .debian }
 }
 
 extension VMConfiguration {
