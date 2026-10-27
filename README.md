@@ -98,6 +98,20 @@ quietly recreated on your Mac or forgotten while its files are on the
 drive. While Windows installs, AVM still needs about 8 gigabytes free on
 the Mac itself for a short while.
 
+## Backing up and moving a virtual machine
+
+Shut a machine down, then choose Export beside it on the dashboard, or
+Export Virtual Machine… in the Virtual Machine menu, and pick a folder or
+drive. AVM saves the whole machine there as one folder ending in .avmvm,
+saying how big it is, how far along it is, and when it's done. Import
+Virtual Machine… brings it back, on this Mac or another, as a new entry
+in your list, so it never collides with the original. Passwords AVM kept
+for setup are left out. A machine that is running, still installing, or
+saved rather than shut down is refused, with the reason. On an ExFAT or
+FAT drive a disk takes its full size; APFS or Mac OS Extended keeps it
+small. An imported macOS machine keeps its identity, so it is the same
+Mac to macOS as the original: run only one of them at a time.
+
 ## Secure Boot
 
 New Windows machines have Secure Boot, with Microsoft's keys, so Windows

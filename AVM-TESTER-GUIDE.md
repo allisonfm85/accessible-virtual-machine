@@ -186,8 +186,8 @@ navigation it reads in this order:
 - **AVM** is the app title, a level-one heading.
 - **Each virtual machine's name** is a level-two heading. Under each name is
   a plain line of specifications (cores, memory, disk size) and its
-  buttons, each labeled with that machine's name: Start, Settings and
-  Delete while it's shut down. While it runs, the row says how it is
+  buttons, each labeled with that machine's name: Start, Settings, Export
+  and Delete while it's shut down. While it runs, the row says how it is
   ("Running", "Running, keyboard in Windows", "Paused", "Shutting down")
   and has **Enter** and **Shut Down** instead. macOS machines' rows also
   say **"Saved"** when the machine was saved with Save and Quit (section
@@ -209,6 +209,40 @@ machine's folder is in the Trash until you empty it.
 command. It looks for machine folders on disk that no longer appear in
 your list, tells you how much space each one holds, and moves the ones you
 pick to the Trash.
+
+**Export and Import: backing a machine up, or moving it.** Shut the
+machine down, then press its **Export** button, or choose **Export Virtual
+Machine…** in the Virtual Machine menu (with several machines it is a
+submenu of their names). Pick a folder or an external drive; AVM saves
+the machine there as one folder named after it, ending in **.avmvm**. AVM
+says how big the copy is when it starts, how far along it is every 10
+percent for anything over 2 gigabytes, and when it has finished. To bring
+it back, on this Mac or another, choose **Import Virtual Machine…** in
+the same menu, or the button of that name on the dashboard, and pick the
+.avmvm folder. The machine comes back as a new entry in your list, so
+importing next to the original, or twice, is safe; if the name is taken,
+AVM adds a number and says so.
+
+Things to know:
+
+- AVM refuses, and says why, if the machine is running, if a macOS machine
+  is **saved** rather than shut down (start it and shut it down from
+  macOS first), if Windows or Linux hasn't finished installing (start it
+  once, let it reach the desktop, shut it down), or if the drive doesn't
+  have room. It checks the space before it copies anything.
+- No passwords travel. The Windows account password AVM kept for setup,
+  and the Ubuntu or Debian password, are left out.
+- On an external drive formatted **ExFAT** or **MS-DOS (FAT)**, a disk
+  takes its full size, even the parts Windows or macOS haven't used, so
+  the copy can be much bigger than the machine is on your Mac. A drive
+  formatted **APFS** or **Mac OS Extended** keeps it small.
+- For a macOS machine with restore points, AVM asks whether to include
+  them: on another drive each one is a full copy of the disk.
+- An imported macOS machine is the same Mac to macOS as the original.
+  AVM says so if the original is on this Mac too: run only one of them at
+  a time.
+- While the copy runs, that machine's Start, Settings and Delete say to
+  wait. Quitting AVM asks first.
 
 Your machines live in your Library folder, under Application Support, in a
 folder named AVM, unless you chose another folder or drive for one in the

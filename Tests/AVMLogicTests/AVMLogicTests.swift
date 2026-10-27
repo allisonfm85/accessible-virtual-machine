@@ -765,3 +765,278 @@ final class DebianInstallTests: XCTestCase {
         XCTAssertFalse(GuestOS.macOS.isLinux)
     }
 }
+
+// MARK: - Export and import (2026-10-26)
+
+/// A machine backed up and brought back must start, must not carry its
+/// passwords with it, and must never collide with the machine it came from.
+final class MachineArchiveTests: XCTestCase {
+    private var root: URL!
+    private let fm = FileManager.default
+
+    override func setUpWithError() throws {
+        root = fm.temporaryDirectory.appendingPathComponent("avm-archive-\(UUID().uuidString)")
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? fm.removeItem(at: root)
+    }
+
+    private func folder(_ name: String) throws -> URL {
+        let url = root.appendingPathComponent(name, isDirectory: true)
+        try fm.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    /// A sparse file: `size` long, with `marker` at the start and in the middle.
+    private func writeSparse(_ url: URL, size: off_t, marker: String) throws {
+        let fd = open(url.path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        defer { close(fd) }
+        XCTAssertEqual(ftruncate(fd, size), 0)
+        let bytes = Array(marker.utf8)
+        _ = pwrite(fd, bytes, bytes.count, 0)
+        _ = pwrite(fd, bytes, bytes.count, size / 2)
+    }
+
+    private func installedWindows() throws -> (VMConfiguration, URL) {
+        let dir = try folder("source-vm")
+        try writeSparse(dir.appendingPathComponent("disk.qcow2"), size: 64 * 1_048_576, marker: "QFI")
+        try Data("nvram".utf8).write(to: dir.appendingPathComponent("nvram.fd"))
+        let tpm = try folder("source-vm/tpm-state")
+        try Data("tpm".utf8).write(to: tpm.appendingPathComponent("tpm2-00.permall"))
+        let point = try folder("source-vm/restore-points/avm-1")
+        try Data("Fresh install".utf8).write(to: point.appendingPathComponent("label.txt"))
+        try Data("fat".utf8).write(to: dir.appendingPathComponent("autounattend.img"))
+        try Data("sock".utf8).write(to: dir.appendingPathComponent("qmp.sock"))
+        try Data("serial".utf8).write(to: dir.appendingPathComponent("firmware-serial.log"))
+        var answers = WindowsSetupAnswers()
+        answers.localAccount = .init(userName: "amena", displayName: "Amena", encodedPassword: "c2VjcmV0")
+        try answers.save(inVMDirectory: dir)
+        var config = VMConfiguration(name: "Work PC", diskImagePath: dir.appendingPathComponent("disk.qcow2").path,
+                                     installISOPath: "/Users/someone/Downloads/Win11.iso",
+                                     storageFolderPath: dir.path)
+        config.secureBoot = true
+        return (config, dir)
+    }
+
+    private func export(_ config: VMConfiguration, from dir: URL, includeRestorePoints: Bool = true) throws -> URL {
+        let package = try folder("backup").appendingPathComponent(MachineArchive.packageName(for: config))
+        let plan = try MachineArchive.exportPlan(vmDirectory: dir, isMac: config.guestOS == .macOS,
+                                                 includeRestorePoints: includeRestorePoints)
+        let manifest = try MachineArchive.manifestData(for: config, appVersion: "test")
+        try MachineArchive.writePackage(plan: plan, from: dir, to: package, manifest: manifest) { _, _ in }
+        return package
+    }
+
+    func testWindowsRoundTrip() throws {
+        let (original, dir) = try installedWindows()
+        XCTAssertNil(MachineArchive.exportProblem(for: original, vmDirectory: dir))
+        // A password hash left behind must not travel even so.
+        try UbuntuAccount(realName: "A", userName: "amena", passwordHash: "$6$a$b", signInAutomatically: false)
+            .save(inVMDirectory: dir)
+        let package = try export(original, from: dir)
+        XCTAssertEqual(package.lastPathComponent, "Work PC.avmvm")
+
+        // What went, and what didn't.
+        let exists = { (name: String) in self.fm.fileExists(atPath: package.appendingPathComponent(name).path) }
+        for name in ["disk.qcow2", "nvram.fd", "tpm-state/tpm2-00.permall", "restore-points/avm-1/label.txt",
+                     "autounattend.img", MachineArchive.manifestName, WindowsSetupAnswers.fileName] {
+            XCTAssertTrue(exists(name), "\(name) should be in the package")
+        }
+        for name in ["qmp.sock", "firmware-serial.log", UbuntuAccount.fileName] {
+            XCTAssertFalse(exists(name), "\(name) should not be in the package")
+        }
+        XCTAssertNil(WindowsSetupAnswers.load(fromVMDirectory: package)?.localAccount?.encodedPassword)
+        XCTAssertEqual(WindowsSetupAnswers.load(fromVMDirectory: package)?.localAccount?.userName, "amena")
+        let manifestText = try String(contentsOf: package.appendingPathComponent(MachineArchive.manifestName), encoding: .utf8)
+        XCTAssertFalse(manifestText.contains("c2VjcmV0"))
+        XCTAssertFalse(manifestText.contains(dir.path), "no path from the old Mac's machine folder")
+        XCTAssertFalse(try fm.contentsOfDirectory(atPath: package.deletingLastPathComponent().path).contains { $0.contains("partial") })
+
+        // Back in, as a new machine.
+        let manifest = try MachineArchive.readPackage(package)
+        XCTAssertNil(manifest.configuration.storageFolderPath)
+        XCTAssertEqual(manifest.configuration.diskImagePath, "disk.qcow2")
+        let container = try folder("VMs")
+        let id = UUID()
+        let newFolder = try MachineArchive.copyIn(plan: try MachineArchive.importPlan(package: package), from: package,
+                                                  container: container, id: id) { _, _ in }
+        XCTAssertEqual(newFolder.lastPathComponent, id.uuidString)
+        let imported = MachineArchive.importedConfiguration(manifest.configuration, id: id, folder: newFolder,
+                                                            existingNames: [original.name])
+        XCTAssertNotEqual(imported.id, original.id)
+        XCTAssertEqual(imported.name, "Work PC 2")
+        XCTAssertNil(imported.storageFolderPath)
+        XCTAssertEqual(imported.diskImagePath, newFolder.appendingPathComponent("disk.qcow2").path)
+        XCTAssertEqual(imported.secureBoot, true)
+        XCTAssertEqual(imported.installISOPath, original.installISOPath, "kept, so the install-complete check still runs")
+        XCTAssertEqual(try Data(contentsOf: newFolder.appendingPathComponent("disk.qcow2")),
+                       try Data(contentsOf: dir.appendingPathComponent("disk.qcow2")))
+        XCTAssertFalse(fm.fileExists(atPath: newFolder.appendingPathComponent(MachineArchive.manifestName).path))
+        let mode = try fm.attributesOfItem(atPath: newFolder.appendingPathComponent(WindowsSetupAnswers.fileName).path)[.posixPermissions] as? Int
+        XCTAssertEqual(mode, 0o600)
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: container.path), [id.uuidString], "no working folder left behind")
+    }
+
+    func testExportingAgainReplacesThePackage() throws {
+        let (config, dir) = try installedWindows()
+        let package = try export(config, from: dir)
+        try Data("changed".utf8).write(to: dir.appendingPathComponent("nvram.fd"))
+        let plan = try MachineArchive.exportPlan(vmDirectory: dir, isMac: false, includeRestorePoints: true)
+        try MachineArchive.writePackage(plan: plan, from: dir, to: package,
+                                        manifest: try MachineArchive.manifestData(for: config, appVersion: nil)) { _, _ in }
+        XCTAssertEqual(try String(contentsOf: package.appendingPathComponent("nvram.fd"), encoding: .utf8), "changed")
+    }
+
+    func testUnfinishedInstallsAreRefused() throws {
+        let (config, dir) = try installedWindows()
+        try Data("iso".utf8).write(to: dir.appendingPathComponent("install-avm.iso"))
+        XCTAssertNotNil(MachineArchive.exportProblem(for: config, vmDirectory: dir))
+        try fm.removeItem(at: dir.appendingPathComponent("install-avm.iso"))
+        try fm.removeItem(at: dir.appendingPathComponent("autounattend.img"))
+        XCTAssertNotNil(MachineArchive.exportProblem(for: config, vmDirectory: dir), "never started: nothing installed")
+    }
+
+    private func macMachine(_ name: String, identity: String) throws -> (VMConfiguration, URL) {
+        let dir = try folder(name)
+        let files = MacGuestFiles(folder: dir)
+        try writeSparse(files.disk, size: 32 * 1_048_576, marker: "APFS")
+        try Data("aux".utf8).write(to: files.auxiliaryStorage)
+        try Data("model".utf8).write(to: files.hardwareModel)
+        try Data(identity.utf8).write(to: files.machineIdentifier)
+        try Data("mac".utf8).write(to: files.macAddress)
+        var config = VMConfiguration(name: name, diskImagePath: files.disk.path, storageFolderPath: dir.path)
+        config.guestOSName = GuestOS.macOS.rawValue
+        return (config, dir)
+    }
+
+    func testMacOSMachineKeepsItsIdentity() throws {
+        let (config, dir) = try macMachine("Sequoia", identity: "id-1")
+        let files = MacGuestFiles(folder: dir)
+        try MacRestorePoints.take(files, name: "Before update")
+
+        try Data("state".utf8).write(to: files.savedState)
+        XCTAssertNotNil(MachineArchive.exportProblem(for: config, vmDirectory: dir), "a saved machine is mid-session")
+        try fm.removeItem(at: files.savedState)
+        XCTAssertNil(MachineArchive.exportProblem(for: config, vmDirectory: dir))
+
+        let withPoints = try MachineArchive.exportPlan(vmDirectory: dir, isMac: true, includeRestorePoints: true)
+        XCTAssertTrue(withPoints.hasRestorePoints)
+        XCTAssertGreaterThan(withPoints.restorePointBytes, 0)
+        let package = try export(config, from: dir, includeRestorePoints: false)
+        XCTAssertFalse(fm.fileExists(atPath: package.appendingPathComponent("restore-points").path))
+        XCTAssertTrue(fm.fileExists(atPath: package.appendingPathComponent("MACAddress").path))
+        let manifest = try MachineArchive.readPackage(package)
+        XCTAssertEqual(manifest.configuration.guestOS, .macOS)
+        XCTAssertEqual(manifest.configuration.diskImagePath, "macos-disk.img")
+
+        let (other, _) = try macMachine("Other Mac", identity: "id-2")
+        let twins = MachineArchive.macOSIdentityTwins(of: package, among: [config, other])
+        XCTAssertEqual(twins.map(\.id), [config.id], "the original is the same Mac to macOS")
+        XCTAssertTrue(MachineArchive.macOSIdentityTwins(of: package, among: [config], excluding: config.id).isEmpty)
+    }
+
+    func testBadPackagesSayWhatIsWrong() throws {
+        func message(_ url: URL) -> String {
+            do {
+                _ = try MachineArchive.readPackage(url)
+                return "accepted"
+            } catch {
+                return error.localizedDescription
+            }
+        }
+        let file = root.appendingPathComponent("notes.avmvm")
+        try Data("x".utf8).write(to: file)
+        XCTAssertTrue(message(file).contains("is a file"))
+
+        let empty = try folder("Empty.avmvm")
+        XCTAssertTrue(message(empty).contains("has no \(MachineArchive.manifestName)"))
+
+        try Data("{not json".utf8).write(to: empty.appendingPathComponent(MachineArchive.manifestName))
+        XCTAssertTrue(message(empty).contains("can't read"))
+
+        let (config, dir) = try installedWindows()
+        let package = try export(config, from: dir)
+        try fm.removeItem(at: package.appendingPathComponent("disk.qcow2"))
+        XCTAssertTrue(message(package).contains("missing disk.qcow2"))
+        try fm.removeItem(at: package.appendingPathComponent("autounattend.img"))
+        XCTAssertTrue(message(package).contains("missing disk.qcow2 and autounattend.img"))
+
+        var newer = try JSONSerialization.jsonObject(with: Data(contentsOf: package.appendingPathComponent(MachineArchive.manifestName))) as! [String: Any]
+        newer["format"] = MachineArchive.formatVersion + 1
+        try JSONSerialization.data(withJSONObject: newer).write(to: package.appendingPathComponent(MachineArchive.manifestName))
+        XCTAssertTrue(message(package).contains("newer AVM"))
+
+        XCTAssertTrue(message(root.appendingPathComponent("gone.avmvm")).contains("can't find"))
+    }
+
+    /// The copy used when cloning isn't possible (another drive) keeps a
+    /// sparse disk sparse and every byte the same.
+    func testCopyKeepsHoles() throws {
+        let source = root.appendingPathComponent("sparse.img")
+        try writeSparse(source, size: 256 * 1_048_576, marker: "DATA")
+        let destination = root.appendingPathComponent("copy.img")
+        var reported: UInt64 = 0
+        try MachineFileCopier.copyFile(source, to: destination, permissions: 0o640) { reported = $0 }
+        XCTAssertEqual(try Data(contentsOf: destination), try Data(contentsOf: source))
+        let plan = try MachineFileCopier.plan(source: root) { $0 != "sparse.img" }
+        let copied = try MachineFileCopier.plan(source: root) { $0 != "copy.img" }
+        XCTAssertEqual(plan.logicalBytes, copied.logicalBytes)
+        XCTAssertLessThan(copied.allocatedBytes, 16 * 1_048_576, "the holes stayed holes")
+        XCTAssertLessThan(reported, 64 * 1_048_576, "only the parts with data were read")
+        let mode = try fm.attributesOfItem(atPath: destination.path)[.posixPermissions] as? Int
+        XCTAssertEqual(mode, 0o640)
+    }
+
+    /// Export to another drive, where nothing can be cloned. Opt-in: set
+    /// AVM_ARCHIVE_TEST_VOLUME to a folder on another volume, such as an
+    /// exFAT disk image (hdiutil create -size 200m -fs ExFAT ...).
+    func testExportToAnotherDrive() throws {
+        guard let path = ProcessInfo.processInfo.environment["AVM_ARCHIVE_TEST_VOLUME"] else {
+            throw XCTSkip("set AVM_ARCHIVE_TEST_VOLUME to a folder on another volume")
+        }
+        let (config, dir) = try installedWindows()
+        let drive = URL(fileURLWithPath: path).appendingPathComponent("avm-test-\(UUID().uuidString)")
+        try fm.createDirectory(at: drive, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: drive) }
+        XCTAssertFalse(MachineFileCopier.sameVolume(dir, drive))
+        let plan = try MachineArchive.exportPlan(vmDirectory: dir, isMac: false, includeRestorePoints: true)
+        let needed = MachineFileCopier.bytesNeeded(plan, from: dir, to: drive)
+        let fsName = MachineFileCopier.fileSystemName(drive) ?? "?"
+        if fsName == "exfat" || fsName == "msdos" {
+            XCTAssertEqual(needed, plan.logicalBytes, "no sparse files there: the full length")
+        }
+        let package = drive.appendingPathComponent(MachineArchive.packageName(for: config))
+        var calls = 0
+        try MachineArchive.writePackage(plan: plan, from: dir, to: package,
+                                        manifest: try MachineArchive.manifestData(for: config, appVersion: nil)) { _, _ in calls += 1 }
+        XCTAssertGreaterThan(calls, 0)
+        XCTAssertEqual(try Data(contentsOf: package.appendingPathComponent("disk.qcow2")),
+                       try Data(contentsOf: dir.appendingPathComponent("disk.qcow2")))
+        let manifest = try MachineArchive.readPackage(package)
+        let container = try folder("VMs-from-drive")
+        let back = try MachineArchive.copyIn(plan: try MachineArchive.importPlan(package: package), from: package,
+                                             container: container, id: UUID()) { _, _ in }
+        XCTAssertEqual(try Data(contentsOf: back.appendingPathComponent("disk.qcow2")),
+                       try Data(contentsOf: dir.appendingPathComponent("disk.qcow2")))
+        XCTAssertEqual(manifest.configuration.name, "Work PC")
+    }
+
+    func testSpaceNeededAndNames() throws {
+        let (config, dir) = try installedWindows()
+        let plan = try MachineArchive.exportPlan(vmDirectory: dir, isMac: false, includeRestorePoints: true)
+        XCTAssertLessThan(MachineFileCopier.bytesNeeded(plan, from: dir, to: root), plan.logicalBytes,
+                          "on the same APFS volume the copy is a clone")
+        XCTAssertEqual(MachineArchive.uniqueName("Work PC", existing: ["work pc", "Work PC 2"]), "Work PC 3")
+        XCTAssertEqual(MachineArchive.uniqueName("Work PC", existing: []), "Work PC")
+        var odd = config; odd.name = "../a/b:c"
+        XCTAssertEqual(MachineArchive.packageName(for: odd), "-a-b-c.avmvm")
+        XCTAssertEqual(MachineArchive.placeName(of: URL(fileURLWithPath: "/Volumes/Backup/AVM")), "the drive Backup")
+        XCTAssertEqual(MachineArchive.placeName(of: root), "your Mac")
+        XCTAssertTrue(MachineArchive.exportSkips("SavedState.vzvmsave"))
+        XCTAssertTrue(MachineArchive.exportSkips("restore-points/x/.macos-disk.img.restoring"))
+        XCTAssertFalse(MachineArchive.exportSkips("restore-points/avm-1/nvram.fd"))
+    }
+}

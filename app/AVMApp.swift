@@ -412,6 +412,38 @@ struct AVMApp: App {
 
                 Divider()
 
+                // 9. Export and Import (2026-10-26, MachineArchivePanels
+                //    .swift). Export names the machine: one item when there
+                //    is one machine, a submenu of names when there are
+                //    several, dimmed with none. Not dimmed for a running
+                //    machine: its handler says to shut it down first, which
+                //    a dimmed item couldn't. Import is always there. No key
+                //    combos: rare, deliberate, like Reclaim.
+                if vmStore.configurations.count > 1 {
+                    Menu("Export Virtual Machine") {
+                        ForEach(vmStore.configurations) { config in
+                            Button("\(config.name)…") {
+                                AVMLog.write("AVM: Export submenu — posting export request for '\(config.name)' to ContentView.")
+                                NotificationCenter.default.post(name: .avmExportVMFromMenu, object: config.id)
+                            }
+                        }
+                    }
+                } else {
+                    Button("Export Virtual Machine…") {
+                        guard let config = vmStore.configurations.first else { return }
+                        AVMLog.write("AVM: Export Virtual Machine menu — posting export request for '\(config.name)' to ContentView.")
+                        NotificationCenter.default.post(name: .avmExportVMFromMenu, object: config.id)
+                    }
+                    .disabled(vmStore.configurations.isEmpty)
+                }
+
+                Button("Import Virtual Machine…") {
+                    AVMLog.write("AVM: Import Virtual Machine menu — posting import request to ContentView.")
+                    NotificationCenter.default.post(name: .avmImportVMFromMenu, object: nil)
+                }
+
+                Divider()
+
                 Button("Reclaim Disk Space…") {
                     AVMLog.write("AVM: Reclaim Disk Space menu — posting reclaim request to ContentView.")
                     NotificationCenter.default.post(name: .avmReclaimFromMenu, object: nil)
@@ -627,6 +659,22 @@ enum QuitCoordinator {
     static var closingWindow = false
 
     static func shouldTerminate() -> NSApplication.TerminateReply {
+        // An export or import in progress (2026-10-26): quitting stops it.
+        // Its half-made copy is a hidden folder that the next export to the
+        // same place, or the next import, clears away. Cancel is the default.
+        if let activity = MachineArchiveController.shared.activity {
+            let alert = NSAlert()
+            alert.messageText = "AVM is \(activity). Quit anyway?"
+            alert.informativeText = "Quitting stops it part way. The machine itself is untouched. The half-made copy is hidden, never mistaken for a whole one, and AVM clears it away the next time you export or import."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Quit and Stop")
+            guard alert.runModal() == .alertSecondButtonReturn else {
+                AVMLog.write("AVM: Quit — cancelled while \(activity).")
+                return .terminateCancel
+            }
+            AVMLog.write("AVM: Quit — chosen while \(activity).")
+        }
         // A macOS machine runs inside AVM itself (2026-10-26): quitting
         // ends it at once, so ask.
         if MacGuestRunner.shared.runningID != nil {

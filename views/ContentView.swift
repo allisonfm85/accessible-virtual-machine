@@ -34,6 +34,13 @@ extension Notification.Name {
     /// (Cmd-Shift-I, 2026-10-25). ContentView answers because the active
     /// session and the machine list live here.
     static let avmSpeakStatusFromMenu = Notification.Name("avmSpeakStatusFromMenu")
+
+    /// Posted by the Virtual Machine menu's Export and Import items
+    /// (2026-10-26, MachineArchivePanels.swift). Export carries the
+    /// machine's ID. ContentView answers because whether a machine is
+    /// running is known here (the active session) and the list is vmStore.
+    static let avmExportVMFromMenu = Notification.Name("avmExportVMFromMenu")
+    static let avmImportVMFromMenu = Notification.Name("avmImportVMFromMenu")
 }
 
 /// One open of the USB picker sheet: which mode, which devices. Identity
@@ -258,6 +265,21 @@ struct ContentView: View {
             AVMLog.write("AVM: Speak Status — \(status)")
             Announcer.shared.announce(status, tone: .info)
         }
+        // Export and Import (2026-10-26). A machine is "running" for export
+        // while any session for it exists (starting, running, paused or
+        // shutting down) or macOS runs it: its disk is in use.
+        .onReceive(NotificationCenter.default.publisher(for: .avmExportVMFromMenu)) { note in
+            guard let id = note.object as? UUID,
+                  let config = vmStore.configurations.first(where: { $0.id == id }) else {
+                Announcer.shared.announce("That virtual machine is no longer in your list. Nothing was exported.", tone: .failure)
+                return
+            }
+            let running = activeSession?.configuration.id == id || MacGuestRunner.shared.runningID == id
+            MachineArchiveController.shared.export(config, isRunning: running)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .avmImportVMFromMenu)) { _ in
+            MachineArchiveController.shared.importMachine(into: vmStore)
+        }
     }
 
     // MARK: - Helpers
@@ -323,6 +345,8 @@ struct ContentView: View {
     /// DashboardContent.startVM). Duplicated here because the menu-driven
     /// start needs access to this view's activeSession @State.
     private func startVM(config: VMConfiguration) {
+        // Not while its files are being copied (2026-10-26).
+        if MachineArchiveController.shared.refusesWhileBusy(config) { return }
         errorMessage = nil
         // macOS runs on Apple's Virtualization framework, in its own window
         // (MacGuest.swift), not in a QEMU session.
@@ -568,10 +592,12 @@ private struct DashboardContent: View {
                                 .accessibilityHint("Starts this virtual machine")
 
                                 Button("Settings") {
-                                    settingsTarget = config
+                                    openSettings(config)
                                 }
                                 .accessibilityLabel("Settings for \(config.name)")
                                 .accessibilityHint("Opens settings for this virtual machine")
+
+                                exportButton(config)
 
                                 Button("Delete") {
                                     confirmDelete(config: config)
@@ -686,6 +712,13 @@ private struct DashboardContent: View {
                 }
                 .accessibilityHint("Downloads macOS from Apple and makes a macOS virtual machine")
 
+                // Import (2026-10-26): here too, because on a new Mac an
+                // exported machine is what the user has instead of a wizard.
+                Button("Import Virtual Machine…") {
+                    MachineArchiveController.shared.importMachine(into: vmStore)
+                }
+                .accessibilityHint("Brings back a virtual machine AVM exported, from a folder ending in .avmvm")
+
                 if activeSession != nil {
                     Button("Settings") {
                         settingsTarget = activeSession?.configuration
@@ -772,6 +805,8 @@ private struct DashboardContent: View {
     }
 
     private func confirmDelete(config: VMConfiguration) {
+        // Not while its files are being copied (2026-10-26).
+        if MachineArchiveController.shared.refusesWhileBusy(config) { return }
         // Defense-in-depth guard (see header). Matching ID with a live
         // session in any non-stopped state refuses with a spoken reason.
         if let session = activeSession,
@@ -933,15 +968,38 @@ private struct DashboardContent: View {
                 .accessibilityLabel("Start \(config.name)")
                 .accessibilityHint("Starts this macOS virtual machine in its own window")
                 .disabled(macGuest.runningID != nil)
-            Button("Settings") { settingsTarget = config }
+            Button("Settings") { openSettings(config) }
                 .accessibilityLabel("Settings for \(config.name)")
+            exportButton(config)
             Button("Delete") { confirmDelete(config: config) }
                 .accessibilityLabel("Delete \(config.name)")
                 .accessibilityHint("Moves this virtual machine and all of its files to the Trash. Asks for confirmation first.")
         }
     }
 
+    // MARK: Export (2026-10-26)
+
+    /// Export, in every shut-down machine's row, named for the machine.
+    /// Rows only show it while the machine is shut down, so it is never
+    /// running here.
+    private func exportButton(_ config: VMConfiguration) -> some View {
+        Button("Export…") {
+            MachineArchiveController.shared.export(config, isRunning: false)
+        }
+        .accessibilityLabel("Export \(config.name)")
+        .accessibilityHint("Copies this virtual machine to a folder or drive you choose, as a backup that Import Virtual Machine brings back")
+    }
+
+    /// Settings, except while the machine's files are being copied: a
+    /// restore point or a bigger disk then would change them mid-copy.
+    private func openSettings(_ config: VMConfiguration) {
+        if MachineArchiveController.shared.refusesWhileBusy(config) { return }
+        settingsTarget = config
+    }
+
     private func startVM(config: VMConfiguration) {
+        // Not while its files are being copied (2026-10-26).
+        if MachineArchiveController.shared.refusesWhileBusy(config) { return }
         errorMessage = nil
         // macOS runs on Apple's Virtualization framework, in its own window
         // (MacGuest.swift), not in a QEMU session.
