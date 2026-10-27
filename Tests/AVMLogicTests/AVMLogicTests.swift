@@ -62,6 +62,7 @@ final class VMConfigurationTests: XCTestCase {
         let configs = try JSONDecoder().decode([VMConfiguration].self, from: Data(json.utf8))
         let config = try XCTUnwrap(configs.first)
         XCTAssertEqual(config.guestOS, .windows)
+        XCTAssertNil(config.windowsEdition)
         XCTAssertFalse(config.usesSecureBoot)
         XCTAssertEqual(config.effectiveUSBMode, .ask)
     }
@@ -69,11 +70,19 @@ final class VMConfigurationTests: XCTestCase {
     func testUnknownWordsReadAsDefaults() throws {
         let json = """
         [{"id":"F48267BA-0CA9-49E4-BD2A-3190FCD06455","name":"x","cpuCount":2,"ramSizeGB":4,
-          "diskSizeGB":40,"diskImagePath":"","usbMode":"someday","guestOSName":"beos"}]
+          "diskSizeGB":40,"diskImagePath":"","usbMode":"someday","guestOSName":"beos",
+          "windowsEditionName":"enterprise"}]
         """
         let config = try XCTUnwrap(try JSONDecoder().decode([VMConfiguration].self, from: Data(json.utf8)).first)
         XCTAssertEqual(config.effectiveUSBMode, .ask)
         XCTAssertEqual(config.guestOS, .windows)
+        XCTAssertNil(config.windowsEdition)
+    }
+
+    func testEditionsSelectTheRightImageAndKey() {
+        XCTAssertEqual(WindowsEdition.pro.imageName, "Windows 11 Pro")
+        XCTAssertEqual(WindowsEdition.pro.genericProductKey, "VK7JG-NPHTM-C97JM-9MPGT-3V66T")
+        XCTAssertEqual(Set(WindowsEdition.allCases.map(\.genericProductKey)).count, WindowsEdition.allCases.count)
     }
 
     /// QEMU reads a comma as the next option: "/Volumes/Backup, 2TB" used

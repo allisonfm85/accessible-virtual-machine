@@ -233,6 +233,9 @@ The window reads top to bottom:
   choose one. The **Choose Installer Image** button opens a standard file
   picker. Navigate to your ISO and choose it. The wizard then reads back
   the file's name so you know what it took.
+- **Windows Edition** appears once you've chosen a Windows ISO: Pro, Home,
+  or Home Single Language, as radio buttons. Choose the edition your
+  Windows license is for. Pro is chosen to start with.
 - **Cancel** and **Create Virtual Machine**. Escape cancels, and
   Command-Return creates. While the machine is being created the button
   reads "Creating virtual machine, please wait". It takes a moment,
@@ -732,9 +735,6 @@ files can be deleted afterward.
   one you meant. With more than one machine, use the Start submenu in
   the Virtual Machine menu, which names each machine, or the dashboard's
   Start buttons.
-- **Windows edition.** The installer selects a single edition. Choosing
-  between Home, Home Single Language and Pro is planned but not exposed
-  yet.
 - **Out-of-box setup is stock Windows.** AVM does not script your account
   creation. You go through Microsoft's own setup with Narrator.
 - **No ISO downloader.** You supply the Windows image yourself.

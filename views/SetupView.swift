@@ -81,6 +81,10 @@ struct SetupView: View {
     @State private var showingFilePicker = false
     @State private var notices: [Notice] = []
     @State private var isCreating = false
+    /// Which Windows edition Setup installs (2026-10-25). Shown once a
+    /// Windows installer is picked. Pro is the default, as it was when AVM
+    /// chose without asking.
+    @State private var windowsEdition: WindowsEdition = .pro
 
     // MARK: - Ubuntu (2026-10-19)
     //
@@ -207,6 +211,10 @@ struct SetupView: View {
                     .accessibilityHint("Opens a file picker to select your Windows or Ubuntu installer ISO")
                 }
 
+                if installerKind == .windows {
+                    windowsEditionSection
+                }
+
                 if isUbuntu {
                     ubuntuAccountSection
                 }
@@ -272,6 +280,27 @@ struct SetupView: View {
             case .failure(let error):
                 reportFailure(error.localizedDescription)
             }
+        }
+    }
+
+    // MARK: - Windows edition
+
+    private var windowsEditionSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Windows Edition")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Text("Choose the edition your Windows license is for. If you're not sure, choose Pro. AVM checks that the installer has it before installing.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker("Windows edition", selection: $windowsEdition) {
+                ForEach(WindowsEdition.allCases) { edition in
+                    Text(edition.imageName).tag(edition)
+                }
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+            .accessibilityLabel("Windows edition")
         }
     }
 
@@ -474,6 +503,7 @@ struct SetupView: View {
             diskImagePath: diskPath,
             installISOPath: installerURL.path,
             guestOSName: isUbuntu ? GuestOS.ubuntu.rawValue : nil,
+            windowsEditionName: isUbuntu ? nil : windowsEdition.rawValue,
             // Secure Boot for every new Windows VM (2026-10-25): with the
             // TPM AVM already gives it, Windows sees a PC that meets its
             // requirements, Insider builds included.

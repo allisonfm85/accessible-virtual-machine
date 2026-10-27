@@ -829,8 +829,11 @@ final class VMManager: ObservableObject {
             vmID: configuration.id,
             sourceISOPath: iso,
             runtimeDir: runtimeDir,
-            editionName: "",      // empty -> pipeline resolves + validates the default (issue #6)
-            productKey: "",       // (edition-picker UI fills these later)
+            // The setup wizard's edition (2026-10-25). nil (machines made
+            // before the wizard asked) stays empty, so the pipeline resolves
+            // and validates its default exactly as before (issue #6).
+            editionName: configuration.windowsEdition?.imageName ?? "",
+            productKey: configuration.windowsEdition?.genericProductKey ?? "",
             confirmWarning: { [weak self] reason in
                 // Invoked OFF the main actor (pipeline contract); hop to the
                 // main-actor handler, which asks the UI or defaults to proceed.
