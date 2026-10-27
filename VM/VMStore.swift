@@ -49,7 +49,7 @@ final class VMStore: ObservableObject {
                 appropriateFor: nil,
                 create: true
             )
-            let avmDirectory = appSupport.appendingPathComponent("AVM")
+            let avmDirectory = appSupport.appendingPathComponent(AVMPaths.supportFolderName)
             try fileManager.createDirectory(
                 at: avmDirectory,
                 withIntermediateDirectories: true
@@ -222,12 +222,12 @@ final class VMStore: ObservableObject {
     // relaunch, is diagnosed by exactly these lines, and until this change
     // they were invisible in every log AVM has.
     //
-    // BANKED QUESTION (not changed here — behavior change, needs its own
-    // decision and wording approval): a SAVE failure is silent data loss —
-    // the in-memory list looks right and the truth only surfaces at next
-    // launch. Under "silence is never neutral" it is a candidate for a
-    // spoken .failure announcement, not just a log line. Queued for the
-    // announcements work.
+    // SAVE FAILURE IS SPOKEN (2026-10-25, closes the banked question): a
+    // save failure is silent data loss — the in-memory list looks right and
+    // the truth only surfaces at next launch. Under "silence is never
+    // neutral" saveAll now speaks a .failure as well as logging it. A LOAD
+    // failure stays log-only: it happens at launch, before anything could
+    // be said usefully, and an empty list is already visible.
     private func loadAll() -> [VMConfiguration] {
         do {
             let url = try storeURL
@@ -249,6 +249,13 @@ final class VMStore: ObservableObject {
             try data.write(to: url, options: .atomic)
         } catch {
             AVMLog.write("AVM: VMStore — FAILED to save configurations: \(error.localizedDescription)")
+            let reason = error.localizedDescription
+            Task { @MainActor in
+                Announcer.shared.announce(
+                    "AVM could not save your virtual machine list. Your last change will be lost when AVM quits. Reason: \(reason) Next: make sure your Mac has free disk space, then make the change again.",
+                    tone: .failure
+                )
+            }
         }
     }
 
@@ -264,6 +271,21 @@ final class VMStore: ObservableObject {
     }
 
     // MARK: - Delete
+
+    /// The install pipelines' scratch folder for this VM, removed with it
+    /// (2026-10-25, code audit). A build cut short by a quit or crash left
+    /// up to 15 GB there, and for Ubuntu a copy of the password hash, and
+    /// nothing else ever cleared it. AVM's own working files, so removed
+    /// outright rather than trashed.
+    private func removeScratch(for configuration: VMConfiguration) {
+        guard let scratch = try? avmDirectory
+            .appendingPathComponent("scratch")
+            .appendingPathComponent(configuration.id.uuidString) else { return }
+        if fileManager.fileExists(atPath: scratch.path) {
+            try? fileManager.removeItem(at: scratch)
+            AVMLog.write("AVM: VMStore — removed install scratch for '\(configuration.name)'.")
+        }
+    }
 
     /// Removes ONLY the configuration entry. This was the entire delete
     /// implementation until 2026-08-15 — which is exactly issue #5: the
@@ -293,6 +315,7 @@ final class VMStore: ObservableObject {
 
         guard fileManager.fileExists(atPath: url.path) else {
             AVMLog.write("AVM: VMStore — delete of '\(configuration.name)': no VM directory on disk (orphaned entry); removing entry only.")
+            removeScratch(for: configuration)
             delete(configuration)
             return 0
         }
@@ -307,6 +330,7 @@ final class VMStore: ObservableObject {
         }
 
         AVMLog.write("AVM: VMStore — moved VM directory to Trash for '\(configuration.name)' (\(bytes) bytes).")
+        removeScratch(for: configuration)
         delete(configuration)
         return bytes
     }
