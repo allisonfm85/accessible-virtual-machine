@@ -141,7 +141,8 @@ produce install ISOs the Windows boot loader cannot read.
 ## Tests
 
 `swift test` runs the logic tests: password hashing, the log sanitizer,
-saved settings, and the Ubuntu account checks. They need no sysroot, so
+saved settings, the Ubuntu account checks, and the root USB helper's socket
+check. They need no sysroot, so
 they run on any Mac with Xcode. If you
 build in a folder under ~/Documents, add
 `--scratch-path ~/Library/Caches/AVM-build/swiftpm`: file syncing adds

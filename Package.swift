@@ -34,6 +34,7 @@ let package = Package(
                 "VM/VMConfiguration.swift",
                 "VM/VMStore.swift",
                 "VM/UbuntuInstallPipeline.swift",
+                "AVMUSBHelper/StreamSocketCheck.swift",
             ],
             swiftSettings: appSettings
         ),

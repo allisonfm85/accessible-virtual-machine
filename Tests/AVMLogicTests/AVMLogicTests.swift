@@ -142,3 +142,75 @@ final class UbuntuAccountTests: XCTestCase {
     }
 }
 
+// MARK: - The root USB helper's socket check
+
+final class StreamSocketCheckTests: XCTestCase {
+    private var root = ""
+    private var dir = ""
+    private var socketPath = ""
+    private var fd: Int32 = -1
+
+    override func setUpWithError() throws {
+        let uid = getuid()
+        root = "/tmp/avm-\(uid)"
+        dir = "\(root)/\(UUID().uuidString)"
+        socketPath = "\(dir)/usbredir-5.sock"
+        mkdir(root, 0o700)
+        chmod(root, 0o700)
+        XCTAssertEqual(mkdir(dir, 0o700), 0)
+        fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        _ = withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            socketPath.utf8CString.withUnsafeBytes { buffer.copyMemory(from: $0) }
+        }
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        XCTAssertEqual(bound, 0)
+    }
+
+    override func tearDown() {
+        Darwin.close(fd)
+        unlink(socketPath)
+        rmdir(dir)
+    }
+
+    func testTheUsersOwnSocketIsAccepted() {
+        XCTAssertNil(streamSocketProblem(socketPath, uid: getuid()))
+    }
+
+    func testAnotherUserIsRefused() {
+        XCTAssertNotNil(streamSocketProblem(socketPath, uid: getuid() + 1))
+    }
+
+    func testPathsOutsideThePrivateFolderAreRefused() {
+        let uid = getuid()
+        for path in ["/tmp/elsewhere/\(UUID().uuidString)/usbredir-5.sock",
+                     "\(dir)/qmp.sock",
+                     "\(root)/../avm-\(uid)/\(URL(fileURLWithPath: dir).lastPathComponent)/usbredir-5.sock",
+                     "/var/run/usbmuxd"] {
+            XCTAssertNotNil(streamSocketProblem(path, uid: uid), path)
+        }
+    }
+
+    func testAFolderOthersCanOpenIsRefused() {
+        chmod(dir, 0o755)
+        defer { chmod(dir, 0o700) }
+        XCTAssertNotNil(streamSocketProblem(socketPath, uid: getuid()))
+    }
+
+    func testASymlinkInPlaceOfTheFolderIsRefused() throws {
+        let real = "\(root)/real-\(UUID().uuidString)"
+        XCTAssertEqual(rename(dir, real), 0)
+        XCTAssertEqual(symlink(real, dir), 0)
+        defer {
+            unlink(dir)
+            rename(real, dir)
+        }
+        XCTAssertNotNil(streamSocketProblem(socketPath, uid: getuid()))
+    }
+}
+
