@@ -426,6 +426,11 @@ of this is AVM.
 - **Command-F5** turns VoiceOver on and off. This is macOS, not AVM, but
   it is half the routine.
 
+Commands that can't do anything right now are dimmed in the Virtual
+Machine menu, and VoiceOver reads them as "dimmed": Enter Windows when
+nothing is running, Send Control-Alt-Delete and Reset when Windows isn't
+running, Detach USB Device when nothing is attached. Pressing a dimmed
+command's keys only beeps.
 
 **Force Stop asks first,** with Cancel as the default, wherever you find
 it, because it turns Windows off at once. It is also offered while Windows

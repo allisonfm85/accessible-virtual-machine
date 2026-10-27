@@ -44,6 +44,13 @@ struct AVMApp: App {
     /// design of record in AVMUpdater.swift's header.
     @StateObject private var updater = AVMUpdater()
 
+    /// The running VM's state and the USB devices in it, so the Virtual
+    /// Machine menu dims what can't act right now (2026-10-25). Both are
+    /// app-lifetime singletons; observing them here is what makes the
+    /// menu redraw when they change.
+    @ObservedObject private var activity = VMActivity.shared
+    @ObservedObject private var usbRedirect = USBRedirectController.shared
+
     /// AVM's FIRST app delegate (added 2026-07-26). See AVMAppDelegate below
     /// for why one became necessary.
     @NSApplicationDelegateAdaptor(AVMAppDelegate.self) private var appDelegate
@@ -183,10 +190,23 @@ struct AVMApp: App {
             // existing weak static VMSession sets at init for out-of-tree
             // handlers — same route the QEMU stderr/termination handlers
             // use); Enter Windows uses the app-root focusLock directly;
-            // Start posts a notification to ContentView. Commands are always
-            // enabled. (Reactive menu dimming needs an app-level VM-state
-            // observable — parked with the UI redesign; audible feedback
-            // arrives with the announcements work.)
+            // Start posts a notification to ContentView.
+            //
+            // DIMMING (2026-10-25, replaces "commands are always enabled"):
+            // items that can't act right now are dimmed, read from
+            // VMActivity (the app-level VM-state observable this used to
+            // wait for). VoiceOver reads them as "dimmed", which says what
+            // is possible before you try, and a dimmed item's key combo
+            // only beeps. Start and the Start submenu dim while a machine
+            // is starting, running, paused or stopping; Enter dims unless
+            // running or paused; Send Ctrl-Alt-Delete, Reset and Attach USB
+            // dim unless running; Detach USB dims with nothing attached.
+            // Start Virtual Machine stays enabled with zero or several
+            // machines set up, because it explains what to do instead.
+            // Speak Status, Reclaim and Save Diagnostic Log never dim:
+            // Speak Status is the way to ask why something is dimmed. The
+            // handlers keep their own guards and spoken refusals as defense
+            // in depth.
             //
             // The shortcuts only fire when AVM has key focus OUTSIDE focus
             // lock (inside lock, keys forward to the guest), which is exactly
@@ -254,6 +274,8 @@ struct AVMApp: App {
                     NotificationCenter.default.post(name: .avmStartVMFromMenu, object: nil)
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
+                .disabled(!activity.canStart)
+
 
                 Button("Enter \(focusLock.guestName)") {
                     // Same gate as the dashboard's Enter Windows button: only
@@ -275,6 +297,8 @@ struct AVMApp: App {
                     }
                 }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(!activity.isRunningOrPaused)
+
 
                 Divider()
 
@@ -284,6 +308,7 @@ struct AVMApp: App {
                     }
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
+                .disabled(!activity.isRunning)
 
                 Divider()
 
@@ -291,10 +316,12 @@ struct AVMApp: App {
                     AVMLog.write("AVM: Attach USB Device menu — posting request to ContentView.", category: "USBHelper")
                     NotificationCenter.default.post(name: .avmAttachUSBFromMenu, object: nil)
                 }
+                .disabled(!activity.isRunning)
                 Button("Detach USB Device…") {
                     AVMLog.write("AVM: Detach USB Device menu — posting request to ContentView.", category: "USBHelper")
                     NotificationCenter.default.post(name: .avmDetachUSBFromMenu, object: nil)
                 }
+                .disabled(usbRedirect.portByDevice.isEmpty)
 
                 Divider()
 
@@ -319,6 +346,7 @@ struct AVMApp: App {
                     }
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(!activity.isRunning)
 
                 Divider()
 
