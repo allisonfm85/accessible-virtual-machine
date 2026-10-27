@@ -100,6 +100,10 @@ struct ContentView: View {
         // type FocusLockManager found" crashes in nested views.
         .environmentObject(vmStore)
         .environmentObject(focusLock)
+        // Closing the window while a VM runs asks first (MainWindowCloseGuard).
+        .background(WindowAccessor { window in
+            MainWindowCloseGuard.shared.install(on: window)
+        })
         // Start Virtual Machine from the menu (Cmd-Shift-S). Honest scope:
         // starts the VM only when exactly ONE is configured and nothing is
         // running. Zero or multiple configurations: beep + explanatory status
@@ -550,12 +554,22 @@ private struct DashboardContent: View {
                         }
                         .accessibilityHint("Gracefully shuts down \(guest)")
                         .keyboardShortcut(".", modifiers: .command)
+                    }
 
+                    // Force Stop is offered while shutting down too
+                    // (2026-10-25, code audit): a guest that ignores the power
+                    // button, such as the firmware screen or an installer, would
+                    // otherwise leave nothing to press, though the two-minute
+                    // reminder tells the user to use Force Stop. It asks first,
+                    // Cancel the default: it is the same plug-pull as Quit Now.
+                    if session.vmState == .running || session.vmState == .paused || session.vmState == .stopping {
                         Button("Force Stop") {
-                            session.forceStop()
-                            activeSession = nil
+                            if confirmForceStop(guest: guest) {
+                                session.forceStop()
+                                activeSession = nil
+                            }
                         }
-                        .accessibilityHint("Immediately terminates the virtual machine without a graceful shutdown")
+                        .accessibilityHint("Turns the virtual machine off at once, without shutting down. Asks first.")
                     }
                 }
             }
@@ -725,4 +739,19 @@ private struct DashboardContent: View {
             }
         }
     }
+}
+
+// MARK: - Force Stop confirmation (2026-10-25)
+
+    /// The Force Stop question, shared with the VM window's overlay.
+func confirmForceStop(guest: String) -> Bool {
+    let alert = NSAlert()
+    alert.messageText = "Force stop \(guest)?"
+    alert.informativeText = "This turns \(guest) off at once, like pulling the plug. Unsaved work in \(guest) is lost, and if \(guest) is installing or updating, it can be damaged."
+    alert.alertStyle = .warning
+    alert.addButton(withTitle: "Cancel")
+    alert.addButton(withTitle: "Force Stop")
+    let confirmed = alert.runModal() == .alertSecondButtonReturn
+    AVMLog.write("AVM: Force Stop \(confirmed ? "confirmed" : "cancelled").")
+    return confirmed
 }
