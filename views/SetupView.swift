@@ -93,6 +93,9 @@ struct SetupView: View {
     /// JAWS needs the user's own license, so it's their choice.
     @State private var installNVDA = true
     @State private var installJAWS = false
+    /// NVDA's laptop keyboard layout (2026-10-26): a Mac keyboard has no
+    /// Insert key or number pad, which desktop layout leans on.
+    @State private var nvdaLaptopLayout = true
     /// Where the VM is stored (2026-10-25, roadmap item 3). nil means on
     /// this Mac, in Application Support, as always. Otherwise a folder the
     /// user chose, usually on an external drive; AVM makes an "AVM Virtual
@@ -424,6 +427,10 @@ struct SetupView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Toggle("Install NVDA (free, from NV Access)", isOn: $installNVDA)
+            if installNVDA {
+                Toggle("NVDA uses its laptop keyboard layout", isOn: $nvdaLaptopLayout)
+                    .accessibilityHint("Recommended on a Mac keyboard, which has no Insert key or number pad. NVDA's key is then Caps Lock.")
+            }
             Toggle("Install JAWS for ARM (from Freedom Scientific)", isOn: $installJAWS)
                 .accessibilityHint("A 1.5 gigabyte download. Without a license, JAWS runs for 40 minutes at a time; activate it in Windows with your own license.")
         }
@@ -534,7 +541,8 @@ struct SetupView: View {
             inputLocale: windowsKeyboard,
             computerName: computerName,
             timeZone: windowsTimeZone,
-            privacy: windowsPrivacy
+            privacy: windowsPrivacy,
+            nvdaLaptopLayout: installNVDA ? nvdaLaptopLayout : false
         )
         if windowsLocalAccount {
             let userName = windowsUserName.trimmingCharacters(in: .whitespaces)

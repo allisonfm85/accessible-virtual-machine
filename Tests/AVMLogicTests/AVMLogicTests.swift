@@ -416,7 +416,8 @@ final class WindowsSetupAnswersTests: XCTestCase {
         XCTAssertTrue(XMLParser(data: Data(text.utf8)).parse())
         for expected in ["<ComputerName>Amenas-PC</ComputerName>", "<TimeZone>GMT Standard Time</TimeZone>",
                          "<ProtectYourPC>1</ProtectYourPC>", "<HideOnlineAccountScreens>true</HideOnlineAccountScreens>",
-                         "<LogonCount>1</LogonCount>", "Amena &lt;&quot;&amp;&apos;&gt; T", "<UserLocale>en-GB</UserLocale>"] {
+                         "<LogonCount>1</LogonCount>", "Amena &lt;&quot;&amp;&apos;&gt; T", "<UserLocale>en-GB</UserLocale>",
+                         "keyboardLayout = laptop"] {
             XCTAssertTrue(text.contains(expected), expected)
         }
         // A Microsoft account and nothing else answered: still valid.
@@ -426,6 +427,8 @@ final class WindowsSetupAnswersTests: XCTestCase {
         }
         XCTAssertTrue(XMLParser(data: Data(plain.utf8)).parse())
         XCTAssertFalse(plain.contains("<UserAccounts>"))
+        var noLaptop = WindowsSetupAnswers(); noLaptop.nvdaLaptopLayout = false
+        XCTAssertEqual(noLaptop.answerFileSections["<!--AVM_NVDA_SETTINGS-->"], "")
     }
 
     func testSavedAnswersAreOwnerOnlyAndForgetThePassword() throws {

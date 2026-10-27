@@ -223,18 +223,19 @@
           <Description>AVM: install NVDA</Description>
           <CommandLine>cmd /c if exist "%SystemRoot%\Setup\AVM\NVDA.EXE" "%SystemRoot%\Setup\AVM\NVDA.EXE" --install-silent --enable-start-on-logon=True</CommandLine>
         </SynchronousCommand>
+        <!--AVM_NVDA_SETTINGS-->
         <SynchronousCommand wcm:action="add">
-          <Order>2</Order>
+          <Order>3</Order>
           <Description>AVM: start the installed screen reader</Description>
           <CommandLine>cmd /c if exist "%ProgramFiles%\NVDA\nvda.exe" (start "" "%ProgramFiles%\NVDA\nvda.exe") else if exist "%ProgramFiles(x86)%\NVDA\nvda.exe" (start "" "%ProgramFiles(x86)%\NVDA\nvda.exe") else for /d %v in ("%ProgramFiles%\Freedom Scientific\JAWS\*") do @if exist "%v\jfw.exe" start "" "%v\jfw.exe"</CommandLine>
         </SynchronousCommand>
         <SynchronousCommand wcm:action="add">
-          <Order>3</Order>
+          <Order>4</Order>
           <Description>AVM: remove the NVDA installer copy</Description>
           <CommandLine>cmd /c rmdir /s /q "%SystemRoot%\Setup\AVM"</CommandLine>
         </SynchronousCommand>
         <SynchronousCommand wcm:action="add">
-          <Order>4</Order>
+          <Order>5</Order>
           <Description>AVM: report what the first sign-in installed</Description>
           <CommandLine>cmd /c for %d in (C D E F G H I J K L) do @if exist %d:\AVMDONE.TAG ((if exist "%ProgramFiles%\NVDA\nvda.exe" (echo nvda-installed&gt;&gt;%d:\AVMSTATUS.TXT) else if exist "%ProgramFiles(x86)%\NVDA\nvda.exe" (echo nvda-installed&gt;&gt;%d:\AVMSTATUS.TXT)) &amp; echo first-sign-in-done&gt;&gt;%d:\AVMSTATUS.TXT)</CommandLine>
         </SynchronousCommand>

@@ -52,6 +52,9 @@ nonisolated struct WindowsSetupAnswers: Codable, Equatable, Sendable {
     var privacy: Privacy = .mostPrivate
     /// nil: a Microsoft account, signed in during setup.
     var localAccount: LocalAccount?
+    /// NVDA's laptop keyboard layout, written before NVDA first starts: a
+    /// Mac keyboard has no Insert key or number pad. nil or true: laptop.
+    var nvdaLaptopLayout: Bool?
 
     // MARK: Defaults from the Mac
 
@@ -181,6 +184,7 @@ nonisolated struct WindowsSetupAnswers: Codable, Equatable, Sendable {
             "<!--AVM_OOBE_ACCOUNT-->": localAccount == nil ? "" : "<HideLocalAccountScreen>true</HideLocalAccountScreen>\n        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>",
             "AVM_PROTECT_YOUR_PC": privacy == .mostPrivate ? "3" : "1",
             "<!--AVM_TIMEZONE_ACCOUNTS-->": timeZoneAndAccounts,
+            "<!--AVM_NVDA_SETTINGS-->": nvdaSettings,
         ]
     }
 
@@ -205,6 +209,21 @@ nonisolated struct WindowsSetupAnswers: Codable, Equatable, Sendable {
                   <PlainText>false</PlainText>
                 </Password>
               </AutoLogon>
+        """
+    }
+
+    /// At the first sign-in, after NVDA installs and before it starts:
+    /// NVDA's own settings file (configobj) with the laptop layout, only if
+    /// NVDA is there and has no settings yet. NVDA's welcome dialog then
+    /// shows laptop already chosen.
+    private var nvdaSettings: String {
+        guard nvdaLaptopLayout ?? true else { return "" }
+        return """
+        <SynchronousCommand wcm:action="add">
+                  <Order>2</Order>
+                  <Description>AVM: NVDA laptop keyboard layout</Description>
+                  <CommandLine>cmd /c if exist "%ProgramFiles%\\NVDA\\nvda.exe" if not exist "%APPDATA%\\nvda\\nvda.ini" (mkdir "%APPDATA%\\nvda" 2&gt;nul &amp; (echo [keyboard]&amp; echo keyboardLayout = laptop)&gt;"%APPDATA%\\nvda\\nvda.ini")</CommandLine>
+                </SynchronousCommand>
         """
     }
 
