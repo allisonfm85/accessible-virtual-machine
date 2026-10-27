@@ -530,7 +530,14 @@ private func avmPublicLog(_ message: String) {
 /// When enabled, the app self-declares in the unified log at first key event
 /// (the NSLog in the initializer below), so a log capture can always be
 /// audited for whether key logging was on.
+///
+/// DEBUG BUILDS ONLY (2026-10-25, privacy audit): in a release build this is
+/// false, with no setting that can change it. The flag above used to work in
+/// release builds too, and any program the user runs can write a defaults
+/// key or pass it on the command line, which made the README's promise,
+/// that AVM cannot capture what you type, untrue for the build testers use.
 enum KeyEventLogging {
+    #if DEBUG
     static let isEnabled: Bool = {
         let on = UserDefaults.standard.bool(forKey: "AVMKeyEventLogging")
         if on {
@@ -538,6 +545,9 @@ enum KeyEventLogging {
         }
         return on
     }()
+    #else
+    static let isEnabled = false
+    #endif
 }
 
 // MARK: - SwiftUI Entry Point
@@ -597,17 +607,34 @@ struct VMView: View {
                 }
                 .keyboardShortcut(.escape, modifiers: [.control, .command])
                 .accessibilityHint("Unlocks focus and returns keyboard control to macOS")
+                // Same shutdown as the dashboard's Stop (2026-10-25, code
+                // audit). This used stop(), which does nothing while paused,
+                // and dropped every failure, so the user heard only "Mac
+                // keyboard on" while the VM kept running. stopGracefully
+                // resumes a paused VM, speaks the shutdown, and its failure
+                // is spoken here. The session ends by itself when the VM
+                // reaches Stopped (SessionGate).
                 Button("Stop \(guest)") {
+                    focusLock.unlock()
                     Task {
-                        do { try await session.stop() }
-                        catch {}
-                        focusLock.unlock()
+                        do {
+                            try await session.stopGracefully()
+                        } catch {
+                            Announcer.shared.announce(
+                                "\(guest) could not be shut down. Reason: \(error.localizedDescription) Next: try Stop again, or use Force Stop.",
+                                tone: .failure
+                            )
+                        }
                     }
                 }
                 .accessibilityHint("Shuts down the \(guest) virtual machine")
                 Button("Force Stop") {
-                    session.forceStop()
-                    focusLock.unlock()
+                    // Asks first, as on the dashboard: a VoiceOver press can
+                    // reach this button even while the keyboard is in the VM.
+                    if confirmForceStop(guest: guest) {
+                        session.forceStop()
+                        focusLock.unlock()
+                    }
                 }
                 .accessibilityHint("Immediately kills the virtual machine. Use only if Stop is unresponsive.")
             }
@@ -862,6 +889,124 @@ final class SPICEKeyCaptureView: MTKView {
 }
 
 // MARK: - Coordinator
+// MARK: - Clipboard sharing (2026-10-25)
+
+/// Connects CocoaSpice's clipboard sharing to the Mac's pasteboard.
+/// CocoaSpice already turns sharing on and the SPICE agent AVM installs in
+/// Windows speaks it, but with no pasteboard delegate nothing moved:
+/// copying between the Mac and Windows didn't work at all.
+///   - Windows to Mac: CocoaSpice calls setString/setData as soon as
+///     something is copied in the guest.
+///   - Mac to Windows: NSPasteboard has no change notification, so AVM
+///     checks its change count whenever the user enters the guest or comes
+///     back to AVM, and tells CocoaSpice when it moved; Windows then asks
+///     for the data when the user pastes.
+/// CocoaSpice calls this on its SPICE thread, so it touches no main-actor
+/// state: the VM's setting is copied in, behind a lock, by refreshEnabled.
+/// PRIVACY: clipboard contents are never logged, only that sharing ran.
+nonisolated final class AVMPasteboard: NSObject, CSPasteboardDelegate, @unchecked Sendable {
+    static let shared = AVMPasteboard()
+
+    private let lock = NSLock()
+    private var enabled = true
+    /// The pasteboard's change count when AVM last told the guest, or last
+    /// wrote it itself, so a guest copy isn't echoed back as a Mac change.
+    private var seenChangeCount = NSPasteboard.general.changeCount
+
+    private var isEnabled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return enabled
+    }
+
+    /// Reads the running VM's saved setting. Main actor: called on connect,
+    /// when Settings are saved, and before each change check.
+    @MainActor
+    func refreshEnabled() {
+        let id = VMSession.current?.configuration.id
+        let saved = id.flatMap { id in VMStore.shared?.configurations.first { $0.id == id } }
+        let on = saved?.sharesClipboard ?? true
+        lock.lock(); enabled = on; lock.unlock()
+    }
+
+    /// Tells CocoaSpice if the Mac's clipboard changed since AVM last
+    /// looked. Called on entering the guest and when AVM becomes active.
+    @MainActor
+    func macPasteboardMayHaveChanged() {
+        refreshEnabled()
+        guard isEnabled else { return }
+        let count = NSPasteboard.general.changeCount
+        lock.lock()
+        let changed = count != seenChangeCount
+        seenChangeCount = count
+        lock.unlock()
+        if changed {
+            AVMLog.write("AVM: Clipboard — the Mac's clipboard changed; offering it to the guest.")
+            NotificationCenter.default.post(name: .csPasteboardChanged, object: nil)
+        }
+    }
+
+    private static func macType(_ type: CSPasteboardType) -> NSPasteboard.PasteboardType? {
+        switch type {
+        case .string: return .string
+        case .png: return .png
+        case .tiff: return .tiff
+        case .html: return .html
+        case .rtf: return .rtf
+        case .rtfd: return .rtfd
+        case .pdf: return .pdf
+        case .URL: return .URL
+        case .fileURL: return .fileURL
+        case .jpg: return NSPasteboard.PasteboardType("public.jpeg")
+        case .bmp: return NSPasteboard.PasteboardType("com.microsoft.bmp")
+        case .tabularText: return .tabularText
+        default: return nil
+        }
+    }
+
+    func canReadItem(for type: CSPasteboardType) -> Bool {
+        guard isEnabled, let macType = Self.macType(type) else { return false }
+        return NSPasteboard.general.availableType(from: [macType]) != nil
+    }
+
+    func data(for type: CSPasteboardType) -> Data? {
+        guard isEnabled, let macType = Self.macType(type) else { return nil }
+        return NSPasteboard.general.data(forType: macType)
+    }
+
+    func setData(_ data: Data, for type: CSPasteboardType) {
+        guard isEnabled, let macType = Self.macType(type) else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setData(data, forType: macType)
+        noteOwnWrite()
+    }
+
+    func string() -> String? {
+        guard isEnabled else { return nil }
+        return NSPasteboard.general.string(forType: .string)
+    }
+
+    func setString(_ string: String) {
+        guard isEnabled else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(string, forType: .string)
+        noteOwnWrite()
+    }
+
+    func clearContents() {
+        guard isEnabled else { return }
+        NSPasteboard.general.clearContents()
+        noteOwnWrite()
+    }
+
+    private func noteOwnWrite() {
+        let count = NSPasteboard.general.changeCount
+        lock.lock(); seenChangeCount = count; lock.unlock()
+        AVMLog.write("AVM: Clipboard — the guest copied something; it's on the Mac's clipboard.")
+    }
+}
+
 final class SPICECoordinator: NSObject, CSConnectionDelegate {
     private var connection: CSConnection?
     private var renderer: CSMetalRenderer?
@@ -1030,6 +1175,10 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         // VM is restarted. The teardown rules in this file keep AVM's main
         // thread (and QMP-based Stop) alive when that happens.
         conn.audioEnabled = true
+        // The shorter audio path, if chosen (2026-10-26, experimental; see
+        // SpiceAudioPipeline). Read when playback starts, so set it first.
+        let savedForAudio = VMSession.current.flatMap { session in VMStore.shared?.configurations.first { $0.id == session.configuration.id } }
+        SpiceAudioPipeline.apply(lowLatency: savedForAudio?.usesLowAudioLatency ?? false)
         self.connection = conn
 
         guard conn.connect() else {
@@ -1806,7 +1955,31 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     // MARK: CSConnectionDelegate
     func spiceConnected(_ connection: CSConnection) {
         avmPublicLog("SPICE connected.")
+        // Clipboard sharing (2026-10-25): the delegate is weak in CocoaSpice,
+        // so the shared instance keeps it alive.
+        connection.session.pasteboardDelegate = AVMPasteboard.shared
+        // Shared folder (2026-10-26). Always set: CocoaSpice's own default
+        // is ~/Documents/Public, read and write.
+        let id = VMSession.current?.configuration.id
+        let saved = id.flatMap { id in VMStore.shared?.configurations.first { $0.id == id } }
+        if let folder = saved?.sharedFolderURL {
+            connection.session.setSharedDirectory(folder.path, readOnly: saved?.sharedFolderIsReadOnly ?? false)
+        } else {
+            connection.session.setSharedDirectory(Self.emptyShare.path, readOnly: true)
+        }
+        Task { @MainActor in
+            AVMPasteboard.shared.refreshEnabled()
+            AVMPasteboard.shared.macPasteboardMayHaveChanged()
+        }
     }
+    /// An empty, read-only folder to share when none is chosen, in place
+    /// of CocoaSpice's ~/Documents/Public.
+    private static let emptyShare: URL = {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("avm-no-shared-folder", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }()
+
     func spiceDisconnected(_ connection: CSConnection) {
         avmPublicLog("SPICE disconnected.")
     }
