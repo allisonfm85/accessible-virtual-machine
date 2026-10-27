@@ -550,6 +550,7 @@ struct SettingsView: View {
                     Text("\(windowsKeyboardName ?? "Keyboard") (not connected now)").tag(Optional(id))
                 }
             }
+            .accessibilityHint("Opens the list of keyboards connected to your Mac. The one you choose types only into Windows.")
             .onChange(of: windowsKeyboardID) { id in
                 if let id, let keyboard = connectedKeyboards.first(where: { $0.id == id }) {
                     windowsKeyboardName = keyboard.name
@@ -807,8 +808,7 @@ struct SettingsView: View {
                 Text("Always use in \(guest)").tag(USBPlugMode.always)
                 Text("Keep on the Mac").tag(USBPlugMode.keepOnMac)
             }
-            .pickerStyle(.radioGroup)
-            .labelsHidden()
+            .choicePopUp("Opens the choices for a USB device plugged in while \(guest) runs.")
 
             Text("Keyboards, braille displays, and other input devices always ask, even with Always use in \(guest). You can still attach any device from the Virtual Machine menu.")
                 .font(.caption)
@@ -823,8 +823,7 @@ struct SettingsView: View {
                 Text("Send it back to \(guest)").tag(true)
                 Text("Ask first").tag(false)
             }
-            .pickerStyle(.radioGroup)
-            .labelsHidden()
+            .choicePopUp("Opens the choices for a braille display that comes back within a minute.")
             Text("Some displays, such as the Monarch, disconnect for a moment when they switch modes; Send it back keeps them in \(guest). Choose Ask first if you unplug your display to bring it back to the Mac.")
                 .font(.caption)
                 .foregroundStyle(.secondary)

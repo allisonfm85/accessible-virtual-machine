@@ -72,8 +72,7 @@ struct MacSetupView: View {
                     Text("Download the newest macOS this Mac supports, from Apple").tag(false)
                     Text("Use a macOS installer file (IPSW) I have").tag(true)
                 }
-                .pickerStyle(.radioGroup)
-                .labelsHidden()
+                .choicePopUp("Opens the choices for where macOS comes from.")
                 if useIPSW {
                     HStack {
                         Button("Choose IPSW File…") { chooseIPSW() }

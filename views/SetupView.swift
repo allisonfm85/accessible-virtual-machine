@@ -447,13 +447,16 @@ struct SetupView: View {
             // an accessibilityLabel that repeats it was said twice
             // ("Windows edition, Windows edition"). Same for Privacy and
             // Windows account below.
+            // A pop-up, not radio buttons (2026-10-27, user feedback): VoiceOver
+            // read the radio group with Pro already chosen and nothing saying
+            // there was a choice to make. "Pop-up button" says it can be
+            // opened, and the hint says what to do.
             Picker("Windows edition", selection: $windowsEdition) {
                 ForEach(WindowsEdition.allCases) { edition in
                     Text(edition.imageName).tag(edition)
                 }
             }
-            .pickerStyle(.radioGroup)
-            .labelsHidden()
+            .choicePopUp("Opens the list of Windows editions. Choose the one your Windows license is for.")
         }
     }
 
@@ -515,6 +518,7 @@ struct SetupView: View {
                     Text(region.name).tag(Optional(region.id))
                 }
             }
+            .accessibilityHint("Opens the list of regions. Windows uses it for its language, dates and money.")
             Picker("Keyboard", selection: $windowsKeyboard) {
                 Text("Let Windows ask").tag(String?.none)
                 ForEach(WindowsRegion.windowsKeyboards, id: \.id) { keyboard in
@@ -528,6 +532,7 @@ struct SetupView: View {
                     Text(zone).tag(Optional(zone))
                 }
             }
+            .accessibilityHint("Opens the list of time zones for Windows' clock.")
             TextField("Computer name", text: $windowsComputerName, prompt: Text(suggestedComputerName))
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Computer name")
@@ -543,8 +548,7 @@ struct SetupView: View {
                 Text("Most private: send Microsoft no optional data").tag(WindowsSetupAnswers.Privacy.mostPrivate)
                 Text("Windows' recommended settings").tag(WindowsSetupAnswers.Privacy.recommended)
             }
-            .pickerStyle(.radioGroup)
-            .labelsHidden()
+            .choicePopUp("Opens the privacy choices. Choose how much Windows sends Microsoft.")
 
             Text("Windows account")
                 .fixedSize(horizontal: false, vertical: true)
@@ -553,8 +557,7 @@ struct SetupView: View {
                 Text("Microsoft account: sign in during setup").tag(false)
                 Text("Local account on this PC: no sign-in screens").tag(true)
             }
-            .pickerStyle(.radioGroup)
-            .labelsHidden()
+            .choicePopUp("Opens the account choices. Choose how you'll sign in to Windows.")
 
             if windowsLocalAccount {
                 TextField("Your name", text: $windowsDisplayName)

@@ -62,6 +62,13 @@ struct USBDevicePickerView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selected: AVMUSBDeviceIdentity?
 
+    /// A device's name in the list, with its ID, bus and address when
+    /// another device has the same name.
+    private func menuName(_ device: AVMUSBDeviceIdentity) -> String {
+        guard devices.filter({ $0.displayName == device.displayName }).count > 1 else { return device.displayName }
+        return "\(device.displayName), ID \(device.vidPidString), bus \(device.busNumber), address \(device.deviceAddress)"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
 
@@ -74,15 +81,16 @@ struct USBDevicePickerView: View {
                 .font(.body)
                 .fixedSize(horizontal: false, vertical: true)
 
+            // A pop-up (2026-10-27, ChoiceGroup.swift). A menu item can't
+            // carry a hint, so two devices with the same name say their ID,
+            // bus and address in it, to tell them apart.
             Picker(mode.listLabel, selection: $selected) {
+                Text("Choose a device").tag(nil as AVMUSBDeviceIdentity?)
                 ForEach(devices, id: \.description) { device in
-                    Text(device.displayName)
-                        .accessibilityHint("ID \(device.vidPidString), bus \(device.busNumber), address \(device.deviceAddress).")
-                        .tag(device as AVMUSBDeviceIdentity?)
+                    Text(menuName(device)).tag(device as AVMUSBDeviceIdentity?)
                 }
             }
-            .pickerStyle(.radioGroup)
-            .labelsHidden()
+            .choicePopUp("Opens the list of \(devices.count == 1 ? "one device" : "\(devices.count) devices"). Choose one, then \(mode.actionTitle).")
 
             HStack {
                 Spacer()
