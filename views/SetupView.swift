@@ -2,6 +2,7 @@
 // AVM — Accessible Virtual Machine
 
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 
 struct SetupView: View {
@@ -56,7 +57,9 @@ struct SetupView: View {
     }
 
     private var maxDiskInGB: Int {
-        let fileURL = URL(fileURLWithPath: NSHomeDirectory())
+        // The disk lives where the VM is stored (2026-10-25), so the limit
+        // follows the chosen drive's free space.
+        let fileURL = storageFolder ?? URL(fileURLWithPath: NSHomeDirectory())
         if let values = try? fileURL.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
            let available = values.volumeAvailableCapacity {
             return max(40, available / (1024 * 1024 * 1024) - 20)
@@ -85,6 +88,11 @@ struct SetupView: View {
     /// Windows installer is picked. Pro is the default, as it was when AVM
     /// chose without asking.
     @State private var windowsEdition: WindowsEdition = .pro
+    /// Where the VM is stored (2026-10-25, roadmap item 3). nil means on
+    /// this Mac, in Application Support, as always. Otherwise a folder the
+    /// user chose, usually on an external drive; AVM makes an "AVM Virtual
+    /// Machines" folder inside it, and one folder per VM inside that.
+    @State private var storageFolder: URL? = nil
 
     // MARK: - Ubuntu (2026-10-19)
     //
@@ -178,6 +186,8 @@ struct SetupView: View {
                         .accessibilityValue("\(diskSizeGB) gigabytes")
                         .accessibilityHint("Adjust with arrow keys. Minimum 40 GB, maximum \(maxDiskInGB) GB based on available space")
                 }
+
+                storageSection
 
                 // Graphics section removed 2026-08-06: its text promised that
                 // "Windows guest drivers will provide improved display
@@ -281,6 +291,62 @@ struct SetupView: View {
                 reportFailure(error.localizedDescription)
             }
         }
+    }
+
+    // MARK: - Storage location
+
+    private var storageSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Where to Store It")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Text(storageDescription)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Stored: \(storageDescription)")
+            HStack {
+                Button("Choose a Folder or Drive…") {
+                    chooseStorageFolder()
+                }
+                .accessibilityHint("Opens a folder picker, to store this virtual machine on an external drive or in another folder")
+                if storageFolder != nil {
+                    Button("Store on This Mac") {
+                        storageFolder = nil
+                        Announcer.shared.announce("The virtual machine will be stored on this Mac.", tone: .info)
+                    }
+                    .accessibilityHint("Goes back to storing this virtual machine on the Mac's own disk")
+                }
+            }
+        }
+    }
+
+    private var storageDescription: String {
+        guard let folder = storageFolder else { return "On this Mac." }
+        if let drive = Self.driveName(of: folder) {
+            return "On the drive \(drive), in \(folder.lastPathComponent)."
+        }
+        return "In the folder \(folder.path)."
+    }
+
+    /// The drive's name for a folder under /Volumes, or nil on the Mac's
+    /// own disk.
+    private static func driveName(of url: URL) -> String? {
+        let parts = url.standardizedFileURL.pathComponents
+        return parts.count > 2 && parts[1] == "Volumes" ? parts[2] : nil
+    }
+
+    private func chooseStorageFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Store Here"
+        panel.message = "Choose a drive or folder to store this virtual machine in. Windows needs 64 gigabytes or more."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        storageFolder = url
+        // Keep the disk size within what the new drive can hold.
+        diskSizeGB = min(diskSizeGB, maxDiskInGB)
+        Announcer.shared.announce("The virtual machine will be stored \(storageDescription.prefix(1).lowercased() + storageDescription.dropFirst())", tone: .info)
     }
 
     // MARK: - Windows edition
@@ -473,17 +539,15 @@ struct SetupView: View {
         // the VM for the first time.
         let vmID = UUID()
         let diskPath: String
+        // A chosen folder gets "AVM Virtual Machines/<uuid>" inside it, so
+        // the drive shows plainly what the folder is for. nil keeps the
+        // Application Support layout (VMConfiguration.directoryURL).
+        let storagePath = storageFolder?
+            .appendingPathComponent("AVM Virtual Machines", isDirectory: true)
+            .appendingPathComponent(vmID.uuidString, isDirectory: true)
+            .path
         do {
-            let appSupport = try FileManager.default.url(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask,
-                appropriateFor: nil,
-                create: true
-            )
-            let vmDir = appSupport
-                .appendingPathComponent("AVM")
-                .appendingPathComponent("vms")
-                .appendingPathComponent(vmID.uuidString)
+            let vmDir = try VMConfiguration(id: vmID, storageFolderPath: storagePath).directoryURL()
             try FileManager.default.createDirectory(at: vmDir, withIntermediateDirectories: true)
             diskPath = vmDir.appendingPathComponent("disk.qcow2").path
             // Only the hash is stored, owner-only, until the install media
@@ -504,6 +568,7 @@ struct SetupView: View {
             installISOPath: installerURL.path,
             guestOSName: isUbuntu ? GuestOS.ubuntu.rawValue : nil,
             windowsEditionName: isUbuntu ? nil : windowsEdition.rawValue,
+            storageFolderPath: storagePath,
             // Secure Boot for every new Windows VM (2026-10-25): with the
             // TPM AVM already gives it, Windows sees a PC that meets its
             // requirements, Insider builds included.

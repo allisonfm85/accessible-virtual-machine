@@ -575,8 +575,8 @@ final class VMManager: ObservableObject {
 
     /// Kills any swtpm process orphaned from a prior run that is still bound to
     /// THIS VM's TPM control socket and holding the TPM-state lock.
-    private func reapOrphanedSwtpm(for vmID: UUID) {
-        let uuid = vmID.uuidString
+    private func reapOrphanedSwtpm(for configuration: VMConfiguration) {
+        let uuid = configuration.id.uuidString
 
         let pgrep = Process()
         pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
@@ -611,16 +611,8 @@ final class VMManager: ObservableObject {
             usleep(300_000)
         }
 
-        if let appSupport = try? FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: false
-        ) {
-            let lockPath = appSupport
-                .appendingPathComponent("AVM")
-                .appendingPathComponent("vms")
-                .appendingPathComponent(uuid)
+        if let vmDir = try? configuration.directoryURL() {
+            let lockPath = vmDir
                 .appendingPathComponent("tpm-state")
                 .appendingPathComponent(".lock")
             if FileManager.default.fileExists(atPath: lockPath.path) {
@@ -632,18 +624,14 @@ final class VMManager: ObservableObject {
 
     // MARK: - Directory Setup
 
-    private func prepareRuntimeDirectory(for vmID: UUID) throws -> URL {
-        let appSupport = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let dir = appSupport
-            .appendingPathComponent("AVM")
-            .appendingPathComponent("vms")
-            .appendingPathComponent(vmID.uuidString)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    /// The VM's own folder (VMConfiguration.directoryURL). A folder the user
+    /// chose must already exist; startVM has checked. Only the Application
+    /// Support layout is created here.
+    private func prepareRuntimeDirectory(for configuration: VMConfiguration) throws -> URL {
+        let dir = try configuration.directoryURL()
+        if !configuration.isStoredElsewhere {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
         avmLog("prepareRuntimeDirectory: \(dir.path)")
         return dir
     }
@@ -951,8 +939,20 @@ final class VMManager: ObservableObject {
         }
         avmLog("startVM: found QEMU executable at \(qemuURL.path)")
 
+        // A VM stored on a drive that isn't connected (2026-10-25). Checked
+        // before anything is created: the folder-making below would
+        // otherwise quietly make /Volumes/<drive>/... on the Mac's own disk
+        // and install a fresh Windows there.
+        if configuration.storageIsMissing {
+            let message = configuration.storageMissingMessage
+            avmLog("startVM: storage folder missing at \(configuration.storageFolderPath ?? "?") — refusing")
+            Announcer.shared.announce(message, tone: .failure)
+            state = .error(message)
+            throw AVMError.storageMissing(message)
+        }
+
         reapOrphanedQEMU(for: configuration.id)
-        reapOrphanedSwtpm(for: configuration.id)
+        reapOrphanedSwtpm(for: configuration)
 
         activeConfiguration = configuration
         state = .starting
@@ -975,7 +975,7 @@ final class VMManager: ObservableObject {
 
     /// Everything startVM does once the state is .starting.
     private func continueStart(configuration: VMConfiguration, qemuURL: URL) async throws {
-        let runtimeDir = try prepareRuntimeDirectory(for: configuration.id)
+        let runtimeDir = try prepareRuntimeDirectory(for: configuration)
         vmRuntimeDir = runtimeDir
 
         // REINSTALL GUARD: check for the install-complete marker BEFORE any
@@ -2985,11 +2985,14 @@ enum AVMError: LocalizedError {
     case qmpEncodingFailed
     case qmpCommandFailed(String)
     case diskCreationFailed(String)
+    case storageMissing(String)
     case socketDirectoryUnsafe(String)
 
     var errorDescription: String? {
         switch self {
         case .socketDirectoryUnsafe(let message):
+            return message
+        case .storageMissing(let message):
             return message
         case .vmAlreadyRunning:
             return "A VM is already running. Stop it before starting a new one."

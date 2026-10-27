@@ -518,10 +518,10 @@ private struct DashboardContent: View {
                                     .font(.body)
                                     .accessibilityAddTraits(.isHeader)
                                     .accessibilityHeading(.h2)
-                                Text("\(config.cpuCount) cores · \(config.ramSizeGB) GB RAM · \(config.diskSizeGB) GB disk")
+                                Text("\(config.cpuCount) cores · \(config.ramSizeGB) GB RAM · \(config.diskSizeGB) GB disk\(storageNote(config).map { " · \($0)" } ?? "")")
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .accessibilityLabel("\(config.cpuCount) cores, \(config.ramSizeGB) gigabytes RAM, \(config.diskSizeGB) gigabytes disk")
+                                    .foregroundStyle(config.storageIsMissing ? Color.red : Color.secondary)
+                                    .accessibilityLabel("\(config.cpuCount) cores, \(config.ramSizeGB) gigabytes RAM, \(config.diskSizeGB) gigabytes disk\(storageNote(config).map { ", \($0)" } ?? "")")
                             }
 
                             Spacer()
@@ -739,6 +739,17 @@ private struct DashboardContent: View {
     ///     the Trash-recovery note; failure .failure (Basso) stating the
     ///     machine was NOT deleted and its files are untouched (VMStore keeps
     ///     the entry on failure — see deleteMovingFilesToTrash).
+    /// Where a VM stored outside the Mac's usual place lives, for the
+    /// spec line (2026-10-25): its drive, or that the drive is missing, so
+    /// the problem is heard on the dashboard before Start is pressed.
+    private func storageNote(_ config: VMConfiguration) -> String? {
+        guard config.isStoredElsewhere else { return nil }
+        if config.storageIsMissing {
+            return config.storageDriveName.map { "drive \($0) not connected" } ?? "storage folder not found"
+        }
+        return config.storageDriveName.map { "on \($0)" } ?? "in a folder you chose"
+    }
+
     private func confirmDelete(config: VMConfiguration) {
         // Defense-in-depth guard (see header). Matching ID with a live
         // session in any non-stopped state refuses with a spoken reason.
@@ -748,6 +759,18 @@ private struct DashboardContent: View {
             AVMLog.write("AVM: Delete refused for '\(config.name)' — VM is not stopped.")
             Announcer.shared.announce(
                 "Cannot delete \(config.name) while it is running. Stop the virtual machine first.",
+                tone: .failure
+            )
+            return
+        }
+
+        // A drive that isn't connected (2026-10-25): with no folder to see,
+        // the dialog would say there are no files and the entry would go,
+        // leaving the files on the drive. Refuse, and say what to do.
+        if config.storageIsMissing {
+            AVMLog.write("AVM: Delete refused for '\(config.name)' — storage folder missing.")
+            Announcer.shared.announce(
+                "\(config.storageMissingMessage) \(config.name) was not deleted.",
                 tone: .failure
             )
             return

@@ -83,6 +83,17 @@ When Windows starts, AVM sends the devices you've chosen to remember for Windows
 
 **USB flash drives don't work yet.** macOS 27 blocks AVM from sending a USB storage device to Windows. I'm working with Apple on a fix.
 
+## Keeping a virtual machine on an external drive
+
+In the Setup Wizard, under Where to Store It, choose Choose a Folder or
+Drive, then pick the drive. AVM keeps everything for that machine there,
+in a folder named AVM Virtual Machines. The dashboard says which drive
+each machine is on. If the drive isn't connected, the dashboard says so,
+and Start and Delete refuse until you connect it, so a machine is never
+quietly recreated on your Mac or forgotten while its files are on the
+drive. While Windows installs, AVM still needs about 8 gigabytes free on
+the Mac itself for a short while.
+
 ## Secure Boot
 
 New Windows machines have Secure Boot, with Microsoft's keys, so Windows

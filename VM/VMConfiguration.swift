@@ -72,6 +72,15 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// windowsEdition, never directly.
     var windowsEditionName: String?
 
+    // MARK: - Storage location (2026-10-25, roadmap item 3)
+
+    /// Absolute path of this VM's own folder (disk.qcow2, nvram, tpm-state,
+    /// install media) when the user stored it somewhere other than
+    /// Application Support, such as an external drive. nil means the
+    /// Application Support layout, exactly as before. Read the folder
+    /// through directoryURL(), never directly.
+    var storageFolderPath: String?
+
     // MARK: - Secure Boot (2026-10-25, roadmap item 8)
 
     /// true: the VM boots UTM's Secure Boot firmware, whose variable store
@@ -96,6 +105,7 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         usbRememberedDevices: [RememberedUSBDevice]? = nil,
         guestOSName: String? = nil,
         windowsEditionName: String? = nil,
+        storageFolderPath: String? = nil,
         secureBoot: Bool? = nil,
     ) {
         self.id = id
@@ -110,6 +120,7 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         self.usbRememberedDevices = usbRememberedDevices
         self.guestOSName = guestOSName
         self.windowsEditionName = windowsEditionName
+        self.storageFolderPath = storageFolderPath
         self.secureBoot = secureBoot
     }
 }
@@ -118,6 +129,66 @@ extension VMConfiguration {
     var usesSecureBoot: Bool { secureBoot == true }
 }
 
+// MARK: - Storage location
+
+extension VMConfiguration {
+
+    /// Application Support/AVM/VMs, where every VM lives unless the user
+    /// chose another folder. Spelled "VMs", as VMStore's layout of record
+    /// has it (the lowercase "vms" some older code used is the same folder
+    /// on a case-insensitive disk).
+    static func defaultVMsContainer() throws -> URL {
+        try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        .appendingPathComponent(AVMPaths.supportFolderName)
+        .appendingPathComponent("VMs")
+    }
+
+    /// The folder that holds every file belonging to this VM. Computed
+    /// from the UUID, or from storageFolderPath when the user chose a
+    /// folder; never derived from diskImagePath (see VMStore).
+    func directoryURL() throws -> URL {
+        if let path = storageFolderPath {
+            return URL(fileURLWithPath: path, isDirectory: true)
+        }
+        return try Self.defaultVMsContainer().appendingPathComponent(id.uuidString)
+    }
+
+    var isStoredElsewhere: Bool { storageFolderPath != nil }
+
+    /// True when the VM was stored in a folder of the user's choosing and
+    /// that folder can't be found now: almost always an external drive
+    /// that isn't connected. Start and Delete refuse, and say so.
+    var storageIsMissing: Bool {
+        guard let path = storageFolderPath else { return false }
+        var isDirectory: ObjCBool = false
+        return !(FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue)
+    }
+
+    /// The name of the drive holding the VM, for speech: "Backup Drive".
+    /// Read from the path when the drive isn't connected. nil for the
+    /// Mac's own disk.
+    var storageDriveName: String? {
+        guard let path = storageFolderPath else { return nil }
+        let parts = URL(fileURLWithPath: path).pathComponents
+        if parts.count > 2, parts[1] == "Volumes" {
+            return parts[2]
+        }
+        return nil
+    }
+
+    /// The spoken refusal when storageIsMissing.
+    var storageMissingMessage: String {
+        if let drive = storageDriveName {
+            return "\(name) is stored on the drive \(drive), which isn't connected. Next: connect \(drive), then try again."
+        }
+        return "AVM can't find the folder that holds \(name), at \(storageFolderPath ?? "its saved location"). Next: if it's on an external drive, connect the drive, then try again."
+    }
+}
 
 // MARK: - Guest operating system
 

@@ -206,7 +206,8 @@ your list, tells you how much space each one holds, and moves the ones you
 pick to the Trash.
 
 Your machines live in your Library folder, under Application Support, in a
-folder named AVM. You do not need to go there, but that is where the space
+folder named AVM, unless you chose another folder or drive for one in the
+Setup Wizard. You do not need to go there, but that is where the space
 is going.
 
 ---
@@ -229,6 +230,14 @@ The window reads top to bottom:
   10. The minimum is 40. The maximum is based on your free disk space, and
   it always leaves your Mac roughly 20 gigabytes of headroom. Remember, the
   disk file starts small and grows as Windows uses it.
+- **Where to Store It** is a heading, followed by where the machine will
+  live: "On this Mac" unless you change it. **Choose a Folder or Drive**
+  opens a folder picker, so you can keep the machine on an external drive
+  instead. AVM makes a folder called "AVM Virtual Machines" there. The
+  dashboard then says which drive each machine is on, and, if that drive
+  isn't connected, says so; Start and Delete refuse, out loud, until you
+  connect it. During installation AVM still needs about 8 gigabytes free
+  on your Mac for a short while, to build the install disc.
 - **Windows installer image** reads "No installer selected" until you
   choose one. The **Choose Installer Image** button opens a standard file
   picker. Navigate to your ISO and choose it. The wizard then reads back

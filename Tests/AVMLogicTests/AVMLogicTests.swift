@@ -63,6 +63,7 @@ final class VMConfigurationTests: XCTestCase {
         let config = try XCTUnwrap(configs.first)
         XCTAssertEqual(config.guestOS, .windows)
         XCTAssertNil(config.windowsEdition)
+        XCTAssertFalse(config.isStoredElsewhere)
         XCTAssertFalse(config.usesSecureBoot)
         XCTAssertEqual(config.effectiveUSBMode, .ask)
     }
@@ -83,6 +84,21 @@ final class VMConfigurationTests: XCTestCase {
         XCTAssertEqual(WindowsEdition.pro.imageName, "Windows 11 Pro")
         XCTAssertEqual(WindowsEdition.pro.genericProductKey, "VK7JG-NPHTM-C97JM-9MPGT-3V66T")
         XCTAssertEqual(Set(WindowsEdition.allCases.map(\.genericProductKey)).count, WindowsEdition.allCases.count)
+    }
+
+    func testExternalDriveNameAndMissingDrive() {
+        var config = VMConfiguration(name: "Travel PC")
+        config.storageFolderPath = "/Volumes/Backup Drive/AVM Virtual Machines/\(config.id.uuidString)"
+        XCTAssertEqual(config.storageDriveName, "Backup Drive")
+        XCTAssertTrue(config.storageIsMissing)
+        XCTAssertTrue(config.storageMissingMessage.contains("Backup Drive"))
+    }
+
+    func testStoredHereByDefault() throws {
+        let config = VMConfiguration()
+        XCTAssertNil(config.storageDriveName)
+        XCTAssertFalse(config.storageIsMissing)
+        XCTAssertEqual(try config.directoryURL().lastPathComponent, config.id.uuidString)
     }
 
     /// QEMU reads a comma as the next option: "/Volumes/Backup, 2TB" used

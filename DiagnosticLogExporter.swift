@@ -194,6 +194,19 @@ enum DiagnosticLogExporter {
             }
         }
 
+        // VMs stored in a folder the user chose (2026-10-25), such as an
+        // external drive: their folders aren't under Application Support.
+        // A drive that isn't connected is skipped, like a missing log.
+        for config in (VMStore.shared?.configurations ?? []).sorted(by: { $0.id.uuidString < $1.id.uuidString })
+        where config.isStoredElsewhere && !config.storageIsMissing {
+            guard let dir = try? config.directoryURL() else { continue }
+            let serial = dir.appendingPathComponent("firmware-serial.log")
+            guard let attrs = try? fm.attributesOfItem(atPath: serial.path),
+                  let size = attrs[.size] as? Int, size > 0 else { continue }
+            let shortID = String(config.id.uuidString.prefix(8))
+            sources.append(Source(url: serial, destinationName: "firmware-serial-\(shortID).log"))
+        }
+
         return sources
     }
 

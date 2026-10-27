@@ -66,7 +66,11 @@ struct SettingsView: View {
 
     /// Free space on the Mac minus 20 GB (the rule the Setup Wizard also uses).
     private var maxDiskInGB: Int {
-        let fileURL = URL(fileURLWithPath: NSHomeDirectory())
+        // The drive the VM is on (2026-10-25, code audit), not always the
+        // Mac's own disk: an external drive can be much fuller or emptier.
+        let fileURL = configuration.storageIsMissing
+            ? URL(fileURLWithPath: NSHomeDirectory())
+            : ((try? configuration.directoryURL()) ?? URL(fileURLWithPath: NSHomeDirectory()))
         if let values = try? fileURL.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
            let available = values.volumeAvailableCapacity {
             return max(40, available / (1024 * 1024 * 1024) - 20)
@@ -373,6 +377,15 @@ struct SettingsView: View {
         isSaving = true
 
         let growTo: Int? = (!isRunning && diskSizeGB > currentDiskGB) ? diskSizeGB : nil
+
+        // The disk can't grow on a drive that isn't connected (2026-10-25).
+        if growTo != nil, configuration.storageIsMissing {
+            let message = "\(configuration.storageMissingMessage) Nothing was saved."
+            validationErrors = [message]
+            Announcer.shared.announce(message, tone: .failure)
+            isSaving = false
+            return
+        }
 
         // The Secure Boot question comes first (2026-10-25, code audit), before
         // anything changes: asked after the disk had grown, a Cancel left the

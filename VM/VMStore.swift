@@ -88,9 +88,15 @@ final class VMStore: ObservableObject {
     /// installISOPath and sharedFolderPath are deliberately NOT part of
     /// this layout: they point at the user's own files (e.g. an ISO in
     /// ~/Downloads) and deletion must never touch them.
+    ///
+    /// STORAGE LOCATION (2026-10-25): a VM the user stored in a folder of
+    /// their choosing (an external drive) lives in that folder instead,
+    /// recorded in storageFolderPath. The rule above still holds: the
+    /// folder comes from that dedicated setting or the UUID, never from
+    /// diskImagePath. VMConfiguration.directoryURL() is the one place it is
+    /// worked out.
     func vmDirectoryURL(for configuration: VMConfiguration) throws -> URL {
-        try vmsContainerURL
-            .appendingPathComponent(configuration.id.uuidString)
+        try configuration.directoryURL()
     }
 
     /// Total allocated size in bytes of the VM's directory, for the
@@ -282,6 +288,10 @@ final class VMStore: ObservableObject {
     /// Files are moved, never deleted. Throws, for a spoken failure, with
     /// nothing changed if the first move fails.
     func switchSecureBoot(_ configuration: VMConfiguration, on: Bool) throws {
+        if configuration.storageIsMissing {
+            throw NSError(domain: "AVM.SecureBoot", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: configuration.storageMissingMessage])
+        }
         let dir = try vmDirectoryURL(for: configuration)
         let current = dir.appendingPathComponent("nvram.fd")
         let setAside = dir.appendingPathComponent(on ? "nvram-plain.fd" : "nvram-secure.fd")
@@ -342,8 +352,21 @@ final class VMStore: ObservableObject {
     /// caller for a spoken .failure announcement — the one state this
     /// method must never produce is "entry gone, files stranded and now
     /// invisible in the app", which is the very bug it fixes.
+    ///
+    /// A VM whose drive isn't connected is refused (2026-10-25): its folder
+    /// is missing only because the drive is, and "no directory on disk"
+    /// would otherwise remove the entry and strand the files on the drive,
+    /// invisible to AVM, which is issue #5 again.
     @discardableResult
     func deleteMovingFilesToTrash(_ configuration: VMConfiguration) throws -> UInt64 {
+        if configuration.storageIsMissing {
+            AVMLog.write("AVM: VMStore — delete of '\(configuration.name)' refused: its storage folder is missing (drive not connected?). Entry kept.")
+            throw NSError(
+                domain: "AVM.Delete",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: configuration.storageMissingMessage]
+            )
+        }
         let url = try vmDirectoryURL(for: configuration)
 
         guard fileManager.fileExists(atPath: url.path) else {
