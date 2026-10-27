@@ -473,7 +473,11 @@ struct SetupView: View {
             diskSizeGB: diskSizeGB,
             diskImagePath: diskPath,
             installISOPath: installerURL.path,
-            guestOSName: isUbuntu ? GuestOS.ubuntu.rawValue : nil
+            guestOSName: isUbuntu ? GuestOS.ubuntu.rawValue : nil,
+            // Secure Boot for every new Windows VM (2026-10-25): with the
+            // TPM AVM already gives it, Windows sees a PC that meets its
+            // requirements, Insider builds included.
+            secureBoot: isUbuntu ? nil : true,
         )
 
         isCreating = true

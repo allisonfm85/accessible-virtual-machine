@@ -83,6 +83,16 @@ When Windows starts, AVM sends the devices you've chosen to remember for Windows
 
 **USB flash drives don't work yet.** macOS 27 blocks AVM from sending a USB storage device to Windows. I'm working with Apple on a fix.
 
+## Secure Boot
+
+New Windows machines have Secure Boot, with Microsoft's keys, so Windows
+Update offers Insider preview builds. For an older machine, stop it, open
+Settings, and turn on Secure Boot. AVM asks first, keeps a copy of the
+old firmware settings, and puts them back if you turn Secure Boot off.
+If BitLocker is on, Windows may ask for its recovery key after the switch.
+The firmware is UTM's Secure Boot build of edk2; its licences ship with
+it, in edk2-licenses.txt.
+
 ## Braille displays
 
 When you plug in a USB device while Windows is running, AVM checks whether it's a braille display before doing anything with it. A braille display is never sent to Windows without asking, even when "Always use in Windows" is chosen in Settings. If you check "Remember my choice for this device," AVM will use your choice from then on.

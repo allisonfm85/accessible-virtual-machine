@@ -604,6 +604,43 @@ final class VMManager: ObservableObject {
         return dir
     }
 
+    // MARK: - Secure Boot NVRAM (2026-10-25)
+
+    /// For a Secure Boot VM with no variable store yet, makes one from UTM's
+    /// edk2-arm-secure-vars.fd: Secure Boot on, Microsoft's KEK and db
+    /// certificates enrolled. That template is qcow2 (64 MiB virtual), so
+    /// qemu-img converts it to the raw 64 MiB store the pflash drive
+    /// expects; padding it, as the plain template is padded, would keep
+    /// neither the keys nor the format. Missing pieces throw, so a VM that
+    /// asked for Secure Boot never boots without it unannounced.
+    private func prepareSecureBootNVRAM(configuration: VMConfiguration, runtimeDir: URL) throws {
+        guard configuration.usesSecureBoot else { return }
+        let nvram = runtimeDir.appendingPathComponent("nvram.fd")
+        guard !FileManager.default.fileExists(atPath: nvram.path) else { return }
+        guard bundledBinaryURL(named: "edk2-aarch64-secure-code.fd") != nil,
+              let template = bundledBinaryURL(named: "edk2-arm-secure-vars.fd") else {
+            throw AVMError.binaryNotFound("Secure Boot firmware (edk2-aarch64-secure-code.fd and edk2-arm-secure-vars.fd)")
+        }
+        guard let qemuImg = bundledBinaryURL(named: "qemu-img") else {
+            throw AVMError.binaryNotFound("qemu-img")
+        }
+        let convert = Process()
+        convert.executableURL = qemuImg
+        convert.arguments = ["convert", "-O", "raw", template.path, nvram.path]
+        let errors = Pipe()
+        convert.standardError = errors
+        try convert.run()
+        convert.waitUntilExit()
+        let size = ((try? FileManager.default.attributesOfItem(atPath: nvram.path))?[.size] as? NSNumber)?.intValue ?? 0
+        guard convert.terminationStatus == 0, size == 67_108_864 else {
+            let detail = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            try? FileManager.default.removeItem(at: nvram)
+            avmLog("prepareSecureBootNVRAM: qemu-img convert failed (status \(convert.terminationStatus), size \(size)): \(detail)")
+            throw AVMError.diskCreationFailed("The Secure Boot settings store could not be made. \(detail)")
+        }
+        avmLog("prepareSecureBootNVRAM: created Secure Boot NVRAM (Microsoft keys enrolled) from edk2-arm-secure-vars.fd")
+    }
+
     // MARK: - Install Media Pipeline
 
     /// REINSTALL GUARD: returns true if the answer file's specialize pass has
@@ -954,6 +991,17 @@ final class VMManager: ObservableObject {
         } else {
             avmLog("startVM: swtpm not found, skipping TPM")
             appendConsole("AVM: swtpm not found in bundle — TPM emulation disabled.\n")
+        }
+
+        // Secure Boot's variable store, before the arguments that use it.
+        // Throws, spoken, rather than quietly booting without Secure Boot.
+        do {
+            try prepareSecureBootNVRAM(configuration: configuration, runtimeDir: runtimeDir)
+        } catch {
+            let message = "\(configuration.name) could not start with Secure Boot. Reason: \(error.localizedDescription) Next: save the diagnostic log and report the problem, or turn off Secure Boot in Settings."
+            Announcer.shared.announce(message, tone: .failure)
+            state = .error(message)
+            throw error
         }
 
         let args = buildQEMUArguments(
@@ -1704,7 +1752,11 @@ final class VMManager: ObservableObject {
         args += ["-smp", "\(max(1, configuration.cpuCount))"]
         args += ["-m", "\(configuration.ramSizeGB * 1024)M"]
 
-        if let firmware = bundledBinaryURL(named: "edk2-aarch64-code.fd") {
+        // SECURE BOOT (2026-10-25): UTM's Secure Boot build of the same
+        // firmware. Its variable store was made by prepareSecureBootNVRAM,
+        // so the padding below never runs for it.
+        let firmwareName = configuration.usesSecureBoot ? "edk2-aarch64-secure-code.fd" : "edk2-aarch64-code.fd"
+        if let firmware = bundledBinaryURL(named: firmwareName) {
             let nvramPath = runtimeDir.appendingPathComponent("nvram.fd").path
 
             // Build the writable NVRAM from the PROPER vars template (edk2-arm-vars.fd,
@@ -1738,7 +1790,7 @@ final class VMManager: ObservableObject {
                 "-drive", "if=pflash,format=raw,file=\(Self.qemuOptionValue(nvramPath))"
             ]
         } else {
-            appendConsole("AVM: WARNING — edk2-aarch64-code.fd not found in bundle.\n")
+            appendConsole("AVM: WARNING — \(firmwareName) not found in bundle.\n")
         }
 
         // USB controller + INPUT DEVICES. usb-kbd is REQUIRED: without it the

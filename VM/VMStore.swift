@@ -270,6 +270,39 @@ final class VMStore: ObservableObject {
         saveAll()
     }
 
+    // MARK: - Secure Boot switch (2026-10-25)
+
+    /// Switches which firmware's variable store the VM uses. Each firmware
+    /// keeps its own: the current nvram.fd is set aside as
+    /// nvram-plain.fd or nvram-secure.fd, and the other firmware's earlier
+    /// store, if there is one, comes back. A first switch to Secure Boot
+    /// leaves no nvram.fd, so the next start makes one with Microsoft's
+    /// keys (VMManager.prepareSecureBootNVRAM). Switching back puts the
+    /// old store, and the boot entries Windows wrote to it, back exactly.
+    /// Files are moved, never deleted. Throws, for a spoken failure, with
+    /// nothing changed if the first move fails.
+    func switchSecureBoot(_ configuration: VMConfiguration, on: Bool) throws {
+        let dir = try vmDirectoryURL(for: configuration)
+        let current = dir.appendingPathComponent("nvram.fd")
+        let setAside = dir.appendingPathComponent(on ? "nvram-plain.fd" : "nvram-secure.fd")
+        let comingBack = dir.appendingPathComponent(on ? "nvram-secure.fd" : "nvram-plain.fd")
+        if fileManager.fileExists(atPath: current.path) {
+            // An older set-aside store is renamed, never deleted (2026-10-25,
+            // code audit): after a half-finished switch it may be the only
+            // copy with Windows' boot entries.
+            if fileManager.fileExists(atPath: setAside.path) {
+                let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+                let older = dir.appendingPathComponent("\(setAside.deletingPathExtension().lastPathComponent)-\(stamp).fd")
+                try fileManager.moveItem(at: setAside, to: older)
+            }
+            try fileManager.moveItem(at: current, to: setAside)
+        }
+        if fileManager.fileExists(atPath: comingBack.path) {
+            try fileManager.moveItem(at: comingBack, to: current)
+        }
+        AVMLog.write("AVM: VMStore — Secure Boot \(on ? "on" : "off") for '\(configuration.name)'; firmware settings switched.")
+    }
+
     // MARK: - Delete
 
     /// The install pipelines' scratch folder for this VM, removed with it

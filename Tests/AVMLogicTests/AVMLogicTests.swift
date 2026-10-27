@@ -62,6 +62,7 @@ final class VMConfigurationTests: XCTestCase {
         let configs = try JSONDecoder().decode([VMConfiguration].self, from: Data(json.utf8))
         let config = try XCTUnwrap(configs.first)
         XCTAssertEqual(config.guestOS, .windows)
+        XCTAssertFalse(config.usesSecureBoot)
         XCTAssertEqual(config.effectiveUSBMode, .ask)
     }
 

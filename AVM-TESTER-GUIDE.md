@@ -609,6 +609,18 @@ its own commands), run it a second time with AVM in place of qemu-system.
 
 Then force-quit and report what happened.
 
+### Secure Boot and Insider builds
+
+Machines made with this version have Secure Boot, with Microsoft's keys,
+which Windows needs before it offers Insider preview builds. For a machine
+made earlier, stop it, open its Settings, turn on **Secure Boot**, and
+choose Save Settings. AVM asks first, because it resets the machine's
+firmware settings, keeping a copy. Windows normally starts again on its
+own. If BitLocker or device encryption is on in Windows, it may ask for
+your recovery key, so have it ready. Turning Secure Boot off again puts
+the old settings back. If Windows doesn't start after the switch, turn
+Secure Boot off and report it, with a diagnostic log.
+
 ### Resetting a virtual machine
 
 **Command-Shift-R** resets the machine. It is the equivalent of the reset
@@ -706,9 +718,11 @@ files can be deleted afterward.
   creation. You go through Microsoft's own setup with Narrator.
 - **No ISO downloader.** You supply the Windows image yourself.
 
-USB passthrough is here, except for USB drives. Next is firmware work:
-stopping Windows Update from blocking updates over the TPM and processor
-checks (issues 16 and 17), and Secure Boot. After that comes graphics
+USB passthrough is here, except for USB drives. New machines now have
+Secure Boot, and existing ones can turn it on in Settings (see section
+13). Next is the rest of the firmware work: stopping Windows Update from
+blocking updates over the TPM and processor checks (issues 16 and 17).
+After that comes graphics
 acceleration. If a USB device you need doesn't work in Windows, please
 report it, with its name and a diagnostic log.
 
