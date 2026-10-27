@@ -87,7 +87,43 @@
 // interesting lines are the last ones before the freeze.
 import Foundation
 
-final class AVMLog: @unchecked Sendable {
+// MARK: - Where AVM keeps its data (2026-10-25)
+
+/// The folder under Application Support that holds everything AVM stores:
+/// configurations.json, the VMs, logs and install scratch. Every file that
+/// needs it reads it here. A build with the original bundle identifier
+/// keeps the original folder, "AVM"; any other build uses its bundle
+/// identifier, the usual macOS convention, so two differently identified
+/// copies of AVM on one Mac never share or disturb each other's machines.
+enum AVMPaths {
+    nonisolated static let supportFolderName: String = {
+        let id = Bundle.main.bundleIdentifier ?? "com.alllisonmeloy.AVM"
+        return id == "com.alllisonmeloy.AVM" ? "AVM" : id
+    }()
+
+    /// A stand-in for Application Support/<supportFolderName> (2026-10-26),
+    /// set only by the accessibility audit (AccessibilityAudit.swift)
+    /// before anything reads or writes, so its sample machines, their
+    /// files and its log lines all go to a temporary folder and the
+    /// user's real machine list is never opened. nil in every normal run.
+    nonisolated(unsafe) static var supportDirectoryOverride: URL?
+
+    /// Application Support/<supportFolderName>, or the audit's stand-in.
+    /// Not created here; callers that need it create it, as before.
+    nonisolated static func supportDirectory() throws -> URL {
+        if let override = supportDirectoryOverride { return override }
+        // The avmctl test's own folder (2026-10-27): its `AVM ctl` children
+        // find the test's control socket, never the user's AVM.
+        if let test = ProcessInfo.processInfo.environment["AVM_TEST_SUPPORT_DIR"], !test.isEmpty {
+            return URL(fileURLWithPath: test, isDirectory: true)
+        }
+        return try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                           appropriateFor: nil, create: true)
+            .appendingPathComponent(supportFolderName, isDirectory: true)
+    }
+}
+
+nonisolated final class AVMLog: @unchecked Sendable {
 
     static let shared = AVMLog()
 
@@ -141,11 +177,21 @@ final class AVMLog: @unchecked Sendable {
 
     /// Directory holding the kept log files.
     static var logDirectory: URL? {
-        FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first?
-            .appendingPathComponent("AVM", isDirectory: true)
+        if let logDirectoryOverride { return logDirectoryOverride }
+        return (try? AVMPaths.supportDirectory())?
             .appendingPathComponent("logs", isDirectory: true)
+    }
+
+    /// Set by the window-less test runs (InstallMediaJob, MacTestJob,
+    /// KeyboardTestJob) before anything is logged (2026-10-26, code audit):
+    /// each run used to open a new log in the real folder, and keeping only
+    /// the newest few pushed out the user's own, the previous launch's
+    /// most of all.
+    nonisolated(unsafe) static var logDirectoryOverride: URL?
+
+    /// The test runs' log folder: beside the system's temporary files.
+    static func useTestLogFolder() {
+        logDirectoryOverride = FileManager.default.temporaryDirectory.appendingPathComponent("avm-test-logs", isDirectory: true)
     }
 
     // MARK: - Sanitizer (Promise 2)
@@ -174,9 +220,20 @@ final class AVMLog: @unchecked Sendable {
             out = rx.stringByReplacingMatches(in: out, options: [], range: range, withTemplate: "~")
         }
 
+        // Any capitalisation, and the full name too (2026-10-25, privacy
+        // audit): the Ubuntu account's name defaults to the Mac short name
+        // lowercased and its real name to the full name, and either can come
+        // back in a guest's console log.
+        // The full name first (2026-10-26, code audit): the short name is
+        // often its first word ("amena" in "Amena Thomas"), and replacing
+        // that first left "~ Thomas", which the full name no longer matched.
         let user = NSUserName()
+        let fullName = NSFullUserName()
+        if fullName.count >= 4, fullName != user {
+            out = out.replacingOccurrences(of: fullName, with: "~", options: .caseInsensitive)
+        }
         if user.count >= 4 {
-            out = out.replacingOccurrences(of: user, with: "~")
+            out = out.replacingOccurrences(of: user, with: "~", options: .caseInsensitive)
         }
 
         return out
