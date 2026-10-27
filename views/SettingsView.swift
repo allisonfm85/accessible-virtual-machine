@@ -123,6 +123,9 @@ struct SettingsView: View {
     @State private var rememberedDevices: [RememberedUSBDevice] = []
     @State private var secureBoot = false
     @State private var shareClipboard = true
+    @State private var restorePoints: [RestorePoint] = []
+    @State private var restorePointsBusy = false
+    @State private var restorePointsLoaded = false
 
     // MARK: - Body
 
@@ -235,6 +238,9 @@ struct SettingsView: View {
             // USB Devices
             usbSection
 
+            // Restore Points (2026-10-25)
+            restorePointsSection
+
             // Actions
             HStack(spacing: 16) {
                 Button("Close") {
@@ -263,6 +269,150 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Restore Points Section (2026-10-25)
+
+    /// Saving and using restore points (RestorePoints in VMStore.swift).
+    /// Only while the VM is stopped, and not while its drive is missing.
+    private var restorePointsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Restore Points")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            if isRunning {
+                Text("Stop \(guest) to save or use a restore point.")
+                    .foregroundStyle(.secondary)
+            } else if saved.storageIsMissing {
+                Text(saved.storageMissingMessage)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("A restore point saves this virtual machine as it is now, so you can put it back later, before a big update for example. Each one takes more disk space as \(guest) changes afterwards.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !restorePointsLoaded {
+                    Text("Reading restore points…")
+                } else if restorePoints.isEmpty {
+                    Text("No restore points yet.")
+                }
+                ForEach(restorePoints) { point in
+                    HStack {
+                        Text("\(point.label), \(restorePointDate(point.date))")
+                        Spacer()
+                        Button("Restore") { restoreTo(point) }
+                            .accessibilityLabel("Restore \(point.label)")
+                            .accessibilityHint("Puts the virtual machine back as it was then. Asks first.")
+                            .disabled(restorePointsBusy)
+                        Button("Delete") { deleteRestorePoint(point) }
+                            .accessibilityLabel("Delete restore point \(point.label)")
+                            .accessibilityHint("Frees the disk space it uses. Asks first.")
+                            .disabled(restorePointsBusy)
+                    }
+                }
+                Button(restorePointsBusy ? "Working…" : "Save a Restore Point…") { saveRestorePoint() }
+                    .disabled(restorePointsBusy)
+                    .accessibilityHint("Saves the virtual machine as it is now, under a name you choose")
+            }
+        }
+        .padding(.horizontal)
+        .task { await loadRestorePoints() }
+    }
+
+    private func restorePointDate(_ date: Date) -> String {
+        date.formatted(date: .long, time: .shortened)
+    }
+
+    private func loadRestorePoints() async {
+        guard !isRunning, !saved.storageIsMissing,
+              let dir = try? vmStore.vmDirectoryURL(for: saved),
+              FileManager.default.fileExists(atPath: dir.appendingPathComponent("disk.qcow2").path) else {
+            restorePointsLoaded = true
+            return
+        }
+        restorePoints = (try? await RestorePoints.list(vmDirectory: dir)) ?? []
+        restorePointsLoaded = true
+    }
+
+    private func saveRestorePoint() {
+        let alert = NSAlert()
+        alert.messageText = "Save a restore point for \(saved.name)?"
+        alert.informativeText = "Give it a name you'll recognize, such as Before the October update."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        field.stringValue = "Restore point from \(restorePointDate(Date()))"
+        field.setAccessibilityLabel("Restore point name")
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let label = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = label.isEmpty ? "Restore point from \(restorePointDate(Date()))" : label
+        guard let dir = try? vmStore.vmDirectoryURL(for: saved) else { return }
+        restorePointsBusy = true
+        Announcer.shared.announce("Saving the restore point.", tone: .info)
+        Task { @MainActor in
+            do {
+                _ = try await RestorePoints.create(vmDirectory: dir, label: name, secureBoot: saved.usesSecureBoot)
+                await loadRestorePoints()
+                Announcer.shared.announce("Restore point saved: \(name).", tone: .success)
+            } catch {
+                Announcer.shared.announce("The restore point was not saved. Reason: \(error.localizedDescription)", tone: .failure)
+            }
+            restorePointsBusy = false
+        }
+    }
+
+    private func restoreTo(_ point: RestorePoint) {
+        let alert = NSAlert()
+        alert.messageText = "Put \(saved.name) back to \(point.label)?"
+        alert.informativeText = "Everything since \(restorePointDate(point.date)) is lost: files, settings and installed updates. AVM keeps the restore point, so you can use it again."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Restore")
+        guard alert.runModal() == .alertSecondButtonReturn,
+              let dir = try? vmStore.vmDirectoryURL(for: saved) else { return }
+        restorePointsBusy = true
+        Task { @MainActor in
+            do {
+                try await RestorePoints.restore(point, vmDirectory: dir, currentSecureBoot: saved.usesSecureBoot)
+                // The disk's size comes back with it, if it has grown since.
+                var sizeNote = ""
+                if let size = try? await RestorePoints.diskSizeGB(vmDirectory: dir), size > 0, size != saved.diskSizeGB {
+                    var updated = saved
+                    updated.diskSizeGB = size
+                    vmStore.save(updated)
+                    diskSizeGB = size
+                    sizeNote = " Its disk is \(size) gigabytes again, as it was then."
+                }
+                Announcer.shared.announce("\(saved.name) is back to \(point.label).\(sizeNote) Start it when you're ready.", tone: .success)
+            } catch {
+                Announcer.shared.announce("\(saved.name) was not restored. Reason: \(error.localizedDescription)", tone: .failure)
+            }
+            restorePointsBusy = false
+        }
+    }
+
+    private func deleteRestorePoint(_ point: RestorePoint) {
+        let alert = NSAlert()
+        alert.messageText = "Delete the restore point \(point.label)?"
+        alert.informativeText = "This frees the disk space it uses. It can't be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Delete")
+        guard alert.runModal() == .alertSecondButtonReturn,
+              let dir = try? vmStore.vmDirectoryURL(for: saved) else { return }
+        restorePointsBusy = true
+        Task { @MainActor in
+            do {
+                try await RestorePoints.delete(point, vmDirectory: dir)
+                await loadRestorePoints()
+                Announcer.shared.announce("Restore point \(point.label) deleted.", tone: .success)
+            } catch {
+                Announcer.shared.announce("The restore point was not deleted. Reason: \(error.localizedDescription)", tone: .failure)
+            }
+            restorePointsBusy = false
+        }
+    }
+
+    // MARK: - Shared Folder Section (2026-10-26)
 
     private var secureBootSection: some View {
         VStack(alignment: .leading, spacing: 6) {

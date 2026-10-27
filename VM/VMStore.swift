@@ -391,3 +391,159 @@ final class VMStore: ObservableObject {
         return bytes
     }
 }
+
+// MARK: - Restore points (2026-10-25)
+
+/// One restore point: a qcow2 snapshot of the VM's disk, tagged
+/// "avm-<milliseconds>", and a folder of the same name under
+/// restore-points/ holding a copy of nvram.fd, of tpm-state, the user's
+/// label, and whether Secure Boot was on. The disk snapshot lives inside
+/// disk.qcow2 and costs nothing at first; the file grows as the disk
+/// changes afterwards, by about what changed.
+nonisolated struct RestorePoint: Identifiable, Hashable, Sendable {
+    let tag: String
+    let label: String
+    let date: Date
+    let secureBoot: Bool
+    var id: String { tag }
+}
+
+nonisolated enum RestorePointError: LocalizedError, Sendable {
+    case tool(String)
+    case secureBootMismatch(madeWithSecureBoot: Bool)
+
+    var errorDescription: String? {
+        switch self {
+        case .tool(let detail):
+            return detail
+        case .secureBootMismatch(let on):
+            return on
+                ? "This restore point was made with Secure Boot on. Next: turn Secure Boot on in Settings, then restore it."
+                : "This restore point was made with Secure Boot off. Next: turn Secure Boot off in Settings, then restore it."
+        }
+    }
+}
+
+/// Restore points for a stopped VM (2026-10-25). Only ever while the VM is
+/// stopped: QEMU holds the disk while it runs, and a snapshot of a running
+/// guest's disk alone would not match its memory. The qemu-img work runs
+/// off the main thread.
+nonisolated enum RestorePoints {
+    static let folderName = "restore-points"
+
+    static func list(vmDirectory dir: URL) async throws -> [RestorePoint] {
+        let output = try await qemuImg(["info", "--output=json", disk(dir).path])
+        guard let json = try JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any] else {
+            throw RestorePointError.tool("AVM couldn't read the disk's restore points.")
+        }
+        let snapshots = json["snapshots"] as? [[String: Any]] ?? []
+        return snapshots.compactMap { snap -> RestorePoint? in
+            guard let tag = snap["name"] as? String, tag.hasPrefix("avm-") else { return nil }
+            let seconds = snap["date-sec"] as? Double ?? 0
+            let folder = dir.appendingPathComponent(folderName).appendingPathComponent(tag)
+            let label = (try? String(contentsOf: folder.appendingPathComponent("label.txt"), encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let secure = FileManager.default.fileExists(atPath: folder.appendingPathComponent("secure-boot").path)
+            return RestorePoint(tag: tag, label: (label?.isEmpty == false ? label! : "Restore point"),
+                                date: Date(timeIntervalSince1970: seconds), secureBoot: secure)
+        }
+        .sorted { $0.date > $1.date }
+    }
+
+    static func create(vmDirectory dir: URL, label: String, secureBoot: Bool) async throws -> RestorePoint {
+        let tag = "avm-\(Int(Date().timeIntervalSince1970 * 1000))"
+        _ = try await qemuImg(["snapshot", "-c", tag, disk(dir).path])
+        let fm = FileManager.default
+        let folder = dir.appendingPathComponent(folderName).appendingPathComponent(tag)
+        do {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            let nvram = dir.appendingPathComponent("nvram.fd")
+            if fm.fileExists(atPath: nvram.path) {
+                try fm.copyItem(at: nvram, to: folder.appendingPathComponent("nvram.fd"))
+            }
+            let tpm = dir.appendingPathComponent("tpm-state")
+            if fm.fileExists(atPath: tpm.path) {
+                try fm.copyItem(at: tpm, to: folder.appendingPathComponent("tpm-state"))
+            }
+            try label.write(to: folder.appendingPathComponent("label.txt"), atomically: true, encoding: .utf8)
+            if secureBoot {
+                fm.createFile(atPath: folder.appendingPathComponent("secure-boot").path, contents: nil)
+            }
+        } catch {
+            // Half a restore point is worse than none: take the snapshot back.
+            _ = try? await qemuImg(["snapshot", "-d", tag, disk(dir).path])
+            try? fm.removeItem(at: folder)
+            throw RestorePointError.tool("The restore point could not be saved: \(error.localizedDescription)")
+        }
+        AVMLog.write("AVM: RestorePoints — created \(tag).")
+        return RestorePoint(tag: tag, label: label, date: Date(), secureBoot: secureBoot)
+    }
+
+    /// Puts the disk, firmware settings and TPM back as they were. The
+    /// current firmware settings and TPM state are kept beside the restore
+    /// point's copies until the restore has worked, then replaced.
+    static func restore(_ point: RestorePoint, vmDirectory dir: URL, currentSecureBoot: Bool) async throws {
+        guard point.secureBoot == currentSecureBoot else {
+            throw RestorePointError.secureBootMismatch(madeWithSecureBoot: point.secureBoot)
+        }
+        _ = try await qemuImg(["snapshot", "-a", point.tag, disk(dir).path])
+        let fm = FileManager.default
+        let folder = dir.appendingPathComponent(folderName).appendingPathComponent(point.tag)
+        for name in ["nvram.fd", "tpm-state"] {
+            let live = dir.appendingPathComponent(name)
+            let saved = folder.appendingPathComponent(name)
+            if fm.fileExists(atPath: live.path) {
+                try fm.removeItem(at: live)
+            }
+            if fm.fileExists(atPath: saved.path) {
+                try fm.copyItem(at: saved, to: live)
+            }
+        }
+        AVMLog.write("AVM: RestorePoints — restored \(point.tag).")
+    }
+
+    /// The disk's size in gigabytes (GiB, as qemu-img's "G" makes them).
+    /// A restore point made before the disk grew puts the old size back.
+    static func diskSizeGB(vmDirectory dir: URL) async throws -> Int {
+        let output = try await qemuImg(["info", "--output=json", disk(dir).path])
+        let json = try JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any]
+        let bytes = (json?["virtual-size"] as? Double) ?? 0
+        return Int((bytes / 1_073_741_824).rounded())
+    }
+
+    static func delete(_ point: RestorePoint, vmDirectory dir: URL) async throws {
+        _ = try await qemuImg(["snapshot", "-d", point.tag, disk(dir).path])
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent(folderName).appendingPathComponent(point.tag))
+        AVMLog.write("AVM: RestorePoints — deleted \(point.tag).")
+    }
+
+    private static func disk(_ dir: URL) -> URL {
+        dir.appendingPathComponent("disk.qcow2")
+    }
+
+    /// Runs the bundled qemu-img off the main thread; stdout on success,
+    /// a spoken-ready error with qemu-img's own words on failure.
+    private static func qemuImg(_ arguments: [String]) async throws -> String {
+        guard let tool = Bundle.main.resourceURL?.appendingPathComponent("qemu-img"),
+              FileManager.default.isExecutableFile(atPath: tool.path) else {
+            throw RestorePointError.tool("qemu-img is missing from AVM, so restore points can't be used.")
+        }
+        return try await Task.detached(priority: .userInitiated) { () throws -> String in
+            let process = Process()
+            process.executableURL = tool
+            process.arguments = arguments
+            let out = Pipe(), err = Pipe()
+            process.standardOutput = out
+            process.standardError = err
+            try process.run()
+            let outData = out.fileHandleForReading.readDataToEndOfFile()
+            let errData = err.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                let detail = String(decoding: errData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                throw RestorePointError.tool("qemu-img said: \(detail.isEmpty ? "exit \(process.terminationStatus)" : detail)")
+            }
+            return String(decoding: outData, as: UTF8.self)
+        }.value
+    }
+}

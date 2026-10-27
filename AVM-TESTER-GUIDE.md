@@ -663,6 +663,18 @@ your recovery key, so have it ready. Turning Secure Boot off again puts
 the old settings back. If Windows doesn't start after the switch, turn
 Secure Boot off and report it, with a diagnostic log.
 
+### Restore points
+
+Before something risky, such as a big update or Insider builds, shut the
+machine down, open its Settings, and choose **Save a Restore Point**. Give
+it a name you'll recognize. If things go wrong, shut down again and
+choose **Restore** beside it. AVM asks first, with Cancel as the default,
+because everything since that restore point is lost. The disk, the
+firmware settings and the TPM all go back together, so BitLocker and
+Windows Hello keep working. A restore point made with Secure Boot on can
+only be restored with Secure Boot on, and the other way round; AVM says
+so if they differ.
+
 ### Resetting a virtual machine
 
 **Command-Shift-R** resets the machine. It is the equivalent of the reset
