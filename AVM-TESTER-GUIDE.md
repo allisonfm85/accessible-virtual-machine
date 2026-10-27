@@ -453,7 +453,9 @@ USB devices go back to your Mac first.
 Note on Command-Shift-S: in this build it starts a machine only when you
 have exactly one machine configured and nothing is running. With no
 machines, or more than one, you get a beep and an explanation instead of a
-guess. Use the dashboard's Start button in that case.
+guess. With more than one machine, the Virtual Machine menu has a Start
+submenu that lists each machine by name; choose the one you want. The
+dashboard's Start buttons work too.
 
 ### Mac keys inside Windows
 
@@ -727,8 +729,9 @@ files can be deleted afterward.
   number, and each machine has its own Start button. The limit is only
   in the Command-Shift-S shortcut: it starts a machine only when exactly
   one is configured, because with several it would have to guess which
-  one you meant. With more than one machine, use the dashboard's Start
-  buttons. A smarter shortcut is planned.
+  one you meant. With more than one machine, use the Start submenu in
+  the Virtual Machine menu, which names each machine, or the dashboard's
+  Start buttons.
 - **Windows edition.** The installer selects a single edition. Choosing
   between Home, Home Single Language and Pro is planned but not exposed
   yet.

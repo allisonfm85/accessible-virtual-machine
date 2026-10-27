@@ -121,11 +121,29 @@ struct ContentView: View {
         // "did nothing" is a classic field report, and these lines record
         // which gate answered. Privacy check: configuration names and counts
         // only, same as VMManager already writes to the file log.
-        .onReceive(NotificationCenter.default.publisher(for: .avmStartVMFromMenu)) { _ in
+        //
+        // START SUBMENU (2026-10-25): a request carrying a machine's ID comes
+        // from the Start submenu, which names the machine, so there is no
+        // guessing to refuse. It goes through the same already-running guard.
+        // A machine deleted while the menu was open is spoken, not ignored.
+        .onReceive(NotificationCenter.default.publisher(for: .avmStartVMFromMenu)) { note in
             guard activeSession == nil else {
                 AVMLog.write("AVM: Start-from-menu — a session is already active; beeping.")
                 NSSound.beep()
                 errorMessage = "A virtual machine is already running."
+                return
+            }
+            if let id = note.object as? UUID {
+                guard let config = vmStore.configurations.first(where: { $0.id == id }) else {
+                    AVMLog.write("AVM: Start-from-menu — requested machine \(id) is no longer configured; announcing.")
+                    Announcer.shared.announce(
+                        "That virtual machine is no longer in your list. Nothing was started.",
+                        tone: .failure
+                    )
+                    return
+                }
+                AVMLog.write("AVM: Start-from-menu — starting '\(config.name)' (named in the Start submenu).")
+                startVM(config: config)
                 return
             }
             let configs = vmStore.configurations
@@ -134,7 +152,7 @@ struct ContentView: View {
                 NSSound.beep()
                 errorMessage = configs.isEmpty
                     ? "No virtual machine is set up yet. Use the Setup Wizard first."
-                    : "More than one virtual machine is configured. Use the Start button next to the machine you want."
+                    : "More than one virtual machine is configured. Choose the one you want from Start in the Virtual Machine menu, or use the Start button next to it."
                 return
             }
             AVMLog.write("AVM: Start-from-menu — starting '\(config.name)'.")

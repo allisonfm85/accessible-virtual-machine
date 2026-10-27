@@ -230,6 +230,13 @@ struct AVMApp: App {
             //    USBHelperClient's. Placed after their own Divider: they
             //    change what the guest can see, not the machine's state.
             //
+            // 7. Start submenu (no key combos) — ADDED 2026-10-25. Shown
+            //    only when more than one VM is set up, which is exactly when
+            //    Start Virtual Machine (item 1) beeps. One item per machine,
+            //    named as on the dashboard. Each posts .avmStartVMFromMenu
+            //    with the machine's ID; ContentView's handler starts that
+            //    one, with the same already-running guard as item 1.
+            //
             // 8. Speak Status (Cmd-Shift-I) — ADDED 2026-10-25. Speaks, in
             //    the system voice, which machine is in which state, which
             //    side the keyboard is on, and which USB devices are
@@ -286,6 +293,17 @@ struct AVMApp: App {
                 .keyboardShortcut("s", modifiers: [.command, .shift])
                 .disabled(!activity.canStart)
 
+                if vmStore.configurations.count > 1 {
+                    Menu("Start") {
+                        ForEach(vmStore.configurations) { config in
+                            Button(config.name) {
+                                AVMLog.write("AVM: Start submenu — posting start request for '\(config.name)' to ContentView.")
+                                NotificationCenter.default.post(name: .avmStartVMFromMenu, object: config.id)
+                            }
+                        }
+                    }
+                    .disabled(!activity.canStart)
+                }
 
                 Button("Enter \(focusLock.guestName)") {
                     // Same gate as the dashboard's Enter Windows button: only
