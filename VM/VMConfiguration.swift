@@ -63,6 +63,46 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// it through guestOS, never directly.
     var guestOSName: String?
 
+    // MARK: - Windows edition (2026-10-25)
+
+    /// Which edition Windows Setup installs: a WindowsEdition raw value.
+    /// Plain text for the same reason as usbMode. nil, or a word this AVM
+    /// doesn't know, means the install pipeline's own default (Windows 11
+    /// Pro), exactly as before the setup wizard asked. Read it through
+    /// windowsEdition, never directly.
+    var windowsEditionName: String?
+
+    // MARK: - Storage location (2026-10-25, roadmap item 3)
+
+    /// Absolute path of this VM's own folder (disk.qcow2, nvram, tpm-state,
+    /// install media) when the user stored it somewhere other than
+    /// Application Support, such as an external drive. nil means the
+    /// Application Support layout, exactly as before. Read the folder
+    /// through directoryURL(), never directly.
+    var storageFolderPath: String?
+
+    // MARK: - Secure Boot (2026-10-25, roadmap item 8)
+
+    /// true: the VM boots UTM's Secure Boot firmware, whose variable store
+    /// carries Microsoft's KEK and db certificates with Secure Boot on, so
+    /// Windows Update's Secure Boot check passes (Insider builds). nil or
+    /// false: the original firmware, exactly as before. New Windows VMs
+    /// get true from the setup wizard; existing ones change it in Settings.
+    var secureBoot: Bool?
+
+    // MARK: - Clipboard (2026-10-25)
+
+    /// Share the clipboard with the guest, through the SPICE agent AVM
+    /// installs (AVMPasteboard). nil means on, the default; false keeps the
+    /// two clipboards apart. Read it through sharesClipboard.
+    var shareClipboard: Bool?
+
+    // MARK: - Sound (2026-10-26)
+
+    /// true: the experimental shorter audio path (SpiceAudioPipeline).
+    /// Read it through usesLowAudioLatency.
+    var lowAudioLatency: Bool?
+
     // MARK: - Defaults
 
     init(
@@ -76,7 +116,11 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         sharedFolderPath: String? = nil,
         usbMode: String? = nil,
         usbRememberedDevices: [RememberedUSBDevice]? = nil,
-        guestOSName: String? = nil
+        guestOSName: String? = nil,
+        windowsEditionName: String? = nil,
+        storageFolderPath: String? = nil,
+        secureBoot: Bool? = nil,
+        shareClipboard: Bool? = nil,
     ) {
         self.id = id
         self.name = name
@@ -89,6 +133,77 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         self.usbMode = usbMode
         self.usbRememberedDevices = usbRememberedDevices
         self.guestOSName = guestOSName
+        self.windowsEditionName = windowsEditionName
+        self.storageFolderPath = storageFolderPath
+        self.secureBoot = secureBoot
+        self.shareClipboard = shareClipboard
+    }
+}
+
+extension VMConfiguration {
+    var usesSecureBoot: Bool { secureBoot == true }
+    var sharesClipboard: Bool { shareClipboard ?? true }
+    var usesLowAudioLatency: Bool { lowAudioLatency == true }
+}
+
+// MARK: - Storage location
+
+extension VMConfiguration {
+
+    /// Application Support/AVM/VMs, where every VM lives unless the user
+    /// chose another folder. Spelled "VMs", as VMStore's layout of record
+    /// has it (the lowercase "vms" some older code used is the same folder
+    /// on a case-insensitive disk).
+    static func defaultVMsContainer() throws -> URL {
+        try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        .appendingPathComponent(AVMPaths.supportFolderName)
+        .appendingPathComponent("VMs")
+    }
+
+    /// The folder that holds every file belonging to this VM. Computed
+    /// from the UUID, or from storageFolderPath when the user chose a
+    /// folder; never derived from diskImagePath (see VMStore).
+    func directoryURL() throws -> URL {
+        if let path = storageFolderPath {
+            return URL(fileURLWithPath: path, isDirectory: true)
+        }
+        return try Self.defaultVMsContainer().appendingPathComponent(id.uuidString)
+    }
+
+    var isStoredElsewhere: Bool { storageFolderPath != nil }
+
+    /// True when the VM was stored in a folder of the user's choosing and
+    /// that folder can't be found now: almost always an external drive
+    /// that isn't connected. Start and Delete refuse, and say so.
+    var storageIsMissing: Bool {
+        guard let path = storageFolderPath else { return false }
+        var isDirectory: ObjCBool = false
+        return !(FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue)
+    }
+
+    /// The name of the drive holding the VM, for speech: "Backup Drive".
+    /// Read from the path when the drive isn't connected. nil for the
+    /// Mac's own disk.
+    var storageDriveName: String? {
+        guard let path = storageFolderPath else { return nil }
+        let parts = URL(fileURLWithPath: path).pathComponents
+        if parts.count > 2, parts[1] == "Volumes" {
+            return parts[2]
+        }
+        return nil
+    }
+
+    /// The spoken refusal when storageIsMissing.
+    var storageMissingMessage: String {
+        if let drive = storageDriveName {
+            return "\(name) is stored on the drive \(drive), which isn't connected. Next: connect \(drive), then try again."
+        }
+        return "AVM can't find the folder that holds \(name), at \(storageFolderPath ?? "its saved location"). Next: if it's on an external drive, connect the drive, then try again."
     }
 }
 
@@ -113,6 +228,46 @@ enum GuestOS: String {
 extension VMConfiguration {
     var guestOS: GuestOS {
         guestOSName.flatMap(GuestOS.init(rawValue:)) ?? .windows
+    }
+}
+
+// MARK: - Windows edition
+
+/// The Windows 11 editions the setup wizard offers. Raw values are the
+/// words windowsEditionName stores.
+enum WindowsEdition: String, CaseIterable, Identifiable {
+    case pro
+    case home
+    case homeSingleLanguage
+
+    var id: String { rawValue }
+
+    /// The edition's name inside install.wim, which the answer file's
+    /// /IMAGE/NAME selects. Spoken and shown as is.
+    var imageName: String {
+        switch self {
+        case .pro: return "Windows 11 Pro"
+        case .home: return "Windows 11 Home"
+        case .homeSingleLanguage: return "Windows 11 Home Single Language"
+        }
+    }
+
+    /// Microsoft's public generic install key for the edition. It tells
+    /// Setup which edition to install and activates nothing; Windows asks
+    /// for the user's own key or digital license later.
+    var genericProductKey: String {
+        switch self {
+        case .pro: return "VK7JG-NPHTM-C97JM-9MPGT-3V66T"
+        case .home: return "YTMG3-N6DKC-DKB77-7M9GH-8HVX7"
+        case .homeSingleLanguage: return "BT79Q-G7N6G-PGBYW-4YWX6-6F4BT"
+        }
+    }
+}
+
+extension VMConfiguration {
+    /// The chosen edition, or nil for the pipeline's default.
+    var windowsEdition: WindowsEdition? {
+        windowsEditionName.flatMap(WindowsEdition.init(rawValue:))
     }
 }
 
@@ -172,5 +327,44 @@ struct RememberedUSBDevice: Codable, Hashable, Identifiable {
         self.vendorID == vendorID
             && self.productID == productID
             && self.serialNumber == serialNumber
+    }
+}
+// MARK: - QEMU option values (2026-10-25)
+
+/// A value for a comma-separated QEMU option: QEMU reads a comma as the
+/// start of the next option and escapes a literal one by doubling it.
+/// Used by VMManager.qemuOptionValue for every file path it passes.
+nonisolated enum QEMUOption {
+    static func value(_ path: String) -> String {
+        path.replacingOccurrences(of: ",", with: ",,")
+    }
+}
+
+/// The guest's sound on the Mac (2026-10-26). spice-gtk plays it through a
+/// GStreamer pipeline with no ceiling on buffering: about a second can
+/// pile up in its queues, plus 200 ms in the Mac output's ring buffer, and
+/// over a long session the guest's and the Mac's audio clocks drift apart,
+/// so speech can end up audibly late. spice-gtk lets the app replace the
+/// pipeline (the SPICE_GST_AUDIOSINK environment variable, read in-process
+/// when playback starts). This one is the same chain with ceilings: at
+/// most 50 ms queued and a 50 ms output buffer, dropping the oldest audio
+/// rather than falling behind. The guest always sends 48 kHz stereo here:
+/// this spice-server is built with Opus, and Opus playback is 48 kHz.
+/// Experimental: a busy Mac may crackle. Measure with
+/// Tools/measure-speech-latency.sh, on and off.
+nonisolated enum SpiceAudioPipeline {
+    static let environmentName = "SPICE_GST_AUDIOSINK"
+    static let lowLatency =
+        #"appsrc is-live=1 do-timestamp=0 format=time caps="audio/x-raw,format=S16LE,channels=2,rate=48000,layout=interleaved" name="appsrc" max-bytes=19200 leaky-type=downstream ! "#
+        + "queue max-size-buffers=0 max-size-bytes=0 max-size-time=50000000 leaky=downstream ! "
+        + #"audioconvert ! audioresample ! osxaudiosink name="audiosink" buffer-time=50000 latency-time=10000"#
+
+    /// Sets or clears the variable for the next SPICE connection.
+    static func apply(lowLatency on: Bool) {
+        if on {
+            setenv(environmentName, lowLatency, 1)
+        } else {
+            unsetenv(environmentName)
+        }
     }
 }

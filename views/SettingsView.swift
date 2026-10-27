@@ -2,6 +2,7 @@
 // AVM — Accessible Virtual Machine
 
 import SwiftUI
+import AppKit
 
 /// Settings for one virtual machine, running or stopped.
 ///
@@ -65,7 +66,11 @@ struct SettingsView: View {
 
     /// Free space on the Mac minus 20 GB (the rule the Setup Wizard also uses).
     private var maxDiskInGB: Int {
-        let fileURL = URL(fileURLWithPath: NSHomeDirectory())
+        // The drive the VM is on (2026-10-25, code audit), not always the
+        // Mac's own disk: an external drive can be much fuller or emptier.
+        let fileURL = configuration.storageIsMissing
+            ? URL(fileURLWithPath: NSHomeDirectory())
+            : ((try? configuration.directoryURL()) ?? URL(fileURLWithPath: NSHomeDirectory()))
         if let values = try? fileURL.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
            let available = values.volumeAvailableCapacity {
             return max(40, available / (1024 * 1024 * 1024) - 20)
@@ -116,10 +121,18 @@ struct SettingsView: View {
     @State private var saveMessage: String? = nil
     @State private var usbMode: USBPlugMode = .ask
     @State private var rememberedDevices: [RememberedUSBDevice] = []
+    @State private var secureBoot = false
+    @State private var shareClipboard = true
+    @State private var lowAudioLatency = false
+    @State private var restorePoints: [RestorePoint] = []
+    @State private var restorePointsBusy = false
+    @State private var restorePointsLoaded = false
 
     // MARK: - Body
 
     var body: some View {
+        // Scrolls (2026-10-25): the window has grown past small screens.
+        ScrollView {
         VStack(spacing: 24) {
             Text("Settings")
                 .font(.largeTitle)
@@ -205,8 +218,43 @@ struct SettingsView: View {
                 .padding(.horizontal)
             }
 
+            // Clipboard (2026-10-25)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Clipboard")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                Toggle("Share the clipboard with \(guest)", isOn: $shareClipboard)
+                    .accessibilityHint("When on, text and images you copy on the Mac can be pasted in \(guest), and the other way round")
+                Text("Copy on the Mac, enter \(guest), and paste. What you copy in \(guest) is ready to paste on the Mac straight away. AVM never records what's copied.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal)
+
+            // Sound (2026-10-26)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Sound")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                Toggle("Shorter speech delay (experimental)", isOn: $lowAudioLatency)
+                    .accessibilityHint("Keeps less sound waiting, so speech from \(guest) follows your keys more closely")
+                Text("Keeps speech from falling behind during long sessions. If sound crackles, turn it off. Takes effect the next time \(guest) starts.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal)
+
+            // Secure Boot (Windows only)
+            if configuration.guestOS == .windows {
+                secureBootSection
+            }
+
             // USB Devices
             usbSection
+
+            // Restore Points (2026-10-25)
+            restorePointsSection
 
             // Actions
             HStack(spacing: 16) {
@@ -226,6 +274,7 @@ struct SettingsView: View {
             }
         }
         .padding(32)
+        }
         .frame(minWidth: 480, minHeight: 600)
         .onAppear {
             loadCurrentSettings()
@@ -233,6 +282,190 @@ struct SettingsView: View {
                 isFirstFieldFocused = true
             }
         }
+    }
+
+    // MARK: - Restore Points Section (2026-10-25)
+
+    /// Saving and using restore points (RestorePoints in VMStore.swift).
+    /// Only while the VM is stopped, and not while its drive is missing.
+    private var restorePointsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Restore Points")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            if isRunning {
+                Text("Stop \(guest) to save or use a restore point.")
+                    .foregroundStyle(.secondary)
+            } else if saved.storageIsMissing {
+                Text(saved.storageMissingMessage)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("A restore point saves this virtual machine as it is now, so you can put it back later, before a big update for example. Each one takes more disk space as \(guest) changes afterwards.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !restorePointsLoaded {
+                    Text("Reading restore points…")
+                } else if restorePoints.isEmpty {
+                    Text("No restore points yet.")
+                }
+                ForEach(restorePoints) { point in
+                    HStack {
+                        Text("\(point.label), \(restorePointDate(point.date))")
+                        Spacer()
+                        Button("Restore") { restoreTo(point) }
+                            .accessibilityLabel("Restore \(point.label)")
+                            .accessibilityHint("Puts the virtual machine back as it was then. Asks first.")
+                            .disabled(restorePointsBusy)
+                        Button("Delete") { deleteRestorePoint(point) }
+                            .accessibilityLabel("Delete restore point \(point.label)")
+                            .accessibilityHint("Frees the disk space it uses. Asks first.")
+                            .disabled(restorePointsBusy)
+                    }
+                }
+                Button(restorePointsBusy ? "Working…" : "Save a Restore Point…") { saveRestorePoint() }
+                    .disabled(restorePointsBusy)
+                    .accessibilityHint("Saves the virtual machine as it is now, under a name you choose")
+            }
+        }
+        .padding(.horizontal)
+        .task { await loadRestorePoints() }
+    }
+
+    private func restorePointDate(_ date: Date) -> String {
+        date.formatted(date: .long, time: .shortened)
+    }
+
+    private func loadRestorePoints() async {
+        guard !isRunning, !saved.storageIsMissing,
+              let dir = try? vmStore.vmDirectoryURL(for: saved),
+              FileManager.default.fileExists(atPath: dir.appendingPathComponent("disk.qcow2").path) else {
+            restorePointsLoaded = true
+            return
+        }
+        restorePoints = (try? await RestorePoints.list(vmDirectory: dir)) ?? []
+        restorePointsLoaded = true
+    }
+
+    private func saveRestorePoint() {
+        let alert = NSAlert()
+        alert.messageText = "Save a restore point for \(saved.name)?"
+        alert.informativeText = "Give it a name you'll recognize, such as Before the October update."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        field.stringValue = "Restore point from \(restorePointDate(Date()))"
+        field.setAccessibilityLabel("Restore point name")
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let label = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = label.isEmpty ? "Restore point from \(restorePointDate(Date()))" : label
+        guard let dir = try? vmStore.vmDirectoryURL(for: saved) else { return }
+        restorePointsBusy = true
+        Announcer.shared.announce("Saving the restore point.", tone: .info)
+        Task { @MainActor in
+            do {
+                _ = try await RestorePoints.create(vmDirectory: dir, label: name, secureBoot: saved.usesSecureBoot)
+                await loadRestorePoints()
+                Announcer.shared.announce("Restore point saved: \(name).", tone: .success)
+            } catch {
+                Announcer.shared.announce("The restore point was not saved. Reason: \(error.localizedDescription)", tone: .failure)
+            }
+            restorePointsBusy = false
+        }
+    }
+
+    private func restoreTo(_ point: RestorePoint) {
+        let alert = NSAlert()
+        alert.messageText = "Put \(saved.name) back to \(point.label)?"
+        alert.informativeText = "Everything since \(restorePointDate(point.date)) is lost: files, settings and installed updates. AVM keeps the restore point, so you can use it again."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Restore")
+        guard alert.runModal() == .alertSecondButtonReturn,
+              let dir = try? vmStore.vmDirectoryURL(for: saved) else { return }
+        restorePointsBusy = true
+        Task { @MainActor in
+            do {
+                try await RestorePoints.restore(point, vmDirectory: dir, currentSecureBoot: saved.usesSecureBoot)
+                // The disk's size comes back with it, if it has grown since.
+                var sizeNote = ""
+                if let size = try? await RestorePoints.diskSizeGB(vmDirectory: dir), size > 0, size != saved.diskSizeGB {
+                    var updated = saved
+                    updated.diskSizeGB = size
+                    vmStore.save(updated)
+                    diskSizeGB = size
+                    sizeNote = " Its disk is \(size) gigabytes again, as it was then."
+                }
+                Announcer.shared.announce("\(saved.name) is back to \(point.label).\(sizeNote) Start it when you're ready.", tone: .success)
+            } catch {
+                Announcer.shared.announce("\(saved.name) was not restored. Reason: \(error.localizedDescription)", tone: .failure)
+            }
+            restorePointsBusy = false
+        }
+    }
+
+    private func deleteRestorePoint(_ point: RestorePoint) {
+        let alert = NSAlert()
+        alert.messageText = "Delete the restore point \(point.label)?"
+        alert.informativeText = "This frees the disk space it uses. It can't be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Delete")
+        guard alert.runModal() == .alertSecondButtonReturn,
+              let dir = try? vmStore.vmDirectoryURL(for: saved) else { return }
+        restorePointsBusy = true
+        Task { @MainActor in
+            do {
+                try await RestorePoints.delete(point, vmDirectory: dir)
+                await loadRestorePoints()
+                Announcer.shared.announce("Restore point \(point.label) deleted.", tone: .success)
+            } catch {
+                Announcer.shared.announce("The restore point was not deleted. Reason: \(error.localizedDescription)", tone: .failure)
+            }
+            restorePointsBusy = false
+        }
+    }
+
+    // MARK: - Shared Folder Section (2026-10-26)
+
+    private var secureBootSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Secure Boot")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Toggle("Secure Boot", isOn: $secureBoot)
+                .disabled(isRunning)
+                .accessibilityHint(isRunning
+                    ? "Stop \(guest) to change Secure Boot"
+                    : "Windows needs Secure Boot for Insider preview builds and some updates")
+            Text(isRunning
+                 ? "Stop \(guest) to change Secure Boot."
+                 : "Windows needs Secure Boot for Insider preview builds. Turning it on resets the firmware settings, keeping a copy; Windows normally starts again on its own.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal)
+    }
+
+    /// Asks before switching Secure Boot on a VM that has already started.
+    /// Cancel is the default, as for every change that can stop a machine
+    /// booting the way it did.
+    private func confirmSecureBootSwitch(on: Bool) -> Bool {
+        let alert = NSAlert()
+        if on {
+            alert.messageText = "Turn on Secure Boot for \(saved.name)?"
+            alert.informativeText = "AVM resets this virtual machine's firmware settings, keeping a copy, so Secure Boot can start with Microsoft's keys. Windows normally starts again on its own. If BitLocker or device encryption is on in Windows, it may ask for your recovery key, so have it ready. Turning Secure Boot off again puts the old settings back."
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Turn On Secure Boot")
+        } else {
+            alert.messageText = "Turn off Secure Boot for \(saved.name)?"
+            alert.informativeText = "AVM puts back the firmware settings from before Secure Boot, keeping a copy of the Secure Boot ones. Windows Update stops offering Insider preview builds. If BitLocker or device encryption is on, Windows may ask for your recovery key."
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Turn Off Secure Boot")
+        }
+        alert.alertStyle = .warning
+        return alert.runModal() == .alertSecondButtonReturn
     }
 
     // MARK: - USB Section
@@ -303,6 +536,9 @@ struct SettingsView: View {
         diskSizeGB = saved.diskSizeGB
         usbMode = saved.effectiveUSBMode
         rememberedDevices = saved.usbRememberedDevices ?? []
+        secureBoot = saved.usesSecureBoot
+        shareClipboard = saved.sharesClipboard
+        lowAudioLatency = saved.usesLowAudioLatency
     }
 
     // MARK: - Save Settings
@@ -323,6 +559,31 @@ struct SettingsView: View {
 
         let growTo: Int? = (!isRunning && diskSizeGB > currentDiskGB) ? diskSizeGB : nil
 
+        // The disk can't grow on a drive that isn't connected (2026-10-25).
+        if growTo != nil, configuration.storageIsMissing {
+            let message = "\(configuration.storageMissingMessage) Nothing was saved."
+            validationErrors = [message]
+            Announcer.shared.announce(message, tone: .failure)
+            isSaving = false
+            return
+        }
+
+        // The Secure Boot question comes first (2026-10-25, code audit), before
+        // anything changes: asked after the disk had grown, a Cancel left the
+        // disk larger with nothing saved and nothing said. A machine that has
+        // never started has nothing to switch, so no question.
+        let secureBootChanged = !isRunning && secureBoot != saved.usesSecureBoot
+        if secureBootChanged {
+            let started = ((try? vmStore.vmDirectoryURL(for: saved))?.appendingPathComponent("nvram.fd").path)
+                .map { FileManager.default.fileExists(atPath: $0) } ?? false
+            if started, !confirmSecureBootSwitch(on: secureBoot) {
+                secureBoot = saved.usesSecureBoot
+                isSaving = false
+                Announcer.shared.announce("Secure Boot left as it was. Nothing was saved.", tone: .info)
+                return
+            }
+        }
+
         Task { @MainActor in
             if let growTo {
                 do {
@@ -338,16 +599,35 @@ struct SettingsView: View {
                 }
             }
 
+            // The firmware switch comes after the disk, which may already have
+            // grown, so a failed switch still saves everything else and says
+            // exactly what didn't change.
+            var secureBootFailure: String? = nil
+            if secureBootChanged {
+                do {
+                    try vmStore.switchSecureBoot(saved, on: secureBoot)
+                } catch {
+                    secureBootFailure = error.localizedDescription
+                }
+            }
+
             var updated = saved
+            if secureBootChanged && secureBootFailure == nil {
+                updated.secureBoot = secureBoot
+            }
             updated.name = vmName
             updated.cpuCount = cpuCount
             updated.ramSizeGB = ramSizeGB
             if let growTo {
                 updated.diskSizeGB = growTo
             }
+            updated.shareClipboard = shareClipboard ? nil : false
+            updated.lowAudioLatency = lowAudioLatency ? true : nil
             updated.usbMode = usbMode.rawValue
             updated.usbRememberedDevices = rememberedDevices.isEmpty ? nil : rememberedDevices
             vmStore.save(updated)
+            // A running VM follows the clipboard setting straight away.
+            AVMPasteboard.shared.refreshEnabled()
 
             let message: String
             if let growTo {
@@ -356,6 +636,15 @@ struct SettingsView: View {
                 message = "Settings saved. USB changes apply right away. Other changes take effect after you restart \(guest)."
             } else {
                 message = "Settings saved. Changes take effect the next time you start \(guest)."
+            }
+            if let secureBootFailure {
+                let full = "\(message) But Secure Boot was not changed. Reason: \(secureBootFailure)"
+                saveMessage = full
+                validationErrors = [full]
+                Announcer.shared.announce(full, tone: .failure)
+                secureBoot = saved.usesSecureBoot
+                isSaving = false
+                return
             }
             saveMessage = message
             Announcer.shared.announce(message, tone: .info)
