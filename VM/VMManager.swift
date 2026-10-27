@@ -1036,6 +1036,8 @@ final class VMManager: ObservableObject {
                 removeFinishedWindowsMedia(runtimeDir: runtimeDir)
                 if signedIn {
                     await saveFreshInstallRestorePoint(configuration: configuration, runtimeDir: runtimeDir)
+                } else {
+                    await saveWeeklyRestorePoint(configuration: configuration, runtimeDir: runtimeDir)
                 }
             }
         } else {
@@ -2513,6 +2515,34 @@ final class VMManager: ObservableObject {
             Announcer.shared.announce("AVM saved a restore point called Fresh install, so you can return to a new Windows from Settings at any time.", tone: .info)
         } catch {
             avmLog("saveFreshInstallRestorePoint: \(error.localizedDescription)")
+        }
+    }
+
+    /// An automatic restore point, at most one a week (2026-10-26), saved
+    /// as the machine starts, so a Windows update that breaks something
+    /// (a screen reader, most often) is at most a week from undone. Why at
+    /// Start and not "before each update": restore points need Windows
+    /// stopped, and Windows installs updates while it runs and as it shuts
+    /// down, so the moment before an update is never one where Windows is
+    /// stopped. A point taken at Start is always from before the updates
+    /// installed after it. The two newest automatic points are kept; the
+    /// user's own are never touched.
+    static let automaticLabelPrefix = "Automatic"
+
+    private func saveWeeklyRestorePoint(configuration: VMConfiguration, runtimeDir: URL) async {
+        guard let existing = try? await RestorePoints.list(vmDirectory: runtimeDir), !existing.isEmpty else { return }
+        let automatic = existing.filter { $0.label.hasPrefix(Self.automaticLabelPrefix) }
+        if let newest = automatic.first, Date().timeIntervalSince(newest.date) < 7 * 24 * 3600 { return }
+        let label = "\(Self.automaticLabelPrefix), \(Date().formatted(date: .abbreviated, time: .omitted))"
+        do {
+            _ = try await RestorePoints.create(vmDirectory: runtimeDir, label: label, secureBoot: configuration.usesSecureBoot)
+            for old in automatic.dropFirst(1) {
+                try? await RestorePoints.delete(old, vmDirectory: runtimeDir)
+            }
+            appendConsole("AVM: Saved this week's automatic restore point.\n")
+            Announcer.shared.announce("AVM saved this week's automatic restore point, so this week's updates can be undone from Settings.", tone: .info)
+        } catch {
+            avmLog("saveWeeklyRestorePoint: \(error.localizedDescription)")
         }
     }
 

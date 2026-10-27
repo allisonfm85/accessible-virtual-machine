@@ -34,9 +34,17 @@ final class KeyboardHold {
     let queue = DispatchQueue(label: "keyboard-hold")
     private var wantedID: String?
     private weak var owner: NSXPCConnection?
-    private var held: IOHIDDevice?
+    /// Every interface of the chosen keyboard (2026-10-26, keyboard
+    /// audit): many keyboards show macOS two or more (a boot keyboard and an
+    /// n-key-rollover one, or a receiver's several), and holding only one
+    /// left the others typing on the Mac.
+    private var held: [IOHIDDevice] = []
     private var heldID: String?
+    private var heldOwnerUID: uid_t?
     private var lookTimer: DispatchSourceTimer?
+    /// While held: checks every few seconds that the Mac still has another
+    /// keyboard and that the person who asked is still at the screen.
+    private var watchTimer: DispatchSourceTimer?
 
     var isActive: Bool { queue.sync { wantedID != nil } }
 
@@ -63,6 +71,23 @@ final class KeyboardHold {
         let serial = (property(device, kIOHIDSerialNumberKey) as? String).flatMap { $0.isEmpty ? nil : $0 }
             ?? "loc\(property(device, kIOHIDLocationIDKey) as? Int ?? 0)"
         return String(format: "%04x:%04x:", vendor, product) + serial
+    }
+
+    /// Keyboards the Mac could still type with if `wanted` were held:
+    /// distinct keyboards other than it, not counting security keys and
+    /// virtual keyboards, which show macOS a keyboard but aren't one a
+    /// person can type with (2026-10-26, keyboard audit: one keyboard plus
+    /// a YubiKey passed the old "two keyboards" count).
+    private static func otherKeyboards(_ all: [IOHIDDevice], than wanted: String) -> Int {
+        let ids = all.filter { device in
+            let vendor = property(device, kIOHIDVendorIDKey) as? Int ?? 0
+            let transport = (property(device, kIOHIDTransportKey) as? String ?? "").lowercased()
+            return identifier(device) != wanted
+                && vendor != 0x1050                 // Yubico
+                && transport != "virtual"
+                && !(property(device, kIOHIDProductKey) as? String ?? "").lowercased().contains("karabiner")
+        }.map(identifier)
+        return Set(ids).count
     }
 
     private static func isBuiltIn(_ device: IOHIDDevice) -> Bool {
@@ -98,6 +123,7 @@ final class KeyboardHold {
             self.releaseHeld(notify: false)
             self.wantedID = keyboardID
             self.owner = connection
+            self.heldOwnerUID = connection.effectiveUserIdentifier
             idle.keyboardChanged(held: true)
             reply(true, nil)
             os_log("keyboard for Windows requested", log: log, type: .default)
@@ -112,57 +138,118 @@ final class KeyboardHold {
             self.releaseHeld(notify: false)
             self.wantedID = nil
             self.owner = nil
+            self.heldOwnerUID = nil
             idle.keyboardChanged(held: false)
         }
     }
 
     private func lookForKeyboard() {
-        guard let wanted = wantedID, held == nil else { return }
+        guard let wanted = wantedID, held.isEmpty else { return }
+        if let uid = heldOwnerUID, !Self.isConsoleUser(uid) {
+            startLooking()                    // their turn at the screen again later
+            return
+        }
         let all = Self.keyboards()
-        guard let device = all.first(where: { Self.identifier($0) == wanted }) else {
+        let interfaces = all.filter { Self.identifier($0) == wanted }
+        guard let first = interfaces.first else {
             startLooking()
             return
         }
-        if Self.isBuiltIn(device) {
+        if interfaces.contains(where: Self.isBuiltIn) {
             refuse(wanted, "AVM never takes the Mac's built-in keyboard.")
             return
         }
-        if all.count < 2 {
+        if Self.otherKeyboards(all, than: wanted) < 1 {
             refuse(wanted, "That is the only keyboard connected, and the Mac must keep one. Connect another keyboard for the Mac, then start again.")
             return
         }
-        let opened = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
-        guard opened == kIOReturnSuccess else {
-            os_log("couldn't hold the keyboard for Windows: 0x%{public}x", log: log, type: .error, opened)
-            refuse(wanted, String(format: "macOS wouldn't let the helper take the keyboard (error 0x%08x).", opened))
-            return
+        var opened: [IOHIDDevice] = []
+        for device in interfaces {
+            let result = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
+            guard result == kIOReturnSuccess else {
+                os_log("couldn't hold the keyboard for Windows: 0x%{public}x", log: log, type: .error, result)
+                for done in opened { IOHIDDeviceClose(done, IOOptionBits(kIOHIDOptionsTypeSeizeDevice)) }
+                refuse(wanted, String(format: "macOS wouldn't let the helper take the keyboard (error 0x%08x).", result))
+                return
+            }
+            opened.append(device)
         }
         let context = Unmanaged.passUnretained(self).toOpaque()
-        IOHIDDeviceRegisterInputValueCallback(device, { context, _, _, value in
-            guard let context else { return }
-            Unmanaged<KeyboardHold>.fromOpaque(context).takeUnretainedValue().handle(value)
-        }, context)
-        IOHIDDeviceRegisterRemovalCallback(device, { context, _, _ in
-            guard let context else { return }
-            Unmanaged<KeyboardHold>.fromOpaque(context).takeUnretainedValue().keyboardWentAway()
-        }, context)
-        IOHIDDeviceSetDispatchQueue(device, queue)
-        IOHIDDeviceActivate(device)
-        held = device
+        for device in opened {
+            IOHIDDeviceRegisterInputValueCallback(device, { context, _, _, value in
+                guard let context else { return }
+                Unmanaged<KeyboardHold>.fromOpaque(context).takeUnretainedValue().handle(value)
+            }, context)
+            IOHIDDeviceRegisterRemovalCallback(device, { context, _, _ in
+                guard let context else { return }
+                Unmanaged<KeyboardHold>.fromOpaque(context).takeUnretainedValue().keyboardWentAway()
+            }, context)
+            IOHIDDeviceSetDispatchQueue(device, queue)
+            // As IOHIDDevice.h has it: the cancel handler set before
+            // activating, and the device let go (closed, and its last
+            // reference dropped, the closure's) only once it has run, after
+            // the last callback.
+            IOHIDDeviceSetCancelHandler(device) {
+                IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
+            }
+            IOHIDDeviceActivate(device)
+        }
+        held = opened
         heldID = wanted
         stopLooking()
-        os_log("keyboard for Windows held", log: log, type: .default)
-        client()?.keyboardState(wanted, held: true, detail: Self.property(device, kIOHIDProductKey) as? String)
+        startWatching()
+        os_log("keyboard for Windows held (%d interfaces)", log: log, type: .default, opened.count)
+        client()?.keyboardState(wanted, held: true, detail: Self.property(first, kIOHIDProductKey) as? String)
     }
 
-    /// On `queue`. Only page-7 key usages, 4 through 0xE7; the rest
-    /// (rollover reports, vendor pages) are dropped. Never logged.
+    /// While held: the Mac must still have a keyboard of its own, and the
+    /// keyboard is only for the person at the screen (a fast user switch
+    /// hands it back).
+    private func startWatching() {
+        guard watchTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 3, repeating: 3)
+        timer.setEventHandler { [weak self] in self?.checkWhileHeld() }
+        timer.resume()
+        watchTimer = timer
+    }
+
+    private func checkWhileHeld() {
+        guard let id = heldID, !held.isEmpty else { return }
+        if let uid = heldOwnerUID, !Self.isConsoleUser(uid) {
+            os_log("keyboard for Windows given back: its user left the screen", log: log, type: .default)
+            releaseHeld(notify: false)
+            client()?.keyboardState(id, held: false, detail: "disconnected")
+            startLooking()
+            return
+        }
+        if Self.otherKeyboards(Self.keyboards(), than: id) < 1 {
+            os_log("keyboard for Windows given back: the Mac had no other keyboard", log: log, type: .default)
+            releaseHeld(notify: false)
+            refuse(id, "The Mac's other keyboard went away, so this one types on the Mac again; the Mac must keep one.")
+        }
+    }
+
+    /// On `queue`. Only page-7 key usages, 4 through 0xE7, and an Apple
+    /// keyboard's Fn; the rest (rollover reports, other vendor usages) are
+    /// dropped. Never logged.
     private func handle(_ value: IOHIDValue) {
         let element = IOHIDValueGetElement(value)
-        guard IOHIDElementGetUsagePage(element) == UInt32(kHIDPage_KeyboardOrKeypad) else { return }
+        let page = IOHIDElementGetUsagePage(element)
         let usage = Int(IOHIDElementGetUsage(element))
+        let pressed = IOHIDValueGetIntegerValue(value) != 0
+        // An Apple keyboard's Fn key (2026-10-26): on Apple's own pages
+        // (0xFF, the older top-case page, and 0xFF01), usage 3. macOS
+        // turns Fn combinations into Forward Delete, Home, End and the
+        // rest; with the keyboard held, AVM does (WindowsKeyboard), so Fn
+        // goes to AVM as HIDKeyMap.fnUsage.
+        if (page == 0xFF || page == 0xFF01) && usage == 0x03 {
+            client()?.keyboardKey(usage: 0x1_0003, pressed: pressed)
+            return
+        }
+        guard page == UInt32(kHIDPage_KeyboardOrKeypad) else { return }
         guard (0x04...0xE7).contains(usage) else { return }
-        client()?.keyboardKey(usage: usage, pressed: IOHIDValueGetIntegerValue(value) != 0)
+        client()?.keyboardKey(usage: usage, pressed: pressed)
     }
 
     private func keyboardWentAway() {
@@ -181,11 +268,11 @@ final class KeyboardHold {
     }
 
     private func releaseHeld(notify: Bool) {
-        guard let device = held else { return }
-        IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
-        IOHIDDeviceSetCancelHandler(device) {}
-        IOHIDDeviceCancel(device)
-        held = nil
+        watchTimer?.cancel()
+        watchTimer = nil
+        guard !held.isEmpty else { return }
+        for device in held { IOHIDDeviceCancel(device) }   // closed in its cancel handler
+        held = []
         if notify, let id = heldID { client()?.keyboardState(id, held: false, detail: nil) }
         heldID = nil
         os_log("keyboard for Windows released", log: log, type: .default)

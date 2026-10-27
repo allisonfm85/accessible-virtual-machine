@@ -25,8 +25,8 @@ import Carbon.HIToolbox
 ///   remap that lets guest screen readers use Caps Lock as their modifier.
 ///   See CapsLockRemapper.swift for the root cause and the full rationale.
 ///   Here, only the placement matters, and it is deliberate on both sides:
-///     - lock() APPLIES the remap BEFORE announcing "Windows keyboard on".
-///     - unlock() RESTORES it BEFORE announcing "Mac keyboard on".
+///     - lock() APPLIES the remap BEFORE announcing "Entering Windows".
+///     - unlock() RESTORES it BEFORE announcing "Entering Mac".
 ///   Both orderings exist for the same reason: a .failure announcement
 ///   INTERRUPTS and FLUSHES the Announcer queue, so a remap failure that
 ///   spoke AFTER the mode-transition announcement would cut that
@@ -91,7 +91,8 @@ import Carbon.HIToolbox
 ///       in place at lock time enters the same debounced path.
 ///
 /// AUDIBLE MODE TRANSITIONS (added 2026-07-19):
-///   lock/unlock announce "Windows keyboard on" / "Mac keyboard on" via
+///   lock/unlock announce "Entering Windows" / "Entering Mac" (2026-10-26,
+///   the same words for every guest, at the user's request) via
 ///   Announcer (.info — Tink, neutral by design). Reclaims themselves are
 ///   SILENT: with VO-cursor sync on, every arrow press triggers one, and
 ///   per-reclaim speech would make VO navigation unbearable.
@@ -245,7 +246,7 @@ class FocusLockManager: ObservableObject {
         guestName = VMManager.currentGuestName
         // Copied on the Mac before entering? Offer it to the guest now.
         AVMPasteboard.shared.macPasteboardMayHaveChanged()
-        Announcer.shared.announce("\(guestName) keyboard on", tone: .info)
+        Announcer.shared.announce("Entering \(guestName)", tone: .enterGuest)
         AVMLog.write("AVM: FocusLock.lock() — NOW LOCKED (isLocked=true).")
     }
 
@@ -265,7 +266,7 @@ class FocusLockManager: ObservableObject {
         // Caps Lock back to normal Mac behavior BEFORE the transition
         // announcement, for the same queue-flush reason as lock().
         CapsLockRemapper.shared.restoreForUnlock()
-        Announcer.shared.announce("Mac keyboard on", tone: .info)
+        Announcer.shared.announce("Entering Mac", tone: .leaveGuest)
         AVMLog.write("AVM: FocusLock.unlock() — NOW UNLOCKED (isLocked=false).")
     }
 
@@ -386,7 +387,7 @@ class FocusLockManager: ObservableObject {
             if voiceOverIsRunning {
                 AVMLog.write("AVM: FocusLock — key watch: window REGAINED key; announcement suppressed (VoiceOver running).")
             } else {
-                Announcer.shared.announce("Keyboard back in \(guestName)", tone: .info)
+                Announcer.shared.announce("Entering \(guestName)", tone: .enterGuest)
                 AVMLog.write("AVM: FocusLock — key watch: window REGAINED key; ANNOUNCED return.")
             }
         } else {
@@ -429,7 +430,7 @@ class FocusLockManager: ObservableObject {
             eventKind: UInt32(kEventHotKeyPressed)
         )
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
-        InstallEventHandler(
+        let installed = InstallEventHandler(
             GetApplicationEventTarget(),
             { _, _, userData -> OSStatus in
                 guard let userData = userData else {
@@ -450,8 +451,7 @@ class FocusLockManager: ObservableObject {
             selfPtr,
             &eventHandlerRef
         )
-        AVMLog.write("AVM: FocusLock — Carbon hotkey registered (Control-Command-Escape).")
-        RegisterEventHotKey(
+        let registered = RegisterEventHotKey(
             hotkeyKeyCode,
             hotkeyModifiers,
             hotkeyID,
@@ -459,6 +459,16 @@ class FocusLockManager: ObservableObject {
             0,
             &hotKeyRef
         )
+        // Checked, not assumed (2026-10-26, keyboard audit): the line used
+        // to say "registered" before the call and ignore its result. If the
+        // chord is taken, the in-window Control-Command-Escape (the capture
+        // view's own check) is the way back, and the user hears so.
+        if installed == noErr && registered == noErr {
+            AVMLog.write("AVM: FocusLock — Carbon hotkey registered (Control-Command-Escape).")
+        } else {
+            AVMLog.write("AVM: FocusLock — Carbon hotkey NOT registered (handler \(installed), hotkey \(registered)).")
+            Announcer.shared.announce("AVM couldn't reserve Control-Command-Escape; it still returns to your Mac while the machine's window is in front.", tone: .failure)
+        }
     }
 
     private func unregisterHotKey() {

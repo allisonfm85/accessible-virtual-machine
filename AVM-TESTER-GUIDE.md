@@ -185,8 +185,13 @@ navigation it reads in this order:
 
 - **AVM** is the app title, a level-one heading.
 - **Each virtual machine's name** is a level-two heading. Under each name is
-  a plain line of specifications (cores, memory, disk size) and two buttons,
-  Start and Delete, each labeled with that machine's name.
+  a plain line of specifications (cores, memory, disk size) and its
+  buttons, each labeled with that machine's name: Start, Settings and
+  Delete while it's shut down. While it runs, the row says how it is
+  ("Running", "Running, keyboard in Windows", "Paused", "Shutting down")
+  and has **Enter** and **Shut Down** instead. macOS machines' rows also
+  say **"Saved"** when the machine was saved with Save and Quit (section
+  17).
 - **Status** is a level-three heading, below the machine list. It describes
   what AVM is currently doing.
 
@@ -347,15 +352,15 @@ they fight over the same keystrokes, and neither one works right.
    machine's Start button.
 3. As soon as the Windows view appears, your keyboard is in Windows. You
    don't have to do anything else. You will hear the system voice say
-   **"Windows keyboard on."** You'll hear it even with VoiceOver off —
-   that's how you know the handover happened.
+   **"Entering Windows"**, after two rising notes. You'll hear it even
+   with VoiceOver off — that's how you know the handover happened.
 
 From here, every keystroke goes to Windows.
 
 ### Leaving Windows
 
 1. Press **Control-Command-Escape**. This is the escape hatch.
-2. You will hear **"Mac keyboard on."**
+2. You will hear two falling notes and **"Entering Mac."**
 3. Press **Command-F5** to turn VoiceOver back on.
 
 ### Going back into Windows
@@ -522,6 +527,17 @@ dashboard's Start buttons work too.
 
 - **USB keyboards work now.** Type on whatever keyboard you like. AVM
   forwards keys the same way no matter which keyboard you use.
+- **A keyboard for Windows.** In a Windows machine's Settings, Keyboard for
+  Windows, you can choose a second keyboard, USB or Bluetooth, that types
+  only into Windows while it runs, whichever app is in front. Your Mac's
+  own keyboard stays with the Mac and VoiceOver, so there's nothing to
+  switch. AVM never takes the Mac's built-in keyboard or its only one,
+  and gives the keyboard back if your Mac's other keyboard goes away.
+  Pause works, and on an Apple keyboard, Fn with Backspace, the arrows or
+  Return gives Delete, Page Up and Down, Home, End and keypad Enter, as on
+  a Mac. For an Apple keyboard with a § key, turn on "It's an Apple
+  keyboard with a § key (ISO)", so § and ` come out where they're
+  printed.
 - **Mice and trackpads work now.** On machines installed with AVM 0.1.1
   or later, the Windows pointer follows your finger exactly and clicks
   land where the pointer is, from the very first boot. Machines
@@ -561,13 +577,16 @@ minute to catch up.
 
 ## 12. Sounds and announcements
 
-AVM speaks in the Mac's system voice and plays three sounds:
+AVM speaks in the Mac's system voice and plays these sounds:
 
 - **Glass** means something succeeded.
 - **Basso** means something failed.
 - **Tink** is a neutral change of state, or guidance. It is not a verdict,
-  just information: the keyboard changed sides, or a form needs one more
-  field.
+  just information: a form needs one more field, say.
+- **Two rising notes** mean the keyboard just went to a virtual machine.
+- **Two falling notes** mean it just came back to the Mac. These two are
+  AVM's own, so you can tell where the keyboard is even while a screen
+  reader is talking over the words.
 
 The sound always plays immediately. Speech may wait its turn. If two
 announcements land within a second of each other, the second one queues
@@ -580,8 +599,9 @@ Announcements you may hear, and what they mean:
 - **"Install media ready. Starting the virtual machine."** The media
   build finished, and the VM is booting.
 - **"Windows Setup is underway…"** The milestone in section 7.
-- **"Windows keyboard on." / "Mac keyboard on."** The keyboard changed
-  sides.
+- **"Entering Windows" / "Entering Mac"** (or the name of the machine's
+  system: "Entering Ubuntu", "Entering macOS"). The keyboard changed
+  sides; the rising or falling notes say which way.
 - **"Another window took the keyboard. Turn VoiceOver on to check."** See
   section 13.
 - **"Keyboard back in Windows."** The window that took the keyboard went
@@ -715,6 +735,15 @@ so if they differ.
 AVM saves a restore point called **Fresh install** by itself, the first
 time you start a machine after Windows is set up. Restoring it gives you a
 brand-new Windows in a minute or two.
+
+AVM also saves an **Automatic** restore point by itself, at most once a
+week, as the machine starts, and keeps the two newest; your own restore
+points are never touched. If a Windows update breaks something, a
+screen reader most often, the automatic point from before it is at most a
+week old. (Restore points need Windows shut down, and Windows installs
+updates while it runs and as it shuts down, so AVM can't take one at the
+exact moment before an update. A point taken at Start is always from
+before the updates installed after it.)
 
 To start over completely, choose **Reinstall Windows…** in Settings while
 the machine is shut down. AVM asks first (it erases everything in Windows
@@ -943,13 +972,70 @@ If the install fails, the machine turns off and AVM says so:
   > minutes. Next: save the diagnostic log from the File menu, then stop
   > the virtual machine and start it again.
 
-  Save the log while the machine is still running (section 17): for
+  Save the log while the machine is still running (section 18): for
   Ubuntu, the machine's startup log records the installer's own start-up
   messages, and the next start replaces it. Then please report it.
 
 ---
 
-## 17. The diagnostic log, your privacy, and reporting a problem
+## 17. macOS instead of Windows
+
+AVM can run macOS too, on Apple's own virtualization. Choose **New macOS
+Virtual Machine…** on the dashboard. AVM downloads the newest macOS your
+Mac supports from Apple (about 26 GB, kept for the next one), or uses an
+installer file (IPSW) you have, and installs it in a few minutes, saying
+how far it has got.
+
+### The keyboard
+
+A macOS machine opens in its own window, with a bar VoiceOver can read
+above the machine's screen: where the keyboard is, **Give macOS the
+Keyboard**, **Turn On VoiceOver in macOS**, and **Shut Down**.
+
+- **Command-Shift-E** (Virtual Machine > Enter macOS) gives macOS the
+  keyboard; you hear the rising notes and "Entering macOS".
+- **Control-Command-Escape** gives it back to the Mac.
+- Command-Tab and Command-F5 stay your Mac's.
+
+**Your Mac's VoiceOver and macOS's.** With both on, they fight over your
+keys. When you enter macOS with your Mac's VoiceOver on, AVM asks you to
+press Command-F5 to turn it off; AVM can't do that for you (macOS starts
+VoiceOver again by itself if a program stops it). When you return to the
+Mac, AVM turns your Mac's VoiceOver back on by itself, and if AVM ever
+quits unexpectedly while you're in macOS, it turns it back on the next
+time it opens.
+
+### Turning on VoiceOver inside macOS
+
+Command-F5 is your Mac's, so to start macOS's own VoiceOver, use **Turn On
+VoiceOver in macOS** on the bar, or **Command-Option-Shift-V**. AVM asks
+you to press Command-F5 and sends that one to macOS. For those few
+seconds every key goes to macOS, so Control-Command-Escape waits until
+AVM says Command-F5 is your Mac's again, within 10 seconds. A new
+machine's first start does this by itself, about three minutes in, when
+Setup Assistant is up. macOS keeps VoiceOver on afterwards.
+
+### Saving, restore points and the clipboard
+
+- **Save and Quit / Save and Close.** Quitting AVM, or closing the
+  machine's window, offers to save the machine as it is, open apps and
+  all. Its next Start carries on from there in seconds instead of a
+  three-minute start.
+- **Restore points.** In a macOS machine's Settings, with it shut down:
+  **Take Restore Point**, then **Restore** or **Delete** beside each one.
+  They are instant and use space only for what changes afterwards. Every
+  new machine has a **Fresh install** point.
+- **Copy and paste.** With Share the clipboard on in its Settings (it is
+  by default), text copied on the Mac can be pasted in macOS and the other
+  way round. Once, in macOS: open Finder, Locations, My Shared Files, AVM
+  Clipboard, and open **Install Clipboard Sharing**. It says when it's
+  on. Text only, for now.
+- **Shared folder.** A folder shared in Settings appears in macOS's Finder
+  under Locations, My Shared Files.
+
+---
+
+## 18. The diagnostic log, your privacy, and reporting a problem
 
 ### What AVM records, and what it never records
 

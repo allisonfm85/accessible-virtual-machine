@@ -341,11 +341,13 @@ final class USBHelperClient: NSObject, ObservableObject {
             Task { @MainActor in
                 self?.log("connection invalidated")
                 self?.connection = nil
+                self?.keyboardHelperLost()
             }
         }
         c.interruptionHandler = { [weak self] in
             Task { @MainActor in
                 self?.log("connection interrupted (helper exited or crashed)")
+                self?.keyboardHelperLost()
             }
         }
         c.resume()
@@ -369,6 +371,11 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// A keyboard for Windows is wanted or held (WindowsKeyboard.swift);
     /// the connection is what keeps it, so it stays open meanwhile.
     var keyboardActive = false
+    /// Bumped by every holdKeyboard (2026-10-26, keyboard audit): a release
+    /// still waiting on the helper's answer when a new hold starts (a quick
+    /// SPICE reconnect) must not then mark the keyboard idle and drop the
+    /// connection, which would make the helper let go of the new hold.
+    private var keyboardGeneration = 0
 
     private func disconnectIfIdle() {
         if attachedDevices.isEmpty && pendingDevices.isEmpty && !keyboardActive {
@@ -431,6 +438,7 @@ final class USBHelperClient: NSObject, ObservableObject {
     func holdKeyboard(_ keyboardID: String) async -> Result<Void, USBHelperError> {
         guard ensureRegistered() else { return .failure(.notEnabled(status)) }
         keyboardActive = true
+        keyboardGeneration += 1
         let c = connect()
         let result: Result<Void, USBHelperError> = await withCheckedContinuation { cont in
             let proxy = c.remoteObjectProxyWithErrorHandler { error in
@@ -448,13 +456,25 @@ final class USBHelperClient: NSObject, ObservableObject {
         return result
     }
 
+    /// The helper went away while it held the keyboard for Windows: the
+    /// kernel has given the keyboard back to macOS, so Windows must let go
+    /// of any key still down, and AVM asks again (2026-10-26, keyboard
+    /// audit; this used to only log).
+    private func keyboardHelperLost() {
+        guard keyboardActive else { return }
+        keyboardActive = false
+        WindowsKeyboard.shared.helperLost()
+    }
+
     func releaseKeyboard() async {
         guard keyboardActive, let c = connection else { keyboardActive = false; return }
+        let generation = keyboardGeneration
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             let proxy = c.remoteObjectProxyWithErrorHandler { _ in cont.resume() } as? AVMUSBHelperProtocol
             guard let proxy else { cont.resume(); return }
             proxy.releaseKeyboard { cont.resume() }
         }
+        guard generation == keyboardGeneration else { return }
         keyboardActive = false
         disconnectIfIdle()
     }

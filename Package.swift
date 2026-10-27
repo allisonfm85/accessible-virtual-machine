@@ -41,6 +41,7 @@ let package = Package(
                 "AVM/GuestAgent.swift",
                 "AVM/SetupReport.swift",
                 "AVM/HIDKeyMap.swift",
+                "AVM/MacGuestFiles.swift",
             ],
             swiftSettings: appSettings
         ),

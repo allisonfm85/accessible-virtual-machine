@@ -50,6 +50,9 @@ struct AVMApp: App {
     /// menu redraw when they change.
     @ObservedObject private var activity = VMActivity.shared
     @ObservedObject private var usbRedirect = USBRedirectController.shared
+    /// A running macOS machine (MacGuest.swift): Enter goes to it when no
+    /// QEMU machine is running.
+    @ObservedObject private var macGuest = MacGuestRunner.shared
 
     /// AVM's FIRST app delegate (added 2026-07-26). See AVMAppDelegate below
     /// for why one became necessary.
@@ -60,6 +63,7 @@ struct AVMApp: App {
     /// launch carries on as always.
     init() {
         InstallMediaJob.runIfAsked()
+        MacTestJob.runIfAsked()
     }
 
     var body: some Scene {
@@ -312,7 +316,14 @@ struct AVMApp: App {
                     .disabled(!activity.canStart)
                 }
 
-                Button("Enter \(focusLock.guestName)") {
+                Button(macGuest.runningID != nil && !activity.isRunningOrPaused ? "Enter macOS" : "Enter \(focusLock.guestName)") {
+                    // A macOS machine has its own window and keyboard model
+                    // (2026-10-26, MacGuest.swift).
+                    if macGuest.runningID != nil && !activity.isRunningOrPaused {
+                        AVMLog.write("AVM: Enter macOS menu — giving the macOS machine the keyboard.")
+                        macGuest.enter()
+                        return
+                    }
                     // Same gate as the dashboard's Enter Windows button: only
                     // meaningful when a VM is running or paused. focusLock.lock()
                     // flips SessionGate to VMView and speaks "Windows keyboard
@@ -332,7 +343,17 @@ struct AVMApp: App {
                     }
                 }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
-                .disabled(!activity.isRunningOrPaused)
+                .disabled(!activity.isRunningOrPaused && macGuest.runningID == nil)
+
+                // macOS's VoiceOver from any screen (2026-10-26): Command-F5
+                // reaches the macOS machine for 10 seconds. MacGuest.swift.
+                if macGuest.runningID != nil {
+                    Button("Pass Command-F5 to macOS") {
+                        AVMLog.write("AVM: Pass Command-F5 menu — system keys to the macOS machine for 10 seconds.")
+                        macGuest.passSystemKeysBriefly()
+                    }
+                    .keyboardShortcut("v", modifiers: [.command, .option, .shift])
+                }
 
                 Button("Speak Status") {
                     AVMLog.write("AVM: Speak Status menu — posting request to ContentView.")
@@ -474,6 +495,9 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
         NSLog("AVM: AppDelegate — applicationDidFinishLaunching; running Caps Lock recovery check.")
         MainActor.assumeIsolated {
             CapsLockRemapper.shared.recoverAtLaunch()
+            // The Mac's VoiceOver back on if AVM ended while it was off for a
+            // macOS machine (2026-10-26).
+            MacVoiceOver.recoverAtLaunch()
             // Pause a running VM before the Mac sleeps (2026-10-26).
             SleepCoordinator.shared.start()
         }
@@ -490,6 +514,9 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
         NSLog("AVM: AppDelegate — applicationWillTerminate; restoring Caps Lock if applied.")
         MainActor.assumeIsolated {
             CapsLockRemapper.shared.restoreForTermination()
+            // The Mac's VoiceOver back on if AVM turned it off for a macOS
+            // machine (2026-10-26, MacVoiceOver in MacGuest.swift).
+            MacVoiceOver.restoreAfterGuest()
             // The focus lock's own teardown (2026-10-25): its hot key, its
             // focus enforcement, and the presentation options it sets.
             // cleanup() existed with no callers; this is the place the
@@ -599,6 +626,34 @@ enum QuitCoordinator {
     static var closingWindow = false
 
     static func shouldTerminate() -> NSApplication.TerminateReply {
+        // A macOS machine runs inside AVM itself (2026-10-26): quitting
+        // ends it at once, so ask.
+        if MacGuestRunner.shared.runningID != nil {
+            let alert = NSAlert()
+            alert.messageText = "macOS is still running. Quit AVM?"
+            alert.informativeText = "Quitting turns the macOS machine off at once, like pulling the plug; unsaved work in it is lost. To shut it down properly first, choose Cancel, then Shut Down in its window."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Quit Now")
+            // Save and Quit (2026-10-26): macOS kept as it is, resumed in
+            // seconds at the next Start (MacGuestRunner.saveAndStop).
+            let saveable = MacGuestRunner.shared.canSave
+            if saveable {
+                alert.addButton(withTitle: "Save and Quit")
+                alert.informativeText += " Save and Quit keeps macOS as it is, open apps and all, and its next Start carries on from there in seconds."
+            }
+            switch alert.runModal() {
+            case .alertSecondButtonReturn:
+                return .terminateNow
+            case .alertThirdButtonReturn where saveable:
+                MacGuestRunner.shared.saveAndStop { saved in
+                    NSApp.reply(toApplicationShouldTerminate: saved)
+                }
+                return .terminateLater
+            default:
+                return .terminateCancel
+            }
+        }
         let vmActive = vmIsActive
         let hasUSB = !USBRedirectController.shared.portByDevice.isEmpty
         guard vmActive || hasUSB else { return .terminateNow }

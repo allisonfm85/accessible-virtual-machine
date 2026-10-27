@@ -28,10 +28,17 @@ final class WindowsKeyboard {
     /// Sends a scancode to the running guest; set by VMView's SPICE
     /// coordinator while connected.
     var send: ((Int32, Bool) -> Void)?
+    /// Sends Pause, which has no single scancode (HIDKeyMap.pauseUsage).
+    var sendPause: ((Bool) -> Void)?
+    /// An Apple ISO keyboard: § and ` swapped back (HIDKeyMap.isoSwapped).
+    var appleISO: Bool {
+        get { translator.appleISO }
+        set { translator.appleISO = newValue }
+    }
+    private var translator = WindowsKeyTranslator()
 
     private(set) var keyboardID: String?
     private var keyboardName = "The keyboard for Windows"
-    private var pressed = Set<Int32>()
     private var announcedHeld = false
 
     private init() {}
@@ -45,6 +52,8 @@ final class WindowsKeyboard {
         Task { @MainActor in
             if case .failure(let error) = await USBHelperClient.shared.holdKeyboard(keyboardID) {
                 AVMLog.write("AVM: WindowsKeyboard — the helper couldn't hold it: \(error)")
+                // Only if no newer start has replaced this one meanwhile.
+                guard self.keyboardID == keyboardID else { return }
                 Announcer.shared.announce("\(keyboardName) can't be used for Windows. Reason: \(Self.reason(error)) It still types on the Mac.", tone: .failure)
                 self.keyboardID = nil
             }
@@ -55,15 +64,41 @@ final class WindowsKeyboard {
         guard keyboardID != nil else { return }
         releaseAllKeys()
         keyboardID = nil
+        retriedAfterHelperLoss = false
         AVMLog.write("AVM: WindowsKeyboard — giving the keyboard back to the Mac.")
         Task { await USBHelperClient.shared.releaseKeyboard() }
     }
 
+    /// AVM's helper stopped while holding the keyboard: keys still down are
+    /// let go in Windows, and AVM asks for the keyboard once more.
+    private var retriedAfterHelperLoss = false
+    func helperLost() {
+        guard let id = keyboardID else { return }
+        releaseAllKeys()
+        keyboardID = nil
+        AVMLog.write("AVM: WindowsKeyboard — the helper stopped while holding the keyboard.")
+        guard !retriedAfterHelperLoss else {
+            Announcer.shared.announce("\(keyboardName) types on the Mac again: AVM's helper stopped. Restart the machine to try again.", tone: .failure)
+            return
+        }
+        retriedAfterHelperLoss = true
+        let name = keyboardName
+        Announcer.shared.announce("\(keyboardName) types on the Mac for a moment: AVM's helper restarted. Asking for it again.", tone: .info)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.send != nil, self.keyboardID == nil else { return }
+                self.start(keyboardID: id, name: name)
+            }
+        }
+    }
+
     func key(usage: Int, pressed down: Bool) {
-        guard keyboardID != nil, let code = HIDKeyMap.scancode(forUsage: usage), let send else { return }
-        let scancode = Int32(code)
-        if down { pressed.insert(scancode) } else { pressed.remove(scancode) }
-        send(scancode, down)
+        guard keyboardID != nil, let send else { return }
+        switch translator.translate(usage: usage, pressed: down) {
+        case .key(let scancode, let isDown): send(scancode, isDown)
+        case .pause(let isDown): sendPause?(isDown)
+        case nil: break
+        }
     }
 
     func stateChanged(_ id: String, held: Bool, detail: String?) {
@@ -90,9 +125,9 @@ final class WindowsKeyboard {
     }
 
     private func releaseAllKeys() {
-        guard let send else { pressed.removeAll(); return }
-        for code in pressed { send(code, false) }
-        pressed.removeAll()
+        let codes = translator.releaseAll()
+        guard let send else { return }
+        for code in codes { send(code, false) }
     }
 
     private static func reason(_ error: USBHelperError) -> String {

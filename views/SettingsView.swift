@@ -397,6 +397,7 @@ struct SettingsView: View {
 
     @State private var windowsKeyboardID: String?
     @State private var windowsKeyboardName: String?
+    @State private var windowsKeyboardAppleISO = false
     @State private var connectedKeyboards: [(id: String, name: String)] = []
     @State private var keyboardsMessage: String?
 
@@ -422,6 +423,10 @@ struct SettingsView: View {
                 if let id, let keyboard = connectedKeyboards.first(where: { $0.id == id }) {
                     windowsKeyboardName = keyboard.name
                 }
+            }
+            if windowsKeyboardID != nil {
+                Toggle("It's an Apple keyboard with a § key (ISO)", isOn: $windowsKeyboardAppleISO)
+                    .accessibilityHint("Swaps the § key and the ` key back, as macOS does for these keyboards. Leave off for other keyboards.")
             }
             HStack {
                 Button("Look Again") { Task { await loadKeyboards() } }
@@ -737,6 +742,7 @@ struct SettingsView: View {
         lowAudioLatency = saved.usesLowAudioLatency
         windowsKeyboardID = saved.windowsKeyboardID
         windowsKeyboardName = saved.windowsKeyboardName
+        windowsKeyboardAppleISO = saved.windowsKeyboardAppleISO == true
     }
 
     // MARK: - Save Settings
@@ -826,6 +832,7 @@ struct SettingsView: View {
             updated.lowAudioLatency = lowAudioLatency ? true : nil
             updated.windowsKeyboardID = windowsKeyboardID
             updated.windowsKeyboardName = windowsKeyboardID == nil ? nil : windowsKeyboardName
+            updated.windowsKeyboardAppleISO = windowsKeyboardID != nil && windowsKeyboardAppleISO ? true : nil
             updated.usbMode = usbMode.rawValue
             updated.usbRememberedDevices = rememberedDevices.isEmpty ? nil : rememberedDevices
             vmStore.save(updated)

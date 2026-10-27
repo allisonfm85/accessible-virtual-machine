@@ -582,6 +582,91 @@ final class AnswerFileLimitsTests: XCTestCase {
 
 // MARK: - The keyboard for Windows: HID usages to PC scancodes
 
+final class MacRestorePointTests: XCTestCase {
+    func testTakeListRestoreDelete() throws {
+        // On the same volume as the build, which is APFS.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let files = MacGuestFiles(folder: folder)
+        try Data("before".utf8).write(to: files.disk)
+        try Data("aux-before".utf8).write(to: files.auxiliaryStorage)
+        try MacRestorePoints.take(files, name: "First")
+        let points = MacRestorePoints.list(files)
+        XCTAssertEqual(points.map(\.name), ["First"])
+        try Data("after".utf8).write(to: files.disk)
+        try Data("state".utf8).write(to: files.savedState)
+        try MacRestorePoints.restore(points[0], into: files)
+        XCTAssertEqual(try String(contentsOf: files.disk, encoding: .utf8), "before")
+        XCTAssertEqual(try String(contentsOf: files.auxiliaryStorage, encoding: .utf8), "aux-before")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: files.savedState.path))
+        XCTAssertEqual(MacRestorePoints.list(files).count, 1, "restoring keeps the point")
+        try MacRestorePoints.delete(points[0])
+        XCTAssertTrue(MacRestorePoints.list(files).isEmpty)
+    }
+}
+
+/// The keyboard paths that went wrong on 2026-10-26, as tests: a key or
+/// modifier left down in Windows is a silent, maddening failure.
+final class KeyboardPathTests: XCTestCase {
+    // Mac virtual key codes.
+    let leftShift = 0x38, rightShift = 0x3C, leftCommand = 0x37, rightOption = 0x3D
+    // Device-dependent flag bits.
+    let lShiftBit: UInt = 0x2, rShiftBit: UInt = 0x4
+
+    func testBothShiftsReleaseSeparately() {
+        // Left Shift down, then Right Shift down, then Right Shift up: the
+        // device-independent .shift is still set, but Right Shift is up.
+        XCTAssertEqual(ModifierSides.isDown(virtualKey: leftShift, flags: lShiftBit), true)
+        XCTAssertEqual(ModifierSides.isDown(virtualKey: rightShift, flags: lShiftBit | rShiftBit), true)
+        XCTAssertEqual(ModifierSides.isDown(virtualKey: rightShift, flags: lShiftBit), false)
+        XCTAssertEqual(ModifierSides.isDown(virtualKey: leftShift, flags: 0), false)
+    }
+
+    func testEveryModifierHasItsOwnBit() {
+        let keys = [0x3B, 0x38, 0x3C, 0x37, 0x36, 0x3A, 0x3D, 0x3E]
+        let bits = keys.map(ModifierSides.sideMask(forVirtualKey:))
+        XCTAssertFalse(bits.contains(0))
+        XCTAssertEqual(Set(bits).count, keys.count)
+        XCTAssertNil(ModifierSides.isDown(virtualKey: 0x00, flags: 0xFFFF), "a letter isn't a modifier")
+    }
+
+    func testFnReleaseMatchesPressEvenIfFnLetGoFirst() {
+        var t = WindowsKeyTranslator()
+        XCTAssertNil(t.translate(usage: HIDKeyMap.fnUsage, pressed: true))
+        XCTAssertEqual(t.translate(usage: 0x2A, pressed: true), .key(0x153, down: true))    // Fn-Backspace: Delete
+        XCTAssertNil(t.translate(usage: HIDKeyMap.fnUsage, pressed: false))
+        XCTAssertEqual(t.translate(usage: 0x2A, pressed: false), .key(0x153, down: false))  // Delete up, not Backspace
+        XCTAssertEqual(t.translate(usage: 0x2A, pressed: true), .key(0x0E, down: true))     // plain Backspace now
+        XCTAssertTrue(t.pressed.contains(0x0E))
+    }
+
+    func testISOSwapOnlyWhenAsked() {
+        var plain = WindowsKeyTranslator()
+        XCTAssertEqual(plain.translate(usage: 0x35, pressed: true), .key(0x29, down: true))
+        var iso = WindowsKeyTranslator()
+        iso.appleISO = true
+        XCTAssertEqual(iso.translate(usage: 0x35, pressed: true), .key(0x56, down: true))
+        XCTAssertEqual(iso.translate(usage: 0x64, pressed: true), .key(0x29, down: true))
+    }
+
+    func testPauseGoesItsOwnWay() {
+        var t = WindowsKeyTranslator()
+        XCTAssertEqual(t.translate(usage: HIDKeyMap.pauseUsage, pressed: true), .pause(down: true))
+        XCTAssertEqual(t.translate(usage: HIDKeyMap.pauseUsage, pressed: false), .pause(down: false))
+        XCTAssertTrue(t.pressed.isEmpty)
+    }
+
+    func testReleaseAllLetsGoOfEverything() {
+        var t = WindowsKeyTranslator()
+        _ = t.translate(usage: 0xE3, pressed: true)   // Windows key
+        _ = t.translate(usage: 0x04, pressed: true)   // a
+        XCTAssertEqual(Set(t.releaseAll()), [0x15B, 0x1E])
+        XCTAssertTrue(t.pressed.isEmpty)
+        XCTAssertEqual(t.translate(usage: 0x04, pressed: false), .key(0x1E, down: false), "a late key-up still maps")
+    }
+}
+
 final class HIDKeyMapTests: XCTestCase {
     func testCommonKeys() {
         XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x04), 0x1E)        // a
@@ -597,6 +682,16 @@ final class HIDKeyMapTests: XCTestCase {
         XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x62), 0x52)        // keypad 0, also Insert with Num Lock off
         XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0xE3), 0x15B)       // left Windows (Command on a Mac keyboard)
         XCTAssertNil(HIDKeyMap.scancode(forUsage: 0x01))                // rollover error
+        XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x7F), 0x120)       // Mute
+        XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x80), 0x130)       // Volume Up
+        XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x81), 0x12E)       // Volume Down
+        XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x85), 0x7E)        // keypad comma
+        XCTAssertEqual(HIDKeyMap.fnLayer[0x2A], 0x153)                 // Fn-Backspace: Delete
+        XCTAssertEqual(HIDKeyMap.fnLayer[0x50], 0x147)                 // Fn-Left: Home
+        XCTAssertEqual(HIDKeyMap.isoSwapped(0x35), 0x64)
+        XCTAssertEqual(HIDKeyMap.isoSwapped(0x64), 0x35)
+        XCTAssertEqual(HIDKeyMap.isoSwapped(0x04), 0x04)
+        XCTAssertNil(HIDKeyMap.scancode(forUsage: HIDKeyMap.pauseUsage), "Pause goes through sendPause")
     }
 
     /// Two keys never send the same scancode, except the two backslash

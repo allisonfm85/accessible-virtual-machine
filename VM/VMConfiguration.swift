@@ -117,6 +117,14 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// for saying which one, even when it isn't connected.
     var windowsKeyboardID: String?
     var windowsKeyboardName: String?
+    /// true: an Apple ISO keyboard, whose § and ` keys AVM swaps back
+    /// (HIDKeyMap.isoSwapped). nil: a PC or ANSI keyboard, as it is.
+    var windowsKeyboardAppleISO: Bool?
+
+    /// macOS machines: false for a new machine whose first start hasn't
+    /// offered macOS's VoiceOver yet, true once it has; nil for machines
+    /// made before this existed (MacGuestRunner.offerVoiceOverOnce).
+    var macVoiceOverOffered: Bool?
 
     // MARK: - Sound (2026-10-26)
 

@@ -771,6 +771,16 @@ final class SPICEKeyCaptureView: MTKView {
         // to keyDown, where held keys stay held and the F19 repeat filter
         // applies. Real Command combinations are unchanged.
         guard event.modifierFlags.contains(.command) else { return false }
+        // THE WAY BACK, IN THE WINDOW TOO (2026-10-26, keyboard audit): the
+        // Carbon hotkey normally takes Control-Command-Escape before it gets
+        // here; if another app holds that chord the hotkey isn't registered,
+        // and without this the chord went to the guest while process
+        // switching and Force Quit are disabled.
+        if event.keyCode == UInt16(kVK_Escape),
+           event.modifierFlags.intersection([.control, .command, .option, .shift]) == [.control, .command] {
+            coordinator.returnToMac()
+            return true
+        }
         // Command combos (e.g. Ctrl+Cmd+Return for Narrator) are delivered here,
         // NOT to keyDown — and AppKit never delivers a matching keyUp while
         // Command is held. We forward the press; the stuck-key flush in
@@ -1105,13 +1115,22 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
                     // audio-teardown deadlock case), a synchronous call
                     // deadlocks the main thread. Queue the flush on the SPICE
                     // context.
-                    self?.flushGuestKeysOnSpiceContext(reason: "unlock observed")
+                    self?.flushGuestKeysOnSpiceContext(reason: "unlock observed", maskWindowsKey: true)
                 } else {
+                    // The Mac's Caps Lock and modifiers as they are now
+                    // (2026-10-26, keyboard audit): with a stale
+                    // capsLockEngaged, the first modifier press after
+                    // locking sent a Caps Lock tap that toggled the guest's.
+                    self?.capsLockEngaged = NSEvent.modifierFlags.contains(.capsLock)
+                    self?.previousModifiers = NSEvent.modifierFlags
                     // POINTER CONFINEMENT: lock engaged — confine (warp to
                     // view center, dissociate, hide). Guards inside handle a
                     // not-yet-key window; the key-status watch below catches
-                    // up when key arrives.
-                    self?.confinePointer(reason: "lock engaged")
+                    // up when key arrives. On the next turn of the main
+                    // loop (2026-10-26, keyboard audit): $isLocked fires in
+                    // willSet, so confinePointer read isLocked as still
+                    // false and did nothing on every entry after the first.
+                    DispatchQueue.main.async { self?.confinePointer(reason: "lock engaged") }
                 }
             }
 
@@ -1132,6 +1151,11 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
             // window — restore immediately; the lock's own resign handling
             // (FocusLockManager's debounced announcement) is unchanged.
             self.restorePointer(reason: "window resigned key")
+            // Keys held now get their key-ups in the other window, never
+            // here (2026-10-26, keyboard audit): let go of them in the guest,
+            // modifiers too, or Windows keeps Win held and the next keys
+            // arrive as Win-key shortcuts.
+            self.flushGuestKeysOnSpiceContext(reason: "window resigned key")
         })
         keyStatusObservers.append(center.addObserver(
             forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
@@ -1234,6 +1258,14 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         mtkView?.delegate = nil
         mtkView?.isPaused = true
 
+        // The keyboard for Windows back to the Mac (2026-10-26, keyboard
+        // audit): spiceInputUnavailable was its only release, and the line
+        // below silences that callback, so the helper could keep holding
+        // the keyboard after the machine's view was gone.
+        WindowsKeyboard.shared.stop()
+        WindowsKeyboard.shared.send = nil
+        WindowsKeyboard.shared.sendPause = nil
+
         // Silence delegate callbacks immediately (plain property write; not a
         // context-bound CocoaSpice operation).
         connection?.delegate = nil
@@ -1302,7 +1334,7 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     /// (Issue #4: held mouse buttons flush here too — an unlock mid-drag must
     /// not strand a held button in the guest, exactly as it must not strand a
     /// held key.)
-    private func flushGuestKeysOnSpiceContext(reason: String) {
+    private func flushGuestKeysOnSpiceContext(reason: String, maskWindowsKey: Bool = false) {
         let inputToFlush = input
         let codesToRelease = pressedScancodes
         pressedScancodes.removeAll()
@@ -1321,6 +1353,18 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
             }
             for button in Self.allMouseButtons where buttonsToRelease.contains(button) {
                 inputToFlush.sendMouseButton(button, mask: [], pressed: false)
+            }
+            // NO START MENU ON THE WAY OUT (2026-10-26): Control-Command-
+            // Escape leaves Control and Command (the Windows key) down in
+            // the guest, the Escape being the hotkey's; releasing them then
+            // is a bare Windows-key tap, which opens Start. A Control tap
+            // while the Windows key is down is what Windows takes as "that
+            // was a shortcut", so Start stays shut (the same mask AutoHotkey
+            // uses). Harmless when the Windows key isn't down; to a screen
+            // reader, Control only stops speech.
+            if maskWindowsKey {
+                inputToFlush.send(.press, code: 0x1D)
+                inputToFlush.send(.release, code: 0x1D)
             }
             inputToFlush.releaseKeys()
         }
@@ -1347,6 +1391,13 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     /// press and release together, not tracked in pressedScancodes. See the
     /// COMMAND COMBOS ARE TAPS note in performKeyEquivalent. Modifiers are
     /// not touched here; they are driven by flagsChanged as always.
+    /// Control-Command-Escape reached the capture view (the hotkey wasn't
+    /// registered): the same as the hotkey.
+    func returnToMac() {
+        AVMLog.write("AVM: FocusLock — Control-Command-Escape arrived in the window (hotkey not registered); returning to the Mac.")
+        focusLock.unlock()
+    }
+
     func handleCommandComboTap(event: NSEvent) {
         guard isLocked, let input else {
             NSLog("AVM: combo tap gated — locked=\(isLocked), input=\(input != nil ? "present" : "nil")")
@@ -1510,8 +1561,12 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
 
         let vk = Int(event.keyCode)
         if let scancode = Self.scancode(forVirtualKey: vk) {
+            // Left and right apart (2026-10-26, keyboard audit): the
+            // device-independent .shift stays set while the OTHER Shift is
+            // held, so releasing one Shift was sent as a second press and it
+            // stayed down in the guest. The device-dependent bits say which.
             let mask = Self.modifierMask(forVirtualKey: vk)
-            let isDown = !mask.isEmpty && flags.contains(mask)
+            let isDown = ModifierSides.isDown(virtualKey: vk, flags: flags.rawValue) ?? (!mask.isEmpty && flags.contains(mask))
             // Stage B: names which modifier went down/up and when — key
             // identity, so gated. The send below is NOT gated.
             if KeyEventLogging.isEnabled {
@@ -2098,9 +2153,13 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         WindowsKeyboard.shared.send = { [weak input] code, down in
             input?.send(down ? .press : .release, code: code)
         }
+        WindowsKeyboard.shared.sendPause = { [weak input] down in
+            input?.sendPause(down ? .press : .release)
+        }
         let id = VMSession.current?.configuration.id
         if let saved = id.flatMap({ id in VMStore.shared?.configurations.first { $0.id == id } }),
            let keyboardID = saved.windowsKeyboardID {
+            WindowsKeyboard.shared.appleISO = saved.windowsKeyboardAppleISO == true
             WindowsKeyboard.shared.start(keyboardID: keyboardID, name: saved.windowsKeyboardName)
         }
     }
@@ -2111,6 +2170,7 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
             self.input = nil
             WindowsKeyboard.shared.stop()
             WindowsKeyboard.shared.send = nil
+            WindowsKeyboard.shared.sendPause = nil
         }
     }
 

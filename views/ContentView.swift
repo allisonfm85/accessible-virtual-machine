@@ -266,7 +266,13 @@ struct ContentView: View {
     /// the keyboard is, then USB. Without a session, how many machines are
     /// set up, so "nothing running" is never confused with "nothing exists".
     private func spokenStatus() -> String {
+        // A macOS machine runs beside any QEMU session (2026-10-26).
+        let mac = MacGuestRunner.shared
+        let macPart = mac.runningID.flatMap { id in vmStore.configurations.first { $0.id == id } }.map { config in
+            "\(config.name), a macOS machine, is running. The keyboard is \(mac.keyboardInGuest ? "in macOS" : "on your Mac")."
+        }
         guard let session = activeSession else {
+            if let macPart { return macPart }
             switch vmStore.configurations.count {
             case 0:
                 return "No virtual machine is set up yet. Use the Setup Wizard first."
@@ -279,7 +285,7 @@ struct ContentView: View {
 
         let name = session.configuration.name
         let guest = session.configuration.guestOS.displayName
-        var parts: [String] = []
+        var parts: [String] = macPart.map { [$0] } ?? []
         switch session.vmState {
         case .stopped:            parts.append("\(name) is stopped.")
         case .starting:
@@ -500,6 +506,8 @@ private struct DashboardContent: View {
 
     @EnvironmentObject var vmStore: VMStore
     @EnvironmentObject var focusLock: FocusLockManager
+    /// macOS machines' state for their rows (2026-10-26).
+    @ObservedObject private var macGuest = MacGuestRunner.shared
 
     var observedSession: VMSession?
     /// The VM state, passed by value so SwiftUI redraws this view when it
@@ -545,7 +553,14 @@ private struct DashboardContent: View {
 
                             Spacer()
 
-                            if activeSession == nil {
+                            // macOS machines run beside QEMU, in their own
+                            // window (2026-10-26): their row says how they
+                            // are and runs them.
+                            if config.guestOS == .macOS {
+                                macRowControls(config)
+                            } else if let session = observedSession, session.configuration.id == config.id {
+                                qemuRowControls(config, session: session)
+                            } else if activeSession == nil {
                                 Button("Start") {
                                     startVM(config: config)
                                 }
@@ -634,25 +649,7 @@ private struct DashboardContent: View {
 
                     if session.vmState == .running || session.vmState == .paused {
                         Button("Stop \(guest)") {
-                            Task {
-                                // stopGracefully waits until Windows has shut down,
-                                // so the session (and its VMManager) stays alive the
-                                // whole time. Throwing it away early is what used to
-                                // kill QEMU mid-shutdown (fixed 2026-09-27).
-                                do {
-                                    try await session.stopGracefully()
-                                    // Clear only the session this Stop was for: after
-                                    // a Force Stop, a new VM may already be running.
-                                    if activeSession === session { activeSession = nil }
-                                } catch {
-                                    // Keep the session, so Force Stop stays available.
-                                    errorMessage = error.localizedDescription
-                                    Announcer.shared.announce(
-                                        "\(guest) could not be shut down. Reason: \(error.localizedDescription). Next: try Stop again, or use Force Stop.",
-                                        tone: .failure
-                                    )
-                                }
-                            }
+                            shutDown(session)
                         }
                         .accessibilityHint("Gracefully shuts down \(guest)")
                         .keyboardShortcut(".", modifiers: .command)
@@ -854,6 +851,94 @@ private struct DashboardContent: View {
             return "about \(Int(mb.rounded())) megabytes"
         }
         return "less than one megabyte"
+    }
+
+    private func shutDown(_ session: VMSession) {
+        let guest = session.configuration.guestOS.displayName
+        Task {
+            // stopGracefully waits until Windows has shut down,
+            // so the session (and its VMManager) stays alive the
+            // whole time. Throwing it away early is what used to
+            // kill QEMU mid-shutdown (fixed 2026-09-27).
+            do {
+                try await session.stopGracefully()
+                // Clear only the session this Stop was for: after
+                // a Force Stop, a new VM may already be running.
+                if activeSession === session { activeSession = nil }
+            } catch {
+                // Keep the session, so Force Stop stays available.
+                errorMessage = error.localizedDescription
+                Announcer.shared.announce(
+                    "\(guest) could not be shut down. Reason: \(error.localizedDescription). Next: try Stop again, or use Force Stop.",
+                    tone: .failure
+                )
+            }
+        }
+    }
+
+    // MARK: Windows and Linux machine rows (2026-10-26, as macOS ones)
+
+    private func qemuStatus(_ session: VMSession) -> String {
+        switch session.vmState {
+        case .starting: return "Starting"
+        case .running: return focusLock.isLocked ? "Running, keyboard in \(session.configuration.guestOS.displayName)" : "Running"
+        case .paused: return "Paused"
+        case .stopping: return "Shutting down"
+        case .stopped: return "Shut down"
+        case .error: return "Stopped with an error"
+        }
+    }
+
+    @ViewBuilder
+    private func qemuRowControls(_ config: VMConfiguration, session: VMSession) -> some View {
+        let guest = config.guestOS.displayName
+        Text(qemuStatus(session))
+            .font(.caption)
+            .accessibilityLabel("\(config.name): \(qemuStatus(session))")
+        if session.vmState == .running || session.vmState == .paused {
+            Button("Enter \(guest)") { focusLock.lock() }
+                .accessibilityLabel("Enter \(config.name)")
+                .accessibilityHint("Gives \(guest) the keyboard. Control-Command-Escape returns to your Mac.")
+            Button("Shut Down") { shutDown(session) }
+                .accessibilityLabel("Shut down \(config.name)")
+        }
+    }
+
+    // MARK: macOS machine rows (2026-10-26)
+
+    private func macStatus(_ config: VMConfiguration) -> String {
+        if macGuest.runningID == config.id {
+            return macGuest.keyboardInGuest ? "Running, keyboard in macOS" : "Running"
+        }
+        if let folder = try? config.directoryURL(),
+           FileManager.default.fileExists(atPath: MacGuestFiles(folder: folder).savedState.path) {
+            return "Saved: Start carries on where you left it"
+        }
+        return "Shut down"
+    }
+
+    @ViewBuilder
+    private func macRowControls(_ config: VMConfiguration) -> some View {
+        Text(macStatus(config))
+            .font(.caption)
+            .accessibilityLabel("\(config.name): \(macStatus(config))")
+        if macGuest.runningID == config.id {
+            Button("Enter macOS") { macGuest.enter() }
+                .accessibilityLabel("Enter \(config.name)")
+                .accessibilityHint("Brings its window forward and gives it the keyboard")
+            Button("Shut Down") { macGuest.shutDown() }
+                .accessibilityLabel("Shut down \(config.name)")
+        } else {
+            Button("Start") { startVM(config: config) }
+                .accessibilityLabel("Start \(config.name)")
+                .accessibilityHint("Starts this macOS virtual machine in its own window")
+                .disabled(macGuest.runningID != nil)
+            Button("Settings") { settingsTarget = config }
+                .accessibilityLabel("Settings for \(config.name)")
+            Button("Delete") { confirmDelete(config: config) }
+                .accessibilityLabel("Delete \(config.name)")
+                .accessibilityHint("Moves this virtual machine and all of its files to the Trash. Asks for confirmation first.")
+        }
     }
 
     private func startVM(config: VMConfiguration) {

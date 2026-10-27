@@ -35,7 +35,7 @@ struct MacSetupView: View {
                 Text("New macOS Virtual Machine")
                     .font(.title)
                     .accessibilityAddTraits(.isHeader)
-                Text("macOS runs on Apple's own virtualization. AVM gets macOS from Apple and installs it, saying how far it has got. macOS's Setup Assistant then runs the first time you start the machine, and offers VoiceOver itself: press Escape when it speaks. To use VoiceOver inside the machine, turn your Mac's VoiceOver off with Command-F5 while you work there.")
+                Text("macOS runs on Apple's own virtualization. AVM gets macOS from Apple and installs it, saying how far it has got. macOS's Setup Assistant then runs the first time you start the machine, and offers VoiceOver itself: give macOS the keyboard, wait about a minute on its first screen, and press Escape when it speaks. macOS keeps VoiceOver on after that. To use VoiceOver inside the machine, turn your Mac's VoiceOver off with Command-F5 while you work there.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -79,7 +79,7 @@ struct MacSetupView: View {
                         .disabled(working)
                 }
                 if working {
-                    Text("Keep this window open. A download and install take 20 minutes to over an hour; AVM speaks each step.")
+                    Text("Keep this window open. The download is large (26 GB for macOS 27) and is kept for your next macOS machine; the install itself takes a few minutes. AVM speaks each step.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -117,6 +117,7 @@ struct MacSetupView: View {
                                      diskSizeGB: diskSizeGB, guestOSName: GuestOS.macOS.rawValue)
         guard let folder = try? config.directoryURL() else { return }
         config.diskImagePath = MacGuestFiles(folder: folder).disk.path
+        config.macVoiceOverOffered = false
         working = true
         let installer = MacInstaller()
         installer.onProgress = { progress = $0 }
@@ -151,6 +152,15 @@ struct MacSettingsView: View {
     @State private var ramSizeGB = 8
     @State private var sharedFolderPath: String?
     @State private var sharedFolderReadOnly = false
+    @State private var shareClipboard = true
+    @State private var restorePoints: [MacRestorePoint] = []
+    @State private var newPointName = ""
+    @State private var restoreMessage: String?
+
+    private var files: MacGuestFiles? {
+        (try? configuration.directoryURL()).map { MacGuestFiles(folder: $0) }
+    }
+    private var running: Bool { isRunning || MacGuestRunner.shared.runningID == configuration.id }
 
     private let maxCores = max(2, ProcessInfo.processInfo.processorCount / 2)
     private let maxMemoryGB = max(4, Int(ProcessInfo.processInfo.physicalMemory >> 30) / 2)
@@ -183,9 +193,22 @@ struct MacSettingsView: View {
             if sharedFolderPath != nil {
                 Toggle("macOS in the machine can only read it", isOn: $sharedFolderReadOnly)
             }
-            Text("It appears in the machine's Finder as My Shared Files, in Locations.")
+            Text(shareClipboard
+                 ? "It appears in the machine's Finder in Locations, My Shared Files, under its own name."
+                 : "It appears in the machine's Finder as My Shared Files, in Locations.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            Text("Clipboard")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Toggle("Share the clipboard with \(configuration.name)", isOn: $shareClipboard)
+            Text("Text copied on the Mac can be pasted in macOS, and the other way round. Once, in macOS: open Finder, Locations, My Shared Files, AVM Clipboard, and open Install Clipboard Sharing. Takes effect at the next Start.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            restorePointsSection
 
             HStack {
                 Button("Close") { dismiss() }
@@ -203,6 +226,106 @@ struct MacSettingsView: View {
             ramSizeGB = configuration.ramSizeGB
             sharedFolderPath = configuration.sharedFolderPath
             sharedFolderReadOnly = configuration.sharedFolderIsReadOnly
+            shareClipboard = configuration.sharesClipboard
+            reloadPoints()
+        }
+    }
+
+    // MARK: Restore points (2026-10-26)
+
+    private var restorePointsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Restore Points")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Text(running
+                 ? "Shut \(configuration.name) down to take or use a restore point."
+                 : "A restore point keeps \(configuration.name)'s disk as it is now. Taking one is instant and uses space only for what changes afterwards.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                TextField("Name for a new restore point", text: $newPointName)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Name for a new restore point")
+                Button("Take Restore Point") { takePoint() }
+                    .disabled(running)
+            }
+            if restorePoints.isEmpty {
+                Text("No restore points yet.")
+            }
+            ForEach(restorePoints) { point in
+                HStack {
+                    Text("\(point.name), \(point.date.formatted(date: .abbreviated, time: .shortened))")
+                    Spacer()
+                    Button("Restore") { restore(point) }
+                        .disabled(running)
+                        .accessibilityLabel("Restore \(point.name)")
+                    Button("Delete") { delete(point) }
+                        .accessibilityLabel("Delete \(point.name)")
+                }
+                .accessibilityElement(children: .contain)
+            }
+            if let restoreMessage {
+                Text(restoreMessage)
+                    .accessibilityAddTraits(.updatesFrequently)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func reloadPoints() {
+        restorePoints = files.map(MacRestorePoints.list) ?? []
+    }
+
+    private func say(_ message: String, _ tone: Announcer.Tone) {
+        restoreMessage = message
+        Announcer.shared.announce(message, tone: tone)
+    }
+
+    private func takePoint() {
+        guard let files else { return }
+        let trimmed = newPointName.trimmingCharacters(in: .whitespaces)
+        let name = trimmed.isEmpty ? "Restore point" : trimmed
+        do {
+            try MacRestorePoints.take(files, name: name)
+            newPointName = ""
+            reloadPoints()
+            say("Restore point \(name) taken.", .success)
+        } catch {
+            say("The restore point wasn't taken. Reason: \(error.localizedDescription)", .failure)
+        }
+    }
+
+    private func restore(_ point: MacRestorePoint) {
+        guard let files else { return }
+        let alert = NSAlert()
+        alert.messageText = "Put \(configuration.name) back to \(point.name)?"
+        alert.informativeText = "Everything done in \(configuration.name) since then is lost, unless you take a restore point of it first. The restore point itself is kept."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Restore")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        do {
+            try MacRestorePoints.restore(point, into: files)
+            say("\(configuration.name) is back to \(point.name).", .success)
+        } catch {
+            say("\(configuration.name) wasn't restored. Reason: \(error.localizedDescription)", .failure)
+        }
+    }
+
+    private func delete(_ point: MacRestorePoint) {
+        let alert = NSAlert()
+        alert.messageText = "Delete the restore point \(point.name)?"
+        alert.informativeText = "\(configuration.name) itself isn't changed; you just can't go back to this point afterwards."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Delete")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        do {
+            try MacRestorePoints.delete(point)
+            reloadPoints()
+            say("Restore point \(point.name) deleted.", .success)
+        } catch {
+            say("The restore point wasn't deleted. Reason: \(error.localizedDescription)", .failure)
         }
     }
 
@@ -223,6 +346,7 @@ struct MacSettingsView: View {
         updated.ramSizeGB = ramSizeGB
         updated.sharedFolderPath = sharedFolderPath
         updated.sharedFolderReadOnly = sharedFolderReadOnly ? true : nil
+        updated.shareClipboard = shareClipboard ? nil : false
         vmStore.save(updated)
         Announcer.shared.announce("Settings saved.", tone: .success)
         dismiss()
