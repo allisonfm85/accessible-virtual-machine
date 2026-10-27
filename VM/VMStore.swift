@@ -49,7 +49,7 @@ final class VMStore: ObservableObject {
                 appropriateFor: nil,
                 create: true
             )
-            let avmDirectory = appSupport.appendingPathComponent("AVM")
+            let avmDirectory = appSupport.appendingPathComponent(AVMPaths.supportFolderName)
             try fileManager.createDirectory(
                 at: avmDirectory,
                 withIntermediateDirectories: true
@@ -88,9 +88,15 @@ final class VMStore: ObservableObject {
     /// installISOPath and sharedFolderPath are deliberately NOT part of
     /// this layout: they point at the user's own files (e.g. an ISO in
     /// ~/Downloads) and deletion must never touch them.
+    ///
+    /// STORAGE LOCATION (2026-10-25): a VM the user stored in a folder of
+    /// their choosing (an external drive) lives in that folder instead,
+    /// recorded in storageFolderPath. The rule above still holds: the
+    /// folder comes from that dedicated setting or the UUID, never from
+    /// diskImagePath. VMConfiguration.directoryURL() is the one place it is
+    /// worked out.
     func vmDirectoryURL(for configuration: VMConfiguration) throws -> URL {
-        try vmsContainerURL
-            .appendingPathComponent(configuration.id.uuidString)
+        try configuration.directoryURL()
     }
 
     /// Total allocated size in bytes of the VM's directory, for the
@@ -222,12 +228,12 @@ final class VMStore: ObservableObject {
     // relaunch, is diagnosed by exactly these lines, and until this change
     // they were invisible in every log AVM has.
     //
-    // BANKED QUESTION (not changed here — behavior change, needs its own
-    // decision and wording approval): a SAVE failure is silent data loss —
-    // the in-memory list looks right and the truth only surfaces at next
-    // launch. Under "silence is never neutral" it is a candidate for a
-    // spoken .failure announcement, not just a log line. Queued for the
-    // announcements work.
+    // SAVE FAILURE IS SPOKEN (2026-10-25, closes the banked question): a
+    // save failure is silent data loss — the in-memory list looks right and
+    // the truth only surfaces at next launch. Under "silence is never
+    // neutral" saveAll now speaks a .failure as well as logging it. A LOAD
+    // failure stays log-only: it happens at launch, before anything could
+    // be said usefully, and an empty list is already visible.
     private func loadAll() -> [VMConfiguration] {
         do {
             let url = try storeURL
@@ -249,6 +255,13 @@ final class VMStore: ObservableObject {
             try data.write(to: url, options: .atomic)
         } catch {
             AVMLog.write("AVM: VMStore — FAILED to save configurations: \(error.localizedDescription)")
+            let reason = error.localizedDescription
+            Task { @MainActor in
+                Announcer.shared.announce(
+                    "AVM could not save your virtual machine list. Your last change will be lost when AVM quits. Reason: \(reason) Next: make sure your Mac has free disk space, then make the change again.",
+                    tone: .failure
+                )
+            }
         }
     }
 
@@ -263,7 +276,59 @@ final class VMStore: ObservableObject {
         saveAll()
     }
 
+    // MARK: - Secure Boot switch (2026-10-25)
+
+    /// Switches which firmware's variable store the VM uses. Each firmware
+    /// keeps its own: the current nvram.fd is set aside as
+    /// nvram-plain.fd or nvram-secure.fd, and the other firmware's earlier
+    /// store, if there is one, comes back. A first switch to Secure Boot
+    /// leaves no nvram.fd, so the next start makes one with Microsoft's
+    /// keys (VMManager.prepareSecureBootNVRAM). Switching back puts the
+    /// old store, and the boot entries Windows wrote to it, back exactly.
+    /// Files are moved, never deleted. Throws, for a spoken failure, with
+    /// nothing changed if the first move fails.
+    func switchSecureBoot(_ configuration: VMConfiguration, on: Bool) throws {
+        if configuration.storageIsMissing {
+            throw NSError(domain: "AVM.SecureBoot", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: configuration.storageMissingMessage])
+        }
+        let dir = try vmDirectoryURL(for: configuration)
+        let current = dir.appendingPathComponent("nvram.fd")
+        let setAside = dir.appendingPathComponent(on ? "nvram-plain.fd" : "nvram-secure.fd")
+        let comingBack = dir.appendingPathComponent(on ? "nvram-secure.fd" : "nvram-plain.fd")
+        if fileManager.fileExists(atPath: current.path) {
+            // An older set-aside store is renamed, never deleted (2026-10-25,
+            // code audit): after a half-finished switch it may be the only
+            // copy with Windows' boot entries.
+            if fileManager.fileExists(atPath: setAside.path) {
+                let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+                let older = dir.appendingPathComponent("\(setAside.deletingPathExtension().lastPathComponent)-\(stamp).fd")
+                try fileManager.moveItem(at: setAside, to: older)
+            }
+            try fileManager.moveItem(at: current, to: setAside)
+        }
+        if fileManager.fileExists(atPath: comingBack.path) {
+            try fileManager.moveItem(at: comingBack, to: current)
+        }
+        AVMLog.write("AVM: VMStore — Secure Boot \(on ? "on" : "off") for '\(configuration.name)'; firmware settings switched.")
+    }
+
     // MARK: - Delete
+
+    /// The install pipelines' scratch folder for this VM, removed with it
+    /// (2026-10-25, code audit). A build cut short by a quit or crash left
+    /// up to 15 GB there, and for Ubuntu a copy of the password hash, and
+    /// nothing else ever cleared it. AVM's own working files, so removed
+    /// outright rather than trashed.
+    private func removeScratch(for configuration: VMConfiguration) {
+        guard let scratch = try? avmDirectory
+            .appendingPathComponent("scratch")
+            .appendingPathComponent(configuration.id.uuidString) else { return }
+        if fileManager.fileExists(atPath: scratch.path) {
+            try? fileManager.removeItem(at: scratch)
+            AVMLog.write("AVM: VMStore — removed install scratch for '\(configuration.name)'.")
+        }
+    }
 
     /// Removes ONLY the configuration entry. This was the entire delete
     /// implementation until 2026-08-15 — which is exactly issue #5: the
@@ -287,12 +352,26 @@ final class VMStore: ObservableObject {
     /// caller for a spoken .failure announcement — the one state this
     /// method must never produce is "entry gone, files stranded and now
     /// invisible in the app", which is the very bug it fixes.
+    ///
+    /// A VM whose drive isn't connected is refused (2026-10-25): its folder
+    /// is missing only because the drive is, and "no directory on disk"
+    /// would otherwise remove the entry and strand the files on the drive,
+    /// invisible to AVM, which is issue #5 again.
     @discardableResult
     func deleteMovingFilesToTrash(_ configuration: VMConfiguration) throws -> UInt64 {
+        if configuration.storageIsMissing {
+            AVMLog.write("AVM: VMStore — delete of '\(configuration.name)' refused: its storage folder is missing (drive not connected?). Entry kept.")
+            throw NSError(
+                domain: "AVM.Delete",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: configuration.storageMissingMessage]
+            )
+        }
         let url = try vmDirectoryURL(for: configuration)
 
         guard fileManager.fileExists(atPath: url.path) else {
             AVMLog.write("AVM: VMStore — delete of '\(configuration.name)': no VM directory on disk (orphaned entry); removing entry only.")
+            removeScratch(for: configuration)
             delete(configuration)
             return 0
         }
@@ -307,6 +386,7 @@ final class VMStore: ObservableObject {
         }
 
         AVMLog.write("AVM: VMStore — moved VM directory to Trash for '\(configuration.name)' (\(bytes) bytes).")
+        removeScratch(for: configuration)
         delete(configuration)
         return bytes
     }
