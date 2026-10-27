@@ -83,6 +83,22 @@ When Windows starts, AVM sends the devices you've chosen to remember for Windows
 
 **USB flash drives don't work yet.** macOS 27 blocks AVM from sending a USB storage device to Windows. I'm working with Apple on a fix.
 
+## Secure Boot
+
+New Windows machines have Secure Boot, with Microsoft's keys, so Windows
+Update offers Insider preview builds. For an older machine, stop it, open
+Settings, and turn on Secure Boot. AVM asks first, keeps a copy of the
+old firmware settings, and puts them back if you turn Secure Boot off.
+If BitLocker is on, Windows may ask for its recovery key after the switch.
+The firmware is UTM's Secure Boot build of edk2; its licences ship with
+it, in edk2-licenses.txt.
+
+## When the Mac sleeps
+
+Before the Mac sleeps, AVM pauses a running machine. When the Mac wakes,
+AVM resumes it and tells you. A machine you paused yourself stays
+paused. Windows' clock may take a minute to catch up.
+
 ## Braille displays
 
 When you plug in a USB device while Windows is running, AVM checks whether it's a braille display before doing anything with it. A braille display is never sent to Windows without asking, even when "Always use in Windows" is chosen in Settings. If you check "Remember my choice for this device," AVM will use your choice from then on.
@@ -137,6 +153,16 @@ override the setting, either in Xcode's build settings or on the
 command line with `xcodebuild AVM_SYSROOT=/your/path`.
 The bundled xorriso must be 1.5.8.pl02 or later — earlier versions
 produce install ISOs the Windows boot loader cannot read.
+
+## Tests
+
+`swift test` runs the logic tests: password hashing, the log sanitizer,
+saved settings, the Ubuntu account checks, and the root USB helper's socket
+check. They need no sysroot, so
+they run on any Mac with Xcode. If you
+build in a folder under ~/Documents, add
+`--scratch-path ~/Library/Caches/AVM-build/swiftpm`: file syncing adds
+file attributes there that stop the tests from being signed.
 
 ## Privacy
 

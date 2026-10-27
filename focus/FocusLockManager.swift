@@ -167,7 +167,25 @@ class FocusLockManager: ObservableObject {
     // MARK: - Init
     init() {
         FocusLockManager.shared = self
+        // AVM STOPPED BEING THE ACTIVE APP (2026-10-25, code audit): the
+        // Caps Lock remap applies to the whole Mac, so a lock left on while
+        // another app is in front made Caps Lock F19 everywhere, VoiceOver
+        // included when Caps Lock is its key. Process switching is blocked
+        // while locked, but routes remain (VoiceOver's app chooser, a system
+        // dialog). Leaving AVM now unlocks, which restores Caps Lock and
+        // says "Mac keyboard on".
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isLocked else { return }
+                AVMLog.write("AVM: FocusLock — AVM is no longer the active app while locked; unlocking.")
+                self.unlock()
+            }
+        }
     }
+
+    private var resignObserver: NSObjectProtocol?
 
     // MARK: - Capture view registration
     /// Called by SPICEKeyCaptureView from viewDidMoveToWindow — the moment
@@ -188,6 +206,16 @@ class FocusLockManager: ObservableObject {
         AVMLog.write("AVM: FocusLock.lock() called — isLocked was \(isLocked)")
         guard !isLocked else {
             AVMLog.write("AVM: FocusLock.lock() — already locked, no-op.")
+            return
+        }
+        // Not while another app is in front (2026-10-25, code audit): the
+        // automatic lock when a VM reaches running could fire while the user
+        // was in Mail, sending nothing to the guest while Caps Lock became
+        // F19 across the Mac. Say where things stand instead.
+        guard NSApp.isActive else {
+            let guest = VMManager.currentGuestName
+            AVMLog.write("AVM: FocusLock.lock() — AVM is not the active app; not locking.")
+            Announcer.shared.announce("\(guest) is running. To use it, switch to AVM and press Command Shift E.", tone: .info)
             return
         }
         NSApp.presentationOptions = [
