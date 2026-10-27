@@ -167,6 +167,33 @@ class FocusLockManager: ObservableObject {
     // MARK: - Init
     init() {
         FocusLockManager.shared = self
+        // AVM STOPPED BEING THE ACTIVE APP (2026-10-25, code audit): the
+        // Caps Lock remap applies to the whole Mac, so a lock left on while
+        // another app is in front made Caps Lock F19 everywhere, VoiceOver
+        // included when Caps Lock is its key. Process switching is blocked
+        // while locked, but routes remain (VoiceOver's app chooser, a system
+        // dialog). Leaving AVM now unlocks, which restores Caps Lock and
+        // says "Mac keyboard on".
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isLocked else { return }
+                AVMLog.write("AVM: FocusLock — AVM is no longer the active app while locked; unlocking.")
+                self.unlock()
+            }
+        }
+        _ = activeObserver
+    }
+
+    private var resignObserver: NSObjectProtocol?
+
+    /// Back in AVM after copying something in another app: offer the
+    /// Mac's clipboard to the guest (AVMPasteboard, 2026-10-25).
+    private lazy var activeObserver: NSObjectProtocol = NotificationCenter.default.addObserver(
+        forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+    ) { _ in
+        MainActor.assumeIsolated { AVMPasteboard.shared.macPasteboardMayHaveChanged() }
     }
 
     // MARK: - Capture view registration
@@ -190,6 +217,16 @@ class FocusLockManager: ObservableObject {
             AVMLog.write("AVM: FocusLock.lock() — already locked, no-op.")
             return
         }
+        // Not while another app is in front (2026-10-25, code audit): the
+        // automatic lock when a VM reaches running could fire while the user
+        // was in Mail, sending nothing to the guest while Caps Lock became
+        // F19 across the Mac. Say where things stand instead.
+        guard NSApp.isActive else {
+            let guest = VMManager.currentGuestName
+            AVMLog.write("AVM: FocusLock.lock() — AVM is not the active app; not locking.")
+            Announcer.shared.announce("\(guest) is running. To use it, switch to AVM and press Command Shift E.", tone: .info)
+            return
+        }
         NSApp.presentationOptions = [
             .hideDock,
             .hideMenuBar,
@@ -206,6 +243,8 @@ class FocusLockManager: ObservableObject {
         // remapper is silent on success and handles its own failure speech.
         CapsLockRemapper.shared.applyForLock()
         guestName = VMManager.currentGuestName
+        // Copied on the Mac before entering? Offer it to the guest now.
+        AVMPasteboard.shared.macPasteboardMayHaveChanged()
         Announcer.shared.announce("\(guestName) keyboard on", tone: .info)
         AVMLog.write("AVM: FocusLock.lock() — NOW LOCKED (isLocked=true).")
     }
