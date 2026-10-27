@@ -1,0 +1,888 @@
+AVM: usb-camera, a USB Video Class webcam fed by the Mac's camera
+
+QEMU has no camera device, and a Mac's built-in camera isn't a USB device
+that usb-host or usb-redir could pass through (2026-10-27). usb-camera is
+a UVC 1.1 camera, which Windows and Linux drive with their own drivers:
+YUY2 at 1280x720 or 640x480, 30 frames a second, on a high-speed bulk
+endpoint (one alternate setting, nothing isochronous to negotiate). Its
+pictures come from the Mac's default camera through AVFoundation, scaled
+to the committed size.
+
+The Mac's camera opens when the guest commits a format, and closes on a
+CLEAR_FEATURE(ENDPOINT_HALT) of the video endpoint (how Linux stops a bulk
+stream) or when a finished frame has gone unread for 3 seconds (Windows
+cancels its transfers), so macOS's camera light is on only while
+something in the guest uses it. It says so on stderr ("usb-camera: ...
+is on", "... is off", access not allowed), which AVM speaks. The device
+is migratable, so a machine with it can still be saved; the camera
+reopens at the guest's next read after a restore.
+
+--- a/hw/usb/meson.build
++++ b/hw/usb/meson.build
+@@ -47,6 +47,16 @@
+   system_ss.add(when: 'CONFIG_USB_STORAGE_MTP', if_true: files('dev-mtp.c'))
+ endif
+ 
++# AVM: a UVC camera fed by the Mac's camera
++if host_os == 'darwin'
++  avfoundation = dependency('appleframeworks',
++                            modules: ['AVFoundation', 'CoreMedia', 'CoreVideo', 'Foundation', 'VideoToolbox'],
++                            required: false)
++  if avfoundation.found()
++    system_ss.add(when: 'CONFIG_USB', if_true: [files('dev-camera.m'), avfoundation])
++  endif
++endif
++
+ # smartcard
+ system_ss.add(when: 'CONFIG_USB_SMARTCARD', if_true: files('dev-smartcard-reader.c'))
+ 
+--- /dev/null
++++ b/hw/usb/dev-camera.m
+@@ -0,0 +1,847 @@
++/*
++ * USB Video Class camera fed by the Mac's camera (AVM, 2026-10-27)
++ *
++ * A machine sees a standard UVC 1.1 webcam, which Windows and Linux drive
++ * with their own built-in drivers. Its pictures come from the Mac's
++ * default camera through AVFoundation, as YUY2 at 1280x720 or 640x480,
++ * 30 frames a second, over a bulk endpoint (one alternate setting, so no
++ * isochronous bandwidth to negotiate).
++ *
++ * The Mac's camera is opened when the guest commits a stream format and
++ * starts reading, and closed when the guest stops: on a CLEAR_FEATURE
++ * (ENDPOINT_HALT) of the video endpoint, as Linux sends, or when a
++ * finished frame has gone unread for 3 seconds, as when Windows cancels
++ * its transfers. So macOS's camera light is on only while something in
++ * the guest uses the camera.
++ *
++ * The device's state is migratable: a saved machine comes back with the
++ * same committed format, and the camera reopens at the guest's next read.
++ *
++ * This work is licensed under the terms of the GNU GPL, version 2 or later.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/module.h"
++#include "qemu/main-loop.h"
++#include "qemu/timer.h"
++#include "qemu/thread.h"
++#include "qemu/error-report.h"
++#include "hw/qdev-properties.h"
++#include "hw/usb.h"
++#include "migration/vmstate.h"
++#include "desc.h"
++#include "qom/object.h"
++
++#import <AVFoundation/AVFoundation.h>
++#import <CoreMedia/CoreMedia.h>
++#import <CoreVideo/CoreVideo.h>
++#import <VideoToolbox/VideoToolbox.h>
++
++#define TYPE_USB_CAMERA "usb-camera"
++OBJECT_DECLARE_SIMPLE_TYPE(USBCameraState, USB_CAMERA)
++
++#define USB_CLASS_VIDEO 0x0e
++#define USB_CLASS_MISC  0xef
++
++/* UVC class-specific values */
++#define UVC_SET_CUR     0x01
++#define UVC_GET_CUR     0x81
++#define UVC_GET_MIN     0x82
++#define UVC_GET_MAX     0x83
++#define UVC_GET_RES     0x84
++#define UVC_GET_LEN     0x85
++#define UVC_GET_INFO    0x86
++#define UVC_GET_DEF     0x87
++
++#define VC_REQUEST_ERROR_CODE_CONTROL   0x02
++#define VS_PROBE_CONTROL                0x01
++#define VS_COMMIT_CONTROL               0x02
++#define VS_STREAM_ERROR_CODE_CONTROL    0x06
++
++#define IF_CONTROL      0
++#define IF_STREAMING    1
++#define EP_VIDEO        1
++
++#define PROBE_LEN       34      /* UVC 1.1 probe/commit */
++#define PAYLOAD_MAX     (64 * 1024)
++#define FRAME_INTERVAL  333333  /* 100 ns units: 30 frames a second */
++#define IDLE_STOP_MS    3000
++
++typedef struct {
++    uint16_t width, height;
++} CameraFrameSize;
++
++/* bFrameIndex 1 and 2 */
++static const CameraFrameSize frame_sizes[] = {
++    { 1280, 720 },
++    { 640, 480 },
++};
++#define NUM_FRAMES ((int)ARRAY_SIZE(frame_sizes))
++#define MAX_FRAME_BYTES (1280 * 720 * 2)
++
++@class AVMCameraCapture;
++
++struct USBCameraState {
++    USBDevice dev;
++    USBEndpoint *ep;
++
++    /* Guarded by the BQL */
++    uint8_t probe[PROBE_LEN];
++    uint8_t frame_index;            /* committed bFrameIndex, 0 = none */
++    bool committed;
++    bool sending;
++    bool sent_one;                  /* said once each time it's opened */
++    uint8_t fid;
++    size_t cur_len, cur_off;
++    size_t payload_off;             /* into the payload, header included */
++    bool zlp_pending;               /* a frame ended on a full transfer */
++    uint8_t *cur;
++    int64_t last_taken_ms;
++    QEMUTimer *idle_timer;
++    QEMUBH *wakeup_bh;
++    AVMCameraCapture *capture;      /* non-nil while the Mac's camera is open */
++
++    /* Guarded by lock: filled by the capture queue */
++    QemuMutex lock;
++    uint8_t *next;
++    size_t next_len;
++    bool next_ready;
++    int64_t next_ready_ms;
++    uint16_t capture_width, capture_height;
++};
++
++/* ---------------------------------------------------------------- */
++/* Descriptors */
++
++enum {
++    STR_MANUFACTURER = 1,
++    STR_PRODUCT,
++    STR_SERIALNUMBER,
++    STR_CONFIG,
++    STR_VIDEO,
++};
++
++static const USBDescStrings desc_strings = {
++    [STR_MANUFACTURER] = "AVM",
++    [STR_PRODUCT]      = "Mac Camera",
++    [STR_SERIALNUMBER] = "1",
++    [STR_CONFIG]       = "Mac Camera",
++    [STR_VIDEO]        = "Mac Camera",
++};
++
++#define LE16(v) ((v) & 0xff), (((v) >> 8) & 0xff)
++#define LE32(v) ((v) & 0xff), (((v) >> 8) & 0xff), (((v) >> 16) & 0xff), (((v) >> 24) & 0xff)
++
++/* Video Control: header, camera terminal (1), output terminal (2) */
++#define VC_TOTAL (13 + 18 + 9)
++static const uint8_t vc_header[] = {
++    13, USB_DT_CS_INTERFACE, 0x01, LE16(0x0110), LE16(VC_TOTAL),
++    LE32(48000000), 1, IF_STREAMING,
++};
++static const uint8_t vc_camera_terminal[] = {
++    18, USB_DT_CS_INTERFACE, 0x02, 1, LE16(0x0201), 0, 0,
++    LE16(0), LE16(0), LE16(0), 3, 0, 0, 0,
++};
++static const uint8_t vc_output_terminal[] = {
++    9, USB_DT_CS_INTERFACE, 0x03, 2, LE16(0x0101), 0, 1, 0,
++};
++
++#define FRAME_DESC(index, w, h) \
++    30, USB_DT_CS_INTERFACE, 0x05, index, 0, LE16(w), LE16(h), \
++    LE32((w) * (h) * 16 * 30), LE32((w) * (h) * 16 * 30), \
++    LE32((w) * (h) * 2), LE32(FRAME_INTERVAL), 1, LE32(FRAME_INTERVAL)
++
++/* Video Streaming: input header, YUY2 format, two frames, colour matching */
++#define VS_TOTAL (14 + 27 + 30 + 30 + 6)
++static const uint8_t vs_input_header[] = {
++    14, USB_DT_CS_INTERFACE, 0x01, 1, LE16(VS_TOTAL), USB_DIR_IN | EP_VIDEO,
++    0, 2, 0, 0, 0, 1, 0,
++};
++static const uint8_t vs_format_yuy2[] = {
++    27, USB_DT_CS_INTERFACE, 0x04, 1, NUM_FRAMES,
++    'Y', 'U', 'Y', '2', 0x00, 0x00, 0x10, 0x00,
++    0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71,
++    16, 1, 0, 0, 0, 0,
++};
++static const uint8_t vs_frame_720[] = { FRAME_DESC(1, 1280, 720) };
++static const uint8_t vs_frame_480[] = { FRAME_DESC(2, 640, 480) };
++static const uint8_t vs_color[] = {
++    6, USB_DT_CS_INTERFACE, 0x0d, 1, 1, 4,
++};
++
++/* The same camera at full and high speed; only the bulk packet differs. */
++#define CAMERA_IFACES(packet) {                                         \
++    {                                                                   \
++        .bInterfaceNumber   = IF_CONTROL,                               \
++        .bNumEndpoints      = 0,                                        \
++        .bInterfaceClass    = USB_CLASS_VIDEO,                          \
++        .bInterfaceSubClass = 0x01,                                     \
++        .iInterface         = STR_VIDEO,                                \
++        .ndesc              = 3,                                        \
++        .descs = (USBDescOther[]) {                                     \
++            { .data = vc_header },                                      \
++            { .data = vc_camera_terminal },                             \
++            { .data = vc_output_terminal },                             \
++        },                                                              \
++    }, {                                                                \
++        .bInterfaceNumber   = IF_STREAMING,                             \
++        .bNumEndpoints      = 1,                                        \
++        .bInterfaceClass    = USB_CLASS_VIDEO,                          \
++        .bInterfaceSubClass = 0x02,                                     \
++        .ndesc              = 5,                                        \
++        .descs = (USBDescOther[]) {                                     \
++            { .data = vs_input_header },                                \
++            { .data = vs_format_yuy2 },                                 \
++            { .data = vs_frame_720 },                                   \
++            { .data = vs_frame_480 },                                   \
++            { .data = vs_color },                                       \
++        },                                                              \
++        .eps = (USBDescEndpoint[]) {                                    \
++            {                                                           \
++                .bEndpointAddress = USB_DIR_IN | EP_VIDEO,              \
++                .bmAttributes     = USB_ENDPOINT_XFER_BULK,             \
++                .wMaxPacketSize   = packet,                             \
++            },                                                          \
++        },                                                              \
++    },                                                                  \
++}
++
++static const USBDescIface desc_ifaces_full[] = CAMERA_IFACES(64);
++static const USBDescIface desc_ifaces_high[] = CAMERA_IFACES(512);
++
++#define CAMERA_DEVICE(ifaces) {                                         \
++    .bcdUSB             = 0x0200,                                       \
++    .bDeviceClass       = USB_CLASS_MISC,                               \
++    .bDeviceSubClass    = 0x02,                                         \
++    .bDeviceProtocol    = 0x01, /* uses Interface Association */        \
++    .bMaxPacketSize0    = 64,                                           \
++    .bNumConfigurations = 1,                                            \
++    .confs = (USBDescConfig[]) {                                        \
++        {                                                               \
++            .bNumInterfaces      = 2,                                   \
++            .bConfigurationValue = 1,                                   \
++            .iConfiguration      = STR_CONFIG,                          \
++            .bmAttributes        = USB_CFG_ATT_ONE,                     \
++            .bMaxPower           = 250,                                 \
++            .nif_groups          = 1,                                   \
++            .if_groups = &(USBDescIfaceAssoc) {                         \
++                .bFirstInterface   = IF_CONTROL,                        \
++                .bInterfaceCount   = 2,                                 \
++                .bFunctionClass    = USB_CLASS_VIDEO,                   \
++                .bFunctionSubClass = 0x03,                              \
++                .iFunction         = STR_VIDEO,                         \
++                .nif               = ARRAY_SIZE(ifaces),                \
++                .ifs               = ifaces,                            \
++            },                                                          \
++        },                                                              \
++    },                                                                  \
++}
++
++static const USBDescDevice desc_device_full = CAMERA_DEVICE(desc_ifaces_full);
++static const USBDescDevice desc_device_high = CAMERA_DEVICE(desc_ifaces_high);
++
++static const USBDesc desc_camera = {
++    .id = {
++        .idVendor      = 0x46f4, /* CRC16() of "QEMU" */
++        .idProduct     = 0x0010,
++        .bcdDevice     = 0x0100,
++        .iManufacturer = STR_MANUFACTURER,
++        .iProduct      = STR_PRODUCT,
++        .iSerialNumber = STR_SERIALNUMBER,
++    },
++    .full = &desc_device_full,
++    .high = &desc_device_high,
++    .str  = desc_strings,
++};
++
++/* ---------------------------------------------------------------- */
++/* The Mac's camera */
++
++@interface AVMCameraCapture : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
++{
++@public
++    USBCameraState *state;
++    AVCaptureSession *session;
++    dispatch_queue_t queue;
++    uint16_t width, height;
++    VTPixelTransferSessionRef transfer;
++    CVPixelBufferRef scaled;    /* the guest's size, YUY2 (or UYVY) */
++    bool swap_bytes;            /* UYVY made: swap to YUY2 */
++    bool reported;
++}
++@end
++
++static void camera_frame_arrived(void *opaque)
++{
++    USBCameraState *s = opaque;
++    usb_wakeup(s->ep, 0);
++}
++
++@implementation AVMCameraCapture
++
++- (void)startSession
++{
++    AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
++    if (!device) {
++        error_report("usb-camera: the Mac has no camera");
++        return;
++    }
++    NSError *err = nil;
++    AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:device error:&err];
++    if (!input) {
++        error_report("usb-camera: the Mac's camera could not be opened: %s",
++                     err.localizedDescription.UTF8String);
++        return;
++    }
++    /* The camera's own frames, scaled and converted here: AVFoundation
++     * doesn't always honour a size asked of it (the frames came at the
++     * camera's size, and none reached the guest). */
++    AVCaptureVideoDataOutput *output = [[[AVCaptureVideoDataOutput alloc] init] autorelease];
++    if (VTPixelTransferSessionCreate(kCFAllocatorDefault, &transfer) != noErr) {
++        error_report("usb-camera: the Mac's camera could not be opened: no pixel transfer");
++        return;
++    }
++    /* Aspect fill: a 16:9 camera fills 640x480, its sides trimmed. */
++    VTSessionSetProperty(transfer, kVTPixelTransferPropertyKey_ScalingMode, kVTScalingMode_Trim);
++    if (![self makeScaled:kCVPixelFormatType_422YpCbCr8_yuvs]) {
++        return;
++    }
++    output.alwaysDiscardsLateVideoFrames = YES;
++    [output setSampleBufferDelegate:self queue:queue];
++
++    session = [[AVCaptureSession alloc] init];
++    [session beginConfiguration];
++    if ([session canAddInput:input]) {
++        [session addInput:input];
++    }
++    if ([session canAddOutput:output]) {
++        [session addOutput:output];
++    }
++    [session commitConfiguration];
++    [session startRunning];
++    info_report("usb-camera: the Mac's camera (%s) is on at %ux%u",
++                device.localizedName.UTF8String, width, height);
++}
++
++- (BOOL)makeScaled:(OSType)pixel
++{
++    if (scaled) {
++        CVPixelBufferRelease(scaled);
++        scaled = NULL;
++    }
++    NSDictionary *attrs = @{ (id)kCVPixelBufferIOSurfacePropertiesKey: @{} };
++    if (CVPixelBufferCreate(kCFAllocatorDefault, width, height, pixel,
++                            (CFDictionaryRef)attrs, &scaled) != kCVReturnSuccess) {
++        error_report("usb-camera: the Mac's camera could not be opened: no %ux%u buffer",
++                     width, height);
++        return NO;
++    }
++    swap_bytes = pixel == kCVPixelFormatType_422YpCbCr8;
++    return YES;
++}
++
++- (void)start
++{
++    dispatch_async(queue, ^{
++        switch ([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo]) {
++        case AVAuthorizationStatusAuthorized:
++            [self startSession];
++            break;
++        case AVAuthorizationStatusNotDetermined:
++            [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL granted) {
++                dispatch_async(self->queue, ^{
++                    if (granted) {
++                        [self startSession];
++                    } else {
++                        error_report("usb-camera: macOS camera access was not allowed");
++                    }
++                });
++            }];
++            break;
++        default:
++            error_report("usb-camera: macOS camera access was not allowed");
++            break;
++        }
++    });
++}
++
++/* Stops the camera; with wait, returns once no more frames can arrive. */
++- (void)stopWaiting:(bool)wait
++{
++    void (^stop)(void) = ^{
++        [self->session stopRunning];
++        [self->session release];
++        self->session = nil;
++        self->state = NULL;
++    };
++    if (wait) {
++        dispatch_sync(queue, stop);
++    } else {
++        dispatch_async(queue, stop);
++    }
++}
++
++- (void)captureOutput:(AVCaptureOutput *)output
++didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
++       fromConnection:(AVCaptureConnection *)connection
++{
++    USBCameraState *s = state;
++    CVImageBufferRef image = CMSampleBufferGetImageBuffer(sampleBuffer);
++    if (!s || !image) {
++        return;
++    }
++    OSStatus err = VTPixelTransferSessionTransferImage(transfer, image, scaled);
++    if (err != noErr && !swap_bytes) {
++        /* No YUY2 from VideoToolbox here: UYVY, swapped below. */
++        if ([self makeScaled:kCVPixelFormatType_422YpCbCr8]) {
++            err = VTPixelTransferSessionTransferImage(transfer, image, scaled);
++        }
++    }
++    if (!reported) {
++        reported = true;
++        info_report("usb-camera: first picture %zux%zu made %ux%u%s (%d)",
++                    CVPixelBufferGetWidth(image), CVPixelBufferGetHeight(image),
++                    width, height, swap_bytes ? " from UYVY" : "", (int)err);
++    }
++    if (err != noErr) {
++        return;
++    }
++    CVPixelBufferLockBaseAddress(scaled, kCVPixelBufferLock_ReadOnly);
++    size_t w = CVPixelBufferGetWidth(scaled);
++    size_t h = CVPixelBufferGetHeight(scaled);
++    size_t row = CVPixelBufferGetBytesPerRow(scaled);
++    const uint8_t *base = CVPixelBufferGetBaseAddress(scaled);
++    size_t out_row = (size_t)width * 2;
++
++    qemu_mutex_lock(&s->lock);
++    /* A late frame from a camera closed for another size is dropped. */
++    if (base && w == width && h == height
++        && s->capture_width == width && s->capture_height == height) {
++        for (size_t y = 0; y < h; y++) {
++            const uint8_t *src = base + y * row;
++            uint8_t *dst = s->next + y * out_row;
++            if (swap_bytes) {
++                for (size_t x = 0; x < out_row; x += 2) {
++                    dst[x] = src[x + 1];
++                    dst[x + 1] = src[x];
++                }
++            } else {
++                memcpy(dst, src, out_row);
++            }
++        }
++        s->next_len = out_row * height;
++        if (!s->next_ready) {
++            s->next_ready_ms = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
++        }
++        s->next_ready = true;
++    }
++    qemu_mutex_unlock(&s->lock);
++    CVPixelBufferUnlockBaseAddress(scaled, kCVPixelBufferLock_ReadOnly);
++    qemu_bh_schedule(s->wakeup_bh);
++}
++
++- (void)dealloc
++{
++    if (transfer) {
++        VTPixelTransferSessionInvalidate(transfer);
++        CFRelease(transfer);
++    }
++    if (scaled) {
++        CVPixelBufferRelease(scaled);
++    }
++    dispatch_release(queue);
++    [super dealloc];
++}
++
++@end
++
++static void camera_open(USBCameraState *s)
++{
++    if (s->capture || !s->committed) {
++        return;
++    }
++    const CameraFrameSize *size = &frame_sizes[s->frame_index - 1];
++    qemu_mutex_lock(&s->lock);
++    s->next_ready = false;
++    s->capture_width = size->width;
++    s->capture_height = size->height;
++    qemu_mutex_unlock(&s->lock);
++    s->sending = false;
++    s->payload_off = 0;
++    s->zlp_pending = false;
++    s->sent_one = false;
++    s->last_taken_ms = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
++
++    AVMCameraCapture *capture = [[AVMCameraCapture alloc] init];
++    capture->state = s;
++    capture->queue = dispatch_queue_create("avm.usb-camera", DISPATCH_QUEUE_SERIAL);
++    capture->width = size->width;
++    capture->height = size->height;
++    s->capture = capture;
++    [capture start];
++    timer_mod(s->idle_timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 1000);
++}
++
++static void camera_close(USBCameraState *s, bool wait)
++{
++    if (!s->capture) {
++        return;
++    }
++    AVMCameraCapture *capture = s->capture;
++    s->capture = nil;
++    timer_del(s->idle_timer);
++    if (wait) {
++        [capture stopWaiting:true];
++        [capture release];
++    } else {
++        /* The capture queue clears its state pointer before any later
++         * frame could use it; the object goes once that has run. */
++        [capture stopWaiting:false];
++        dispatch_async(capture->queue, ^{ [capture release]; });
++    }
++    s->sending = false;
++    qemu_mutex_lock(&s->lock);
++    s->next_ready = false;
++    qemu_mutex_unlock(&s->lock);
++    info_report("usb-camera: the Mac's camera is off");
++}
++
++/* A finished frame unread for IDLE_STOP_MS: the guest stopped reading. */
++static void camera_idle_check(void *opaque)
++{
++    USBCameraState *s = opaque;
++    int64_t now = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
++    qemu_mutex_lock(&s->lock);
++    bool unread = s->next_ready && now - s->next_ready_ms > IDLE_STOP_MS;
++    qemu_mutex_unlock(&s->lock);
++    if (unread && !s->sending && now - s->last_taken_ms > IDLE_STOP_MS) {
++        camera_close(s, false);
++        return;
++    }
++    timer_mod(s->idle_timer, now + 1000);
++}
++
++/* ---------------------------------------------------------------- */
++/* Probe and commit */
++
++static void probe_fill(USBCameraState *s, uint8_t *probe, int frame_index)
++{
++    const CameraFrameSize *size = &frame_sizes[frame_index - 1];
++    uint32_t frame_bytes = size->width * size->height * 2;
++    memset(probe, 0, PROBE_LEN);
++    probe[2] = 1;                       /* bFormatIndex */
++    probe[3] = frame_index;             /* bFrameIndex */
++    stl_le_p(probe + 4, FRAME_INTERVAL);
++    stl_le_p(probe + 18, frame_bytes);  /* dwMaxVideoFrameSize */
++    stl_le_p(probe + 22, PAYLOAD_MAX);  /* dwMaxPayloadTransferSize */
++    stl_le_p(probe + 26, 48000000);     /* dwClockFrequency */
++    probe[30] = 0x03;                   /* bmFramingInfo: FID and EOF */
++    probe[31] = 1;                      /* bPreferedVersion */
++    probe[32] = 1;                      /* bMinVersion */
++    probe[33] = 1;                      /* bMaxVersion */
++}
++
++/* The guest's probe or commit, made one this device can do. */
++static int probe_frame_index(const uint8_t *data, int length)
++{
++    int index = length > 3 ? data[3] : 0;
++    return index >= 1 && index <= NUM_FRAMES ? index : 1;
++}
++
++static int streaming_control(USBCameraState *s, int request, int selector,
++                             int length, uint8_t *data)
++{
++    uint8_t probe[PROBE_LEN];
++    int n = MIN(length, PROBE_LEN);
++
++    if (selector == VS_STREAM_ERROR_CODE_CONTROL) {
++        if (request == (ClassInterfaceRequest | UVC_GET_CUR) && length >= 1) {
++            data[0] = 0;
++            return 1;
++        }
++        if (request == (ClassInterfaceRequest | UVC_GET_INFO) && length >= 1) {
++            data[0] = 0x01;
++            return 1;
++        }
++        return -1;
++    }
++    if (selector != VS_PROBE_CONTROL && selector != VS_COMMIT_CONTROL) {
++        return -1;
++    }
++
++    switch (request) {
++    case ClassInterfaceOutRequest | UVC_SET_CUR:
++        probe_fill(s, s->probe, probe_frame_index(data, length));
++        if (selector == VS_COMMIT_CONTROL) {
++            int index = s->probe[3];
++            if (s->capture && index != s->frame_index) {
++                camera_close(s, true);
++            }
++            s->frame_index = index;
++            s->committed = true;
++            s->sending = false;
++            s->payload_off = 0;
++            s->zlp_pending = false;
++            camera_open(s);
++        }
++        return 0;
++    case ClassInterfaceRequest | UVC_GET_CUR:
++        if (!s->probe[3]) {
++            probe_fill(s, s->probe, 1);
++        }
++        memcpy(data, s->probe, n);
++        return n;
++    case ClassInterfaceRequest | UVC_GET_MIN:
++    case ClassInterfaceRequest | UVC_GET_DEF:
++        probe_fill(s, probe, 1);
++        memcpy(data, probe, n);
++        return n;
++    case ClassInterfaceRequest | UVC_GET_MAX:
++        probe_fill(s, probe, NUM_FRAMES);
++        memcpy(data, probe, n);
++        return n;
++    case ClassInterfaceRequest | UVC_GET_RES:
++        memset(data, 0, n);
++        return n;
++    case ClassInterfaceRequest | UVC_GET_LEN:
++        if (length < 2) {
++            return -1;
++        }
++        stw_le_p(data, PROBE_LEN);
++        return 2;
++    case ClassInterfaceRequest | UVC_GET_INFO:
++        if (length < 1) {
++            return -1;
++        }
++        data[0] = 0x03;
++        return 1;
++    }
++    return -1;
++}
++
++static void usb_camera_handle_control(USBDevice *dev, USBPacket *p,
++                                      int request, int value, int index,
++                                      int length, uint8_t *data)
++{
++    USBCameraState *s = USB_CAMERA(dev);
++    int ret = usb_desc_handle_control(dev, p, request, value, index, length, data);
++    if (ret >= 0) {
++        return;
++    }
++
++    if (request == (EndpointOutRequest | USB_REQ_CLEAR_FEATURE)) {
++        /* Linux stops a bulk stream by clearing the endpoint's halt. */
++        if ((index & 0x0f) == EP_VIDEO) {
++            camera_close(s, true);
++        }
++        return;
++    }
++
++    int iface = index & 0xff;
++    int selector = (value >> 8) & 0xff;
++    ret = -1;
++    if (iface == IF_STREAMING) {
++        ret = streaming_control(s, request, selector, length, data);
++    } else if (iface == IF_CONTROL && selector == VC_REQUEST_ERROR_CODE_CONTROL) {
++        if (request == (ClassInterfaceRequest | UVC_GET_CUR) && length >= 1) {
++            data[0] = 0;
++            ret = 1;
++        } else if (request == (ClassInterfaceRequest | UVC_GET_INFO) && length >= 1) {
++            data[0] = 0x01;
++            ret = 1;
++        }
++    }
++    if (ret < 0) {
++        p->status = USB_RET_STALL;
++        return;
++    }
++    p->actual_length = ret;
++}
++
++/* ---------------------------------------------------------------- */
++/* Streaming */
++
++static void usb_camera_handle_data(USBDevice *dev, USBPacket *p)
++{
++    USBCameraState *s = USB_CAMERA(dev);
++
++    if (p->pid != USB_TOKEN_IN || p->ep->nr != EP_VIDEO) {
++        p->status = USB_RET_STALL;
++        return;
++    }
++    if (!s->committed) {
++        p->status = USB_RET_NAK;
++        return;
++    }
++    if (!s->capture) {
++        /* A read after the camera went idle, or after a restore. */
++        camera_open(s);
++    }
++    if (s->zlp_pending) {
++        s->zlp_pending = false;
++        return;
++    }
++    if (!s->sending) {
++        qemu_mutex_lock(&s->lock);
++        if (s->next_ready) {
++            uint8_t *swap = s->cur;
++            s->cur = s->next;
++            s->next = swap;
++            s->cur_len = s->next_len;
++            s->next_ready = false;
++            s->sending = true;
++            s->cur_off = 0;
++            s->payload_off = 0;
++        }
++        qemu_mutex_unlock(&s->lock);
++        if (!s->sending) {
++            p->status = USB_RET_NAK;
++            return;
++        }
++    }
++
++    /*
++     * A frame goes as payloads of up to PAYLOAD_MAX bytes, each starting
++     * with a 2-byte header. A payload spans as many transfers as it needs
++     * (Linux reads 16 KB at a time), and ends at PAYLOAD_MAX or with a
++     * short transfer, so a transfer never holds the end of one payload and
++     * the start of the next.
++     */
++    size_t space = usb_packet_size(p) - p->actual_length;
++    while (space > 0) {
++        size_t left = s->cur_len - s->cur_off;
++        if (s->payload_off == 0) {
++            if (space < 2) {
++                break;
++            }
++            bool eof = left <= PAYLOAD_MAX - 2;
++            uint8_t header[2] = { 2, 0x80 | s->fid | (eof ? 0x02 : 0) };
++            usb_packet_copy(p, header, 2);
++            s->payload_off = 2;
++            space -= 2;
++        }
++        size_t n = MIN(MIN(space, PAYLOAD_MAX - s->payload_off), left);
++        usb_packet_copy(p, s->cur + s->cur_off, n);
++        s->cur_off += n;
++        s->payload_off += n;
++        space -= n;
++        if (s->cur_off >= s->cur_len) {
++            if (!s->sent_one) {
++                s->sent_one = true;
++                info_report("usb-camera: first picture sent to the guest");
++            }
++            /* Ending on a full transfer, the guest learns the payload is
++             * over from a zero-length one. */
++            s->zlp_pending = space == 0 && s->payload_off < PAYLOAD_MAX;
++            s->payload_off = 0;
++            s->sending = false;
++            s->fid ^= 1;
++            s->last_taken_ms = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
++            break;
++        }
++        if (s->payload_off >= PAYLOAD_MAX) {
++            s->payload_off = 0;
++            break;
++        }
++    }
++}
++
++static void usb_camera_handle_reset(USBDevice *dev)
++{
++    USBCameraState *s = USB_CAMERA(dev);
++    camera_close(s, true);
++    s->committed = false;
++    s->frame_index = 0;
++    s->sending = false;
++    s->payload_off = 0;
++    s->zlp_pending = false;
++    s->fid = 0;
++    memset(s->probe, 0, sizeof(s->probe));
++}
++
++static void usb_camera_realize(USBDevice *dev, Error **errp)
++{
++    USBCameraState *s = USB_CAMERA(dev);
++
++    dev->usb_desc = &desc_camera;
++    usb_desc_create_serial(dev);
++    usb_desc_init(dev);
++    s->ep = usb_ep_get(dev, USB_TOKEN_IN, EP_VIDEO);
++    s->dev.opaque = s;
++    qemu_mutex_init(&s->lock);
++    s->cur = g_malloc0(MAX_FRAME_BYTES);
++    s->next = g_malloc0(MAX_FRAME_BYTES);
++    s->wakeup_bh = qemu_bh_new(camera_frame_arrived, s);
++    s->idle_timer = timer_new_ms(QEMU_CLOCK_REALTIME, camera_idle_check, s);
++}
++
++static void usb_camera_unrealize(USBDevice *dev)
++{
++    USBCameraState *s = USB_CAMERA(dev);
++    camera_close(s, true);
++    timer_free(s->idle_timer);
++    qemu_bh_delete(s->wakeup_bh);
++    g_free(s->cur);
++    g_free(s->next);
++    qemu_mutex_destroy(&s->lock);
++}
++
++static int usb_camera_post_load(void *opaque, int version_id)
++{
++    USBCameraState *s = opaque;
++    if (s->frame_index < 1 || s->frame_index > NUM_FRAMES) {
++        s->frame_index = 0;
++        s->committed = false;
++    }
++    if (s->committed) {
++        probe_fill(s, s->probe, s->frame_index);
++    }
++    s->sending = false;
++    s->payload_off = 0;
++    s->zlp_pending = false;
++    return 0;
++}
++
++static const VMStateDescription vmstate_usb_camera = {
++    .name = TYPE_USB_CAMERA,
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .post_load = usb_camera_post_load,
++    .fields = (const VMStateField[]) {
++        VMSTATE_USB_DEVICE(dev, USBCameraState),
++        VMSTATE_UINT8(frame_index, USBCameraState),
++        VMSTATE_BOOL(committed, USBCameraState),
++        VMSTATE_UINT8(fid, USBCameraState),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
++static void usb_camera_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    USBDeviceClass *k = USB_DEVICE_CLASS(klass);
++
++    dc->vmsd = &vmstate_usb_camera;
++    dc->desc = "USB video camera fed by the Mac's camera";
++    set_bit(DEVICE_CATEGORY_USB, dc->categories);
++    k->product_desc   = "Mac Camera";
++    k->realize        = usb_camera_realize;
++    k->unrealize      = usb_camera_unrealize;
++    k->handle_reset   = usb_camera_handle_reset;
++    k->handle_control = usb_camera_handle_control;
++    k->handle_data    = usb_camera_handle_data;
++}
++
++static const TypeInfo usb_camera_info = {
++    .name          = TYPE_USB_CAMERA,
++    .parent        = TYPE_USB_DEVICE,
++    .instance_size = sizeof(USBCameraState),
++    .class_init    = usb_camera_class_init,
++};
++
++static void usb_camera_register_types(void)
++{
++    type_register_static(&usb_camera_info);
++}
++
++type_init(usb_camera_register_types)
