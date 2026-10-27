@@ -267,15 +267,19 @@ final class USBRedirectController: ObservableObject {
             return false
         }
 
+        // RESERVED BEFORE THE AWAIT (2026-10-25, code audit): the port used
+        // to be recorded only after QEMU answered, so two attaches running at
+        // once (the picker and a plug-in send) could both pick the same free
+        // port, and the second removed the first one's socket and chardev.
+        portByDevice[device] = port
         do {
             try await manager.attachUSBRedirect(port: port, socketPath: socketPath)
         } catch {
+            portByDevice[device] = nil
             log("QMP attach failed for \(device.description): \(error)")
             say("QEMU refused the USB redirection port. Step: QMP device add. Reason: \(error.localizedDescription). Next: check the diagnostic log.", tone: .failure, quiet: quiet)
             return false
         }
-
-        portByDevice[device] = port
         log("port \(port) -> \(device.description)")
         switch await USBHelperClient.shared.attach(device, socketPath: socketPath) {
         case .success:
@@ -358,6 +362,20 @@ final class USBRedirectController: ObservableObject {
     private func freePort() -> Int? {
         let used = Set(portByDevice.values)
         return USBRedirectController.ports.first { !used.contains($0) }
+    }
+
+    /// AVM's helper stopped (2026-10-26, code audit): the kernel has given
+    /// every device it held back to the Mac, so their ports go, and the
+    /// next plug-in attaches afresh instead of "already attached".
+    func helperLost() {
+        let devices = Array(portByDevice.keys)
+        guard !devices.isEmpty else { return }
+        Task { @MainActor in
+            for device in devices {
+                await releasePort(for: device, reason: "the helper stopped")
+            }
+            Announcer.shared.announce("USB devices sent to the virtual machine are back on the Mac: AVM's helper stopped. Plug them in again to send them.", tone: .failure)
+        }
     }
 
     /// Called for every helper-reported ending. Idempotent: a device
