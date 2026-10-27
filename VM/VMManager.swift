@@ -1032,6 +1032,7 @@ final class VMManager: ObservableObject {
             if configuration.guestOS == .ubuntu {
                 removeFinishedUbuntuMedia(runtimeDir: runtimeDir)
             } else {
+                speakSetupReport(configuration: configuration, runtimeDir: runtimeDir)
                 removeFinishedWindowsMedia(runtimeDir: runtimeDir)
             }
         } else {
@@ -2449,6 +2450,46 @@ final class VMManager: ObservableObject {
         } catch {
             avmLog("removeFinishedWindowsMedia: couldn't delete install-avm.iso: \(error.localizedDescription)")
         }
+    }
+
+    /// Runs the bundled mtools on the UNATTEND volume; nil if it couldn't.
+    private func mtools(_ arguments: [String], runtimeDir: URL) -> (status: Int32, output: String)? {
+        let imgPath = runtimeDir.appendingPathComponent("autounattend.img").path
+        guard FileManager.default.fileExists(atPath: imgPath),
+              let mtoolsURL = bundledBinaryURL(named: "mtools") else { return nil }
+        let process = Process()
+        process.executableURL = mtoolsURL
+        process.arguments = ["-c"] + arguments.map { $0 == "IMG" ? imgPath : $0 }
+        var env = ProcessInfo.processInfo.environment
+        env["MTOOLS_SKIP_CHECK"] = "1"
+        env.removeValue(forKey: "DYLD_LIBRARY_PATH")
+        process.environment = env
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+        } catch {
+            avmLog("mtools: couldn't run: \(error)")
+            return nil
+        }
+    }
+
+    /// The first start after Windows is installed: say what setup installed
+    /// (SetupReport.swift), then rename the report so it is said once.
+    private func speakSetupReport(configuration: VMConfiguration, runtimeDir: URL) {
+        guard let read = mtools(["mtype", "-i", "IMG", "::AVMSTATUS.TXT"], runtimeDir: runtimeDir), read.status == 0,
+              let summary = SetupReport.summary(
+                reportText: read.output.replacingOccurrences(of: "\r", with: ""),
+                expectsJAWS: configuration.windowsScreenReaders.contains(.jaws),
+                expectsNVDA: configuration.windowsScreenReaders.contains(.nvda)) else { return }
+        avmLog("speakSetupReport: \(summary.complete ? "complete" : "incomplete"): \(read.output.split(whereSeparator: \.isNewline).joined(separator: ", "))")
+        appendConsole("AVM: \(summary.message)\n")
+        Announcer.shared.announce(summary.message, tone: summary.complete ? .success : .failure)
+        _ = mtools(["mren", "-i", "IMG", "::AVMSTATUS.TXT", "::AVMSTAT.OLD"], runtimeDir: runtimeDir)
     }
 
     /// The answer file on the UNATTEND volume holds the local account's

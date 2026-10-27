@@ -39,6 +39,7 @@ let package = Package(
                 "AVM/WindowsRegion.swift",
                 "AVM/WindowsSetupAnswers.swift",
                 "AVM/GuestAgent.swift",
+                "AVM/SetupReport.swift",
             ],
             swiftSettings: appSettings
         ),

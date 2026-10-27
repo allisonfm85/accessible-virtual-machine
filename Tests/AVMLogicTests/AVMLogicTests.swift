@@ -504,3 +504,39 @@ final class Locked<T>: @unchecked Sendable {
     var value: T { lock.lock(); defer { lock.unlock() }; return stored }
     func mutate(_ change: (inout T) -> Void) { lock.lock(); change(&stored); lock.unlock() }
 }
+
+// MARK: - What Windows Setup installed, said once
+
+final class SetupReportTests: XCTestCase {
+    private let everything = "specialize-done\nnvda-staged\njaws-installed\nvdagent-installed\nwebdavd-installed\nqemu-ga-installed\nnvda-installed\nfirst-sign-in-done\n"
+
+    func testEverythingInstalled() throws {
+        let summary = try XCTUnwrap(SetupReport.summary(reportText: everything, expectsJAWS: true, expectsNVDA: true))
+        XCTAssertTrue(summary.complete)
+        XCTAssertTrue(summary.message.hasPrefix("Windows setup installed everything: NVDA, JAWS,"))
+    }
+
+    func testAMissingInstallerIsNamedWithItsFix() throws {
+        let report = everything.replacingOccurrences(of: "jaws-installed\n", with: "")
+        let summary = try XCTUnwrap(SetupReport.summary(reportText: report, expectsJAWS: true, expectsNVDA: true))
+        XCTAssertFalse(summary.complete)
+        XCTAssertTrue(summary.message.contains("but JAWS didn't install"))
+        XCTAssertTrue(summary.message.contains("freedomscientific.com"))
+    }
+
+    func testBeforeTheFirstSignInNVDAIsntMissing() throws {
+        let report = "specialize-done\nvdagent-installed\nwebdavd-installed\nqemu-ga-installed\n"
+        let summary = try XCTUnwrap(SetupReport.summary(reportText: report, expectsJAWS: false, expectsNVDA: true))
+        XCTAssertTrue(summary.complete)
+        XCTAssertTrue(summary.message.contains("NVDA installs when you first sign in"))
+    }
+
+    func testNoReportSaysNothing() {
+        XCTAssertNil(SetupReport.summary(reportText: "", expectsJAWS: true, expectsNVDA: true))
+    }
+
+    func testLists() {
+        XCTAssertEqual(SetupReport.list(["A"]), "A")
+        XCTAssertEqual(SetupReport.list(["A", "B", "C"]), "A, B and C")
+    }
+}
