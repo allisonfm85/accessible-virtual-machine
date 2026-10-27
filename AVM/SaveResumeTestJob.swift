@@ -14,6 +14,15 @@
 //   AVM.app/Contents/MacOS/AVM --test-linux-share --vm <folder> --guest <os>
 //   AVM.app/Contents/MacOS/AVM --test-ctl --vm <folder> --guest <os>
 //   AVM.app/Contents/MacOS/AVM --test-disk-info --vm <folder> --guest <os>
+//   AVM.app/Contents/MacOS/AVM --run-in-guest <command> --vm <folder> --guest <os>
+//   AVM.app/Contents/MacOS/AVM --test-printers --vm <folder> --guest <os>
+//
+// --test-printers: adds the Mac's network printers in the machine as a
+// Start does (sharePrinters) and lists them there. Prints nothing.
+//
+// --run-in-guest: starts the machine, runs one command in it through the
+// guest agent (sh -c on Linux, PowerShell on Windows), prints what it
+// printed, and shuts it down. For looking around in a test machine.
 //
 // --test-disk-info: the machine's drives as the disk watch reads them
 // from the guest agent (DiskWatch.drives).
@@ -69,7 +78,8 @@ enum SaveResumeTestJob {
         guard arguments.contains(flag) || arguments.contains("--test-microphone") || arguments.contains("--test-two-machines")
                 || arguments.contains("--test-duplicate") || arguments.contains("--test-send-file")
                 || arguments.contains("--test-linux-share") || arguments.contains("--test-ctl")
-                || arguments.contains("--test-disk-info") else { return }
+                || arguments.contains("--test-disk-info") || arguments.contains("--run-in-guest")
+                || arguments.contains("--test-printers") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -86,6 +96,43 @@ enum SaveResumeTestJob {
                 let guest2 = GuestOS(rawValue: value("--guest2") ?? "windows") ?? .windows
                 let passed = await twoMachines(folderURL, guest, URL(fileURLWithPath: second, isDirectory: true), guest2)
                 print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+            }
+            if arguments.contains("--test-printers") {
+                let found = await Task.detached { MacPrinters.find() }.value
+                for p in found { print("   Mac: \(p.name) -> \(p.uri)") }
+                check("the Mac's network printers were found", !found.isEmpty)
+                let manager = VMManager()
+                var config = configuration(folder: folderURL, guest: guest)
+                config.sharePrinters = true
+                guard await start(manager, config), let agent = manager.guestAgentSocketPath,
+                      await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                // The Start adds them; a second pass, as at the next Start,
+                // finds them already there and says nothing.
+                try? await Task.sleep(for: .seconds(60))
+                await manager.addMacPrinters(configuration: config)
+                do {
+                    let out = guest == .windows
+                        ? await exec(agent, program: "powershell.exe", args: ["-NoProfile", "-Command", "Get-Printer | Where-Object Name -like '*(Mac)' | ForEach-Object { $_.Name + ' | ' + $_.PortName + ' | ' + $_.DriverName }"])
+                        : await exec(agent, program: "/bin/sh", args: ["-c", "lpstat -v | grep AVM-; lpstat -d"])
+                    print((out ?? "no answer").split(whereSeparator: \.isNewline).map { "   machine: " + $0 }.joined(separator: "\n"))
+                    check("the machine has them", found.allSatisfy { p in (out ?? "").contains(p.name) || (out ?? "").contains(p.uri.replacingOccurrences(of: "ipp://", with: "")) })
+                }
+                await shutDown(manager)
+                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+            }
+            if let command = value("--run-in-guest") {
+                let manager = VMManager()
+                guard await start(manager, configuration(folder: folderURL, guest: guest)),
+                      let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else {
+                    print("FAILED"); exit(1)
+                }
+                try? await Task.sleep(for: .seconds(10))
+                let out = guest == .windows
+                    ? await exec(agent, program: "powershell.exe", args: ["-NoProfile", "-Command", command])
+                    : await exec(agent, program: "/bin/sh", args: ["-c", command])
+                print(out ?? "(no answer)")
+                await shutDown(manager)
+                exit(0)
             }
             if arguments.contains("--test-disk-info") {
                 let manager = VMManager()
@@ -613,7 +660,7 @@ enum SaveResumeTestJob {
               let reply = try? await Task.detached(operation: { try GuestAgent.run([line], socketPath: path, timeout: 10) }).value.first,
               let json = try? JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any],
               let pid = (json["return"] as? [String: Any])?["pid"] as? Int else { return nil }
-        for _ in 0..<60 {
+        for _ in 0..<360 {
             try? await Task.sleep(for: .milliseconds(500))
             let status = #"{"execute":"guest-exec-status","arguments":{"pid":\#(pid)}}"#
             guard let reply = try? await Task.detached(operation: { try GuestAgent.run([status], socketPath: path, timeout: 10) }).value.first,

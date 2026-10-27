@@ -133,6 +133,7 @@ struct SettingsView: View {
     @State private var shareMicrophone = false
     @State private var isTemplate = false
     @State private var noWindow = false
+    @State private var sharePrinters = false
     @State private var sharedFolderPath: String?
     @State private var sharedFolderReadOnly = false
     @State private var brailleFollowsBack = true
@@ -229,6 +230,20 @@ struct SettingsView: View {
                 .accessibilityElement(children: .combine)
                 .padding(.horizontal)
             }
+
+            // Printers (2026-10-27)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Printers")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                Toggle("Add my Mac's printers to \(guest)", isOn: $sharePrinters)
+                    .accessibilityHint("When on, each Start adds your Mac's network printers in \(guest)")
+                Text("Network printers your Mac uses appear in \(guest) with (Mac) after their names, ready to print with no driver to install. A printer plugged into your Mac by USB isn't included; attach it to \(guest) with Attach USB Device.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal)
 
             // Without a window (2026-10-27)
             VStack(alignment: .leading, spacing: 6) {
@@ -828,6 +843,7 @@ struct SettingsView: View {
         shareMicrophone = saved.sharesMicrophone
         isTemplate = saved.isATemplate
         noWindow = saved.startsWithoutWindow
+        sharePrinters = saved.sharesPrinters
         sharedFolderPath = saved.sharedFolderPath
         sharedFolderReadOnly = saved.sharedFolderIsReadOnly
         brailleFollowsBack = saved.brailleFollowsBack
@@ -943,6 +959,7 @@ struct SettingsView: View {
             updated.shareMicrophone = shareMicrophone ? true : nil
             updated.isTemplate = isTemplate ? true : nil
             updated.noWindow = noWindow ? true : nil
+            updated.sharePrinters = sharePrinters ? true : nil
             updated.sharedFolderPath = sharedFolderPath
             updated.sharedFolderReadOnly = sharedFolderReadOnly ? true : nil
             updated.brailleFollowThrough = brailleFollowsBack ? nil : "ask"

@@ -22,8 +22,35 @@ import Foundation
 
 nonisolated enum GuestAgent {
 
+    /// One lock per machine's agent: its channel takes one client at a
+    /// time, and a second connection is refused (2026-10-27, MEASURED:
+    /// printers and a status check at once got "Connection refused"). AVM's
+    /// own calls take turns here; a refusal from anyone else is retried.
+    private static let locksLock = NSLock()
+    nonisolated(unsafe) private static var locks: [String: NSLock] = [:]
+    private static func lock(for path: String) -> NSLock {
+        locksLock.lock(); defer { locksLock.unlock() }
+        if let lock = locks[path] { return lock }
+        let lock = NSLock()
+        locks[path] = lock
+        return lock
+    }
+
     /// Sends commands in order and returns each reply line, or throws.
     static func run(_ commands: [String], socketPath: String, timeout: TimeInterval = 4) throws -> [String] {
+        let lock = lock(for: socketPath)
+        lock.lock(); defer { lock.unlock() }
+        let deadline = Date().addingTimeInterval(15)
+        while true {
+            do {
+                return try once(commands, socketPath: socketPath, timeout: timeout)
+            } catch let error as AgentError where error.refused && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.2)
+            }
+        }
+    }
+
+    private static func once(_ commands: [String], socketPath: String, timeout: TimeInterval) throws -> [String] {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw AgentError("no socket") }
         defer { close(fd) }
@@ -40,7 +67,12 @@ nonisolated enum GuestAgent {
                 connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard connected == 0 else { throw AgentError("not connected (\(String(cString: strerror(errno))))") }
+        guard connected == 0 else {
+            let refused = errno == ECONNREFUSED || errno == EAGAIN
+            var error = AgentError("not connected (\(String(cString: strerror(errno))))")
+            error.refused = refused
+            throw error
+        }
 
         var wait = timeval(tv_sec: Int(timeout), tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, socklen_t(MemoryLayout<timeval>.size))
@@ -84,6 +116,8 @@ nonisolated enum GuestAgent {
 
     struct AgentError: LocalizedError {
         let errorDescription: String?
+        /// The channel was busy with another client: worth a retry.
+        var refused = false
         init(_ message: String) { errorDescription = message }
     }
 }

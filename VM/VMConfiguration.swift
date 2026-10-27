@@ -171,6 +171,11 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// Read it through startsWithoutWindow.
     var noWindow: Bool?
 
+    /// true: at each Start, the Mac's network printers are added in the
+    /// machine (2026-10-27, MacPrinters.swift). Read it through
+    /// sharesPrinters.
+    var sharePrinters: Bool?
+
     // MARK: - Defaults
 
     init(
@@ -228,6 +233,7 @@ extension VMConfiguration {
     var usesVirtioDisk: Bool { diskBus == "virtio" }
     var isATemplate: Bool { isTemplate == true }
     var startsWithoutWindow: Bool { noWindow == true }
+    var sharesPrinters: Bool { sharePrinters == true }
     /// Known screen readers only, in a fixed order; unknown words ignored.
     var windowsScreenReaders: [ScreenReader] {
         let chosen = Set(windowsScreenReaderNames ?? [])

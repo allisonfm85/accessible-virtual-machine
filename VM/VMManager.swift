@@ -1167,6 +1167,9 @@ final class VMManager: ObservableObject {
         beginQMPEventMonitoring()
 
         startDiskWatch(configuration: configuration, runtimeDir: runtimeDir, installed: installComplete)
+        if installComplete, configuration.sharesPrinters {
+            Task { [weak self] in await self?.addMacPrinters(configuration: configuration) }
+        }
         if installComplete, configuration.diskBusSwitch != nil {
             Task { [weak self] in await self?.continueDiskSwitch(configuration: configuration) }
         }
@@ -3938,5 +3941,62 @@ extension VMManager {
                 }
             }
         }
+    }
+}
+
+// MARK: - The Mac's printers in the machine (2026-10-27; AVM/MacPrinters.swift)
+
+extension VMManager {
+    /// At Start, once the guest agent answers: each of the Mac's network
+    /// printers is added in the machine, or its address updated. Spoken
+    /// only when one is added or changed.
+    func addMacPrinters(configuration: VMConfiguration) async {
+        guard await waitForGuestAgent(limit: .seconds(600)) else {
+            avmLog("printers: the guest agent never answered; none added")
+            return
+        }
+        let printers = await Task.detached { MacPrinters.find() }.value
+        avmLog("printers: \(printers.count) network printer(s) on the Mac")
+        guard !printers.isEmpty else { return }
+        let machine = configuration.name
+        var added: [String] = []
+        for printer in printers {
+            let shown = "\(printer.name) (Mac)"
+            do {
+                let out: String
+                if configuration.guestOS == .windows {
+                    let url = printer.uri.replacingOccurrences(of: "ipp://", with: "http://")
+                    let script = """
+                    $n = '\(shown.replacingOccurrences(of: "'", with: "''"))'; $u = '\(url)'
+                    $p = Get-Printer -Name $n -ErrorAction SilentlyContinue
+                    # The address AVM gave it is kept in its comment: Windows
+                    # names the port itself (WSD-...), so that can't say.
+                    if ($p -and $p.Comment -eq $u) { 'same' } else {
+                      if ($p) { Remove-Printer -Name $n }
+                      Add-Printer -Name $n -IppURL $u -ErrorAction Stop
+                      Set-Printer -Name $n -Comment $u; 'added'
+                    }
+                    """
+                    out = try await agentRun("powershell.exe", ["-NoProfile", "-Command", script], limit: .seconds(180))
+                } else {
+                    let queue = "AVM-" + printer.queue.filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
+                    let script = """
+                    q='\(queue)'; u='\(printer.uri)'
+                    if lpstat -v "$q" 2>/dev/null | grep -qF "$u"; then echo same; exit 0; fi
+                    lpadmin -p "$q" -D '\(shown.replacingOccurrences(of: "'", with: ""))' -E -v "$u" -m everywhere && echo added
+                    lpstat -d 2>&1 | grep -q 'no system default' && lpadmin -d "$q"
+                    true
+                    """
+                    out = try await agentRun("/bin/sh", ["-c", script], limit: .seconds(180))
+                }
+                avmLog("printers: \(printer.queue): \(out.trimmingCharacters(in: .whitespacesAndNewlines).suffix(200))")
+                if out.contains("added") { added.append(printer.name) }
+            } catch {
+                avmLog("printers: \(printer.queue) not added: \(error.localizedDescription)")
+            }
+        }
+        guard !added.isEmpty else { return }
+        let list = ListFormatter.localizedString(byJoining: added)
+        Announcer.shared.announce("\(machine) can print to your Mac's \(added.count == 1 ? "printer" : "printers") \(list). In \(machine) \(added.count == 1 ? "it's" : "they're") named with (Mac) at the end.", tone: .success)
     }
 }
