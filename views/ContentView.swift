@@ -64,6 +64,7 @@ struct ContentView: View {
     // transitions (e.g. starting -> running) and the status stays stuck.
     @State private var activeSession: VMSession? = nil
     @State private var showingSetup = false
+    @State private var showingMacSetup = false
     /// The VM whose Settings sheet is open; nil means closed. Replaces the old
     /// show-Settings flag, which could only open Settings for a running VM.
     @State private var settingsTarget: VMConfiguration? = nil
@@ -181,15 +182,27 @@ struct ContentView: View {
             SetupView()
                 .environmentObject(vmStore)
         }
+        .sheet(isPresented: $showingMacSetup) {
+            MacSetupView()
+                .environmentObject(vmStore)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .avmShowMacSetup)) { _ in
+            showingMacSetup = true
+        }
         .sheet(item: $settingsTarget) { config in
             // Settings works for a stopped VM too (2026-09-26). isRunning is
             // true only for the VM this session is running. SettingsView
             // offers disk growth only when it is false.
-            SettingsView(
-                configuration: config,
-                isRunning: activeSession?.configuration.id == config.id
-            )
-            .environmentObject(vmStore)
+            if config.guestOS == .macOS {
+                MacSettingsView(configuration: config, isRunning: MacGuestRunner.shared.runningID == config.id)
+                    .environmentObject(vmStore)
+            } else {
+                SettingsView(
+                    configuration: config,
+                    isRunning: activeSession?.configuration.id == config.id
+                )
+                .environmentObject(vmStore)
+            }
         }
         .sheet(isPresented: $showingReclaim) {
             ReclaimView()
@@ -305,6 +318,12 @@ struct ContentView: View {
     /// start needs access to this view's activeSession @State.
     private func startVM(config: VMConfiguration) {
         errorMessage = nil
+        // macOS runs on Apple's Virtualization framework, in its own window
+        // (MacGuest.swift), not in a QEMU session.
+        if config.guestOS == .macOS {
+            MacGuestRunner.shared.start(config)
+            return
+        }
         let session = VMSession(configuration: config)
         activeSession = session
         Task {
@@ -665,6 +684,11 @@ private struct DashboardContent: View {
                 .accessibilityHint("Opens the setup wizard to create a new virtual machine")
                 .keyboardShortcut("s", modifiers: .command)
 
+                Button("New macOS Virtual Machine…") {
+                    NotificationCenter.default.post(name: .avmShowMacSetup, object: nil)
+                }
+                .accessibilityHint("Downloads macOS from Apple and makes a macOS virtual machine")
+
                 if activeSession != nil {
                     Button("Settings") {
                         settingsTarget = activeSession?.configuration
@@ -834,6 +858,12 @@ private struct DashboardContent: View {
 
     private func startVM(config: VMConfiguration) {
         errorMessage = nil
+        // macOS runs on Apple's Virtualization framework, in its own window
+        // (MacGuest.swift), not in a QEMU session.
+        if config.guestOS == .macOS {
+            MacGuestRunner.shared.start(config)
+            return
+        }
         let session = VMSession(configuration: config)
         activeSession = session
         Task {
@@ -860,4 +890,9 @@ func confirmForceStop(guest: String) -> Bool {
     let confirmed = alert.runModal() == .alertSecondButtonReturn
     AVMLog.write("AVM: Force Stop \(confirmed ? "confirmed" : "cancelled").")
     return confirmed
+}
+
+extension Notification.Name {
+    /// Opens New macOS Virtual Machine (2026-10-26, MacSetupView.swift).
+    static let avmShowMacSetup = Notification.Name("avmShowMacSetup")
 }

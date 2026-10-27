@@ -259,6 +259,8 @@ extension VMConfiguration {
 enum GuestOS: String {
     case windows
     case ubuntu
+    /// Runs on Apple's Virtualization framework, not QEMU (MacGuest.swift).
+    case macOS
 
     /// The name AVM says and shows for the running guest: "Enter Ubuntu",
     /// "Ubuntu keyboard on", "Send the keyboard to Ubuntu?".
@@ -266,6 +268,7 @@ enum GuestOS: String {
         switch self {
         case .windows: return "Windows"
         case .ubuntu: return "Ubuntu"
+        case .macOS: return "macOS"
         }
     }
 }
