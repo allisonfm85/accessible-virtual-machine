@@ -29,6 +29,18 @@ extension Notification.Name {
     /// controller's live map. Empty answers are spoken, not shown.
     static let avmAttachUSBFromMenu = Notification.Name("avmAttachUSBFromMenu")
     static let avmDetachUSBFromMenu = Notification.Name("avmDetachUSBFromMenu")
+
+    /// Posted by the Virtual Machine menu's "Speak Status" item
+    /// (Cmd-Shift-I, 2026-10-25). ContentView answers because the active
+    /// session and the machine list live here.
+    static let avmSpeakStatusFromMenu = Notification.Name("avmSpeakStatusFromMenu")
+
+    /// Posted by the Virtual Machine menu's Export and Import items
+    /// (2026-10-26, MachineArchivePanels.swift). Export carries the
+    /// machine's ID. ContentView answers because whether a machine is
+    /// running is known here (the active session) and the list is vmStore.
+    static let avmExportVMFromMenu = Notification.Name("avmExportVMFromMenu")
+    static let avmImportVMFromMenu = Notification.Name("avmImportVMFromMenu")
 }
 
 /// One open of the USB picker sheet: which mode, which devices. Identity
@@ -59,6 +71,7 @@ struct ContentView: View {
     // transitions (e.g. starting -> running) and the status stays stuck.
     @State private var activeSession: VMSession? = nil
     @State private var showingSetup = false
+    @State private var showingMacSetup = false
     /// The VM whose Settings sheet is open; nil means closed. Replaces the old
     /// show-Settings flag, which could only open Settings for a running VM.
     @State private var settingsTarget: VMConfiguration? = nil
@@ -100,6 +113,10 @@ struct ContentView: View {
         // type FocusLockManager found" crashes in nested views.
         .environmentObject(vmStore)
         .environmentObject(focusLock)
+        // Closing the window while a VM runs asks first (MainWindowCloseGuard).
+        .background(WindowAccessor { window in
+            MainWindowCloseGuard.shared.install(on: window)
+        })
         // Start Virtual Machine from the menu (Cmd-Shift-S). Honest scope:
         // starts the VM only when exactly ONE is configured and nothing is
         // running. Zero or multiple configurations: beep + explanatory status
@@ -112,11 +129,29 @@ struct ContentView: View {
         // "did nothing" is a classic field report, and these lines record
         // which gate answered. Privacy check: configuration names and counts
         // only, same as VMManager already writes to the file log.
-        .onReceive(NotificationCenter.default.publisher(for: .avmStartVMFromMenu)) { _ in
+        //
+        // START SUBMENU (2026-10-25): a request carrying a machine's ID comes
+        // from the Start submenu, which names the machine, so there is no
+        // guessing to refuse. It goes through the same already-running guard.
+        // A machine deleted while the menu was open is spoken, not ignored.
+        .onReceive(NotificationCenter.default.publisher(for: .avmStartVMFromMenu)) { note in
             guard activeSession == nil else {
                 AVMLog.write("AVM: Start-from-menu — a session is already active; beeping.")
                 NSSound.beep()
                 errorMessage = "A virtual machine is already running."
+                return
+            }
+            if let id = note.object as? UUID {
+                guard let config = vmStore.configurations.first(where: { $0.id == id }) else {
+                    AVMLog.write("AVM: Start-from-menu — requested machine \(id) is no longer configured; announcing.")
+                    Announcer.shared.announce(
+                        "That virtual machine is no longer in your list. Nothing was started.",
+                        tone: .failure
+                    )
+                    return
+                }
+                AVMLog.write("AVM: Start-from-menu — starting '\(config.name)' (named in the Start submenu).")
+                startVM(config: config)
                 return
             }
             let configs = vmStore.configurations
@@ -125,7 +160,7 @@ struct ContentView: View {
                 NSSound.beep()
                 errorMessage = configs.isEmpty
                     ? "No virtual machine is set up yet. Use the Setup Wizard first."
-                    : "More than one virtual machine is configured. Use the Start button next to the machine you want."
+                    : "More than one virtual machine is configured. Choose the one you want from Start in the Virtual Machine menu, or use the Start button next to it."
                 return
             }
             AVMLog.write("AVM: Start-from-menu — starting '\(config.name)'.")
@@ -154,15 +189,27 @@ struct ContentView: View {
             SetupView()
                 .environmentObject(vmStore)
         }
+        .sheet(isPresented: $showingMacSetup) {
+            MacSetupView()
+                .environmentObject(vmStore)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .avmShowMacSetup)) { _ in
+            showingMacSetup = true
+        }
         .sheet(item: $settingsTarget) { config in
             // Settings works for a stopped VM too (2026-09-26). isRunning is
             // true only for the VM this session is running. SettingsView
             // offers disk growth only when it is false.
-            SettingsView(
-                configuration: config,
-                isRunning: activeSession?.configuration.id == config.id
-            )
-            .environmentObject(vmStore)
+            if config.guestOS == .macOS {
+                MacSettingsView(configuration: config, isRunning: MacGuestRunner.shared.runningID == config.id)
+                    .environmentObject(vmStore)
+            } else {
+                SettingsView(
+                    configuration: config,
+                    isRunning: activeSession?.configuration.id == config.id
+                )
+                .environmentObject(vmStore)
+            }
         }
         .sheet(isPresented: $showingReclaim) {
             ReclaimView()
@@ -209,15 +256,104 @@ struct ContentView: View {
         .sheet(item: $usbPicker) { request in
             USBDevicePickerView(mode: request.mode, devices: request.devices)
         }
+        // Speak Status (Cmd-Shift-I, 2026-10-25). Always .info: asking is
+        // not an outcome, so no verdict sound, even when the answer is an
+        // error state. Privacy check: machine names, states and USB product
+        // names only, the same things the file log already records.
+        .onReceive(NotificationCenter.default.publisher(for: .avmSpeakStatusFromMenu)) { _ in
+            let status = spokenStatus()
+            AVMLog.write("AVM: Speak Status — \(status)")
+            Announcer.shared.announce(status, tone: .info)
+        }
+        // Export and Import (2026-10-26). A machine is "running" for export
+        // while any session for it exists (starting, running, paused or
+        // shutting down) or macOS runs it: its disk is in use.
+        .onReceive(NotificationCenter.default.publisher(for: .avmExportVMFromMenu)) { note in
+            guard let id = note.object as? UUID,
+                  let config = vmStore.configurations.first(where: { $0.id == id }) else {
+                Announcer.shared.announce("That virtual machine is no longer in your list. Nothing was exported.", tone: .failure)
+                return
+            }
+            let running = activeSession?.configuration.id == id || MacGuestRunner.shared.runningID == id
+            MachineArchiveController.shared.export(config, isRunning: running)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .avmImportVMFromMenu)) { _ in
+            MachineArchiveController.shared.importMachine(into: vmStore)
+        }
     }
 
     // MARK: - Helpers
+
+    /// The words for Speak Status: the machine and its state, then where
+    /// the keyboard is, then USB. Without a session, how many machines are
+    /// set up, so "nothing running" is never confused with "nothing exists".
+    private func spokenStatus() -> String {
+        // A macOS machine runs beside any QEMU session (2026-10-26).
+        let mac = MacGuestRunner.shared
+        let macPart = mac.runningID.flatMap { id in vmStore.configurations.first { $0.id == id } }.map { config in
+            "\(config.name), a macOS machine, is running. The keyboard is \(mac.keyboardInGuest ? "in macOS" : "on your Mac")."
+        }
+        guard let session = activeSession else {
+            if let macPart { return macPart }
+            switch vmStore.configurations.count {
+            case 0:
+                return "No virtual machine is set up yet. Use the Setup Wizard first."
+            case 1:
+                return "No virtual machine is running. \(vmStore.configurations[0].name) is ready to start."
+            case let n:
+                return "No virtual machine is running. \(n) virtual machines are set up."
+            }
+        }
+
+        let name = session.configuration.name
+        let guest = session.configuration.guestOS.displayName
+        var parts: [String] = macPart.map { [$0] } ?? []
+        switch session.vmState {
+        case .stopped:            parts.append("\(name) is stopped.")
+        case .starting:
+            parts.append("\(name) is starting.")
+            if let install = session.manager.spokenInstallStatus() {
+                parts.append(install)
+            }
+        case .running:            parts.append("\(name) is running.")
+        case .paused:             parts.append("\(name) is paused.")
+        case .stopping:           parts.append("\(name) is shutting down.")
+        case .error(let message): parts.append("\(name) stopped with an error: \(message)")
+        }
+
+        switch session.vmState {
+        case .running, .paused:
+            if let install = session.manager.spokenInstallStatus() {
+                parts.append(install)
+            }
+            parts.append(focusLock.isLocked
+                ? "The keyboard is in \(guest)."
+                : "The keyboard is on the Mac.")
+            let devices = USBRedirectController.shared.redirectedDevices.map(\.displayName)
+            switch devices.count {
+            case 0:  parts.append("No USB devices are attached.")
+            case 1:  parts.append("One USB device is attached: \(devices[0]).")
+            default: parts.append("\(devices.count) USB devices are attached: \(devices.joined(separator: ", ")).")
+            }
+        default:
+            break
+        }
+        return parts.joined(separator: " ")
+    }
 
     /// Same start path as the dashboard's per-VM Start button (see
     /// DashboardContent.startVM). Duplicated here because the menu-driven
     /// start needs access to this view's activeSession @State.
     private func startVM(config: VMConfiguration) {
+        // Not while its files are being copied (2026-10-26).
+        if MachineArchiveController.shared.refusesWhileBusy(config) { return }
         errorMessage = nil
+        // macOS runs on Apple's Virtualization framework, in its own window
+        // (MacGuest.swift), not in a QEMU session.
+        if config.guestOS == .macOS {
+            MacGuestRunner.shared.start(config)
+            return
+        }
         let session = VMSession(configuration: config)
         activeSession = session
         Task {
@@ -394,6 +530,8 @@ private struct DashboardContent: View {
 
     @EnvironmentObject var vmStore: VMStore
     @EnvironmentObject var focusLock: FocusLockManager
+    /// macOS machines' state for their rows (2026-10-26).
+    @ObservedObject private var macGuest = MacGuestRunner.shared
 
     var observedSession: VMSession?
     /// The VM state, passed by value so SwiftUI redraws this view when it
@@ -431,15 +569,22 @@ private struct DashboardContent: View {
                                     .font(.body)
                                     .accessibilityAddTraits(.isHeader)
                                     .accessibilityHeading(.h2)
-                                Text("\(config.cpuCount) cores · \(config.ramSizeGB) GB RAM · \(config.diskSizeGB) GB disk")
+                                Text("\(config.cpuCount) cores · \(config.ramSizeGB) GB RAM · \(config.diskSizeGB) GB disk\(storageNote(config).map { " · \($0)" } ?? "")")
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .accessibilityLabel("\(config.cpuCount) cores, \(config.ramSizeGB) gigabytes RAM, \(config.diskSizeGB) gigabytes disk")
+                                    .foregroundStyle(config.storageIsMissing ? Color.red : Color.secondary)
+                                    .accessibilityLabel("\(config.cpuCount) cores, \(config.ramSizeGB) gigabytes RAM, \(config.diskSizeGB) gigabytes disk\(storageNote(config).map { ", \($0)" } ?? "")")
                             }
 
                             Spacer()
 
-                            if activeSession == nil {
+                            // macOS machines run beside QEMU, in their own
+                            // window (2026-10-26): their row says how they
+                            // are and runs them.
+                            if config.guestOS == .macOS {
+                                macRowControls(config)
+                            } else if let session = observedSession, session.configuration.id == config.id {
+                                qemuRowControls(config, session: session)
+                            } else if activeSession == nil {
                                 Button("Start") {
                                     startVM(config: config)
                                 }
@@ -447,10 +592,12 @@ private struct DashboardContent: View {
                                 .accessibilityHint("Starts this virtual machine")
 
                                 Button("Settings") {
-                                    settingsTarget = config
+                                    openSettings(config)
                                 }
                                 .accessibilityLabel("Settings for \(config.name)")
                                 .accessibilityHint("Opens settings for this virtual machine")
+
+                                exportButton(config)
 
                                 Button("Delete") {
                                     confirmDelete(config: config)
@@ -528,34 +675,26 @@ private struct DashboardContent: View {
 
                     if session.vmState == .running || session.vmState == .paused {
                         Button("Stop \(guest)") {
-                            Task {
-                                // stopGracefully waits until Windows has shut down,
-                                // so the session (and its VMManager) stays alive the
-                                // whole time. Throwing it away early is what used to
-                                // kill QEMU mid-shutdown (fixed 2026-09-27).
-                                do {
-                                    try await session.stopGracefully()
-                                    // Clear only the session this Stop was for: after
-                                    // a Force Stop, a new VM may already be running.
-                                    if activeSession === session { activeSession = nil }
-                                } catch {
-                                    // Keep the session, so Force Stop stays available.
-                                    errorMessage = error.localizedDescription
-                                    Announcer.shared.announce(
-                                        "\(guest) could not be shut down. Reason: \(error.localizedDescription). Next: try Stop again, or use Force Stop.",
-                                        tone: .failure
-                                    )
-                                }
-                            }
+                            shutDown(session)
                         }
                         .accessibilityHint("Gracefully shuts down \(guest)")
                         .keyboardShortcut(".", modifiers: .command)
+                    }
 
+                    // Force Stop is offered while shutting down too
+                    // (2026-10-25, code audit): a guest that ignores the power
+                    // button, such as the firmware screen or an installer, would
+                    // otherwise leave nothing to press, though the two-minute
+                    // reminder tells the user to use Force Stop. It asks first,
+                    // Cancel the default: it is the same plug-pull as Quit Now.
+                    if session.vmState == .running || session.vmState == .paused || session.vmState == .stopping {
                         Button("Force Stop") {
-                            session.forceStop()
-                            activeSession = nil
+                            if confirmForceStop(guest: guest) {
+                                session.forceStop()
+                                activeSession = nil
+                            }
                         }
-                        .accessibilityHint("Immediately terminates the virtual machine without a graceful shutdown")
+                        .accessibilityHint("Turns the virtual machine off at once, without shutting down. Asks first.")
                     }
                 }
             }
@@ -567,6 +706,18 @@ private struct DashboardContent: View {
                 }
                 .accessibilityHint("Opens the setup wizard to create a new virtual machine")
                 .keyboardShortcut("s", modifiers: .command)
+
+                Button("New macOS Virtual Machine…") {
+                    NotificationCenter.default.post(name: .avmShowMacSetup, object: nil)
+                }
+                .accessibilityHint("Downloads macOS from Apple and makes a macOS virtual machine")
+
+                // Import (2026-10-26): here too, because on a new Mac an
+                // exported machine is what the user has instead of a wizard.
+                Button("Import Virtual Machine…") {
+                    MachineArchiveController.shared.importMachine(into: vmStore)
+                }
+                .accessibilityHint("Brings back a virtual machine AVM exported, from a folder ending in .avmvm")
 
                 if activeSession != nil {
                     Button("Settings") {
@@ -642,7 +793,20 @@ private struct DashboardContent: View {
     ///     the Trash-recovery note; failure .failure (Basso) stating the
     ///     machine was NOT deleted and its files are untouched (VMStore keeps
     ///     the entry on failure — see deleteMovingFilesToTrash).
+    /// Where a VM stored outside the Mac's usual place lives, for the
+    /// spec line (2026-10-25): its drive, or that the drive is missing, so
+    /// the problem is heard on the dashboard before Start is pressed.
+    private func storageNote(_ config: VMConfiguration) -> String? {
+        guard config.isStoredElsewhere else { return nil }
+        if config.storageIsMissing {
+            return config.storageDriveName.map { "drive \($0) not connected" } ?? "storage folder not found"
+        }
+        return config.storageDriveName.map { "on \($0)" } ?? "in a folder you chose"
+    }
+
     private func confirmDelete(config: VMConfiguration) {
+        // Not while its files are being copied (2026-10-26).
+        if MachineArchiveController.shared.refusesWhileBusy(config) { return }
         // Defense-in-depth guard (see header). Matching ID with a live
         // session in any non-stopped state refuses with a spoken reason.
         if let session = activeSession,
@@ -651,6 +815,18 @@ private struct DashboardContent: View {
             AVMLog.write("AVM: Delete refused for '\(config.name)' — VM is not stopped.")
             Announcer.shared.announce(
                 "Cannot delete \(config.name) while it is running. Stop the virtual machine first.",
+                tone: .failure
+            )
+            return
+        }
+
+        // A drive that isn't connected (2026-10-25): with no folder to see,
+        // the dialog would say there are no files and the entry would go,
+        // leaving the files on the drive. Refuse, and say what to do.
+        if config.storageIsMissing {
+            AVMLog.write("AVM: Delete refused for '\(config.name)' — storage folder missing.")
+            Announcer.shared.announce(
+                "\(config.storageMissingMessage) \(config.name) was not deleted.",
                 tone: .failure
             )
             return
@@ -712,8 +888,125 @@ private struct DashboardContent: View {
         return "less than one megabyte"
     }
 
+    private func shutDown(_ session: VMSession) {
+        let guest = session.configuration.guestOS.displayName
+        Task {
+            // stopGracefully waits until Windows has shut down,
+            // so the session (and its VMManager) stays alive the
+            // whole time. Throwing it away early is what used to
+            // kill QEMU mid-shutdown (fixed 2026-09-27).
+            do {
+                try await session.stopGracefully()
+                // Clear only the session this Stop was for: after
+                // a Force Stop, a new VM may already be running.
+                if activeSession === session { activeSession = nil }
+            } catch {
+                // Keep the session, so Force Stop stays available.
+                errorMessage = error.localizedDescription
+                Announcer.shared.announce(
+                    "\(guest) could not be shut down. Reason: \(error.localizedDescription). Next: try Stop again, or use Force Stop.",
+                    tone: .failure
+                )
+            }
+        }
+    }
+
+    // MARK: Windows and Linux machine rows (2026-10-26, as macOS ones)
+
+    private func qemuStatus(_ session: VMSession) -> String {
+        switch session.vmState {
+        case .starting: return "Starting"
+        case .running: return focusLock.isLocked ? "Running, keyboard in \(session.configuration.guestOS.displayName)" : "Running"
+        case .paused: return "Paused"
+        case .stopping: return "Shutting down"
+        case .stopped: return "Shut down"
+        case .error: return "Stopped with an error"
+        }
+    }
+
+    @ViewBuilder
+    private func qemuRowControls(_ config: VMConfiguration, session: VMSession) -> some View {
+        let guest = config.guestOS.displayName
+        Text(qemuStatus(session))
+            .font(.caption)
+            .accessibilityLabel("\(config.name): \(qemuStatus(session))")
+        if session.vmState == .running || session.vmState == .paused {
+            Button("Enter \(guest)") { focusLock.lock() }
+                .accessibilityLabel("Enter \(config.name)")
+                .accessibilityHint("Gives \(guest) the keyboard. Control-Command-Escape returns to your Mac.")
+            Button("Shut Down") { shutDown(session) }
+                .accessibilityLabel("Shut down \(config.name)")
+        }
+    }
+
+    // MARK: macOS machine rows (2026-10-26)
+
+    private func macStatus(_ config: VMConfiguration) -> String {
+        if macGuest.runningID == config.id {
+            return macGuest.keyboardInGuest ? "Running, keyboard in macOS" : "Running"
+        }
+        if let folder = try? config.directoryURL(),
+           FileManager.default.fileExists(atPath: MacGuestFiles(folder: folder).savedState.path) {
+            return "Saved: Start carries on where you left it"
+        }
+        return "Shut down"
+    }
+
+    @ViewBuilder
+    private func macRowControls(_ config: VMConfiguration) -> some View {
+        Text(macStatus(config))
+            .font(.caption)
+            .accessibilityLabel("\(config.name): \(macStatus(config))")
+        if macGuest.runningID == config.id {
+            Button("Enter macOS") { macGuest.enter() }
+                .accessibilityLabel("Enter \(config.name)")
+                .accessibilityHint("Brings its window forward and gives it the keyboard")
+            Button("Shut Down") { macGuest.shutDown() }
+                .accessibilityLabel("Shut down \(config.name)")
+        } else {
+            Button("Start") { startVM(config: config) }
+                .accessibilityLabel("Start \(config.name)")
+                .accessibilityHint("Starts this macOS virtual machine in its own window")
+                .disabled(macGuest.runningID != nil)
+            Button("Settings") { openSettings(config) }
+                .accessibilityLabel("Settings for \(config.name)")
+            exportButton(config)
+            Button("Delete") { confirmDelete(config: config) }
+                .accessibilityLabel("Delete \(config.name)")
+                .accessibilityHint("Moves this virtual machine and all of its files to the Trash. Asks for confirmation first.")
+        }
+    }
+
+    // MARK: Export (2026-10-26)
+
+    /// Export, in every shut-down machine's row, named for the machine.
+    /// Rows only show it while the machine is shut down, so it is never
+    /// running here.
+    private func exportButton(_ config: VMConfiguration) -> some View {
+        Button("Export…") {
+            MachineArchiveController.shared.export(config, isRunning: false)
+        }
+        .accessibilityLabel("Export \(config.name)")
+        .accessibilityHint("Copies this virtual machine to a folder or drive you choose, as a backup that Import Virtual Machine brings back")
+    }
+
+    /// Settings, except while the machine's files are being copied: a
+    /// restore point or a bigger disk then would change them mid-copy.
+    private func openSettings(_ config: VMConfiguration) {
+        if MachineArchiveController.shared.refusesWhileBusy(config) { return }
+        settingsTarget = config
+    }
+
     private func startVM(config: VMConfiguration) {
+        // Not while its files are being copied (2026-10-26).
+        if MachineArchiveController.shared.refusesWhileBusy(config) { return }
         errorMessage = nil
+        // macOS runs on Apple's Virtualization framework, in its own window
+        // (MacGuest.swift), not in a QEMU session.
+        if config.guestOS == .macOS {
+            MacGuestRunner.shared.start(config)
+            return
+        }
         let session = VMSession(configuration: config)
         activeSession = session
         Task {
@@ -725,4 +1018,24 @@ private struct DashboardContent: View {
             }
         }
     }
+}
+
+// MARK: - Force Stop confirmation (2026-10-25)
+
+    /// The Force Stop question, shared with the VM window's overlay.
+func confirmForceStop(guest: String) -> Bool {
+    let alert = NSAlert()
+    alert.messageText = "Force stop \(guest)?"
+    alert.informativeText = "This turns \(guest) off at once, like pulling the plug. Unsaved work in \(guest) is lost, and if \(guest) is installing or updating, it can be damaged."
+    alert.alertStyle = .warning
+    alert.addButton(withTitle: "Cancel")
+    alert.addButton(withTitle: "Force Stop")
+    let confirmed = alert.runModal() == .alertSecondButtonReturn
+    AVMLog.write("AVM: Force Stop \(confirmed ? "confirmed" : "cancelled").")
+    return confirmed
+}
+
+extension Notification.Name {
+    /// Opens New macOS Virtual Machine (2026-10-26, MacSetupView.swift).
+    static let avmShowMacSetup = Notification.Name("avmShowMacSetup")
 }

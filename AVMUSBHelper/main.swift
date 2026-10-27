@@ -23,6 +23,8 @@
 //  .info is dropped by default and was invisible in the first proof.
 //
 import Foundation
+import SystemConfiguration
+import Security
 import os.log
 // MARK: - Identity
 /// Bumped whenever the helper's behavior changes so AVM can tell a
@@ -33,17 +35,62 @@ let log = OSLog(subsystem: AVMUSBHelperNames.machServiceName, category: "helper"
 /// chatty, and a root process should not narrate USB traffic into the
 /// unified log by default.
 let verboseStreamLogging = false
-/// Who may talk to this helper. Debug builds of AVM are signed by the
-/// development team; shipped builds by the Developer ID team. A
-/// release helper never trusts the development team.
-#if DEBUG
-let clientTeamID = "4NZJSBJ32X"
-#else
-let clientTeamID = "W7VP84KBHP"
-#endif
-let clientRequirement = "anchor apple generic"
-    + " and identifier \"\(AVMUSBHelperNames.clientBundleIdentifier)\""
-    + " and certificate leaf[subject.OU] = \"\(clientTeamID)\""
+/// Who may talk to this helper: AVM, signed by the same team that
+/// signed this helper. A Debug helper carries the development
+/// certificate and trusts Debug AVM; a Developer ID helper trusts only
+/// Developer ID AVM from its own team, so a release helper still never
+/// trusts the development team.
+///
+/// Read from the helper's own signature (2026-10-25). The two team IDs
+/// used to be written in here, so a build signed by any other team got
+/// a helper that refused every connection, and USB stopped working
+/// with nothing pointing at the signature. nil when the helper has no
+/// team (ad-hoc or unsigned); the listener then refuses everything.
+let clientTeamID: String? = ownTeamIdentifier()
+
+/// The Developer ID Application certificate's marker in its leaf. A
+/// helper signed with one requires it of the client too (2026-10-25,
+/// security audit): the team's development certificates carry the same
+/// team in subject.OU, so without this a release helper would also serve a
+/// development build of AVM, which is debuggable (get-task-allow) and so
+/// can be driven by any process the user runs.
+let developerIDMarker = "certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+let helperIsDeveloperID: Bool = signatureSatisfies("anchor apple generic and " + developerIDMarker)
+
+let clientRequirement: String? = clientTeamID.map { team in
+    "anchor apple generic"
+        + " and identifier \"\(AVMUSBHelperNames.clientBundleIdentifier)\""
+        + " and certificate leaf[subject.OU] = \"\(team)\""
+        + (helperIsDeveloperID ? " and " + developerIDMarker : "")
+}
+
+/// True when this process's own signature meets `requirement`.
+func signatureSatisfies(_ requirement: String) -> Bool {
+    var code: SecCode?
+    var req: SecRequirement?
+    guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
+          SecRequirementCreateWithString(requirement as CFString, [], &req) == errSecSuccess, let req else {
+        return false
+    }
+    return SecCodeCheckValidity(code, [], req) == errSecSuccess
+}
+
+/// The Team ID in this process's own code signature, or nil.
+func ownTeamIdentifier() -> String? {
+    var code: SecCode?
+    guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return nil }
+    var staticCode: SecStaticCode?
+    guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess,
+          let staticCode else { return nil }
+    var info: CFDictionary?
+    guard SecCodeCopySigningInformation(
+              staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info
+          ) == errSecSuccess,
+          let dict = info as? [String: Any],
+          let team = dict[kSecCodeInfoTeamIdentifier as String] as? String,
+          !team.isEmpty else { return nil }
+    return team
+}
 // MARK: - Idle exit
 /// The helper exits after this long with no connections and no
 /// claimed devices. launchd starts it again on the next XPC call.
@@ -53,11 +100,23 @@ final class IdleWatch {
     private let queue = DispatchQueue(label: "idle")
     private(set) var connectionCount = 0
     private(set) var claimedDeviceCount = 0
+    /// A keyboard for Windows wanted or held (KeyboardHold.swift): the
+    /// helper stays while it is.
+    private(set) var keyboardHeld = false
+    /// Synchronous (2026-10-25, code audit): counted before the connection
+    /// resumes, so its first attach can never meet an idle exit already on
+    /// its way. Called from the listener's queue, never from this one.
     func connectionOpened() {
-        queue.async {
+        queue.sync {
             self.connectionCount += 1
             self.cancelTimer()
         }
+    }
+
+    /// Arms the idle clock from outside this queue (the launch path used
+    /// to call armIfIdle from the main thread, racing the queue).
+    func armIfIdleFromOutside() {
+        queue.async { self.armIfIdle() }
     }
     func connectionClosed() {
         queue.async {
@@ -75,15 +134,30 @@ final class IdleWatch {
             }
         }
     }
+    func keyboardChanged(held: Bool) {
+        queue.async {
+            self.keyboardHeld = held
+            if held { self.cancelTimer() } else { self.armIfIdle() }
+        }
+    }
     func armIfIdle() {
-        guard connectionCount == 0, claimedDeviceCount == 0 else { return }
+        guard connectionCount == 0, claimedDeviceCount == 0, !keyboardHeld else { return }
         cancelTimer()
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + idleGracePeriod)
         t.setEventHandler {
-            os_log("idle for %{public}.0f s with no connections and no devices; exiting", log: log, type: .default, idleGracePeriod)
-            avm_usb_runtime_stop()
-            exit(0)
+            // Still idle? A connection or device may have arrived as the
+            // timer fired. Then libusb is stopped on the registry's queue,
+            // where every attach runs, so none can be using it as it goes
+            // (2026-10-25, code audit: libusb_exit under a running open in
+            // a root process).
+            guard self.connectionCount == 0, self.claimedDeviceCount == 0, !self.keyboardHeld else { return }
+            registry.queue.sync {
+                guard registry.isEmpty else { return }
+                os_log("idle for %{public}.0f s with no connections and no devices; exiting", log: log, type: .default, idleGracePeriod)
+                avm_usb_runtime_stop()
+                exit(0)
+            }
         }
         t.resume()
         timer = t
@@ -112,10 +186,15 @@ final class DeviceEntry {
     /// A detach waiting for the pump to finish.
     var detachReply: ((Bool, String?) -> Void)?
     var detachTimeout: DispatchWorkItem?
+    /// The user whose AVM attached this device. One root helper serves
+    /// every user on the Mac (fast user switching), so another user's AVM
+    /// must not see or release it (2026-10-25, code audit).
+    let ownerUID: uid_t
     init(device: AVMUSBDeviceIdentity, socketPath: String, connection: NSXPCConnection?) {
         self.device = device
         self.socketPath = socketPath
         self.connection = connection
+        self.ownerUID = connection?.effectiveUserIdentifier ?? uid_t.max
         self.queue = DispatchQueue(label: "device." + device.vidPidString)
     }
 }
@@ -123,12 +202,36 @@ final class DeviceEntry {
 final class DeviceRegistry {
     let queue = DispatchQueue(label: "registry")
     private var entries: [AVMUSBDeviceIdentity: DeviceEntry] = [:]
+    /// For the idle exit, which reads it inside queue.sync.
+    var isEmpty: Bool { entries.isEmpty }
     private var runtimeStarted = false
     // MARK: Attach
     func attach(_ device: AVMUSBDeviceIdentity,
                 streamSocketPath: String,
                 connection: NSXPCConnection?,
                 reply: @escaping (Bool, String?, String?) -> Void) {
+        // The socket path comes from the client, and this process is root:
+        // check it before connecting (2026-10-25, security audit).
+        guard let uid = connection?.effectiveUserIdentifier else {
+            os_log("attach refused: no client identity", log: log, type: .error)
+            reply(false, "socket", "the helper could not tell which user asked")
+            return
+        }
+        // Only for the person at the screen (2026-10-26, security audit),
+        // as the keyboard hold already was: with fast user switching, a
+        // background user's AVM must not take a device the person at the
+        // screen just plugged in.
+        var consoleUID: uid_t = 0
+        guard SCDynamicStoreCopyConsoleUser(nil, &consoleUID, nil) != nil, consoleUID == uid else {
+            os_log("attach refused: the asking user isn't at the screen", log: log, type: .default)
+            reply(false, "console", "Only the person using this Mac's screen can send a USB device to a virtual machine.")
+            return
+        }
+        if let problem = streamSocketProblem(streamSocketPath, uid: uid) {
+            os_log("attach refused: %{public}@", log: log, type: .error, problem)
+            reply(false, "socket", problem)
+            return
+        }
         queue.async {
             if let existing = self.entries[device] {
                 os_log("attach refused: %{public}@ is already held (state %{public}d)",
@@ -158,7 +261,7 @@ final class DeviceRegistry {
                    device.description, streamSocketPath)
             let stream = avm_usb_stream_attach(device.vendorID, device.productID,
                                                device.busNumber, device.deviceAddress,
-                                               streamSocketPath,
+                                               streamSocketPath, uid,
                                                verboseStreamLogging ? 1 : 0,
                                                streamEventCallback, context,
                                                &step, step.count, &detail, detail.count)
@@ -186,9 +289,17 @@ final class DeviceRegistry {
         }
     }
     // MARK: Detach
+    /// requester: the asking connection's user; nil only for the helper's
+    /// own release when a connection ends.
     func detach(_ device: AVMUSBDeviceIdentity,
+                requester: uid_t?,
                 reply: @escaping (Bool, String?) -> Void) {
         queue.async {
+            if let requester, let entry = self.entries[device], entry.ownerUID != requester {
+                os_log("detach refused: %{public}@ belongs to another user", log: log, type: .error, device.description)
+                reply(false, "\(device.displayName) is not attached by you, so there is nothing to release.")
+                return
+            }
             guard let entry = self.entries[device], let stream = entry.stream else {
                 os_log("detach refused: %{public}@ is not held", log: log, type: .default, device.description)
                 reply(false, "\(device.displayName) is not attached, so there is nothing to release.")
@@ -217,10 +328,34 @@ final class DeviceRegistry {
             avm_usb_stream_stop(stream)
         }
     }
-    // MARK: Status
-    func status(reply: @escaping ([AVMUSBDeviceStatus]) -> Void) {
+    // MARK: Release on disconnect (2026-10-25, code audit)
+
+    /// Releases every device the given connection attached. AVM's client
+    /// treats dropping its connection as the release path for all its
+    /// devices (USBHelperClient), but nothing here did it: after AVM
+    /// crashed, or Unregister, the helper kept streaming a braille display
+    /// or keyboard into a VM nobody controlled, and the relaunched AVM
+    /// couldn't list it to detach. Each device goes through the same stop
+    /// as Detach, so it returns to the Mac.
+    func releaseAll(ownedBy connection: NSXPCConnection) {
         queue.async {
-            let rows = self.entries.values.map {
+            let owned = self.entries.values.filter { $0.connection === connection }
+            for entry in owned where entry.detachReply == nil {
+                os_log("client gone; releasing %{public}@", log: log, type: .default, entry.device.description)
+                self.detach(entry.device, requester: nil) { ok, detail in
+                    if !ok {
+                        os_log("release after disconnect of %{public}@ failed: %{public}@",
+                               log: log, type: .error, entry.device.description, detail ?? "")
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Status
+    func status(requester: uid_t?, reply: @escaping ([AVMUSBDeviceStatus]) -> Void) {
+        queue.async {
+            let rows = self.entries.values.filter { requester == nil || $0.ownerUID == requester }.map {
                 AVMUSBDeviceStatus(device: $0.device, state: $0.state, streamSocketPath: $0.socketPath)
             }
             reply(rows)
@@ -327,15 +462,36 @@ final class HelperService: NSObject, AVMUSBHelperProtocol {
     func detach(_ device: AVMUSBDeviceIdentity,
                 reply: @escaping (Bool, String?) -> Void) {
         os_log("detach requested for %{public}@", log: log, type: .default, device.description)
-        registry.detach(device, reply: reply)
+        guard let uid = connection?.effectiveUserIdentifier else {
+            reply(false, "The helper could not tell which user asked.")
+            return
+        }
+        registry.detach(device, requester: uid, reply: reply)
     }
     func status(reply: @escaping ([AVMUSBDeviceStatus]) -> Void) {
         os_log("status requested", log: log, type: .default)
-        registry.status(reply: reply)
+        guard let uid = connection?.effectiveUserIdentifier else {
+            reply([])
+            return
+        }
+        registry.status(requester: uid, reply: reply)
     }
     func helperVersion(reply: @escaping (String) -> Void) {
         os_log("version requested", log: log, type: .default)
         reply(AVMUSBHelperNames.machServiceName + " " + helperBuildVersion)
+    }
+
+    func listKeyboards(reply: @escaping ([NSDictionary]) -> Void) {
+        reply(KeyboardHold.shared.list())
+    }
+
+    func holdKeyboard(_ keyboardID: String, reply: @escaping (Bool, String?) -> Void) {
+        KeyboardHold.shared.hold(keyboardID, owner: connection, reply: reply)
+    }
+
+    func releaseKeyboard(reply: @escaping () -> Void) {
+        KeyboardHold.shared.release(owner: connection)
+        reply()
     }
 }
 // MARK: - Listener
@@ -345,6 +501,11 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
         // The gate. macOS checks the caller's code signature against
         // this requirement before any message is delivered. A caller
         // that is not AVM, signed by our team, never gets a reply.
+        guard let clientRequirement else {
+            os_log("helper has no Team ID in its own signature; refusing connection (pid %{public}d)",
+                   log: log, type: .error, newConnection.processIdentifier)
+            return false
+        }
         if #available(macOS 13.0, *) {
             newConnection.setCodeSigningRequirement(clientRequirement)
         } else {
@@ -358,6 +519,8 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
         newConnection.remoteObjectInterface = AVMUSBHelperInterfaces.client()
         newConnection.invalidationHandler = {
             os_log("connection invalidated (pid %{public}d)", log: log, type: .default, newConnection.processIdentifier)
+            registry.releaseAll(ownedBy: newConnection)
+            KeyboardHold.shared.release(owner: newConnection)
             idle.connectionClosed()
         }
         newConnection.interruptionHandler = {
@@ -372,12 +535,13 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
 // MARK: - Main
 os_log("%{public}@ %{public}@ starting as uid %{public}d, requiring team %{public}@",
        log: log, type: .default,
-       AVMUSBHelperNames.machServiceName, helperBuildVersion, getuid(), clientTeamID)
+       AVMUSBHelperNames.machServiceName, helperBuildVersion, getuid(),
+       clientTeamID ?? "none (no Team ID in own signature; every connection will be refused)")
 let delegate = ListenerDelegate()
 let listener = NSXPCListener(machServiceName: AVMUSBHelperNames.machServiceName)
 listener.delegate = delegate
 listener.resume()
 // Nobody may ever connect. Start the idle clock now so a spurious
 // launch doesn't leave a root process sitting around.
-idle.armIfIdle()
+idle.armIfIdleFromOutside()
 dispatchMain()
