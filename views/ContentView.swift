@@ -803,6 +803,9 @@ private struct QEMUMachineRow: View {
                 .accessibilityHint("Brings its window forward and gives it the keyboard. Control-Command-Escape returns to your Mac.")
         }
         if session.vmState == .running {
+            Button("Send File…") { chooseFileToSend(session) }
+                .accessibilityLabel("Send a file to \(name)")
+                .accessibilityHint("Copies a file from your Mac into Downloads in \(name)")
             Button("Pause") {
                 Task {
                     do { try await session.pause() }
@@ -860,6 +863,28 @@ private struct QEMUMachineRow: View {
                     tone: .failure
                 )
             }
+        }
+    }
+}
+
+// MARK: - Send a file (2026-10-27)
+
+/// Asks which file, then sends it into the machine's Downloads
+/// (VMManager.sendFile). Spoken.
+@MainActor
+func chooseFileToSend(_ session: VMSession) {
+    let panel = NSOpenPanel()
+    panel.title = "Send a File to \(session.configuration.name)"
+    panel.message = "Choose a file. It goes into Downloads in \(session.configuration.name)."
+    panel.prompt = "Send"
+    panel.canChooseFiles = true
+    panel.canChooseDirectories = false
+    panel.allowsMultipleSelection = true
+    guard panel.runModal() == .OK else { return }
+    let files = panel.urls
+    Task {
+        for file in files {
+            await session.manager.sendFile(file)
         }
     }
 }

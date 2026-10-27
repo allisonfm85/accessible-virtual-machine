@@ -382,6 +382,14 @@ struct AVMApp: App {
 
                 Divider()
 
+                // Send File (2026-10-27): into the current machine's
+                // Downloads, through its guest agent.
+                Button("Send File to \(focusLock.guestName)…") {
+                    if let session = VMSession.current { chooseFileToSend(session) }
+                }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .disabled(!activity.isRunning)
+
                 Button("Attach USB Device…") {
                     AVMLog.write("AVM: Attach USB Device menu — posting request to ContentView.", category: "USBHelper")
                     NotificationCenter.default.post(name: .avmAttachUSBFromMenu, object: nil)

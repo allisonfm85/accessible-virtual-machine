@@ -10,6 +10,11 @@
 //   AVM.app/Contents/MacOS/AVM --test-microphone --vm <folder> [--guest ...]
 //   AVM.app/Contents/MacOS/AVM --test-two-machines --vm <folder> --guest <os> --vm2 <folder> --guest2 <os>
 //   AVM.app/Contents/MacOS/AVM --test-duplicate --vm <folder> --guest <os>
+//   AVM.app/Contents/MacOS/AVM --test-send-file --vm <folder> --guest <os>
+//
+// --test-send-file: sends a 3 MB file of random bytes (three pieces) to
+// the machine's Downloads, twice, and checks both arrive whole, the second
+// under a new name.
 //
 // --test-duplicate: duplicates the machine as Duplicate… does, in a
 // temporary AVM folder (the user's machine list is never opened), then
@@ -38,6 +43,7 @@
 // Prints each step with how long it took; exits 0 if every check passed.
 
 import Foundation
+import CommonCrypto
 
 @MainActor
 enum SaveResumeTestJob {
@@ -46,7 +52,7 @@ enum SaveResumeTestJob {
 
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
         guard arguments.contains(flag) || arguments.contains("--test-microphone") || arguments.contains("--test-two-machines")
-                || arguments.contains("--test-duplicate") else { return }
+                || arguments.contains("--test-duplicate") || arguments.contains("--test-send-file") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -62,6 +68,10 @@ enum SaveResumeTestJob {
             if arguments.contains("--test-two-machines"), let second = value("--vm2") {
                 let guest2 = GuestOS(rawValue: value("--guest2") ?? "windows") ?? .windows
                 let passed = await twoMachines(folderURL, guest, URL(fileURLWithPath: second, isDirectory: true), guest2)
+                print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+            }
+            if arguments.contains("--test-send-file") {
+                let passed = await sendFile(folderURL, guest)
                 print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
             }
             if arguments.contains("--test-duplicate") {
@@ -160,6 +170,44 @@ enum SaveResumeTestJob {
         let frames = words.firstIndex(of: "frames").flatMap { words.indices.contains($0 + 1) ? Int(words[$0 + 1]) : nil } ?? 0
         check("the guest recorded", frames > 48_000)
         check("the recording isn't silence (the Mac's microphone reached it)", level > 0)
+        await shutDown(manager)
+        return ok
+    }
+
+    private static func sendFile(_ folder: URL, _ guest: GuestOS) async -> Bool {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("avm send test.bin")
+        var bytes = Data(count: 3 * 1_048_576 + 12345)
+        bytes.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, $0.count, $0.baseAddress!) }
+        try? bytes.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let sum = bytes.withUnsafeBytes { raw -> String in
+            var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+            CC_SHA256(raw.baseAddress, CC_LONG(raw.count), &digest)
+            return digest.map { String(format: "%02x", $0) }.joined()
+        }
+        let manager = VMManager()
+        guard await start(manager, configuration(folder: folder, guest: guest)),
+              let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else {
+            check("the machine started and answers", false); await shutDown(manager); return false
+        }
+        try? await Task.sleep(for: .seconds(20))
+        print("== Sending the file twice")
+        let started = Date()
+        await manager.sendFile(file)
+        await manager.sendFile(file)
+        print(String(format: "   took %.1f s", Date().timeIntervalSince(started)))
+        let sums = guest == .windows
+            ? await exec(agent, program: "powershell.exe", args: ["-NoProfile", "-Command",
+                "Get-ChildItem -Path C:\\Users\\*\\Downloads\\'avm send test*' | ForEach-Object { (Get-FileHash $_.FullName).Hash.ToLower() + ' ' + $_.Name; Remove-Item $_.FullName }"])
+            : await exec(agent, program: "/bin/sh", args: ["-c", "cd /home/*/Downloads && for f in avm\\ send\\ test*; do echo \"$(sha256sum \"$f\" | cut -c1-64) $f $(stat -c %U \"$f\")\"; rm -f \"$f\"; done"])
+        print("   \(sums ?? "no answer")")
+        let lines = (sums ?? "").split(whereSeparator: \.isNewline)
+        check("two copies arrived", lines.count == 2)
+        check("both are whole", lines.allSatisfy { $0.hasPrefix(sum) })
+        check("the second has its own name", lines.contains { $0.contains("avm send test 2.bin") })
+        if guest != .windows {
+            check("they belong to the user, not root", lines.allSatisfy { !$0.hasSuffix(" root") })
+        }
         await shutDown(manager)
         return ok
     }

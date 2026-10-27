@@ -3779,3 +3779,102 @@ extension VMManager {
         }
     }
 }
+
+// MARK: - Send a file to the machine (2026-10-27)
+
+/// Send File…: a file from the Mac goes into the machine's Downloads
+/// folder through the guest agent, in pieces, so it works for any size and
+/// needs no shared folder. Windows: the signed-in user's Downloads (the
+/// Public one if no one is signed in). Linux: the first user's Downloads,
+/// owned by them. Spoken: where it went, or why it didn't.
+extension VMManager {
+    /// One piece of the file per guest-agent write (base64 grows it by a
+    /// third; the agent's messages stay well under its limit).
+    private static let sendChunk = 1 << 20
+
+    func sendFile(_ file: URL) async {
+        let machine = machineName
+        guard state == .running, let configuration = activeConfiguration else {
+            Announcer.shared.announce("\(machine) isn't running, so nothing was sent.", tone: .failure)
+            return
+        }
+        let name = file.lastPathComponent
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value else {
+            Announcer.shared.announce("AVM can't read \(name), so nothing was sent.", tone: .failure)
+            return
+        }
+        Announcer.shared.announce("Sending \(name) to \(machine).", tone: .info)
+        do {
+            let windows = configuration.guestOS == .windows
+            let folder: String
+            var owner: String?
+            if windows {
+                let user = try await agentRun("powershell.exe", ["-NoProfile", "-Command",
+                    "$u = (Get-CimInstance Win32_ComputerSystem).UserName; if ($u) { $p = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq (New-Object System.Security.Principal.NTAccount($u)).Translate([System.Security.Principal.SecurityIdentifier]).Value }).LocalPath; if ($p) { $p } }"], limit: .seconds(60))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                folder = (user.isEmpty ? "C:\\Users\\Public" : user) + "\\Downloads"
+            } else {
+                let home = try await agentRun("/bin/sh", ["-c", "getent passwd 1000 | cut -d: -f6,1 | tr ':' ' '"], limit: .seconds(30))
+                    .trimmingCharacters(in: .whitespacesAndNewlines).split(separator: " ")
+                guard home.count == 2 else { throw AVMError.qmpCommandFailed("there's no user in \(machine) to send it to") }
+                owner = String(home[0])
+                folder = String(home[1]) + "/Downloads"
+                _ = try await agentRun("/bin/mkdir", ["-p", folder])
+            }
+            let separator = windows ? "\\" : "/"
+            // Never over a file already there: "name 2.ext" and so on.
+            var target = folder + separator + name
+            let stem = (name as NSString).deletingPathExtension, ext = (name as NSString).pathExtension
+            var n = 2
+            while try await guestFileExists(target, windows: windows) {
+                target = folder + separator + stem + " \(n)" + (ext.isEmpty ? "" : ".\(ext)")
+                n += 1
+            }
+
+            let handle = try FileHandle(forReadingFrom: file)
+            defer { try? handle.close() }
+            guard let guestHandle = try await agentCall(["execute": "guest-file-open", "arguments": ["path": target, "mode": "wb"]]) as? Int else {
+                throw AVMError.qmpCommandFailed("\(machine) couldn't make the file")
+            }
+            var sent: Int64 = 0
+            var lastTenth: Int64 = 0
+            do {
+                while let data = try handle.read(upToCount: Self.sendChunk), !data.isEmpty {
+                    _ = try await agentCall(["execute": "guest-file-write",
+                                             "arguments": ["handle": guestHandle, "buf-b64": data.base64EncodedString()]], timeout: 60)
+                    sent += Int64(data.count)
+                    let tenth = size > 50_000_000 ? sent * 10 / max(size, 1) : 0
+                    if tenth > lastTenth, tenth < 10 {
+                        lastTenth = tenth
+                        Announcer.shared.announce("Sending \(name), \(tenth * 10) percent.", tone: .info)
+                    }
+                }
+                _ = try await agentCall(["execute": "guest-file-close", "arguments": ["handle": guestHandle]])
+            } catch {
+                _ = try? await agentCall(["execute": "guest-file-close", "arguments": ["handle": guestHandle]])
+                throw error
+            }
+            if let owner {
+                _ = try? await agentRun("/bin/chown", ["\(owner):\(owner)", target])
+            }
+            let landed = (target as NSString).lastPathComponent
+            avmLog("sendFile: \(sent) bytes sent")
+            Announcer.shared.announce("\(landed) is in Downloads in \(machine).", tone: .success)
+        } catch {
+            avmLog("sendFile: failed: \(error.localizedDescription)")
+            Announcer.shared.announce("\(name) wasn't sent to \(machine). Reason: \(error.localizedDescription) Next: check \(machine) has finished starting, then try again.", tone: .failure)
+        }
+    }
+
+    /// Whether a file is there: opening it for reading works only then.
+    /// The same in every guest, with no shell quoting to get wrong
+    /// (2026-10-27: cmd.exe's "if exist" lost the quotes in a path with
+    /// spaces, and the second file overwrote the first).
+    private func guestFileExists(_ path: String, windows: Bool) async throws -> Bool {
+        guard let handle = try? await agentCall(["execute": "guest-file-open", "arguments": ["path": path, "mode": "r"]]) as? Int else {
+            return false
+        }
+        _ = try? await agentCall(["execute": "guest-file-close", "arguments": ["handle": handle]])
+        return true
+    }
+}
