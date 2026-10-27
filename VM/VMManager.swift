@@ -1019,6 +1019,10 @@ final class VMManager: ObservableObject {
         // testers. The sanitized copy lives in the diagnostic log (line above).
         appendConsole("AVM: QEMU arguments recorded in the diagnostic log.\n")
 
+        // Local Network permission first (2026-10-26), so macOS asks while
+        // the Mac has the keyboard, not in the middle of Windows Setup.
+        _ = await LocalNetworkAccess.ensure(guest: configuration.guestOS.displayName)
+
         avmLog("startVM: launching QEMU child process")
         try launchQEMU(executableURL: qemuURL, arguments: args)
         avmLog("startVM: QEMU launched, connecting to QMP")
