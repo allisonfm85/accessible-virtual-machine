@@ -780,6 +780,35 @@ nonisolated final class UbuntuInstallPipeline {
         [org/gnome/orca/default/keybindings]
         keyboard-layout='laptop'
         DCONF
+        # ORCA'S SETTINGS FILE (2026-10-26, MEASURED on Debian 13): Orca
+        # writes ~/.local/share/orca/user-settings.conf on its first run; a
+        # machine switched off then (Force Stop, a power cut) kept an empty
+        # file, and Orca crashed on it at every later sign-in (KeyError
+        # 'default'), leaving no screen reader for good. Before each desktop
+        # session, a file that isn't valid JSON is set aside; Orca then
+        # starts with its defaults.
+        mkdir -p $T/usr/local/lib/avm $T/etc/systemd/user/graphical-session-pre.target.wants
+        cat > $T/usr/local/lib/avm/orca-settings-guard.sh <<'GUARD'
+        #!/bin/sh
+        f="$HOME/.local/share/orca/user-settings.conf"
+        [ -e "$f" ] || exit 0
+        python3 -c 'import json, sys; json.load(open(sys.argv[1]))' "$f" 2>/dev/null && exit 0
+        mv "$f" "$f.unreadable-$(date +%s)"
+        GUARD
+        chmod 755 $T/usr/local/lib/avm/orca-settings-guard.sh
+        cat > $T/etc/systemd/user/avm-orca-settings-guard.service <<'UNIT'
+        [Unit]
+        Description=AVM: set aside an unreadable Orca settings file
+        Before=graphical-session-pre.target
+
+        [Service]
+        Type=oneshot
+        ExecStart=/bin/sh /usr/local/lib/avm/orca-settings-guard.sh
+
+        [Install]
+        WantedBy=graphical-session-pre.target
+        UNIT
+        ln -sf ../avm-orca-settings-guard.service $T/etc/systemd/user/graphical-session-pre.target.wants/avm-orca-settings-guard.service
         curtin in-target -- dconf update
         # dconf update must have compiled both databases from these files;
         # a database older than its keyfile means the settings never landed.
