@@ -94,6 +94,14 @@ enum USBDeviceClassifier {
         if hid.unreadInterfaces > 0 {
             inputParts.append("HID kind not readable yet")
         }
+        // NO INTERFACES YET (2026-10-25, code audit): a device whose
+        // interfaces macOS hasn't published within the read delay (slow
+        // composite keyboards, devices behind a hub) used to read as
+        // ordinary, and Always mode sent it to Windows unasked. Nothing is
+        // known about it yet, so it counts as possible input and asks.
+        if USBDeviceEnumerator.classCodes(for: service).interfaces.isEmpty {
+            inputParts.append("interfaces not published yet")
+        }
 
         // 2. BRLTTY's table, for displays that don't speak HID braille.
         switch USBBrailleDeviceTable.match(vendorID: identity.vendorID, productID: identity.productID) {
