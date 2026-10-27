@@ -63,6 +63,15 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// it through guestOS, never directly.
     var guestOSName: String?
 
+    // MARK: - Secure Boot (2026-10-25, roadmap item 8)
+
+    /// true: the VM boots UTM's Secure Boot firmware, whose variable store
+    /// carries Microsoft's KEK and db certificates with Secure Boot on, so
+    /// Windows Update's Secure Boot check passes (Insider builds). nil or
+    /// false: the original firmware, exactly as before. New Windows VMs
+    /// get true from the setup wizard; existing ones change it in Settings.
+    var secureBoot: Bool?
+
     // MARK: - Defaults
 
     init(
@@ -76,7 +85,8 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         sharedFolderPath: String? = nil,
         usbMode: String? = nil,
         usbRememberedDevices: [RememberedUSBDevice]? = nil,
-        guestOSName: String? = nil
+        guestOSName: String? = nil,
+        secureBoot: Bool? = nil,
     ) {
         self.id = id
         self.name = name
@@ -89,8 +99,14 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         self.usbMode = usbMode
         self.usbRememberedDevices = usbRememberedDevices
         self.guestOSName = guestOSName
+        self.secureBoot = secureBoot
     }
 }
+
+extension VMConfiguration {
+    var usesSecureBoot: Bool { secureBoot == true }
+}
+
 
 // MARK: - Guest operating system
 
@@ -174,3 +190,14 @@ struct RememberedUSBDevice: Codable, Hashable, Identifiable {
             && self.serialNumber == serialNumber
     }
 }
+// MARK: - QEMU option values (2026-10-25)
+
+/// A value for a comma-separated QEMU option: QEMU reads a comma as the
+/// start of the next option and escapes a literal one by doubling it.
+/// Used by VMManager.qemuOptionValue for every file path it passes.
+nonisolated enum QEMUOption {
+    static func value(_ path: String) -> String {
+        path.replacingOccurrences(of: ",", with: ",,")
+    }
+}
+
