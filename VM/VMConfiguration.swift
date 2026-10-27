@@ -174,3 +174,14 @@ struct RememberedUSBDevice: Codable, Hashable, Identifiable {
             && self.serialNumber == serialNumber
     }
 }
+// MARK: - QEMU option values (2026-10-25)
+
+/// A value for a comma-separated QEMU option: QEMU reads a comma as the
+/// start of the next option and escapes a literal one by doubling it.
+/// Used by VMManager.qemuOptionValue for every file path it passes.
+nonisolated enum QEMUOption {
+    static func value(_ path: String) -> String {
+        path.replacingOccurrences(of: ",", with: ",,")
+    }
+}
+

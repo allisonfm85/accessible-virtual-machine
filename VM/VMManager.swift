@@ -297,6 +297,30 @@ private func avmLog(_ msg: String) {
     AVMLog.write(msg)
 }
 
+// MARK: - App-wide VM activity (2026-10-25)
+
+/// The running VM's state, for code that lives outside the window: the
+/// menus, which dim what can't act right now (VoiceOver reads a dimmed
+/// item as "dimmed"). VMManager is created per session and is gone between
+/// sessions, so menus can't observe it; this one object outlives them.
+/// VMManager writes it on every state change. .stopped when no VM has run.
+@MainActor
+final class VMActivity: ObservableObject {
+    static let shared = VMActivity()
+    @Published fileprivate(set) var state: VMRuntimeState = .stopped
+    private init() {}
+
+    var isRunning: Bool { state == .running }
+    var isRunningOrPaused: Bool { state == .running || state == .paused }
+    /// No VM is starting, running, paused or stopping, so one can start.
+    var canStart: Bool {
+        switch state {
+        case .stopped, .error: return true
+        default: return false
+        }
+    }
+}
+
 // MARK: - VMManager
 
 @MainActor
@@ -305,7 +329,10 @@ final class VMManager: ObservableObject {
     // MARK: Published State
 
     @Published private(set) var state: VMRuntimeState = .stopped {
-        didSet { usbWatcherFollowState() }
+        didSet {
+            VMActivity.shared.state = state
+            usbWatcherFollowState()
+        }
     }
 
     /// True while AVM itself is starting an Ubuntu VM again after its
@@ -388,6 +415,8 @@ final class VMManager: ObservableObject {
     // get mismatched and the protocol desyncs (commands then fail/hang). This
     // flag + waiter queue ensures only one sendQMPCommand runs at once.
     private var qmpBusy = false
+    /// For QMP reply ids (sendQMPCommand).
+    private var qmpCommandCounter = 0
     private var qmpWaiters: [CheckedContinuation<Void, Never>] = []
 
     // MARK: Private — working directory
@@ -845,6 +874,23 @@ final class VMManager: ObservableObject {
         state = .starting
         appendConsole("AVM: Starting VM \"\(configuration.name)\"…\n")
 
+        // FAILED-START CLEANUP (2026-10-25, code audit): every step from
+        // here can throw, and used to leave the state at .starting with
+        // QEMU or swtpm possibly still running and holding the disk: the
+        // menus stayed dimmed, Quit warned about a VM that wasn't there, and
+        // nothing was said for swtpm or QMP failures. One catch now ends
+        // whatever was launched, sets an error state, and speaks the
+        // failure unless the step that failed already did.
+        do {
+            try await continueStart(configuration: configuration, qemuURL: qemuURL)
+        } catch {
+            abandonFailedStart(configuration: configuration, error: error)
+            throw error
+        }
+    }
+
+    /// Everything startVM does once the state is .starting.
+    private func continueStart(configuration: VMConfiguration, qemuURL: URL) async throws {
         let runtimeDir = try prepareRuntimeDirectory(for: configuration.id)
         vmRuntimeDir = runtimeDir
 
@@ -883,8 +929,7 @@ final class VMManager: ObservableObject {
             }
         }
 
-        let socketDir = URL(fileURLWithPath: "/tmp/avm/\(configuration.id.uuidString)")
-        try FileManager.default.createDirectory(at: socketDir, withIntermediateDirectories: true)
+        let socketDir = try Self.privateSocketDirectory(for: configuration.id)
         vmSocketDir = socketDir
 
         let spicePath = socketDir.appendingPathComponent("spice.sock").path
@@ -972,10 +1017,39 @@ final class VMManager: ObservableObject {
         }
     }
 
+    /// Ends a start that failed part way: QEMU and swtpm, the boot and
+    /// install watches, the QMP socket. A step that has already announced
+    /// its failure has also set .error, so only a state still at .starting
+    /// gets the generic spoken failure here.
+    private func abandonFailedStart(configuration: VMConfiguration, error: Error) {
+        avmLog("startVM: start failed (\(error.localizedDescription)); ending what was launched")
+        stopBootKeypressTask()
+        stopInstallWatchdog()
+        endQEMUAndWait()
+        cleanUp()
+        if case .starting = state {
+            let reason = error.localizedDescription
+            Announcer.shared.announce(
+                "\(configuration.name) could not start. Reason: \(reason) Next: try Start again. If it fails again, save the diagnostic log and report the problem.",
+                tone: .failure
+            )
+            state = .error(reason)
+        }
+    }
+
     func stopVM() async throws {
         guard case .running = state else { return }
         state = .stopping
-        try await sendQMPCommand("system_powerdown", arguments: nil)
+        do {
+            try await sendQMPCommand("system_powerdown", arguments: nil)
+        } catch {
+            // The request never reached QEMU (2026-10-25, code audit): the
+            // VM is still running, so say so, rather than sit in .stopping
+            // with nothing that can leave it.
+            avmLog("stopVM: system_powerdown failed (\(error.localizedDescription)); back to running")
+            if case .stopping = state { state = .running }
+            throw error
+        }
     }
 
     func forceStopVM() {
@@ -1164,6 +1238,11 @@ final class VMManager: ObservableObject {
             var previousDiskSize: UInt64? = nil
             var consecutiveWedgeSamples = 0
             var announcedThisRun = false
+            // The last frame sample is removed when the watchdog ends
+            // (2026-10-25, privacy audit): it is a picture of the guest's
+            // screen, and the tester guide promises frames aren't kept.
+            let framePath = runtimeDir.appendingPathComponent("watchdog-screen.ppm").path
+            defer { try? FileManager.default.removeItem(atPath: framePath) }
 
             avmLog("installWatchdog: started (20s samples; \(requiredConsecutive) consecutive frozen-frame + >=90% CPU + flat-disk samples = wedge)")
 
@@ -1172,11 +1251,18 @@ final class VMManager: ObservableObject {
                 if Task.isCancelled { return }
                 guard let self else { return }
 
-                let stillRunning = await MainActor.run { () -> Bool in
-                    if case .running = self.state { return true }
-                    return false
+                // PAUSE (2026-10-25, code audit): a paused VM used to end the
+                // watchdog for good, so after one pause and resume no wedge
+                // was caught and the Setup-underway milestone never came.
+                // Paused now waits, with the streak reset: a paused guest's
+                // still frame and quiet disk are not a wedge.
+                let vmState = await MainActor.run { self.state }
+                if vmState == .paused {
+                    consecutiveWedgeSamples = 0
+                    previousFrame = nil
+                    continue
                 }
-                if !stillRunning {
+                if vmState != .running {
                     avmLog("installWatchdog: VM no longer running — standing down")
                     return
                 }
@@ -1532,11 +1618,24 @@ final class VMManager: ObservableObject {
         let tpmStateDir = runtimeDir.appendingPathComponent("tpm-state")
         try FileManager.default.createDirectory(at: tpmStateDir, withIntermediateDirectories: true)
 
+        // swtpm splits its options on every comma and has no escape, so a
+        // VM folder with a comma in its path (2026-10-25, code audit) gets
+        // a comma-free link to its TPM state, in AVM's private socket
+        // folder next to tpm.sock. Paths without commas are passed as is.
+        var tpmStatePath = tpmStateDir.path
+        if tpmStatePath.contains(",") {
+            let link = URL(fileURLWithPath: socketPath).deletingLastPathComponent().appendingPathComponent("tpm-state")
+            try? FileManager.default.removeItem(at: link)
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: tpmStateDir)
+            tpmStatePath = link.path
+            avmLog("launchSwtpm: TPM state path has a comma; using a link in the socket folder")
+        }
+
         let process = Process()
         process.executableURL = binaryURL
         process.arguments = [
             "socket",
-            "--tpmstate", "dir=\(tpmStateDir.path)",
+            "--tpmstate", "dir=\(tpmStatePath)",
             "--ctrl", "type=unixio,path=\(socketPath)",
             "--tpm2",
             "--log", "level=0"
@@ -1635,8 +1734,8 @@ final class VMManager: ObservableObject {
             }
 
             args += [
-                "-drive", "if=pflash,format=raw,file=\(firmware.path),readonly=on",
-                "-drive", "if=pflash,format=raw,file=\(nvramPath)"
+                "-drive", "if=pflash,format=raw,file=\(Self.qemuOptionValue(firmware.path)),readonly=on",
+                "-drive", "if=pflash,format=raw,file=\(Self.qemuOptionValue(nvramPath))"
             ]
         } else {
             appendConsole("AVM: WARNING — edk2-aarch64-code.fd not found in bundle.\n")
@@ -1672,7 +1771,7 @@ final class VMManager: ObservableObject {
         if !configuration.diskImagePath.isEmpty {
             args += [
                 "-drive",
-                "if=none,id=disk0,file=\(configuration.diskImagePath),format=qcow2,cache=writeback,discard=unmap,detect-zeroes=unmap",
+                "if=none,id=disk0,file=\(Self.qemuOptionValue(configuration.diskImagePath)),format=qcow2,cache=writeback,discard=unmap,detect-zeroes=unmap",
                 "-device", "nvme,drive=disk0,serial=avmdisk0,bootindex=1"
             ]
         }
@@ -1698,7 +1797,7 @@ final class VMManager: ObservableObject {
             let rebuiltISOPath = runtimeDir.appendingPathComponent("install-avm.iso").path
             if FileManager.default.fileExists(atPath: rebuiltISOPath) {
                 args += [
-                    "-drive", "if=none,id=cdrom0,file=\(rebuiltISOPath),media=cdrom,readonly=on",
+                    "-drive", "if=none,id=cdrom0,file=\(Self.qemuOptionValue(rebuiltISOPath)),media=cdrom,readonly=on",
                     "-device", "usb-storage,drive=cdrom0,bus=usb.0,port=3,bootindex=0,removable=on"
                 ]
                 avmLog("buildQEMUArguments: attached AVM-built install ISO at \(rebuiltISOPath)")
@@ -1723,7 +1822,7 @@ final class VMManager: ObservableObject {
         let autounattendImagePath = runtimeDir.appendingPathComponent("autounattend.img").path
         if FileManager.default.fileExists(atPath: autounattendImagePath) {
             args += [
-                "-drive", "if=none,id=unattend,file=\(autounattendImagePath),format=raw,cache=writeback",
+                "-drive", "if=none,id=unattend,file=\(Self.qemuOptionValue(autounattendImagePath)),format=raw,cache=writeback",
                 "-device", "usb-storage,drive=unattend,bus=usb.0,port=4,removable=on"
             ]
             avmLog("buildQEMUArguments: attached autounattend image at \(autounattendImagePath)")
@@ -1903,7 +2002,14 @@ final class VMManager: ObservableObject {
         let errHandle = errPipe.fileHandleForReading
         errHandle.readabilityHandler = { handle in
             let data = handle.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else {
+                // End of file: QEMU has gone. Foundation keeps calling a
+                // handler that is still set at EOF, so it clears itself
+                // (2026-10-25, code audit) rather than spin until cleanUp(),
+                // which may never come for a manager that was dropped.
+                handle.readabilityHandler = nil
+                return
+            }
             if let text = String(data: data, encoding: .utf8) {
                 avmLog("QEMU stderr: \(text)")
                 Task { @MainActor in
@@ -2282,7 +2388,15 @@ final class VMManager: ObservableObject {
         await qmpAcquire()
         defer { qmpRelease() }
 
-        var commandDict: [String: Any] = ["execute": execute]
+        // REPLY IDS (2026-10-25, code audit): QEMU echoes a command's "id"
+        // in its reply. Before ids, one timed-out reply stayed in the socket
+        // and every later command read the previous command's reply as its
+        // own, for the rest of the session (a failed USB device_add could
+        // look like success). Now a line that isn't this command's reply,
+        // late, half read after a timeout, or an event, is skipped.
+        qmpCommandCounter += 1
+        let commandID = "avm-\(qmpCommandCounter)"
+        var commandDict: [String: Any] = ["execute": execute, "id": commandID]
         if let args = arguments { commandDict["arguments"] = args }
 
         let commandData = try JSONSerialization.data(withJSONObject: commandDict)
@@ -2298,9 +2412,15 @@ final class VMManager: ObservableObject {
         // next command would read the wrong line as its reply.
         // (2026-09-12, USB helper increment 1b.)
         var responseData = try await readQMPLine()
-        while let object = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-              let eventName = object["event"] as? String {
-            avmLog("sendQMPCommand(\(execute)): skipped event \(eventName)")
+        while true {
+            let object = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any]
+            if let eventName = object?["event"] as? String {
+                avmLog("sendQMPCommand(\(execute)): skipped event \(eventName)")
+            } else if let id = object?["id"] as? String, id == commandID {
+                break
+            } else {
+                avmLog("sendQMPCommand(\(execute)): skipped a reply that isn't for \(commandID) (\(object?["id"] as? String ?? "no id"))")
+            }
             responseData = try await readQMPLine()
         }
 
@@ -2509,6 +2629,52 @@ final class VMManager: ObservableObject {
 
     /// Socket file name for one redirected root port. Lives in the VM's
     /// socket dir next to qmp.sock; QEMU listens, the root helper dials.
+    // MARK: - Private socket directory (2026-10-25, security audit)
+
+    /// /tmp/avm-<uid>/<uuid>, made owner-only, and checked every start.
+    ///
+    /// The sockets used to live in /tmp/avm/<uuid>, made with
+    /// withIntermediateDirectories and no checks. /tmp is shared and
+    /// emptied at boot, so another account on the Mac could create
+    /// /tmp/avm first and then swap in its own spice.sock (receiving every
+    /// keystroke), qmp.sock (full control), or usbredir-N.sock (the root
+    /// USB helper connects to that one as root and streams the device to
+    /// it). Now the folder carries the user's own uid, is created 0700,
+    /// and AVM refuses to start, saying why, unless both levels are real
+    /// directories (not symlinks), owned by this user, and closed to
+    /// everyone else. The USB helper checks the same things before it
+    /// connects (AVMUSBHelper/main.swift, streamSocketProblem).
+    static func privateSocketDirectory(for vmID: UUID) throws -> URL {
+        let uid = getuid()
+        let root = "/tmp/avm-\(uid)"
+        let dir = "\(root)/\(vmID.uuidString)"
+        for path in [root, dir] {
+            if mkdir(path, 0o700) != 0 && errno != EEXIST {
+                throw AVMError.socketDirectoryUnsafe("AVM could not make its private folder \(path): \(String(cString: strerror(errno))).")
+            }
+            var info = stat()
+            guard lstat(path, &info) == 0 else {
+                throw AVMError.socketDirectoryUnsafe("AVM could not check its private folder \(path).")
+            }
+            let isDirectory = (info.st_mode & S_IFMT) == S_IFDIR
+            guard isDirectory, info.st_uid == uid, info.st_mode & 0o077 == 0 else {
+                avmLog("privateSocketDirectory: refusing \(path): directory \(isDirectory), owner \(info.st_uid), mode \(String(info.st_mode & 0o777, radix: 8))")
+                throw AVMError.socketDirectoryUnsafe("AVM's private folder \(path) belongs to someone else or can be opened by other accounts on this Mac, so AVM won't start the virtual machine with it. Next: restart the Mac, which empties that folder, then try again. If it happens again, another account on this Mac may be interfering; report it.")
+            }
+        }
+        return URL(fileURLWithPath: dir, isDirectory: true)
+    }
+
+    /// A value for a comma-separated QEMU or swtpm option (2026-10-25,
+    /// code audit). Both read a comma as the start of the next option, and
+    /// escape a literal one by doubling it. File paths come from where the
+    /// user keeps AVM and their VMs: "/Volumes/Backup, 2TB/…" used to stop
+    /// that VM ever starting, and a folder named "x,readonly=on" would
+    /// quietly change the drive's options.
+    static func qemuOptionValue(_ path: String) -> String {
+        QEMUOption.value(path)
+    }
+
     static func usbRedirSocketName(port: Int) -> String {
         "usbredir-\(port).sock"
     }
@@ -2644,6 +2810,42 @@ final class VMManager: ObservableObject {
         swtpmProcess?.terminate()
     }
 
+    /// Ends QEMU and swtpm before AVM quits, and doesn't return until QEMU
+    /// is gone (2026-10-25). deinit never runs at app exit, so before this a
+    /// guest left running kept running after AVM closed, with no window and
+    /// any USB devices still held. Same escalation as forceStopVM, but
+    /// waited for here, because a detached task would die with the app:
+    /// SIGTERM, then SIGKILL if QEMU is still alive after two seconds.
+    func terminateForQuit() {
+        stopBootKeypressTask()
+        stopInstallWatchdog()
+        endQEMUAndWait()
+        swtpmProcess?.terminate()
+        swtpmProcess = nil
+        state = .stopped
+    }
+
+    /// SIGTERM, then SIGKILL if QEMU is still alive after two seconds, and
+    /// back only when it is gone. qemuProcess is cleared first, so the exit
+    /// handler's identity guard ignores this exit.
+    private func endQEMUAndWait() {
+        let doomed = qemuProcess
+        qemuProcess = nil
+        guard let proc = doomed, proc.isRunning else { return }
+        let pid = proc.processIdentifier
+        proc.terminate()
+        let deadline = Date().addingTimeInterval(2)
+        while proc.isRunning && Date() < deadline {
+            usleep(50_000)
+        }
+        if proc.isRunning {
+            kill(pid, SIGKILL)
+            avmLog("endQEMUAndWait: QEMU pid \(pid) survived SIGTERM for 2s; sent SIGKILL")
+        } else {
+            avmLog("endQEMUAndWait: QEMU pid \(pid) ended")
+        }
+    }
+
     // MARK: - Console Helpers
 
     fileprivate func appendConsole(_ text: String) {
@@ -2671,9 +2873,12 @@ enum AVMError: LocalizedError {
     case qmpEncodingFailed
     case qmpCommandFailed(String)
     case diskCreationFailed(String)
+    case socketDirectoryUnsafe(String)
 
     var errorDescription: String? {
         switch self {
+        case .socketDirectoryUnsafe(let message):
+            return message
         case .vmAlreadyRunning:
             return "A VM is already running. Stop it before starting a new one."
         case .binaryNotFound(let name):
