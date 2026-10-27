@@ -15,3 +15,6 @@ Frameworks/
 # Swift package build output (the logic tests)
 .build/
 .swiftpm/
+
+# Claude Code worktrees (2026-10-26)
+.claude/worktrees/

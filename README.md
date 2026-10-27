@@ -306,15 +306,75 @@ command line with `xcodebuild AVM_SYSROOT=/your/path`.
 The bundled xorriso must be 1.5.8.pl02 or later — earlier versions
 produce install ISOs the Windows boot loader cannot read.
 
+To build the sysroot from source instead, run `Tools/build-sysroot.sh`.
+It runs UTM's own dependency build at a pinned UTM commit, without the
+GPU libraries AVM doesn't use. It applies the osxaudio deadlock fix in
+`Tools/sysroot-patches` and adds xorriso 1.5.8.pl02, wimlib and mtools.
+It then checks the result against every framework and library the Xcode
+project links. It builds into the default `AVM_SYSROOT` location, so
+Xcode finds it with no changes. It takes most of an hour and about 20
+GB of disk space.
+
+To make the installer, run `Tools/build-installer.sh`. It archives the
+Release build, signs every bundled binary with your Developer ID
+Application identity, and makes a DMG, which it notarizes and staples.
+It also makes the zip that Sparkle updates use. Both files land in
+`build/installer`. Notarizing needs a notarytool keychain profile;
+`Tools/build-installer.sh --help` explains how to make one, and
+`--skip-notarize` makes a DMG that opens only on your own Mac. The
+script checks the sysroot and its xorriso version first, prints one
+plain-text line per step, and says out loud whether the build worked.
+
 ## Tests
 
 `swift test` runs the logic tests: password hashing, the log sanitizer,
 saved settings, the Ubuntu account checks, the root USB helper's socket
 check, and the screen reader download checks. They need no sysroot, so
-they run on any Mac with Xcode. If you
+they run on any Mac with Xcode. GitHub Actions runs them on every push,
+along with checks of the build scripts and the update feed. If you
 build in a folder under ~/Documents, add
 `--scratch-path ~/Library/Caches/AVM-build/swiftpm`: file syncing adds
 file attributes there that stop the tests from being signed.
+
+## Testing an install
+
+`Tools/test-linux-install.sh --guest debian --iso <ISO>` does the same
+for Ubuntu, Debian and Fedora (`--guest ubuntu`, `--guest fedora`): it
+waits for the install-complete marker and the installer's power-off.
+
+## Testing a Windows install
+
+`Tools/test-windows-install.sh` runs a complete Windows install with no
+one at the screen: it builds fresh install media with AVM's own pipeline
+(`AVM --build-install-media`), boots a Secure Boot machine with a TPM
+the way AVM does, and reads the report the answer file writes
+(`AVMSTATUS.TXT` on the UNATTEND volume) until the first sign-in is done.
+It then says which of JAWS, NVDA, the SPICE agent, the shared-folder
+service and the guest agent installed. If Windows stops on a screen, it
+saves a screenshot of it. It takes 30 to 90 minutes; `--help` lists the
+options.
+
+## Publishing an update
+
+The app checks `appcast.xml` in this repository, and accepts only
+updates signed with the Sparkle key whose public half is
+`SUPublicEDKey` in `AVM/Info.plist`. `Tools/build-installer.sh` signs
+the update zip with that key from the Mac's keychain (Sparkle's default
+account; set `AVM_SPARKLE_ACCOUNT` for another), and
+`Tools/publish-release.sh` puts the DMG and zip on a GitHub release and
+adds the update to the feed. Back up the private key:
+`generate_keys -x <file>`, kept somewhere
+safe. Without it, no future update can reach anyone who has the app.
+
+## Measuring speech latency
+
+`Tools/measure-speech-latency.sh` measures how long a screen reader in a
+virtual machine takes to start speaking after a key press. It presses a
+key the way a person would and listens to the Mac's output, so it
+measures any VM app the same way: run it once with AVM and once with
+Parallels on the same Mac to compare. Run it with `--help` for the setup
+it needs; the first run asks for Accessibility and audio recording
+permission.
 
 ## Privacy
 
