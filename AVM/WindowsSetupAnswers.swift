@@ -213,16 +213,19 @@ nonisolated struct WindowsSetupAnswers: Codable, Equatable, Sendable {
     }
 
     /// At the first sign-in, after NVDA installs and before it starts:
-    /// NVDA's own settings file (configobj) with the laptop layout, only if
-    /// NVDA is there and has no settings yet. NVDA's welcome dialog then
-    /// shows laptop already chosen.
+    /// NVDA's own settings file (configobj) with the laptop layout, and
+    /// Caps Lock as an NVDA key beside both Inserts (NVDAModifierKeys is a
+    /// bit set, 1 Caps Lock, 2 numpad Insert, 4 Insert; NVDA's default is
+    /// 6), only if NVDA is there and has no settings yet. NVDA reads this
+    /// minimal file and rewrites it in its own schema (checked in a test
+    /// install, 2026-10-26: schemaVersion 25, laptop kept).
     private var nvdaSettings: String {
         guard nvdaLaptopLayout ?? true else { return "" }
         return """
         <SynchronousCommand wcm:action="add">
                   <Order>2</Order>
                   <Description>AVM: NVDA laptop keyboard layout</Description>
-                  <CommandLine>cmd /c if exist "%ProgramFiles%\\NVDA\\nvda.exe" if not exist "%APPDATA%\\nvda\\nvda.ini" (mkdir "%APPDATA%\\nvda" 2&gt;nul &amp; (echo [keyboard]&amp; echo keyboardLayout = laptop)&gt;"%APPDATA%\\nvda\\nvda.ini")</CommandLine>
+                  <CommandLine>cmd /c if exist "%ProgramFiles%\\NVDA\\nvda.exe" if not exist "%APPDATA%\\nvda\\nvda.ini" (mkdir "%APPDATA%\\nvda" 2&gt;nul &amp; (echo [keyboard]&amp; echo keyboardLayout = laptop&amp; echo NVDAModifierKeys = 7)&gt;"%APPDATA%\\nvda\\nvda.ini")</CommandLine>
                 </SynchronousCommand>
         """
     }

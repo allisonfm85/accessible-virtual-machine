@@ -2089,15 +2089,17 @@ final class VMManager: ObservableObject {
                 "-device", "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0"
             ]
         }
-        // Shared folder (2026-10-26): the SPICE WebDAV channel, only when a
-        // folder is chosen. CocoaSpice shares ~/Documents/Public on any
-        // WebDAV channel unless told otherwise, so no channel, no sharing;
-        // VMView sets the chosen folder when SPICE connects.
+        // Shared folder (2026-10-26): the SPICE WebDAV channel, always. The
+        // spice-webdavd service Windows Setup installs fails to start
+        // without it, and its installer then rolls back (Error 1920, seen
+        // in the install test). VMView always tells CocoaSpice the folder:
+        // the chosen one, or an empty read-only one, never CocoaSpice's own
+        // default of ~/Documents/Public.
+        args += [
+            "-chardev", "spiceport,id=webdav0,name=org.spice-space.webdav.0",
+            "-device", "virtserialport,chardev=webdav0,name=org.spice-space.webdav.0"
+        ]
         if let shared = configuration.sharedFolderURL {
-            args += [
-                "-chardev", "spiceport,id=webdav0,name=org.spice-space.webdav.0",
-                "-device", "virtserialport,chardev=webdav0,name=org.spice-space.webdav.0"
-            ]
             avmLog("buildQEMUArguments: sharing a folder (\(configuration.sharedFolderIsReadOnly ? "read only" : "read and write")): \(shared.path)")
         }
 

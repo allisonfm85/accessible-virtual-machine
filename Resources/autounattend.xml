@@ -219,7 +219,7 @@
         <RunSynchronousCommand wcm:action="add">
           <Order>12</Order>
           <Description>AVM: report: shared-folder service</Description>
-          <Path>cmd /c sc query spicewebdavd &gt;nul &amp;&amp; for %d in (C D E F G H I J K L) do @if exist %d:\AVMDONE.TAG echo webdavd-installed&gt;&gt;%d:\AVMSTATUS.TXT</Path>
+          <Path>cmd /c sc query spice-webdavd &gt;nul &amp;&amp; for %d in (C D E F G H I J K L) do @if exist %d:\AVMDONE.TAG echo webdavd-installed&gt;&gt;%d:\AVMSTATUS.TXT</Path>
         </RunSynchronousCommand>
         <RunSynchronousCommand wcm:action="add">
           <Order>13</Order>
@@ -266,9 +266,19 @@
           <CommandLine>cmd /c rmdir /s /q "%SystemRoot%\Setup\AVM"</CommandLine>
         </SynchronousCommand>
         <SynchronousCommand wcm:action="add">
-          <Order>5</Order>
+          <Order>6</Order>
           <Description>AVM: report what the first sign-in installed</Description>
-          <CommandLine>cmd /c for %d in (C D E F G H I J K L) do @if exist %d:\AVMDONE.TAG ((if exist "%ProgramFiles%\NVDA\nvda.exe" (echo nvda-installed&gt;&gt;%d:\AVMSTATUS.TXT) else if exist "%ProgramFiles(x86)%\NVDA\nvda.exe" (echo nvda-installed&gt;&gt;%d:\AVMSTATUS.TXT)) &amp; echo first-sign-in-done&gt;&gt;%d:\AVMSTATUS.TXT)</CommandLine>
+          <CommandLine>cmd /c for %d in (C D E F G H I J K L) do @if exist %d:\AVMDONE.TAG ((if exist "%ProgramFiles%\NVDA\nvda.exe" (echo nvda-installed&gt;&gt;%d:\AVMSTATUS.TXT) else if exist "%ProgramFiles(x86)%\NVDA\nvda.exe" (echo nvda-installed&gt;&gt;%d:\AVMSTATUS.TXT)) &amp; (reg query "HKCU\Software\Microsoft\Windows NT\CurrentVersion\Accessibility" /v Configuration 2&gt;nul | find "nvda_nvda_v1" &gt;nul &amp;&amp; echo nvda-starts-after-sign-in&gt;&gt;%d:\AVMSTATUS.TXT) &amp; echo first-sign-in-done&gt;&gt;%d:\AVMSTATUS.TXT)</CommandLine>
+        </SynchronousCommand>
+        <!-- NVDA after every sign-in (2026-10-26). The installer's
+             start-on-logon option covers the sign-in screen only (HKLM);
+             starting after the user signs in is the user's own Ease of
+             Access setting, which a test install showed was left empty, so
+             NVDA was silent after a restart. NVDA registers as nvda_nvda_v1. -->
+        <SynchronousCommand wcm:action="add">
+          <Order>5</Order>
+          <Description>AVM: start NVDA after every sign-in</Description>
+          <CommandLine>cmd /c if exist "%ProgramFiles%\NVDA\nvda.exe" reg add "HKCU\Software\Microsoft\Windows NT\CurrentVersion\Accessibility" /v Configuration /t REG_SZ /d nvda_nvda_v1 /f</CommandLine>
         </SynchronousCommand>
       </FirstLogonCommands>
       <!-- Fewer Narrator-only screens (2026-10-26): no license page (the
