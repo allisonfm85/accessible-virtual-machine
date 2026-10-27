@@ -455,6 +455,8 @@ final class VMManager: ObservableObject {
     // install and announces recovery guidance. View-independent Task, same
     // pattern as the boot keypress task.
     private var installWatchdogTask: Task<Void, Never>?
+    /// Disk space, checked once a minute while running (DiskWatch.swift).
+    private var diskWatchTask: Task<Void, Never>?
 
     // MARK: Private — configuration reference
 
@@ -1164,6 +1166,7 @@ final class VMManager: ObservableObject {
         appendConsole("AVM: VM is running.\n")
         beginQMPEventMonitoring()
 
+        startDiskWatch(configuration: configuration, runtimeDir: runtimeDir, installed: installComplete)
         if installComplete, configuration.diskBusSwitch != nil {
             Task { [weak self] in await self?.continueDiskSwitch(configuration: configuration) }
         }
@@ -3266,6 +3269,8 @@ final class VMManager: ObservableObject {
     // MARK: - Cleanup
 
     private func cleanUp() {
+        diskWatchTask?.cancel()
+        diskWatchTask = nil
         // The keyboard for Windows goes back to the Mac when the machine
         // stops (WindowsKeyboard.swift), and only then: it doesn't follow
         // the machine's window.
@@ -3880,5 +3885,58 @@ extension VMManager {
         }
         _ = try? await agentCall(["execute": "guest-file-close", "arguments": ["handle": handle]])
         return true
+    }
+}
+
+// MARK: - Disk space (2026-10-27; the decisions are in AVM/DiskWatch.swift)
+
+extension VMManager {
+    /// Once a minute while the machine runs: the Mac's free space, and
+    /// whether QEMU paused it for a full disk; every five minutes, its own
+    /// drives through the guest agent (once it's installed).
+    func startDiskWatch(configuration: VMConfiguration, runtimeDir: URL, installed: Bool) {
+        diskWatchTask?.cancel()
+        let machine = configuration.name
+        diskWatchTask = Task { [weak self] in
+            var hostSpoken: Int64?
+            var guestSpoken: Set<String> = []
+            var minute = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard let self, !Task.isCancelled else { return }
+                guard self.state == .running || self.state == .paused else { continue }
+                minute += 1
+
+                let free = (try? runtimeDir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+                    .volumeAvailableCapacityForImportantUsage ?? Int64.max
+                let host = DiskWatch.hostWarning(free: free, lastSpoken: hostSpoken)
+                hostSpoken = host.lastSpoken
+                if host.speak != nil {
+                    avmLog("diskWatch: the Mac has \(free / DiskWatch.gigabyte) GB free")
+                    Announcer.shared.announce(DiskWatch.hostWords(machine: machine, free: free), tone: .info)
+                }
+
+                // QEMU stops a machine whose disk write found no space.
+                if self.state == .running,
+                   let status = try? await self.sendQMPCommand("query-status", arguments: nil) as? [String: Any],
+                   status["status"] as? String == "io-error" {
+                    avmLog("diskWatch: QEMU paused the machine with an I/O error (the Mac's disk is full)")
+                    self.state = .paused
+                    Announcer.shared.announce("\(machine) has paused: your Mac's disk is full. Next: free some space on your Mac, then choose Resume in \(machine)'s row.", tone: .failure)
+                }
+
+                if installed, minute % 5 == 0, self.state == .running, let path = self.guestAgentSocketPath,
+                   let reply = try? await Task.detached(operation: { try GuestAgent.run([#"{"execute":"guest-get-fsinfo"}"#], socketPath: path, timeout: 10) }).value.first,
+                   let json = try? JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any] {
+                    let drives = DiskWatch.drives(fromFsinfo: json["return"])
+                    let guest = DiskWatch.guestWarnings(drives, spoken: guestSpoken)
+                    guestSpoken = guest.spoken
+                    for drive in guest.speak {
+                        avmLog("diskWatch: \(drive.name) is \(Int(drive.fraction * 100))% full")
+                        Announcer.shared.announce(DiskWatch.guestWords(machine: machine, drive: drive), tone: .info)
+                    }
+                }
+            }
+        }
     }
 }

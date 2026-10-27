@@ -1254,3 +1254,51 @@ final class VirtioDiskTests: XCTestCase {
         XCTAssertTrue(text.contains(#"<Path>X:\AVM\viostor</Path>"#))
     }
 }
+
+// MARK: - Disk space (2026-10-27)
+
+final class DiskWatchTests: XCTestCase {
+    private let gb = DiskWatch.gigabyte
+
+    func testTheMacsDiskIsSpokenOnceAtEachThreshold() {
+        var last: Int64?
+        var spoken: [Int64] = []
+        for free in [30, 19, 18, 12, 9, 9, 4, 3].map({ Int64($0) * gb }) {
+            let result = DiskWatch.hostWarning(free: free, lastSpoken: last)
+            last = result.lastSpoken
+            if let s = result.speak { spoken.append(s / gb) }
+        }
+        XCTAssertEqual(spoken, [20, 10, 5])
+        // Plenty free again: it starts over.
+        XCTAssertNil(DiskWatch.hostWarning(free: 30 * gb, lastSpoken: 5 * gb).lastSpoken)
+        XCTAssertEqual(DiskWatch.hostWarning(free: 19 * gb, lastSpoken: nil).speak, 20 * gb)
+        // Straight past two thresholds: the smaller one is said.
+        XCTAssertEqual(DiskWatch.hostWarning(free: 8 * gb, lastSpoken: nil).speak, 10 * gb)
+    }
+
+    func testDrivesFromTheGuestAgent() {
+        let windows: [[String: Any]] = [
+            ["mountpoint": "C:\\", "type": "NTFS", "total-bytes": 64 * gb, "used-bytes": 60 * gb],
+            ["mountpoint": "D:\\", "type": "CDFS", "total-bytes": 5 * gb, "used-bytes": 5 * gb],
+            ["mountpoint": "E:\\", "type": "FAT", "total-bytes": 8_388_608, "used-bytes": 1_000],
+        ]
+        XCTAssertEqual(DiskWatch.drives(fromFsinfo: windows), [DiskWatch.Drive(name: "C:", used: 60 * gb, total: 64 * gb)])
+        let linux: [[String: Any]] = [
+            ["mountpoint": "/", "type": "ext4", "total-bytes": 60 * gb, "used-bytes": 10 * gb],
+            ["mountpoint": "/boot/efi", "type": "vfat", "total-bytes": 2 * gb, "used-bytes": 1 * gb],
+        ]
+        XCTAssertEqual(DiskWatch.drives(fromFsinfo: linux).map(\.name), ["/"])
+    }
+
+    func testAGuestDriveIsSpokenOnceUntilItFrees() {
+        let full = DiskWatch.Drive(name: "C:", used: 59 * gb, total: 64 * gb)
+        var result = DiskWatch.guestWarnings([full], spoken: [])
+        XCTAssertEqual(result.speak.map(\.name), ["C:"])
+        result = DiskWatch.guestWarnings([full], spoken: result.spoken)
+        XCTAssertTrue(result.speak.isEmpty, "said once")
+        let freed = DiskWatch.Drive(name: "C:", used: 50 * gb, total: 64 * gb)
+        result = DiskWatch.guestWarnings([freed], spoken: result.spoken)
+        XCTAssertTrue(result.spoken.isEmpty, "below 85% it may warn again")
+        XCTAssertTrue(DiskWatch.guestWords(machine: "Work PC", drive: full).hasPrefix("Work PC's C: drive is 92 percent full, with 5 gigabytes left."))
+    }
+}

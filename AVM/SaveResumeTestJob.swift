@@ -13,6 +13,10 @@
 //   AVM.app/Contents/MacOS/AVM --test-send-file --vm <folder> --guest <os>
 //   AVM.app/Contents/MacOS/AVM --test-linux-share --vm <folder> --guest <os>
 //   AVM.app/Contents/MacOS/AVM --test-ctl --vm <folder> --guest <os>
+//   AVM.app/Contents/MacOS/AVM --test-disk-info --vm <folder> --guest <os>
+//
+// --test-disk-info: the machine's drives as the disk watch reads them
+// from the guest agent (DiskWatch.drives).
 //
 // --test-ctl: a control socket in a temporary AVM folder, and real
 // `AVM ctl` commands against it: list, start --no-window, status,
@@ -64,7 +68,8 @@ enum SaveResumeTestJob {
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
         guard arguments.contains(flag) || arguments.contains("--test-microphone") || arguments.contains("--test-two-machines")
                 || arguments.contains("--test-duplicate") || arguments.contains("--test-send-file")
-                || arguments.contains("--test-linux-share") || arguments.contains("--test-ctl") else { return }
+                || arguments.contains("--test-linux-share") || arguments.contains("--test-ctl")
+                || arguments.contains("--test-disk-info") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -81,6 +86,24 @@ enum SaveResumeTestJob {
                 let guest2 = GuestOS(rawValue: value("--guest2") ?? "windows") ?? .windows
                 let passed = await twoMachines(folderURL, guest, URL(fileURLWithPath: second, isDirectory: true), guest2)
                 print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+            }
+            if arguments.contains("--test-disk-info") {
+                let manager = VMManager()
+                guard await start(manager, configuration(folder: folderURL, guest: guest)),
+                      let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else {
+                    print("FAILED"); exit(1)
+                }
+                try? await Task.sleep(for: .seconds(10))
+                let reply = try? await Task.detached(operation: { try GuestAgent.run([#"{"execute":"guest-get-fsinfo"}"#], socketPath: agent, timeout: 10) }).value.first
+                let json = reply.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+                let drives = DiskWatch.drives(fromFsinfo: json?["return"])
+                for drive in drives {
+                    print("   \(drive.name): \(drive.used / DiskWatch.gigabyte) of \(drive.total / DiskWatch.gigabyte) GB, \(Int(drive.fraction * 100))%")
+                    print("   would say at 90%: \(DiskWatch.guestWords(machine: "Test", drive: drive))")
+                }
+                check("the system drive was found", drives.contains { $0.name == "/" || $0.name == "C:" })
+                await shutDown(manager)
+                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
             }
             if arguments.contains("--test-ctl") {
                 let passed = await controlTest(folderURL, guest)

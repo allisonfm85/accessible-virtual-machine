@@ -34,6 +34,7 @@ let package = Package(
                 "VM/VMConfiguration.swift",
                 "VM/VMStore.swift",
                 "AVM/QEMUSavedState.swift",
+                "AVM/DiskWatch.swift",
                 "VM/UbuntuInstallPipeline.swift",
                 "AVMUSBHelper/StreamSocketCheck.swift",
                 "AVM/ScreenReaderInstallers.swift",
