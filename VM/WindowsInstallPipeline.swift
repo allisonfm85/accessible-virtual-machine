@@ -277,6 +277,7 @@ nonisolated struct WIMImageInfo {
 nonisolated struct WIMInfo {
     let architecture: String     // e.g. "ARM64", "AMD64", "x86"
     let images: [WIMImageInfo]
+    var language: String? = nil  // "Default Language", e.g. "fr-FR" (2026-10-26)
 }
 
 // MARK: - El Torito Info (parsed from xorriso -report_el_torito plain)
@@ -408,6 +409,9 @@ nonisolated final class WindowsInstallPipeline {
     /// INVOKED ON THE MAIN ACTOR (emit hops there), so the host can touch UI
     /// state directly. Assign BEFORE calling run(); don't reassign mid-run.
     var onProgress: (@MainActor (PipelineProgress) -> Void)?
+    /// The ISO's language, for Setup's own screens (2026-10-26); set when
+    /// the ISO is validated, read by Stage 4.
+    private var setupLanguage = "en-US"
 
     /// Scratch dir for the in-progress build. Everything is built HERE and only
     /// promoted into the runtime dir on verified success, so a failure never
@@ -642,10 +646,16 @@ nonisolated final class WindowsInstallPipeline {
     /// the (index, name) of each image. The format is stable "Key: value" lines;
     /// `Architecture:` appears per-image but is the same across images in a normal
     /// Windows ISO, so we take the first one seen.
+    /// "en-US", "sr-Latn-RS": what Windows Setup takes as a language.
+    static func isLanguageTag(_ text: String) -> Bool {
+        text.range(of: "^[a-z]{2,3}(-[A-Za-z]{2,4}){1,2}$", options: .regularExpression) != nil
+    }
+
     private func parseWIMInfo(_ text: String) -> WIMInfo {
         var architecture = ""
         var images: [WIMImageInfo] = []
         var pendingIndex: Int?
+        var language: String?
 
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
@@ -660,9 +670,12 @@ nonisolated final class WindowsInstallPipeline {
                 }
             } else if line.hasPrefix("Architecture:") && architecture.isEmpty {
                 architecture = line.dropFirst("Architecture:".count).trimmingCharacters(in: .whitespaces)
+            } else if line.hasPrefix("Default Language:") && language == nil {
+                let v = line.dropFirst("Default Language:".count).trimmingCharacters(in: .whitespaces)
+                if Self.isLanguageTag(v) { language = v }
             }
         }
-        return WIMInfo(architecture: architecture, images: images)
+        return WIMInfo(architecture: architecture, images: images, language: language)
     }
 
     // MARK: - El Torito Parsing
@@ -897,7 +910,8 @@ nonisolated final class WindowsInstallPipeline {
             }
         }
 
-        pipelineLog("validateISO: OK — arch \(info.architecture), \(info.images.count) edition(s), effective edition \"\(resolved.name)\" present")
+        setupLanguage = info.language ?? "en-US"
+        pipelineLog("validateISO: OK — arch \(info.architecture), \(info.images.count) edition(s), effective edition \"\(resolved.name)\" present, language \(info.language ?? "unread (using en-US)")")
         return .ok
     }
 
@@ -1309,13 +1323,14 @@ nonisolated final class WindowsInstallPipeline {
         var filled = template
             .replacingOccurrences(of: editionToken, with: resolved.name)
             .replacingOccurrences(of: productKeyToken, with: resolved.key)
+            .replacingOccurrences(of: "AVM_SETUP_LANGUAGE", with: setupLanguage)
         for (marker, section) in input.answers.answerFileSections {
             filled = filled.replacingOccurrences(of: marker, with: section)
         }
         // The wizard's answers went in as text (2026-10-26): the result must
         // still be well-formed XML, with every marker filled, or Windows
         // Setup would stop on a screen the user can't read.
-        let unfilled = Array(input.answers.answerFileSections.keys) + [editionToken, productKeyToken]
+        let unfilled = Array(input.answers.answerFileSections.keys) + [editionToken, productKeyToken, "AVM_SETUP_LANGUAGE"]
         guard !unfilled.contains(where: { filled.contains($0) }), XMLParser(data: Data(filled.utf8)).parse() else {
             throw PipelineError.stageFailed(
                 stage: .buildAnswerImage,

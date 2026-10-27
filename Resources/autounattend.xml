@@ -2,13 +2,17 @@
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
   <settings pass="windowsPE">
     <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <!-- AVM_SETUP_LANGUAGE (2026-10-26): the ISO's own language, read from
+           install.wim by Stage 4 (en-US when it can't be read). An English
+           value on a French ISO, say, stops Setup at its first screen. The
+           wizard's region and keyboard for Windows itself are in oobeSystem. -->
       <SetupUILanguage>
-        <UILanguage>en-US</UILanguage>
+        <UILanguage>AVM_SETUP_LANGUAGE</UILanguage>
       </SetupUILanguage>
-      <InputLocale>en-US</InputLocale>
-      <SystemLocale>en-US</SystemLocale>
-      <UILanguage>en-US</UILanguage>
-      <UserLocale>en-US</UserLocale>
+      <InputLocale>AVM_SETUP_LANGUAGE</InputLocale>
+      <SystemLocale>AVM_SETUP_LANGUAGE</SystemLocale>
+      <UILanguage>AVM_SETUP_LANGUAGE</UILanguage>
+      <UserLocale>AVM_SETUP_LANGUAGE</UserLocale>
     </component>
     <component name="Microsoft-Windows-Setup" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
       <UserData>
