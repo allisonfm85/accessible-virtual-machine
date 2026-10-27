@@ -44,9 +44,27 @@ struct AVMApp: App {
     /// design of record in AVMUpdater.swift's header.
     @StateObject private var updater = AVMUpdater()
 
+    /// The running VM's state and the USB devices in it, so the Virtual
+    /// Machine menu dims what can't act right now (2026-10-25). Both are
+    /// app-lifetime singletons; observing them here is what makes the
+    /// menu redraw when they change.
+    @ObservedObject private var activity = VMActivity.shared
+    @ObservedObject private var usbRedirect = USBRedirectController.shared
+    /// A running macOS machine (MacGuest.swift): Enter goes to it when no
+    /// QEMU machine is running.
+    @ObservedObject private var macGuest = MacGuestRunner.shared
+
     /// AVM's FIRST app delegate (added 2026-07-26). See AVMAppDelegate below
     /// for why one became necessary.
     @NSApplicationDelegateAdaptor(AVMAppDelegate.self) private var appDelegate
+
+    /// --build-install-media (InstallMediaJob.swift) builds install media
+    /// with no window and exits before anything else starts; any other
+    /// launch carries on as always.
+    init() {
+        InstallMediaJob.runIfAsked()
+        MacTestJob.runIfAsked()
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -183,10 +201,23 @@ struct AVMApp: App {
             // existing weak static VMSession sets at init for out-of-tree
             // handlers — same route the QEMU stderr/termination handlers
             // use); Enter Windows uses the app-root focusLock directly;
-            // Start posts a notification to ContentView. Commands are always
-            // enabled. (Reactive menu dimming needs an app-level VM-state
-            // observable — parked with the UI redesign; audible feedback
-            // arrives with the announcements work.)
+            // Start posts a notification to ContentView.
+            //
+            // DIMMING (2026-10-25, replaces "commands are always enabled"):
+            // items that can't act right now are dimmed, read from
+            // VMActivity (the app-level VM-state observable this used to
+            // wait for). VoiceOver reads them as "dimmed", which says what
+            // is possible before you try, and a dimmed item's key combo
+            // only beeps. Start and the Start submenu dim while a machine
+            // is starting, running, paused or stopping; Enter dims unless
+            // running or paused; Send Ctrl-Alt-Delete, Reset and Attach USB
+            // dim unless running; Detach USB dims with nothing attached.
+            // Start Virtual Machine stays enabled with zero or several
+            // machines set up, because it explains what to do instead.
+            // Speak Status, Reclaim and Save Diagnostic Log never dim:
+            // Speak Status is the way to ask why something is dimmed. The
+            // handlers keep their own guards and spoken refusals as defense
+            // in depth.
             //
             // The shortcuts only fire when AVM has key focus OUTSIDE focus
             // lock (inside lock, keys forward to the guest), which is exactly
@@ -209,6 +240,23 @@ struct AVMApp: App {
             //    USBRedirectController; the announcements are
             //    USBHelperClient's. Placed after their own Divider: they
             //    change what the guest can see, not the machine's state.
+            //
+            // 7. Start submenu (no key combos) — ADDED 2026-10-25. Shown
+            //    only when more than one VM is set up, which is exactly when
+            //    Start Virtual Machine (item 1) beeps. One item per machine,
+            //    named as on the dashboard. Each posts .avmStartVMFromMenu
+            //    with the machine's ID; ContentView's handler starts that
+            //    one, with the same already-running guard as item 1.
+            //
+            // 8. Speak Status (Cmd-Shift-I) — ADDED 2026-10-25. Speaks, in
+            //    the system voice, which machine is in which state, which
+            //    side the keyboard is on, and which USB devices are
+            //    attached. The non-visual glance at the dashboard: it works
+            //    with VoiceOver asleep (the VO-OFF ritual in item 2) and
+            //    without leaving where you are. It gets a combo because it
+            //    is asked during normal use, not maintenance. Posts
+            //    .avmSpeakStatusFromMenu; ContentView answers, since the
+            //    session and the machine list live there.
             //
             // Debug menu — DEBUG BUILDS ONLY. Test instruments for the USB
             // helper scaffold (2026-09-07). Nothing here ships. The version
@@ -254,8 +302,28 @@ struct AVMApp: App {
                     NotificationCenter.default.post(name: .avmStartVMFromMenu, object: nil)
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
+                .disabled(!activity.canStart)
 
-                Button("Enter \(focusLock.guestName)") {
+                if vmStore.configurations.count > 1 {
+                    Menu("Start") {
+                        ForEach(vmStore.configurations) { config in
+                            Button(config.name) {
+                                AVMLog.write("AVM: Start submenu — posting start request for '\(config.name)' to ContentView.")
+                                NotificationCenter.default.post(name: .avmStartVMFromMenu, object: config.id)
+                            }
+                        }
+                    }
+                    .disabled(!activity.canStart)
+                }
+
+                Button(macGuest.runningID != nil && !activity.isRunningOrPaused ? "Enter macOS" : "Enter \(focusLock.guestName)") {
+                    // A macOS machine has its own window and keyboard model
+                    // (2026-10-26, MacGuest.swift).
+                    if macGuest.runningID != nil && !activity.isRunningOrPaused {
+                        AVMLog.write("AVM: Enter macOS menu — giving the macOS machine the keyboard.")
+                        macGuest.enter()
+                        return
+                    }
                     // Same gate as the dashboard's Enter Windows button: only
                     // meaningful when a VM is running or paused. focusLock.lock()
                     // flips SessionGate to VMView and speaks "Windows keyboard
@@ -275,6 +343,23 @@ struct AVMApp: App {
                     }
                 }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(!activity.isRunningOrPaused && macGuest.runningID == nil)
+
+                // macOS's VoiceOver from any screen (2026-10-26): Command-F5
+                // reaches the macOS machine for 10 seconds. MacGuest.swift.
+                if macGuest.runningID != nil {
+                    Button("Pass Command-F5 to macOS") {
+                        AVMLog.write("AVM: Pass Command-F5 menu — system keys to the macOS machine for 10 seconds.")
+                        macGuest.passSystemKeysBriefly()
+                    }
+                    .keyboardShortcut("v", modifiers: [.command, .option, .shift])
+                }
+
+                Button("Speak Status") {
+                    AVMLog.write("AVM: Speak Status menu — posting request to ContentView.")
+                    NotificationCenter.default.post(name: .avmSpeakStatusFromMenu, object: nil)
+                }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
 
                 Divider()
 
@@ -284,6 +369,7 @@ struct AVMApp: App {
                     }
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
+                .disabled(!activity.isRunning)
 
                 Divider()
 
@@ -291,10 +377,12 @@ struct AVMApp: App {
                     AVMLog.write("AVM: Attach USB Device menu — posting request to ContentView.", category: "USBHelper")
                     NotificationCenter.default.post(name: .avmAttachUSBFromMenu, object: nil)
                 }
+                .disabled(!activity.isRunning)
                 Button("Detach USB Device…") {
                     AVMLog.write("AVM: Detach USB Device menu — posting request to ContentView.", category: "USBHelper")
                     NotificationCenter.default.post(name: .avmDetachUSBFromMenu, object: nil)
                 }
+                .disabled(usbRedirect.portByDevice.isEmpty)
 
                 Divider()
 
@@ -319,6 +407,7 @@ struct AVMApp: App {
                     }
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(!activity.isRunning)
 
                 Divider()
 
@@ -338,6 +427,10 @@ struct AVMApp: App {
             // never received it (tested 2026-10-24). The search field is the
             // system's and stays.
             CommandGroup(replacing: .help) {
+                // Report a Problem… (2026-10-26, ProblemReporter.swift).
+                Button("Report a Problem…") {
+                    ProblemReporter.reportAProblem()
+                }
                 Button("AVM README on GitHub") {
                     AVMLog.write("AVM: Help menu — opening the README on GitHub.")
                     if let url = URL(string: "https://github.com/allisonfm85/accessible-virtual-machine#readme") {
@@ -402,6 +495,18 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
         NSLog("AVM: AppDelegate — applicationDidFinishLaunching; running Caps Lock recovery check.")
         MainActor.assumeIsolated {
             CapsLockRemapper.shared.recoverAtLaunch()
+            // The Mac's VoiceOver back on if AVM ended while it was off for a
+            // macOS machine (2026-10-26).
+            MacVoiceOver.recoverAtLaunch()
+            // Pause a running VM before the Mac sleeps (2026-10-26).
+            SleepCoordinator.shared.start()
+        }
+    }
+
+    /// Quitting with a VM running (2026-10-25). See QuitCoordinator.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            QuitCoordinator.shouldTerminate()
         }
     }
 
@@ -409,6 +514,276 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
         NSLog("AVM: AppDelegate — applicationWillTerminate; restoring Caps Lock if applied.")
         MainActor.assumeIsolated {
             CapsLockRemapper.shared.restoreForTermination()
+            // The Mac's VoiceOver back on if AVM turned it off for a macOS
+            // machine (2026-10-26, MacVoiceOver in MacGuest.swift).
+            MacVoiceOver.restoreAfterGuest()
+            // The focus lock's own teardown (2026-10-25): its hot key, its
+            // focus enforcement, and the presentation options it sets.
+            // cleanup() existed with no callers; this is the place the
+            // header above left for it.
+            FocusLockManager.shared?.cleanup()
+        }
+    }
+}
+
+// MARK: - Closing the window with a VM running (2026-10-25)
+
+/// AVM has one window, and the running VM's session lives in it. Closing it
+/// (Command-W, the close button) used to tear that session down, which
+/// pulled the plug on the guest with no question, nothing spoken, and USB
+/// devices left in the VM (code audit). While a VM is active, Close now
+/// asks the quit question instead (QuitCoordinator), and the window stays
+/// open unless AVM really quits. Installed as the window's delegate,
+/// forwarding everything else to the delegate SwiftUI set.
+final class MainWindowCloseGuard: NSObject, NSWindowDelegate {
+    static let shared = MainWindowCloseGuard()
+    private weak var original: NSWindowDelegate?
+
+    func install(on window: NSWindow) {
+        guard window.delegate !== self else { return }
+        original = window.delegate
+        window.delegate = self
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if QuitCoordinator.vmIsActive {
+            AVMLog.write("AVM: Close window — a VM is active; asking the quit question.")
+            QuitCoordinator.closingWindow = true
+            NSApp.terminate(nil)
+            QuitCoordinator.closingWindow = false
+            return false
+        }
+        return original?.windowShouldClose?(sender) ?? true
+    }
+
+    override func responds(to aSelector: Selector!) -> Bool {
+        super.responds(to: aSelector) || (original?.responds(to: aSelector) ?? false)
+    }
+
+    override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        original
+    }
+}
+
+/// Hands its window to a closure once it is in one.
+struct WindowAccessor: NSViewRepresentable {
+    let onWindow: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            if let window = view.window { onWindow(window) }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if let window = nsView.window { onWindow(window) }
+    }
+}
+
+// MARK: - Quitting with a VM running
+
+/// What happens at Quit while a VM is starting, running, paused or
+/// shutting down (2026-10-25). Before this, nothing stopped QEMU at quit:
+/// the guest kept running with no window, and USB devices stayed in it.
+///
+/// Asks first, Cancel the default (same rule as Reset and Delete: one
+/// ambiguous key press must never cost a blind user their work):
+///   - Shut Down <guest> and Quit: the quit is cancelled, the guest is
+///     shut down as Stop does, and AVM quits once it has. The wait can be
+///     minutes during an update, so AVM stays usable meanwhile (Force Stop
+///     works, and Quit again offers Quit Now); holding macOS in a
+///     terminate-later state that long would freeze the app instead.
+///   - Quit Now: like pulling the plug.
+/// Either way, USB devices go back to the Mac first, and QEMU is gone
+/// before AVM exits (VMManager.terminateForQuit). Every outcome is spoken.
+@MainActor
+enum QuitCoordinator {
+
+    /// True from Shut Down and Quit until the guest has shut down.
+    private static var quitWhenShutDown = false
+
+    /// How long giving USB devices back may hold up the quit. The helper
+    /// answers in milliseconds; this only guards against one that doesn't.
+    private static let usbReleaseLimit: Duration = .seconds(5)
+
+    /// A VM is starting, running, paused or shutting down, and there is a
+    /// manager for it. VMActivity alone could say so for a VM whose manager
+    /// is already gone (2026-10-25, code audit), and asking about that one
+    /// made Shut Down and Quit call terminate from inside terminate, which
+    /// asked again, in a loop.
+    static var vmIsActive: Bool {
+        guard VMManager.shared != nil else { return false }
+        switch VMActivity.shared.state {
+        case .starting, .running, .paused, .stopping: return true
+        case .stopped, .error: return false
+        }
+    }
+
+    /// True while the main window's Close is being handled, so the
+    /// question can say that closing ends the VM too.
+    static var closingWindow = false
+
+    static func shouldTerminate() -> NSApplication.TerminateReply {
+        // A macOS machine runs inside AVM itself (2026-10-26): quitting
+        // ends it at once, so ask.
+        if MacGuestRunner.shared.runningID != nil {
+            let alert = NSAlert()
+            alert.messageText = "macOS is still running. Quit AVM?"
+            alert.informativeText = "Quitting turns the macOS machine off at once, like pulling the plug; unsaved work in it is lost. To shut it down properly first, choose Cancel, then Shut Down in its window."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Quit Now")
+            // Save and Quit (2026-10-26): macOS kept as it is, resumed in
+            // seconds at the next Start (MacGuestRunner.saveAndStop).
+            let saveable = MacGuestRunner.shared.canSave
+            if saveable {
+                alert.addButton(withTitle: "Save and Quit")
+                alert.informativeText += " Save and Quit keeps macOS as it is, open apps and all, and its next Start carries on from there in seconds."
+            }
+            switch alert.runModal() {
+            case .alertSecondButtonReturn:
+                return .terminateNow
+            case .alertThirdButtonReturn where saveable:
+                MacGuestRunner.shared.saveAndStop { saved in
+                    NSApp.reply(toApplicationShouldTerminate: saved)
+                }
+                return .terminateLater
+            default:
+                return .terminateCancel
+            }
+        }
+        let vmActive = vmIsActive
+        let hasUSB = !USBRedirectController.shared.portByDevice.isEmpty
+        guard vmActive || hasUSB else { return .terminateNow }
+
+        if vmActive {
+            let guest = VMManager.currentGuestName
+            // While starting, nothing can shut it down yet (stopGracefully
+            // refuses before .running), so only Cancel and Quit Now.
+            let starting = VMActivity.shared.state == .starting
+            let alert = NSAlert()
+            if quitWhenShutDown {
+                alert.messageText = "AVM is waiting for \(guest) to shut down. Quit now?"
+            } else if starting {
+                alert.messageText = "\(guest) is starting. Quit AVM?"
+            } else {
+                alert.messageText = "\(guest) is still running. Quit AVM?"
+            }
+            let closeNote = closingWindow ? "Closing AVM's window quits AVM, which ends \(guest) too. " : ""
+            alert.informativeText = starting
+                ? closeNote + "Quit Now stops \(guest) while it starts. If it is building install media, that work is lost and starts again next time."
+                : closeNote + "Quit Now turns \(guest) off at once, like pulling the plug, and unsaved work in \(guest) is lost. Shut Down \(guest) and Quit shuts it down first, and AVM quits when it has finished. That can take a few minutes if \(guest) is updating."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Cancel")
+            if !starting {
+                alert.addButton(withTitle: "Shut Down \(guest) and Quit")
+            }
+            alert.addButton(withTitle: "Quit Now")
+            let choice = alert.runModal()
+            let shutDown = !starting && choice == .alertSecondButtonReturn
+            let quitNow = starting ? choice == .alertSecondButtonReturn : choice == .alertThirdButtonReturn
+            if shutDown {
+                AVMLog.write("AVM: Quit — Shut Down and Quit chosen.")
+                beginShutDownThenQuit(guest: guest)
+                return .terminateCancel
+            } else if quitNow {
+                AVMLog.write("AVM: Quit — Quit Now chosen with the VM \(VMActivity.shared.state).")
+            } else {
+                AVMLog.write("AVM: Quit — cancelled with the VM \(VMActivity.shared.state).")
+                return .terminateCancel
+            }
+        }
+
+        Task { @MainActor in
+            await releaseUSBDevices()
+            if vmActive {
+                VMManager.shared?.terminateForQuit()
+            }
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
+    private static func beginShutDownThenQuit(guest: String) {
+        guard !quitWhenShutDown else {
+            // Already shutting down for a quit; the alert's Cancel or
+            // this choice both mean keep waiting.
+            Announcer.shared.announce("Still waiting for \(guest) to shut down. AVM quits when it has.", tone: .info)
+            return
+        }
+        guard let session = VMSession.current else {
+            // Called from inside applicationShouldTerminate: quit on the
+            // next turn, not re-entrantly (2026-10-25, code audit).
+            AVMLog.write("AVM: Quit — no current session to shut down; quitting.")
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+            return
+        }
+        quitWhenShutDown = true
+        Announcer.shared.announce("AVM will quit when \(guest) has shut down.", tone: .info)
+        Task { @MainActor in
+            do {
+                if session.vmState == .stopping {
+                    // A Stop is already under way; wait for it.
+                    while session.vmState == .stopping {
+                        try await Task.sleep(for: .milliseconds(500))
+                    }
+                } else {
+                    try await session.stopGracefully()
+                }
+            } catch {
+                quitWhenShutDown = false
+                AVMLog.write("AVM: Quit — shutdown for quit failed: \(error.localizedDescription)")
+                Announcer.shared.announce(
+                    "\(guest) could not be shut down, so AVM did not quit. Reason: \(error.localizedDescription) Next: try Quit again, and choose Quit Now if \(guest) is not responding.",
+                    tone: .failure
+                )
+                return
+            }
+            quitWhenShutDown = false
+            AVMLog.write("AVM: Quit — guest has shut down; quitting.")
+            NSApp.terminate(nil)
+        }
+    }
+
+    /// Gives every attached USB device back to the Mac, waiting at most
+    /// usbReleaseLimit. Each release is spoken by USBHelperClient.
+    private static func releaseUSBDevices() async {
+        let devices = USBRedirectController.shared.redirectedDevices
+        guard !devices.isEmpty else { return }
+        AVMLog.write("AVM: Quit — giving \(devices.count) USB device(s) back to the Mac.", category: "USBHelper")
+        // A race, not a task group: a group waits for every child, and a
+        // detach stuck in XPC can't be cancelled, so the limit would never
+        // apply. Whichever finishes first resumes; the other is ignored.
+        let once = ResumeOnce()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            Task { @MainActor in
+                for device in devices {
+                    await USBRedirectController.shared.detach(device)
+                }
+                once.resume(continuation)
+            }
+            Task { @MainActor in
+                try? await Task.sleep(for: usbReleaseLimit)
+                if once.resume(continuation) {
+                    AVMLog.write("AVM: Quit — USB release took longer than \(usbReleaseLimit); quitting anyway.", category: "USBHelper")
+                }
+            }
+        }
+    }
+
+    /// Resumes a continuation exactly once, whichever caller is first.
+    @MainActor
+    private final class ResumeOnce {
+        private var done = false
+        /// True if this call did the resuming.
+        @discardableResult
+        func resume(_ continuation: CheckedContinuation<Void, Never>) -> Bool {
+            guard !done else { return false }
+            done = true
+            continuation.resume()
+            return true
         }
     }
 }
