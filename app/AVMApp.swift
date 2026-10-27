@@ -330,10 +330,9 @@ struct AVMApp: App {
                         macGuest.enter()
                         return
                     }
-                    // Same gate as the dashboard's Enter Windows button: only
-                    // meaningful when a VM is running or paused. focusLock.lock()
-                    // flips SessionGate to VMView and speaks "Windows keyboard
-                    // on" (system voice — audible with VoiceOver off).
+                    // Same gate as a row's Enter button: only meaningful when
+                    // the current machine (the one last in front) is running
+                    // or paused. Its window comes forward with the keyboard.
                     guard let manager = VMManager.shared else {
                         AVMLog.write("AVM: Enter Windows menu — no VMManager; beeping.")
                         NSSound.beep()
@@ -341,8 +340,12 @@ struct AVMApp: App {
                     }
                     switch manager.state {
                     case .running, .paused:
-                        AVMLog.write("AVM: Enter Windows menu — engaging focus lock.")
-                        focusLock.lock()
+                        AVMLog.write("AVM: Enter Windows menu — entering the current machine.")
+                        if let id = MachineSessions.shared.currentID {
+                            MachineSessions.shared.enter(id)
+                        } else {
+                            focusLock.lock()
+                        }
                     default:
                         AVMLog.write("AVM: Enter Windows menu — VM not running/paused (state=\(manager.state)); beeping.")
                         NSSound.beep()
@@ -577,11 +580,21 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
 final class MainWindowCloseGuard: NSObject, NSWindowDelegate {
     static let shared = MainWindowCloseGuard()
     private weak var original: NSWindowDelegate?
+    /// AVM's main window, the list of machines.
+    private weak var mainWindow: NSWindow?
 
     func install(on window: NSWindow) {
+        mainWindow = window
         guard window.delegate !== self else { return }
         original = window.delegate
         window.delegate = self
+    }
+
+    /// Brings the list of machines forward (2026-10-27): from a machine's
+    /// own window, Control-Command-Escape lands here.
+    static func bringMainWindowForward() {
+        guard let window = shared.mainWindow else { return }
+        window.makeKeyAndOrderFront(nil)
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -653,11 +666,7 @@ enum QuitCoordinator {
     /// made Shut Down and Quit call terminate from inside terminate, which
     /// asked again, in a loop.
     static var vmIsActive: Bool {
-        guard VMManager.shared != nil else { return false }
-        switch VMActivity.shared.state {
-        case .starting, .running, .paused, .stopping: return true
-        case .stopped, .error: return false
-        }
+        MachineSessions.shared.anyActive
     }
 
     /// True while the main window's Close is being handled, so the
@@ -728,45 +737,65 @@ enum QuitCoordinator {
         guard vmActive || hasUSB else { return .terminateNow }
 
         if vmActive {
-            let guest = VMManager.currentGuestName
-            // While starting, nothing can shut it down yet (stopGracefully
+            // Every running machine (2026-10-27, several at once): named,
+            // and shut down, saved or ended together.
+            let active = MachineSessions.shared.sessions.values.filter {
+                switch $0.vmState { case .stopped, .error: return false; default: return true }
+            }
+            let names = active.map(\.configuration.name).sorted()
+            let guest = names.count == 1 ? names[0] : ListFormatter.localizedString(byJoining: names)
+            let several = names.count > 1
+            // While one starts, nothing can shut it down yet (stopGracefully
             // refuses before .running), so only Cancel and Quit Now.
-            let starting = VMActivity.shared.state == .starting
+            let starting = active.contains { $0.vmState == .starting }
             let alert = NSAlert()
             if quitWhenShutDown {
                 alert.messageText = "AVM is waiting for \(guest) to shut down. Quit now?"
             } else if starting {
-                alert.messageText = "\(guest) is starting. Quit AVM?"
+                alert.messageText = "\(guest) \(several ? "are" : "is") starting. Quit AVM?"
             } else {
-                alert.messageText = "\(guest) is still running. Quit AVM?"
+                alert.messageText = "\(guest) \(several ? "are" : "is") still running. Quit AVM?"
             }
-            let closeNote = closingWindow ? "Closing AVM's window quits AVM, which ends \(guest) too. " : ""
+            let them = several ? "them" : guest
+            let closeNote = closingWindow ? "Closing AVM's window quits AVM, which ends \(them) too. " : ""
             alert.informativeText = starting
-                ? closeNote + "Quit Now stops \(guest) while it starts. If it is building install media, that work is lost and starts again next time."
-                : closeNote + "Quit Now turns \(guest) off at once, like pulling the plug, and unsaved work in \(guest) is lost. Shut Down \(guest) and Quit shuts it down first, and AVM quits when it has finished. That can take a few minutes if \(guest) is updating."
+                ? closeNote + "Quit Now stops \(them) while starting. If one is building install media, that work is lost and starts again next time."
+                : closeNote + "Quit Now turns \(them) off at once, like pulling the plug, and unsaved work in \(them) is lost. Shut Down and Quit shuts \(them) down first, and AVM quits when \(several ? "all have" : "it has") finished. That can take a few minutes during an update."
             alert.alertStyle = .warning
             alert.addButton(withTitle: "Cancel")
             if !starting {
-                alert.addButton(withTitle: "Shut Down \(guest) and Quit")
+                alert.addButton(withTitle: several ? "Shut Down All and Quit" : "Shut Down \(guest) and Quit")
             }
             alert.addButton(withTitle: "Quit Now")
-            // Save and Quit (2026-10-27): the machine kept as it is and
-            // carried on at its next Start (VMManager.saveStateAndStop).
-            let saveable = !starting && VMSession.current?.canSave == true
+            // Save and Quit (2026-10-27): every machine that can be saved is
+            // kept as it is and carried on at its next Start.
+            let saveable = !starting && active.contains { $0.canSave }
             if saveable {
-                alert.addButton(withTitle: "Save \(guest) and Quit")
-                alert.informativeText += " Save \(guest) and Quit keeps \(guest) as it is, open apps and all, and its next Start carries on from there in seconds."
+                alert.addButton(withTitle: several ? "Save and Quit" : "Save \(guest) and Quit")
+                alert.informativeText += several
+                    ? " Save and Quit keeps each machine that can be saved as it is, open apps and all, and shuts the others down; their next Start carries on from there."
+                    : " Save \(guest) and Quit keeps \(guest) as it is, open apps and all, and its next Start carries on from there in seconds."
             }
             let choice = alert.runModal()
             let shutDown = !starting && choice == .alertSecondButtonReturn
             let quitNow = starting ? choice == .alertSecondButtonReturn : choice == .alertThirdButtonReturn
             let saveAndQuit = saveable && choice.rawValue == NSApplication.ModalResponse.alertThirdButtonReturn.rawValue + 1
-            if saveAndQuit, let session = VMSession.current {
-                AVMLog.write("AVM: Quit — Save and Quit chosen.")
+            if saveAndQuit {
+                AVMLog.write("AVM: Quit — Save and Quit chosen for \(active.count) machine(s).")
                 Task { @MainActor in
                     await releaseUSBDevices()
-                    let saved = await session.saveAndStop()
-                    NSApp.reply(toApplicationShouldTerminate: saved)
+                    var allDone = true
+                    for session in active where session.canSave {
+                        if !(await session.saveAndStop()) { allDone = false }
+                    }
+                    let others = active.filter { $0.vmState == .running || $0.vmState == .paused }
+                    if allDone && !others.isEmpty {
+                        // Machines that can't be saved are shut down first.
+                        NSApp.reply(toApplicationShouldTerminate: false)
+                        beginShutDownThenQuit(guest: guest)
+                        return
+                    }
+                    NSApp.reply(toApplicationShouldTerminate: allDone)
                 }
                 return .terminateLater
             }
@@ -775,9 +804,9 @@ enum QuitCoordinator {
                 beginShutDownThenQuit(guest: guest)
                 return .terminateCancel
             } else if quitNow {
-                AVMLog.write("AVM: Quit — Quit Now chosen with the VM \(VMActivity.shared.state).")
+                AVMLog.write("AVM: Quit — Quit Now chosen with \(active.count) machine(s) active.")
             } else {
-                AVMLog.write("AVM: Quit — cancelled with the VM \(VMActivity.shared.state).")
+                AVMLog.write("AVM: Quit — cancelled with \(active.count) machine(s) active.")
                 return .terminateCancel
             }
         }
@@ -785,7 +814,9 @@ enum QuitCoordinator {
         Task { @MainActor in
             await releaseUSBDevices()
             if vmActive {
-                VMManager.shared?.terminateForQuit()
+                for manager in MachineSessions.shared.managers {
+                    manager.terminateForQuit()
+                }
             }
             NSApp.reply(toApplicationShouldTerminate: true)
         }
@@ -799,36 +830,48 @@ enum QuitCoordinator {
             Announcer.shared.announce("Still waiting for \(guest) to shut down. AVM quits when it has.", tone: .info)
             return
         }
-        guard let session = VMSession.current else {
+        let sessions = Array(MachineSessions.shared.sessions.values)
+        guard !sessions.isEmpty else {
             // Called from inside applicationShouldTerminate: quit on the
             // next turn, not re-entrantly (2026-10-25, code audit).
-            AVMLog.write("AVM: Quit — no current session to shut down; quitting.")
+            AVMLog.write("AVM: Quit — no session to shut down; quitting.")
             DispatchQueue.main.async { NSApp.terminate(nil) }
             return
         }
         quitWhenShutDown = true
-        Announcer.shared.announce("AVM will quit when \(guest) has shut down.", tone: .info)
+        Announcer.shared.announce("AVM will quit when \(guest) \(sessions.count > 1 ? "have" : "has") shut down.", tone: .info)
         Task { @MainActor in
-            do {
-                if session.vmState == .stopping {
-                    // A Stop is already under way; wait for it.
-                    while session.vmState == .stopping {
-                        try await Task.sleep(for: .milliseconds(500))
+            // Each machine shuts down at the same time; AVM waits for all.
+            var failures: [String] = []
+            await withTaskGroup(of: String?.self) { group in
+                for session in sessions {
+                    group.addTask { @MainActor in
+                        do {
+                            if session.vmState == .stopping {
+                                while session.vmState == .stopping {
+                                    try await Task.sleep(for: .milliseconds(500))
+                                }
+                            } else if session.vmState == .running || session.vmState == .paused {
+                                try await session.stopGracefully()
+                            }
+                            return nil
+                        } catch {
+                            return "\(session.configuration.name): \(error.localizedDescription)"
+                        }
                     }
-                } else {
-                    try await session.stopGracefully()
                 }
-            } catch {
-                quitWhenShutDown = false
-                AVMLog.write("AVM: Quit — shutdown for quit failed: \(error.localizedDescription)")
+                for await failure in group { if let failure { failures.append(failure) } }
+            }
+            quitWhenShutDown = false
+            guard failures.isEmpty else {
+                AVMLog.write("AVM: Quit — shutdown for quit failed: \(failures.joined(separator: "; "))")
                 Announcer.shared.announce(
-                    "\(guest) could not be shut down, so AVM did not quit. Reason: \(error.localizedDescription) Next: try Quit again, and choose Quit Now if \(guest) is not responding.",
+                    "AVM did not quit: \(failures.joined(separator: ". ")). Next: try Quit again, and choose Quit Now if one is not responding.",
                     tone: .failure
                 )
                 return
             }
-            quitWhenShutDown = false
-            AVMLog.write("AVM: Quit — guest has shut down; quitting.")
+            AVMLog.write("AVM: Quit — every machine has shut down; quitting.")
             NSApp.terminate(nil)
         }
     }

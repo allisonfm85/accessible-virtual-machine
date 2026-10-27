@@ -23,8 +23,9 @@ final class SleepCoordinator {
     private var rootPort: io_connect_t = 0
     private var notifier: io_object_t = 0
     private var notifyPort: IONotificationPortRef?
-    /// True when AVM paused the VM for sleep, so only that pause is undone.
-    private var pausedForSleep = false
+    /// The machines AVM paused for sleep, so only those pauses are undone
+    /// (every running machine, 2026-10-27, several at once).
+    private var pausedForSleep: [VMManager] = []
     /// Between the Mac's sleep and its wake (2026-10-26, code audit): a
     /// pause that lands after the wake (QEMU slower than holdLimit) is let
     /// go at once, instead of leaving the machine paused with nothing said.
@@ -75,27 +76,30 @@ final class SleepCoordinator {
     }
 
     private func willSleep(token: Int) {
-        guard let manager = VMManager.shared, manager.state == .running else {
+        let running = MachineSessions.shared.managers.filter { $0.state == .running }
+        guard !running.isEmpty else {
             IOAllowPowerChange(rootPort, token)
             return
         }
-        AVMLog.write("AVM: Sleep — the Mac is going to sleep; pausing the VM.")
+        AVMLog.write("AVM: Sleep — the Mac is going to sleep; pausing \(running.count) machine(s).")
         let port = rootPort
-        // Sleep goes ahead after the pause, or after holdLimit if QEMU is
+        // Sleep goes ahead after the pauses, or after holdLimit if QEMU is
         // slow to answer, whichever comes first; never both.
         let once = AllowOnce(port: port, token: token)
         asleep = true
         Task { @MainActor in
-            do {
-                try await manager.pauseVM()
-                guard self.asleep else {
-                    AVMLog.write("AVM: Sleep — the pause landed after the Mac woke; resuming at once.")
-                    try? await manager.resumeVM()
-                    return
+            for manager in running {
+                do {
+                    try await manager.pauseVM()
+                    guard self.asleep else {
+                        AVMLog.write("AVM: Sleep — a pause landed after the Mac woke; resuming it at once.")
+                        try? await manager.resumeVM()
+                        continue
+                    }
+                    self.pausedForSleep.append(manager)
+                } catch {
+                    AVMLog.write("AVM: Sleep — a pause failed (\(error.localizedDescription)); letting the Mac sleep anyway.")
                 }
-                self.pausedForSleep = true
-            } catch {
-                AVMLog.write("AVM: Sleep — the pause failed (\(error.localizedDescription)); letting the Mac sleep anyway.")
             }
             once.allow()
         }
@@ -107,26 +111,35 @@ final class SleepCoordinator {
 
     private func didWake() {
         asleep = false
-        guard pausedForSleep else { return }
-        pausedForSleep = false
-        guard let manager = VMManager.shared, manager.state == .paused else { return }
-        let guest = VMManager.currentGuestName
+        let paused = pausedForSleep.filter { $0.state == .paused }
+        pausedForSleep = []
+        guard !paused.isEmpty else { return }
         Task { @MainActor in
-            do {
-                try await manager.resumeVM()
-                AVMLog.write("AVM: Sleep — the Mac woke; the VM is running again.")
-                // The guest agent sets the clock at once (GuestAgent.swift);
-                // without it, Windows catches up at its next time sync.
-                let clockSet = await manager.setGuestClock()
-                Announcer.shared.announce(
-                    clockSet
-                        ? "\(guest) was paused while the Mac slept, and is running again."
-                        : "\(guest) was paused while the Mac slept, and is running again. Its clock may take a while to catch up.",
-                    tone: .info
-                )
-            } catch {
-                Announcer.shared.announce("\(guest) was paused while the Mac slept and could not be resumed. Reason: \(error.localizedDescription) Next: choose Resume on the dashboard.", tone: .failure)
+            var resumed: [String] = []
+            var clocksSet = true
+            for manager in paused {
+                let name = manager.machineName
+                do {
+                    try await manager.resumeVM()
+                    // The guest agent sets the clock at once (GuestAgent.swift);
+                    // without it, Windows catches up at its next time sync.
+                    if !(await manager.setGuestClock()) { clocksSet = false }
+                    resumed.append(name)
+                } catch {
+                    Announcer.shared.announce("\(name) was paused while the Mac slept and could not be resumed. Reason: \(error.localizedDescription) Next: choose Resume in its row.", tone: .failure)
+                }
             }
+            guard !resumed.isEmpty else { return }
+            AVMLog.write("AVM: Sleep — the Mac woke; \(resumed.count) machine(s) running again.")
+            let names = ListFormatter.localizedString(byJoining: resumed)
+            let verb = resumed.count == 1 ? "was" : "were"
+            let again = resumed.count == 1 ? "is" : "are"
+            Announcer.shared.announce(
+                clocksSet
+                    ? "\(names) \(verb) paused while the Mac slept, and \(again) running again."
+                    : "\(names) \(verb) paused while the Mac slept, and \(again) running again. A clock may take a while to catch up.",
+                tone: .info
+            )
         }
     }
 

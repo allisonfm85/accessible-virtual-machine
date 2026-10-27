@@ -8,6 +8,12 @@
 //
 //   AVM.app/Contents/MacOS/AVM --test-save-resume --vm <folder> [--guest windows|debian|ubuntu|fedora] [--convert]
 //   AVM.app/Contents/MacOS/AVM --test-microphone --vm <folder> [--guest ...]
+//   AVM.app/Contents/MacOS/AVM --test-two-machines --vm <folder> --guest <os> --vm2 <folder> --guest2 <os>
+//
+// --test-two-machines: both machines run at once through MachineSessions
+// (with no windows): each answers, each is the current machine in turn,
+// shutting the first down leaves the second running and current, and the
+// second saves and carries on.
 //
 // --test-microphone (Linux): starts the machine with the Mac's microphone shared,
 // records three seconds in the guest, and says how loud the loudest moment
@@ -34,7 +40,7 @@ enum SaveResumeTestJob {
     static let flag = "--test-save-resume"
 
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
-        guard arguments.contains(flag) || arguments.contains("--test-microphone") else { return }
+        guard arguments.contains(flag) || arguments.contains("--test-microphone") || arguments.contains("--test-two-machines") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -47,6 +53,11 @@ enum SaveResumeTestJob {
         let guest = GuestOS(rawValue: value("--guest") ?? "windows") ?? .windows
         Task { @MainActor in
             let folderURL = URL(fileURLWithPath: folder, isDirectory: true)
+            if arguments.contains("--test-two-machines"), let second = value("--vm2") {
+                let guest2 = GuestOS(rawValue: value("--guest2") ?? "windows") ?? .windows
+                let passed = await twoMachines(folderURL, guest, URL(fileURLWithPath: second, isDirectory: true), guest2)
+                print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+            }
             if arguments.contains("--test-microphone") {
                 let heard = await microphone(folder: folderURL, guest: guest)
                 print(heard ? "PASSED" : "FAILED"); exit(heard ? 0 : 1)
@@ -140,6 +151,63 @@ enum SaveResumeTestJob {
         check("the guest recorded", frames > 48_000)
         check("the recording isn't silence (the Mac's microphone reached it)", level > 0)
         await shutDown(manager)
+        return ok
+    }
+
+    private static func twoMachines(_ folderA: URL, _ guestA: GuestOS, _ folderB: URL, _ guestB: GuestOS) async -> Bool {
+        var configA = configuration(folder: folderA, guest: guestA)
+        configA.name = "Machine A"
+        var configB = configuration(folder: folderB, guest: guestB)
+        configB.name = "Machine B"
+        let machines = MachineSessions.shared
+        print("== Starting two machines at once")
+        let a = machines.start(configA, vmStore: nil, focusLock: nil)
+        let b = machines.start(configB, vmStore: nil, focusLock: nil)
+        for _ in 0..<600 where !(a.vmState == .running && b.vmState == .running) {
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        check("both are running", a.vmState == .running && b.vmState == .running)
+        check("two sessions", machines.sessions.count == 2)
+        guard let agentA = a.manager.guestAgentSocketPath, let agentB = b.manager.guestAgentSocketPath else { return false }
+        check("A's guest agent answers", await waitForAgent(agentA, seconds: 300))
+        check("B's guest agent answers", await waitForAgent(agentB, seconds: 300))
+        check("B, started last, is current", machines.currentID == configB.id && VMManager.shared === b.manager)
+        machines.makeCurrent(configA.id)
+        check("A becomes current", machines.currentID == configA.id && VMManager.shared === a.manager && VMActivity.shared.state == .running)
+
+        print("== Shutting A down while B runs")
+        let started = Date()
+        try? await a.stopGracefully()
+        for _ in 0..<40 where machines.session(for: configA.id) != nil {
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        print(String(format: "   A shut down in %.0f s", Date().timeIntervalSince(started)))
+        check("A's session ended", machines.session(for: configA.id) == nil)
+        check("B is still running", b.vmState == .running)
+        check("B's guest agent still answers", await waitForAgent(agentB, seconds: 10))
+        check("B became current", machines.currentID == configB.id && VMManager.shared === b.manager)
+
+        print("== Saving B, then starting it again")
+        check("B was saved", await b.saveAndStop())
+        for _ in 0..<40 where machines.session(for: configB.id) != nil {
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        check("no sessions left", machines.sessions.isEmpty && VMManager.shared == nil)
+        check("the menus see nothing running", VMActivity.shared.state == .stopped)
+        let b2 = machines.start(configB, vmStore: nil, focusLock: nil)
+        for _ in 0..<120 where b2.vmState != .running {
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        check("B carried on", b2.vmState == .running)
+        if let agent = b2.manager.guestAgentSocketPath {
+            check("B's guest agent answers after carrying on", await waitForAgent(agent, seconds: 60))
+        }
+        print("== Shutting B down")
+        try? await b2.stopGracefully()
+        for _ in 0..<40 where machines.session(for: configB.id) != nil {
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        check("everything ended", machines.sessions.isEmpty)
         return ok
     }
 

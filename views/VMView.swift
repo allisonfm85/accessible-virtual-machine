@@ -558,7 +558,9 @@ struct VMView: View {
     var body: some View {
         ZStack {
             SPICEDisplayView(spiceSocketPath: session.spiceSocketPath,
-                             focusLock: focusLock)
+                             focusLock: focusLock,
+                             machineID: session.configuration.id,
+                             manager: session.manager)
                 .ignoresSafeArea()
             VStack {
                 Spacer()
@@ -656,9 +658,12 @@ struct VMView: View {
 struct SPICEDisplayView: NSViewRepresentable {
     let spiceSocketPath: String
     let focusLock: FocusLockManager
+    /// The machine this screen is for (2026-10-27, several at once).
+    let machineID: UUID
+    let manager: VMManager
 
     func makeCoordinator() -> SPICECoordinator {
-        SPICECoordinator(focusLock: focusLock)
+        SPICECoordinator(focusLock: focusLock, machineID: machineID, manager: manager)
     }
 
     func makeNSView(context: Context) -> SPICEKeyCaptureView {
@@ -1117,8 +1122,15 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     /// natively iterable).
     private static let allMouseButtons: [CSInputButton] = [.left, .middle, .right, .side, .extra]
 
-    init(focusLock: FocusLockManager) {
+    /// The machine this connection is for (2026-10-27): its own shared
+    /// folder and keyboard, not the current machine's.
+    private let machineID: UUID?
+    private weak var manager: VMManager?
+
+    init(focusLock: FocusLockManager, machineID: UUID? = nil, manager: VMManager? = nil) {
         self.focusLock = focusLock
+        self.machineID = machineID
+        self.manager = manager
         super.init()
     }
 
@@ -2039,7 +2051,7 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         connection.session.pasteboardDelegate = AVMPasteboard.shared
         // Shared folder (2026-10-26). Always set: CocoaSpice's own default
         // is ~/Documents/Public, read and write.
-        let id = VMSession.current?.configuration.id
+        let id = machineID ?? VMSession.current?.configuration.id
         let saved = id.flatMap { id in VMStore.shared?.configurations.first { $0.id == id } }
         if let folder = saved?.sharedFolderURL {
             connection.session.setSharedDirectory(folder.path, readOnly: saved?.sharedFolderIsReadOnly ?? false)
@@ -2180,11 +2192,12 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         // first time the machine's keyboard channel opens.
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
-                let id = VMSession.current?.configuration.id
+                let id = self.machineID ?? VMSession.current?.configuration.id
                 if let saved = id.flatMap({ id in VMStore.shared?.configurations.first { $0.id == id } }),
                    let keyboardID = saved.windowsKeyboardID {
                     WindowsKeyboard.shared.appleISO = saved.windowsKeyboardAppleISO == true
-                    WindowsKeyboard.shared.start(keyboardID: keyboardID, name: saved.windowsKeyboardName)
+                    WindowsKeyboard.shared.start(keyboardID: keyboardID, name: saved.windowsKeyboardName,
+                                                 target: self.manager)
                 }
             }
         }

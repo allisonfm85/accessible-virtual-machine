@@ -241,24 +241,42 @@ final class USBRedirectController: ObservableObject {
         portByDevice.sorted { $0.value < $1.value }.map { $0.key }
     }
 
+    /// Which machine each device went to (2026-10-27, several machines at
+    /// once). Ports 5-8 are per machine: each QEMU has its own.
+    private var machineByDevice: [AVMUSBDeviceIdentity: WeakManager] = [:]
+    private struct WeakManager { weak var manager: VMManager? }
+
+    /// The devices sent to one machine.
+    func devices(for manager: VMManager) -> [AVMUSBDeviceIdentity] {
+        redirectedDevices.filter { machineByDevice[$0]?.manager === manager }
+    }
+
+    /// The machine a device went to, if it's still running.
+    func machine(for device: AVMUSBDeviceIdentity) -> VMManager? {
+        machineByDevice[device]?.manager
+    }
+
     // MARK: Attach
 
     /// Returns true when the helper accepted the device (the attached
     /// event comes later) or it already holds a port. quiet: log the
     /// failures instead of speaking them; the send gate speaks one
     /// outcome itself.
+    /// `machine`: the machine to send it to; the current one (in front)
+    /// if nil.
     @discardableResult
-    func attach(_ device: AVMUSBDeviceIdentity, quiet: Bool = false) async -> Bool {
-        guard let manager = VMManager.shared, case .running = manager.state else {
+    func attach(_ device: AVMUSBDeviceIdentity, to machine: VMManager? = nil, quiet: Bool = false) async -> Bool {
+        guard let manager = machine ?? VMManager.shared, case .running = manager.state else {
             say("The virtual machine is not running. Start it, then attach \(device.displayName).", tone: .failure, quiet: quiet)
             return false
         }
         if refusesStorage(device) { return false }
         if let port = portByDevice[device] {
-            say("\(device.displayName) is already attached to the virtual machine on port \(port).", tone: .info, quiet: quiet)
+            let name = machineByDevice[device]?.manager?.machineName ?? "the virtual machine"
+            say("\(device.displayName) is already attached to \(name) on port \(port).", tone: .info, quiet: quiet)
             return true
         }
-        guard let port = freePort() else {
+        guard let port = freePort(on: manager) else {
             say("All \(USBRedirectController.ports.count) USB slots are in use. Next: detach a device, then attach \(device.displayName).", tone: .failure, quiet: quiet)
             return false
         }
@@ -272,10 +290,12 @@ final class USBRedirectController: ObservableObject {
         // once (the picker and a plug-in send) could both pick the same free
         // port, and the second removed the first one's socket and chardev.
         portByDevice[device] = port
+        machineByDevice[device] = WeakManager(manager: manager)
         do {
             try await manager.attachUSBRedirect(port: port, socketPath: socketPath)
         } catch {
             portByDevice[device] = nil
+            machineByDevice[device] = nil
             log("QMP attach failed for \(device.description): \(error)")
             say("QEMU refused the USB redirection port. Step: QMP device add. Reason: \(error.localizedDescription). Next: check the diagnostic log.", tone: .failure, quiet: quiet)
             return false
@@ -335,10 +355,11 @@ final class USBRedirectController: ObservableObject {
 
     func detach(_ device: AVMUSBDeviceIdentity) async {
         guard let port = portByDevice[device] else {
-            announce("\(device.displayName) is not attached to the virtual machine.", tone: .info)
+            announce("\(device.displayName) is not attached to a virtual machine.", tone: .info)
             return
         }
         portByDevice[device] = nil
+        let machine = machineByDevice.removeValue(forKey: device)?.manager
         let key = USBPlugPrompt.deviceKey(device)
         handingBack.insert(key)
 
@@ -354,13 +375,13 @@ final class USBRedirectController: ObservableObject {
         }
         handingBack.remove(key)
         handedBackAt[key] = Date()
-        await removeQEMUPort(port, for: device)
+        await removeQEMUPort(port, for: device, on: machine)
     }
 
     // MARK: Port bookkeeping
 
-    private func freePort() -> Int? {
-        let used = Set(portByDevice.values)
+    private func freePort(on manager: VMManager) -> Int? {
+        let used = Set(portByDevice.filter { machineByDevice[$0.key]?.manager === manager }.values)
         return USBRedirectController.ports.first { !used.contains($0) }
     }
 
@@ -387,12 +408,15 @@ final class USBRedirectController: ObservableObject {
 
     private func releasePort(for device: AVMUSBDeviceIdentity, reason: String) async {
         guard let port = portByDevice.removeValue(forKey: device) else { return }
+        let machine = machineByDevice.removeValue(forKey: device)?.manager
         log("releasing port \(port) for \(device.description): \(reason)")
-        await removeQEMUPort(port, for: device)
+        await removeQEMUPort(port, for: device, on: machine)
     }
 
-    private func removeQEMUPort(_ port: Int, for device: AVMUSBDeviceIdentity) async {
-        guard let manager = VMManager.shared, case .running = manager.state else {
+    /// The device's own machine's port; a device recorded before machines
+    /// were tracked goes to the current one.
+    private func removeQEMUPort(_ port: Int, for device: AVMUSBDeviceIdentity, on machine: VMManager?) async {
+        guard let manager = machine ?? VMManager.shared, case .running = manager.state else {
             log("VM not running; port \(port) forgotten without QMP")
             return
         }

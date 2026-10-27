@@ -268,6 +268,8 @@ class FocusLockManager: ObservableObject {
         CapsLockRemapper.shared.restoreForUnlock()
         Announcer.shared.announce("Entering Mac", tone: .leaveGuest)
         AVMLog.write("AVM: FocusLock.unlock() — NOW UNLOCKED (isLocked=false).")
+        // From a machine's own window (2026-10-27), back to the list.
+        MachineSessions.shared.returnedToMac()
     }
 
     // MARK: - First-responder enforcement

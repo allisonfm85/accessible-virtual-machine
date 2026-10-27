@@ -48,7 +48,7 @@ final class WindowsKeyboard {
         nonisolated(unsafe) let event: [String: Any] = ["type": "key", "data": ["down": down, "key": key]]
         lastSend = Task { @MainActor in
             await previous?.value
-            _ = try? await VMManager.shared?.sendQMPCommand("input-send-event", arguments: ["events": [event]])
+            _ = try? await (self.target ?? VMManager.shared)?.sendQMPCommand("input-send-event", arguments: ["events": [event]])
         }
     }
     /// An Apple ISO keyboard: § and ` swapped back (HIDKeyMap.isoSwapped).
@@ -59,14 +59,18 @@ final class WindowsKeyboard {
     private var translator = WindowsKeyTranslator()
 
     private(set) var keyboardID: String?
+    /// The machine it types into (2026-10-27, several machines at once):
+    /// the one whose screen started it.
+    private(set) weak var target: VMManager?
     private var keyboardName = "The keyboard for Windows"
     private var announcedHeld = false
 
     private init() {}
 
-    func start(keyboardID: String, name: String?) {
+    func start(keyboardID: String, name: String?, target: VMManager? = nil) {
         guard self.keyboardID == nil else { return }
         self.keyboardID = keyboardID
+        self.target = target
         keyboardName = name ?? "The keyboard for Windows"
         announcedHeld = false
         AVMLog.write("AVM: WindowsKeyboard — asking the helper for the keyboard for Windows.")
@@ -85,6 +89,7 @@ final class WindowsKeyboard {
         guard keyboardID != nil else { return }
         releaseAllKeys()
         keyboardID = nil
+        target = nil
         retriedAfterHelperLoss = false
         AVMLog.write("AVM: WindowsKeyboard — giving the keyboard back to the Mac.")
         Task { await USBHelperClient.shared.releaseKeyboard() }
