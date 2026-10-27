@@ -378,6 +378,9 @@ nonisolated struct PipelineInput {
     /// download. Stage 3 copies them into AVMSR\ at the media's root, and
     /// the answer file's specialize pass installs whatever it finds there.
     var screenReaderInstallers: [String: URL] = [:]
+    /// The wizard's answers for Windows Setup (WindowsSetupAnswers.swift);
+    /// the default leaves Windows to ask everything but privacy.
+    var answers = WindowsSetupAnswers()
 }
 
 /// The verified artifacts the pipeline produces, living in the VM runtime dir.
@@ -1297,9 +1300,22 @@ nonisolated final class WindowsInstallPipeline {
         // --- Substitute from the RESOLVED pair (no local fallback — the single
         // resolution point at the top of run() is the only place defaults can
         // engage; issue #6). ---
-        let filled = template
+        var filled = template
             .replacingOccurrences(of: editionToken, with: resolved.name)
             .replacingOccurrences(of: productKeyToken, with: resolved.key)
+        for (marker, section) in input.answers.answerFileSections {
+            filled = filled.replacingOccurrences(of: marker, with: section)
+        }
+        // The wizard's answers went in as text (2026-10-26): the result must
+        // still be well-formed XML, with every marker filled, or Windows
+        // Setup would stop on a screen the user can't read.
+        let unfilled = Array(input.answers.answerFileSections.keys) + [editionToken, productKeyToken]
+        guard !unfilled.contains(where: { filled.contains($0) }), XMLParser(data: Data(filled.utf8)).parse() else {
+            throw PipelineError.stageFailed(
+                stage: .buildAnswerImage,
+                reason: "AVM couldn't write a valid answer file from the setup answers. This is a build problem, not something you did."
+            )
+        }
 
         // --- Write the filled XML to scratch. ---
         let filledXMLURL = scratch.appendingPathComponent("autounattend-filled.xml")

@@ -180,8 +180,17 @@
         </RunSynchronousCommand>
       </RunSynchronous>
     </component>
+    <!-- AVM COMPUTER NAME (2026-10-26): the wizard's computer name, as a
+         specialize-pass Shell-Setup component (WindowsSetupAnswers.swift). -->
+    <!--AVM_SPECIALIZE_SHELL-->
   </settings>
   <settings pass="oobeSystem">
+    <!-- AVM REGION (2026-10-26). Stage 4 replaces the marker below with the
+         region and keyboard chosen in the wizard (WindowsSetupAnswers.swift,
+         WindowsRegion.swift), so OOBE skips its region and keyboard pages;
+         an unanswered one is left out, and Windows asks. The same goes for
+         every AVM_ marker below. -->
+    <!--AVM_INTERNATIONAL-->
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
       <!-- At the first sign-in: install NVDA as the signed-in user (an
            administrator, the case NVDA's silent installer is built for),
@@ -190,6 +199,7 @@
            they never both speak; JAWS starts only without NVDA. NVDA 2026
            is 64-bit (Program Files); older ones were in Program Files
            (x86). The installer copy is removed afterwards. -->
+      <!--AVM_AUTOLOGON-->
       <FirstLogonCommands>
         <SynchronousCommand wcm:action="add">
           <Order>1</Order>
@@ -207,6 +217,20 @@
           <CommandLine>cmd /c rmdir /s /q "%SystemRoot%\Setup\AVM"</CommandLine>
         </SynchronousCommand>
       </FirstLogonCommands>
+      <!-- Fewer Narrator-only screens (2026-10-26): no license page (the
+           license is accepted by installing, as on any OEM PC), no Wi-Fi
+           page (the VM's network is wired), and "Choose privacy settings"
+           answered from the wizard: 3, the most private (no optional data,
+           no tailored experiences), or 1, Windows' recommended settings.
+           With a local account the account pages go too; with a Microsoft
+           account they stay. -->
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <!--AVM_OOBE_ACCOUNT-->
+        <ProtectYourPC>AVM_PROTECT_YOUR_PC</ProtectYourPC>
+      </OOBE>
+      <!--AVM_TIMEZONE_ACCOUNTS-->
     </component>
   </settings>
 </unattend>

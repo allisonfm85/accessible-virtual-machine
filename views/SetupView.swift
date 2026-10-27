@@ -128,6 +128,20 @@ struct SetupView: View {
     @State private var ubuntuPasswordConfirm: String = ""
     @State private var ubuntuSignInAutomatically = true
 
+    // Windows Setup answers (2026-10-26): what goes in this machine's
+    // answer file (WindowsSetupAnswers.swift), each filled in from the Mac.
+    // nil means "Let Windows ask".
+    @State private var windowsLocale: String? = WindowsRegion.current().locale
+    @State private var windowsKeyboard: String? = WindowsRegion.current().inputLocale
+    @State private var windowsComputerName: String = ""
+    @State private var windowsTimeZone: String? = WindowsSetupAnswers.windowsTimeZone(for: TimeZone.current.identifier)
+    @State private var windowsPrivacy: WindowsSetupAnswers.Privacy = .mostPrivate
+    @State private var windowsLocalAccount = false
+    @State private var windowsDisplayName: String = NSFullUserName()
+    @State private var windowsUserName: String = NSUserName()
+    @State private var windowsPassword: String = ""
+    @State private var windowsPasswordConfirm: String = ""
+
     private var isUbuntu: Bool {
         if case .ubuntu = installerKind { return true }
         return false
@@ -238,6 +252,7 @@ struct SetupView: View {
                 if installerKind == .windows {
                     windowsEditionSection
                     screenReaderSection
+                    windowsSetupSection
                 }
 
                 if isUbuntu {
@@ -414,6 +429,133 @@ struct SetupView: View {
         }
     }
 
+    // MARK: - Windows Setup answers
+
+    /// Regions Windows knows, by name in the Mac's language.
+    private static let windowsRegions: [(id: String, name: String)] = {
+        var seen = Set<String>()
+        return Locale.availableIdentifiers.compactMap { WindowsRegion.windowsLocale(fromMac: $0) }
+            .filter { seen.insert($0).inserted }
+            .map { id in (id, Locale.current.localizedString(forIdentifier: id.replacingOccurrences(of: "-", with: "_")) ?? id) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }()
+
+    private var suggestedComputerName: String {
+        WindowsSetupAnswers.suggestedComputerName(from: vmName.isEmpty ? "AVM PC" : vmName)
+    }
+
+    private var windowsSetupSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Windows Setup Answers")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Text("Windows Setup won't ask these, so you reach your desktop sooner. Each one is filled in from your Mac; choose Let Windows ask to answer it in Windows instead.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Picker("Region", selection: $windowsLocale) {
+                Text("Let Windows ask").tag(String?.none)
+                ForEach(Self.windowsRegions, id: \.id) { region in
+                    Text(region.name).tag(Optional(region.id))
+                }
+            }
+            Picker("Keyboard", selection: $windowsKeyboard) {
+                Text("Let Windows ask").tag(String?.none)
+                ForEach(WindowsRegion.windowsKeyboards, id: \.id) { keyboard in
+                    Text(keyboard.name).tag(Optional(keyboard.id))
+                }
+            }
+            .accessibilityHint("The keyboard layout Windows uses. Your password types with it.")
+            Picker("Time zone", selection: $windowsTimeZone) {
+                Text("Let Windows set it").tag(String?.none)
+                ForEach(WindowsSetupAnswers.allWindowsTimeZones, id: \.self) { zone in
+                    Text(zone).tag(Optional(zone))
+                }
+            }
+            TextField("Computer name", text: $windowsComputerName, prompt: Text(suggestedComputerName))
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Computer name")
+                .accessibilityHint("Up to 15 letters, digits and hyphens. Leave it empty for \(suggestedComputerName).")
+
+            Text("Privacy")
+                .fixedSize(horizontal: false, vertical: true)
+            Picker("Privacy", selection: $windowsPrivacy) {
+                Text("Most private: send Microsoft no optional data").tag(WindowsSetupAnswers.Privacy.mostPrivate)
+                Text("Windows' recommended settings").tag(WindowsSetupAnswers.Privacy.recommended)
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+            .accessibilityLabel("Privacy")
+
+            Text("Windows account")
+                .fixedSize(horizontal: false, vertical: true)
+            Picker("Windows account", selection: $windowsLocalAccount) {
+                Text("Microsoft account: sign in during setup").tag(false)
+                Text("Local account on this PC: no sign-in screens").tag(true)
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+            .accessibilityLabel("Windows account")
+
+            if windowsLocalAccount {
+                TextField("Your name", text: $windowsDisplayName)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Your name in Windows")
+                TextField("User name", text: $windowsUserName)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Windows user name")
+                    .accessibilityHint("Up to 20 characters")
+                SecureField("Password", text: $windowsPassword)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Windows password")
+                    .accessibilityHint("Leave it empty to sign in with no password. AVM keeps only a scrambled form of it, until Windows is installed.")
+                SecureField("Confirm password", text: $windowsPasswordConfirm)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Confirm Windows password")
+                Text("Windows signs in by itself the first time, so NVDA can install and start. You can sign in to a Microsoft account later in Settings.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// The wizard's Windows answers, or the reason they can't be used.
+    private func windowsSetupAnswers() -> Result<WindowsSetupAnswers, SetupProblem> {
+        let computerName = windowsComputerName.trimmingCharacters(in: .whitespaces).isEmpty
+            ? suggestedComputerName
+            : windowsComputerName.trimmingCharacters(in: .whitespaces)
+        if let problem = WindowsSetupAnswers.problem(withComputerName: computerName) {
+            return .failure(SetupProblem(message: problem))
+        }
+        var answers = WindowsSetupAnswers(
+            locale: windowsLocale,
+            inputLocale: windowsKeyboard,
+            computerName: computerName,
+            timeZone: windowsTimeZone,
+            privacy: windowsPrivacy
+        )
+        if windowsLocalAccount {
+            let userName = windowsUserName.trimmingCharacters(in: .whitespaces)
+            if let problem = WindowsSetupAnswers.problem(withUserName: userName, computerName: computerName) {
+                return .failure(SetupProblem(message: problem))
+            }
+            guard windowsPassword == windowsPasswordConfirm else {
+                return .failure(SetupProblem(message: "The two Windows passwords don't match. Please type them again."))
+            }
+            let displayName = windowsDisplayName.trimmingCharacters(in: .whitespaces)
+            answers.localAccount = .init(
+                userName: userName,
+                displayName: displayName.isEmpty ? userName : displayName,
+                encodedPassword: WindowsSetupAnswers.encode(password: windowsPassword)
+            )
+        }
+        return .success(answers)
+    }
+
+    struct SetupProblem: Error { let message: String }
+
     // MARK: - Ubuntu account
 
     private var ubuntuAccountSection: some View {
@@ -578,6 +720,16 @@ struct SetupView: View {
             )
         }
 
+        var windowsAnswers: WindowsSetupAnswers? = nil
+        if installerKind == .windows {
+            switch windowsSetupAnswers() {
+            case .success(let answers): windowsAnswers = answers
+            case .failure(let problem):
+                reportGuidance(problem.message)
+                return
+            }
+        }
+
         // Build the disk image path in Application Support/AVM/vms/<uuid>/disk.qcow2.
         // VMManager.createDiskImage will create the actual file when the user starts
         // the VM for the first time.
@@ -597,6 +749,8 @@ struct SetupView: View {
             // Only the hash is stored, owner-only, until the install media
             // is built (see UbuntuInstallPipeline.swift).
             try ubuntuAccount?.save(inVMDirectory: vmDir)
+            // Windows' answers, owner-only, until the media is built.
+            try windowsAnswers?.save(inVMDirectory: vmDir)
         } catch {
             reportFailure(error.localizedDescription)
             return

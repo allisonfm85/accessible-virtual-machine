@@ -851,10 +851,24 @@ final class VMManager: ObservableObject {
             }
         )
         input.screenReaderInstallers = readerFiles
+        // The wizard's answers (2026-10-26); a machine made before the wizard
+        // asked gets the Mac's region, keyboard and time zone, and a
+        // Microsoft account, as Windows would have asked for.
+        let answers = WindowsSetupAnswers.load(fromVMDirectory: runtimeDir)
+            ?? WindowsSetupAnswers.fromThisMac(computerName: nil)
+        if let account = answers.localAccount, account.encodedPassword == nil {
+            throw PipelineError.stageFailed(
+                stage: .buildAnswerImage,
+                reason: "AVM no longer has the password for the Windows account \(account.userName), which it forgets once the install media is built. Next: make a new virtual machine with the same installer."
+            )
+        }
+        input.answers = answers
+        avmLog("ensureInstallMedia: setup answers — locale \(answers.locale ?? "asked"), keyboard \(answers.inputLocale ?? "asked"), time zone \(answers.timeZone ?? "asked"), computer name \(answers.computerName == nil ? "Windows' own" : "set"), \(answers.localAccount == nil ? "Microsoft account" : "local account"), privacy \(answers.privacy.rawValue)")
 
         do {
             let output = try await pipeline.run(input)
             avmLog("ensureInstallMedia: pipeline complete — \(output.rebuiltISOPath)")
+            WindowsSetupAnswers.forgetPassword(inVMDirectory: runtimeDir)
             appendConsole("AVM: Install media ready.\n")
             installProgress = "Install media ready."
             Announcer.shared.announce(
@@ -2407,16 +2421,13 @@ final class VMManager: ObservableObject {
         }
     }
 
-    /// Ubuntu's install media is never needed once the install is complete,
-    /// and install-avm.iso is the one place the account's password hash
-    /// still lives (UbuntuInstallPipeline.swift header). Delete it, never
-    /// the UNATTEND volume: that holds the marker the REINSTALL GUARD reads.
     /// Windows' rebuilt install DVD, about 8.5 GB per machine, is read only
     /// during setup, and once the install-complete marker exists it is never
     /// attached again (REINSTALL GUARD), so it is deleted (2026-10-26). The
     /// UNATTEND volume stays: it holds that marker. The user's own ISO is
     /// never touched.
     private func removeFinishedWindowsMedia(runtimeDir: URL) {
+        removeAnswerFile(runtimeDir: runtimeDir)
         let iso = runtimeDir.appendingPathComponent("install-avm.iso")
         guard let size = (try? FileManager.default.attributesOfItem(atPath: iso.path))?[.size] as? NSNumber else { return }
         do {
@@ -2429,6 +2440,39 @@ final class VMManager: ObservableObject {
         }
     }
 
+    /// The answer file on the UNATTEND volume holds the local account's
+    /// password in Windows' scrambled form, and that volume stays attached,
+    /// visible in Windows as a drive (2026-10-26). Windows reads it only
+    /// during setup, and the REINSTALL GUARD reads AVMDONE.TAG, not it, so
+    /// it is deleted once Windows is installed. Harmless when already gone.
+    private func removeAnswerFile(runtimeDir: URL) {
+        let imgPath = runtimeDir.appendingPathComponent("autounattend.img").path
+        guard FileManager.default.fileExists(atPath: imgPath),
+              let mtoolsURL = bundledBinaryURL(named: "mtools") else { return }
+        let process = Process()
+        process.executableURL = mtoolsURL
+        process.arguments = ["-c", "mdel", "-i", imgPath, "::autounattend.xml"]
+        var env = ProcessInfo.processInfo.environment
+        env["MTOOLS_SKIP_CHECK"] = "1"
+        env.removeValue(forKey: "DYLD_LIBRARY_PATH")
+        process.environment = env
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            if process.terminationStatus == 0 {
+                avmLog("removeAnswerFile: deleted autounattend.xml from the UNATTEND volume (install complete)")
+            }
+        } catch {
+            avmLog("removeAnswerFile: couldn't run mtools: \(error)")
+        }
+    }
+
+    /// Ubuntu's install media is never needed once the install is complete,
+    /// and install-avm.iso is the one place the account's password hash
+    /// still lives (UbuntuInstallPipeline.swift header). Delete it, never
+    /// the UNATTEND volume: that holds the marker the REINSTALL GUARD reads.
     private func removeFinishedUbuntuMedia(runtimeDir: URL) {
         let iso = runtimeDir.appendingPathComponent("install-avm.iso")
         guard FileManager.default.fileExists(atPath: iso.path) else { return }
