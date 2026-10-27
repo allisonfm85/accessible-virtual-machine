@@ -2150,7 +2150,7 @@ final class VMManager: ObservableObject {
 
         // SOUND (2026-10-27): QEMU plays the guest's sound to the Mac itself,
         // through the default output audio unit (AVM's QEMU patch
-        // qemu-10.0.12-utm+coreaudio-default-output-unit.patch, which follows
+        // qemu-10.0.12-utm+coreaudio-output-unit-and-microphone.patch, which follows
         // the Mac's output and its rate, so AirPods switching to hands-free
         // mode at 24 kHz don't silence it). It used to go through SPICE and
         // spice-gtk's GStreamer pipeline. Measured key-to-speech with Orca
@@ -2163,7 +2163,14 @@ final class VMManager: ObservableObject {
         // asks for it. If speech crackles on a busy Mac, the buffers are the
         // first thing to grow. Sound no longer depends on the SPICE view, so
         // it also keeps playing while the machine's window is closed.
-        args += ["-audiodev", "coreaudio,id=avmaudio,out.frequency=48000,out.buffer-length=2500,out.buffer-count=2,timer-period=1250"]
+        // THE MICROPHONE (2026-10-27): AVM's QEMU patch gives coreaudio a
+        // recording side (the Mac's default microphone, opened only while
+        // the guest records). Off unless chosen in Settings: no recording
+        // voice at all, so the guest's microphone is silent.
+        let microphone = configuration.sharesMicrophone
+            ? "in.frequency=48000,in.buffer-length=10000,in.buffer-count=2"
+            : "in.voices=0"
+        args += ["-audiodev", "coreaudio,id=avmaudio,out.frequency=48000,out.buffer-length=2500,out.buffer-count=2,timer-period=1250,\(microphone)"]
         args += ["-device", "intel-hda"]
         args += ["-device", "hda-duplex,audiodev=avmaudio,use-timer=off"]
 

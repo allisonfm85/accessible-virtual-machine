@@ -7,6 +7,12 @@
 // and the resume in startVM):
 //
 //   AVM.app/Contents/MacOS/AVM --test-save-resume --vm <folder> [--guest windows|debian|ubuntu|fedora] [--convert]
+//   AVM.app/Contents/MacOS/AVM --test-microphone --vm <folder> [--guest ...]
+//
+// --test-microphone (Linux): starts the machine with the Mac's microphone shared,
+// records three seconds in the guest, and says how loud the loudest moment
+// was (a working microphone always hears something; a blocked one gives
+// exact silence). macOS asks for microphone permission the first time.
 //
 // --convert: the machine is an older one on NVMe; first it's moved to the
 // virtio disk as Settings' Turn On Save with Open Apps does (a Start that
@@ -28,7 +34,7 @@ enum SaveResumeTestJob {
     static let flag = "--test-save-resume"
 
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
-        guard arguments.contains(flag) else { return }
+        guard arguments.contains(flag) || arguments.contains("--test-microphone") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -41,6 +47,10 @@ enum SaveResumeTestJob {
         let guest = GuestOS(rawValue: value("--guest") ?? "windows") ?? .windows
         Task { @MainActor in
             let folderURL = URL(fileURLWithPath: folder, isDirectory: true)
+            if arguments.contains("--test-microphone") {
+                let heard = await microphone(folder: folderURL, guest: guest)
+                print(heard ? "PASSED" : "FAILED"); exit(heard ? 0 : 1)
+            }
             if arguments.contains("--convert"), !(await convert(folder: folderURL, guest: guest)) {
                 print("FAILED"); exit(1)
             }
@@ -99,6 +109,38 @@ enum SaveResumeTestJob {
         check("it came up on the virtio disk", manager.diskSwitchResult == "switched")
         await shutDown(manager)
         return manager.diskSwitchResult == "switched"
+    }
+
+    private static func microphone(folder: URL, guest: GuestOS) async -> Bool {
+        var configuration = configuration(folder: folder, guest: guest)
+        configuration.shareMicrophone = true
+        print("== Starting the machine with the microphone shared")
+        let manager = VMManager()
+        guard await start(manager, configuration) else { return false }
+        guard let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else {
+            check("the guest agent answers", false); await shutDown(manager); return false
+        }
+        try? await Task.sleep(for: .seconds(20))
+        print("== Recording three seconds in the guest")
+        guard guest != .windows else {
+            // Windows has no recorder the guest agent can drive; this test
+            // covers Linux, and QEMU's side is the same for both.
+            print("   (Linux only for now)"); await shutDown(manager); return false
+        }
+        let peak = await exec(agent, program: "/bin/sh", args: ["-c", """
+                U=$(id -u avmtest 2>/dev/null || ls /run/user | head -1)
+                N=$(getent passwd "$U" | cut -d: -f1)
+                runuser -u "$N" -- env XDG_RUNTIME_DIR=/run/user/$U timeout 3 pw-record --rate 48000 --channels 1 --format s16 /tmp/avm-mic.wav
+                python3 -c "import sys,struct,wave; w=wave.open('/tmp/avm-mic.wav'); d=w.readframes(w.getnframes()); s=struct.unpack('<%dh'%(len(d)//2), d); print('frames', len(s), 'peak', max(abs(x) for x in s) if s else 0)"
+                """])
+        print("   \(peak ?? "no answer")")
+        let words = (peak ?? "").split(separator: " ")
+        let level = words.firstIndex(of: "peak").flatMap { words.indices.contains($0 + 1) ? Int(words[$0 + 1]) : nil } ?? 0
+        let frames = words.firstIndex(of: "frames").flatMap { words.indices.contains($0 + 1) ? Int(words[$0 + 1]) : nil } ?? 0
+        check("the guest recorded", frames > 48_000)
+        check("the recording isn't silence (the Mac's microphone reached it)", level > 0)
+        await shutDown(manager)
+        return ok
     }
 
     private static func run(folder: URL, guest: GuestOS) async -> Bool {

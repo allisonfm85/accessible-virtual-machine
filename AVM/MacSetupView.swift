@@ -170,6 +170,7 @@ struct MacSettingsView: View {
     @State private var sharedFolderPath: String?
     @State private var sharedFolderReadOnly = false
     @State private var shareClipboard = true
+    @State private var shareMicrophone = false
     @State private var restorePoints: [MacRestorePoint] = []
     @State private var newPointName = ""
     @State private var restoreMessage: String?
@@ -241,6 +242,14 @@ struct MacSettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            Text("Microphone")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Toggle("Let \(configuration.name) use your Mac's microphone", isOn: $shareMicrophone)
+            Text("For dictation, calls and recordings in macOS. macOS asks once for permission. Takes effect at the next Start.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             Text("Clipboard")
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
@@ -269,6 +278,7 @@ struct MacSettingsView: View {
             sharedFolderPath = configuration.sharedFolderPath
             sharedFolderReadOnly = configuration.sharedFolderIsReadOnly
             shareClipboard = configuration.sharesClipboard
+            shareMicrophone = configuration.sharesMicrophone
             reloadPoints()
         }
     }
@@ -392,6 +402,7 @@ struct MacSettingsView: View {
             || sharedFolderPath != configuration.sharedFolderPath
             || (sharedFolderReadOnly ? true : nil) != configuration.sharedFolderReadOnly
             || shareClipboard != configuration.sharesClipboard
+            || shareMicrophone != configuration.sharesMicrophone
         if saved && changesMachine, let files {
             let alert = NSAlert()
             alert.messageText = "\(configuration.name) is saved with its apps open. Change its settings anyway?"
@@ -409,6 +420,7 @@ struct MacSettingsView: View {
         updated.sharedFolderPath = sharedFolderPath
         updated.sharedFolderReadOnly = sharedFolderReadOnly ? true : nil
         updated.shareClipboard = shareClipboard ? nil : false
+        updated.shareMicrophone = shareMicrophone ? true : nil
         vmStore.save(updated)
         Announcer.shared.announce("Settings saved.", tone: .success)
         dismiss()

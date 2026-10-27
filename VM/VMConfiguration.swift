@@ -100,6 +100,10 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// two clipboards apart. Read it through sharesClipboard.
     var shareClipboard: Bool?
 
+    /// true: the machine may use the Mac's microphone (2026-10-27). Off
+    /// unless chosen. Read it through sharesMicrophone.
+    var shareMicrophone: Bool?
+
     // MARK: - Braille display follow-through (2026-10-26)
 
     /// What happens when a braille display comes back within a minute of
@@ -198,6 +202,7 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
 extension VMConfiguration {
     var usesSecureBoot: Bool { secureBoot == true }
     var sharesClipboard: Bool { shareClipboard ?? true }
+    var sharesMicrophone: Bool { shareMicrophone == true }
     var brailleFollowsBack: Bool { brailleFollowThrough != "ask" }
     /// The shared folder, if one is chosen and is a folder right now (an
     /// unplugged drive shares nothing rather than failing the start).

@@ -111,12 +111,18 @@ enum MacGuestConfiguration {
         }
         vz.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
 
-        // Sound out only: VoiceOver's speech in the machine comes out of the
-        // Mac. No microphone, so no microphone permission is asked.
+        // Sound: VoiceOver's speech in the machine comes out of the Mac. The
+        // Mac's microphone only if chosen in Settings (2026-10-27), so no
+        // microphone permission is asked otherwise.
         let sound = VZVirtioSoundDeviceConfiguration()
         let output = VZVirtioSoundDeviceOutputStreamConfiguration()
         output.sink = VZHostAudioOutputStreamSink()
         sound.streams = [output]
+        if config.sharesMicrophone {
+            let input = VZVirtioSoundDeviceInputStreamConfiguration()
+            input.source = VZHostAudioInputStreamSource()
+            sound.streams.append(input)
+        }
         vz.audioDevices = [sound]
 
         vz.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]

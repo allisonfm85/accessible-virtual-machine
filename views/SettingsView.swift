@@ -130,6 +130,7 @@ struct SettingsView: View {
     @State private var rememberedDevicesAtOpen: [RememberedUSBDevice] = []
     @State private var secureBoot = false
     @State private var shareClipboard = true
+    @State private var shareMicrophone = false
     @State private var sharedFolderPath: String?
     @State private var sharedFolderReadOnly = false
     @State private var brailleFollowsBack = true
@@ -226,6 +227,20 @@ struct SettingsView: View {
                 .accessibilityElement(children: .combine)
                 .padding(.horizontal)
             }
+
+            // Microphone (2026-10-27)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Microphone")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                Toggle("Let \(guest) use your Mac's microphone", isOn: $shareMicrophone)
+                    .accessibilityHint("When on, \(guest) hears your Mac's microphone while an app in it records")
+                Text("For dictation, calls and recordings in \(guest). The microphone is only open while something in \(guest) records, and macOS asks once for permission. Takes effect at the next Start.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal)
 
             // Clipboard (2026-10-25)
             VStack(alignment: .leading, spacing: 6) {
@@ -778,6 +793,7 @@ struct SettingsView: View {
         rememberedDevicesAtOpen = rememberedDevices
         secureBoot = saved.usesSecureBoot
         shareClipboard = saved.sharesClipboard
+        shareMicrophone = saved.sharesMicrophone
         sharedFolderPath = saved.sharedFolderPath
         sharedFolderReadOnly = saved.sharedFolderIsReadOnly
         brailleFollowsBack = saved.brailleFollowsBack
@@ -867,6 +883,7 @@ struct SettingsView: View {
                 updated.diskSizeGB = growTo
             }
             updated.shareClipboard = shareClipboard ? nil : false
+            updated.shareMicrophone = shareMicrophone ? true : nil
             updated.sharedFolderPath = sharedFolderPath
             updated.sharedFolderReadOnly = sharedFolderReadOnly ? true : nil
             updated.brailleFollowThrough = brailleFollowsBack ? nil : "ask"

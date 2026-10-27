@@ -1,4 +1,4 @@
-AVM: play through the default output audio unit, not an IOProc
+AVM: play through the default output audio unit, and record the microphone
 
 QEMU's coreaudio backend opened the default output device with an IOProc
 and set the device's own stream format to the guest's rate. When the
@@ -15,6 +15,14 @@ buffer settings keep their meaning: out.buffer-length is the device's
 buffer for this process, converted to the device's rate, and the ring
 holds out.buffer-count of what each render asks for, plus one spare for a
 device that drops to a lower rate mid-session.
+
+Recording (2026-10-27): the backend had none (max_voices_in 0). It now
+records the Mac's default microphone through a HAL output unit with only
+its input side on, at the microphone's own rate and channel count; QEMU's
+audio core converts to the guest's. The microphone is opened when the
+guest starts recording and closed when it stops, so macOS's microphone
+indicator is on only then, and the default microphone is looked up each
+time.
 Sound the guest hasn't produced yet plays as silence. AudioToolbox joins
 CoreAudio in the backend's frameworks.
 
@@ -281,7 +289,9 @@ CoreAudio in the backend's frameworks.
 -    if (deviceID == kAudioDeviceUnknown) {
 -        dolog ("Could not initialize playback - Unknown Audiodevice\n");
 -        return status;
--    }
++    if (copied == 0) {
++        *ioActionFlags |= kAudioUnitRenderAction_OutputIsSilence;
+     }
 -
 -    /* get minimum and maximum buffer frame sizes */
 -    status = coreaudio_get_framesizerange(deviceID, &frameRange);
@@ -339,9 +349,7 @@ CoreAudio in the backend's frameworks.
 -                                   "Could not set samplerate %lf\n",
 -                                   streamBasicDescription.mSampleRate);
 -        return status;
-+    if (copied == 0) {
-+        *ioActionFlags |= kAudioUnitRenderAction_OutputIsSilence;
-     }
+-    }
 -
 -    /*
 -     * set Callback.
@@ -638,15 +646,340 @@ CoreAudio in the backend's frameworks.
      /* destroy mutex */
      err = pthread_mutex_destroy(&core->buf_mutex);
      if (err) {
-@@ -642,7 +439,7 @@
+@@ -642,9 +439,301 @@
      coreaudioVoiceOut *core = (coreaudioVoiceOut *) hw;
  
      core->enabled = enable;
 -    update_device_playback_state(core);
 +    update_playback_state(core);
++}
++
++/*
++ * Recording (AVM, 2026-10-27): the Mac's default microphone, through a HAL
++ * output unit with only its input side on. QEMU's coreaudio backend had no
++ * recording at all. The unit converts the microphone's format to float
++ * but not its rate, so the voice runs at the microphone's own rate and
++ * QEMU's audio core converts to the guest's. The microphone is opened only
++ * while the guest records (enable_in), so macOS's microphone indicator is
++ * on only then, and the default microphone is looked up each time.
++ */
++typedef struct coreaudioVoiceIn {
++    HWVoiceIn hw;
++    pthread_mutex_t buf_mutex;
++    AudioUnit unit;
++    AudioBufferList *capture;
++    UInt32 captureFrames;
++    int frameSizeSetting;
++    uint32_t bufferCount;
++    bool running;
++} coreaudioVoiceIn;
++
++static OSStatus audioUnitInput(
++    void *voice,
++    AudioUnitRenderActionFlags *ioActionFlags,
++    const AudioTimeStamp *inTimeStamp,
++    UInt32 inBusNumber,
++    UInt32 inNumberFrames,
++    AudioBufferList *ioData)
++{
++    coreaudioVoiceIn *core = voice;
++    HWVoiceIn *hw = &core->hw;
++    OSStatus status;
++    uint8_t *in;
++    size_t len;
++
++    if (inNumberFrames > core->captureFrames) {
++        return 0;
++    }
++    core->capture->mBuffers[0].mDataByteSize = inNumberFrames * hw->info.bytes_per_frame;
++    status = AudioUnitRender(core->unit, ioActionFlags, inTimeStamp, inBusNumber,
++                             inNumberFrames, core->capture);
++    if (status != noErr) {
++        return status;
++    }
++    in = core->capture->mBuffers[0].mData;
++    len = core->capture->mBuffers[0].mDataByteSize;
++
++    if (pthread_mutex_lock(&core->buf_mutex)) {
++        return 0;
++    }
++    while (hw->pending_emul < hw->size_emul && len) {
++        size_t read_len = MIN(len, MIN(hw->size_emul - hw->pos_emul,
++                                       hw->size_emul - hw->pending_emul));
++
++        memcpy(hw->buf_emul + hw->pos_emul, in, read_len);
++        hw->pending_emul += read_len;
++        hw->pos_emul = (hw->pos_emul + read_len) % hw->size_emul;
++        len -= read_len;
++        in += read_len;
++    }
++    pthread_mutex_unlock(&core->buf_mutex);
++    return 0;
++}
++
++static void close_input(coreaudioVoiceIn *core)
++{
++    if (!core->unit) {
++        return;
++    }
++    if (core->running) {
++        AudioOutputUnitStop(core->unit);
++        core->running = false;
++    }
++    AudioUnitUninitialize(core->unit);
++    AudioComponentInstanceDispose(core->unit);
++    core->unit = NULL;
++}
++
++/* Opens the default microphone, at the format the voice was set up for. */
++static int open_input(coreaudioVoiceIn *core)
++{
++    HWVoiceIn *hw = &core->hw;
++    AudioComponentDescription description = {
++        .componentType = kAudioUnitType_Output,
++        .componentSubType = kAudioUnitSubType_HALOutput,
++        .componentManufacturer = kAudioUnitManufacturer_Apple
++    };
++    AudioComponent component = AudioComponentFindNext(NULL, &description);
++    AudioObjectPropertyAddress address = {
++        kAudioHardwarePropertyDefaultInputDevice,
++        kAudioObjectPropertyScopeGlobal,
++        kAudioObjectPropertyElementMain
++    };
++    AudioDeviceID device = kAudioDeviceUnknown;
++    UInt32 size = sizeof(device), on = 1, off = 0, frames;
++    AudioStreamBasicDescription format;
++    AURenderCallbackStruct callback = { .inputProc = audioUnitInput, .inputProcRefCon = core };
++    OSStatus status;
++
++    if (!component || AudioComponentInstanceNew(component, &core->unit) != noErr) {
++        core->unit = NULL;
++        dolog("Could not open the microphone - no input unit\n");
++        return -1;
++    }
++    status = AudioObjectGetPropertyData(kAudioObjectSystemObject, &address, 0, NULL, &size, &device);
++    if (status != noErr || device == kAudioDeviceUnknown) {
++        dolog("Could not open the microphone - no default input device\n");
++        goto fail;
++    }
++    if (AudioUnitSetProperty(core->unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1, &on, sizeof(on)) != noErr ||
++        AudioUnitSetProperty(core->unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0, &off, sizeof(off)) != noErr ||
++        AudioUnitSetProperty(core->unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &device, sizeof(device)) != noErr) {
++        dolog("Could not open the microphone - the input unit refused the device\n");
++        goto fail;
++    }
++    format = (AudioStreamBasicDescription) {
++        .mSampleRate = hw->info.freq,
++        .mFormatID = kAudioFormatLinearPCM,
++        .mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
++        .mBytesPerPacket = hw->info.bytes_per_frame,
++        .mFramesPerPacket = 1,
++        .mBytesPerFrame = hw->info.bytes_per_frame,
++        .mChannelsPerFrame = hw->info.nchannels,
++        .mBitsPerChannel = hw->info.bits
++    };
++    status = AudioUnitSetProperty(core->unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1, &format, sizeof(format));
++    if (status != noErr) {
++        coreaudio_logerr(status, "Could not set the microphone's format\n");
++        goto fail;
++    }
++    frames = core->frameSizeSetting;
++    AudioUnitSetProperty(core->unit, kAudioDevicePropertyBufferFrameSize, kAudioUnitScope_Global, 0, &frames, sizeof(frames));
++    if (AudioUnitSetProperty(core->unit, kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global, 0, &callback, sizeof(callback)) != noErr) {
++        dolog("Could not open the microphone - no input callback\n");
++        goto fail;
++    }
++    status = AudioUnitInitialize(core->unit);
++    if (status != noErr) {
++        coreaudio_logerr(status, "Could not open the microphone\n");
++        goto fail;
++    }
++    return 0;
++
++fail:
++    close_input(core);
++    return -1;
  }
  
++/* The default microphone's rate, which the voice records at. */
++static Float64 input_rate(void)
++{
++    AudioObjectPropertyAddress address = {
++        kAudioHardwarePropertyDefaultInputDevice,
++        kAudioObjectPropertyScopeGlobal,
++        kAudioObjectPropertyElementMain
++    };
++    AudioDeviceID device = kAudioDeviceUnknown;
++    Float64 rate = 0;
++    UInt32 size = sizeof(device);
++
++    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &address, 0, NULL, &size, &device) != noErr ||
++        device == kAudioDeviceUnknown) {
++        return 0;
++    }
++    address.mSelector = kAudioDevicePropertyNominalSampleRate;
++    size = sizeof(rate);
++    if (AudioObjectGetPropertyData(device, &address, 0, NULL, &size, &rate) != noErr) {
++        return 0;
++    }
++    return rate;
++}
++
++/* The default microphone's channel count, 1 or 2 (a mono microphone as
++ * stereo would leave the right channel silent; QEMU spreads mono to both). */
++static int input_channels(void)
++{
++    AudioObjectPropertyAddress address = {
++        kAudioHardwarePropertyDefaultInputDevice,
++        kAudioObjectPropertyScopeGlobal,
++        kAudioObjectPropertyElementMain
++    };
++    AudioDeviceID device = kAudioDeviceUnknown;
++    AudioStreamBasicDescription format = { 0 };
++    UInt32 size = sizeof(device);
++
++    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &address, 0, NULL, &size, &device) != noErr) {
++        return 2;
++    }
++    address.mSelector = kAudioDevicePropertyStreamFormat;
++    address.mScope = kAudioDevicePropertyScopeInput;
++    size = sizeof(format);
++    if (AudioObjectGetPropertyData(device, &address, 0, NULL, &size, &format) != noErr) {
++        return 2;
++    }
++    return format.mChannelsPerFrame == 1 ? 1 : 2;
++}
++
++static int coreaudio_init_in(HWVoiceIn *hw, struct audsettings *as, void *drv_opaque)
++{
++    coreaudioVoiceIn *core = (coreaudioVoiceIn *) hw;
++    Audiodev *dev = drv_opaque;
++    AudiodevCoreaudioPerDirectionOptions *cpdo = dev->u.coreaudio.in;
++    struct audsettings obt_as = *as;
++    Float64 rate = input_rate();
++
++    if (rate <= 0) {
++        dolog("Could not open the microphone - no default input device\n");
++        return -1;
++    }
++    if (pthread_mutex_init(&core->buf_mutex, NULL)) {
++        return -1;
++    }
++    obt_as.fmt = AUDIO_FORMAT_F32;
++    obt_as.freq = (int) rate;
++    obt_as.nchannels = input_channels();
++    audio_pcm_init_info(&hw->info, &obt_as);
++
++    core->frameSizeSetting = audio_buffer_frames(
++        qapi_AudiodevCoreaudioPerDirectionOptions_base(cpdo), &obt_as, 11610);
++    core->bufferCount = cpdo->has_buffer_count ? cpdo->buffer_count : 4;
++    /* Room for a render of a few times the asked-for buffer. */
++    core->captureFrames = MAX(4096, core->frameSizeSetting * 4);
++    core->capture = g_malloc0(sizeof(AudioBufferList));
++    core->capture->mNumberBuffers = 1;
++    core->capture->mBuffers[0].mNumberChannels = hw->info.nchannels;
++    core->capture->mBuffers[0].mDataByteSize = core->captureFrames * hw->info.bytes_per_frame;
++    core->capture->mBuffers[0].mData = g_malloc0(core->capture->mBuffers[0].mDataByteSize);
++
++    hw->samples = (core->bufferCount + 1) * core->frameSizeSetting;
++    hw->size_emul = hw->samples * hw->info.bytes_per_frame;
++    hw->buf_emul = g_malloc0(hw->size_emul);
++    hw->pos_emul = hw->pending_emul = 0;
++    return 0;
++}
++
++static void coreaudio_fini_in(HWVoiceIn *hw)
++{
++    coreaudioVoiceIn *core = (coreaudioVoiceIn *) hw;
++
++    close_input(core);
++    if (core->capture) {
++        g_free(core->capture->mBuffers[0].mData);
++        g_free(core->capture);
++        core->capture = NULL;
++    }
++    pthread_mutex_destroy(&core->buf_mutex);
++}
++
++static void coreaudio_enable_in(HWVoiceIn *hw, bool enable)
++{
++    coreaudioVoiceIn *core = (coreaudioVoiceIn *) hw;
++
++    if (enable && !core->running) {
++        if (!core->unit && open_input(core)) {
++            return;
++        }
++        if (AudioOutputUnitStart(core->unit) == noErr) {
++            core->running = true;
++        }
++    } else if (!enable && core->unit) {
++        /* Closed, not just stopped: macOS's microphone indicator goes off. */
++        close_input(core);
++    }
++}
++
++#define COREAUDIO_IN_WRAPPER_FUNC(name, ret_type, args_decl, args)    \
++    static ret_type glue(coreaudio_, name)args_decl                   \
++    {                                                                 \
++        coreaudioVoiceIn *core = (coreaudioVoiceIn *) hw;             \
++        ret_type ret;                                                 \
++                                                                      \
++        if (pthread_mutex_lock(&core->buf_mutex)) {                   \
++            return 0;                                                 \
++        }                                                             \
++        ret = glue(audio_generic_, name)args;                         \
++        pthread_mutex_unlock(&core->buf_mutex);                       \
++        return ret;                                                   \
++    }
++COREAUDIO_IN_WRAPPER_FUNC(read, size_t, (HWVoiceIn *hw, void *buf, size_t size), (hw, buf, size))
++COREAUDIO_IN_WRAPPER_FUNC(get_buffer_in, void *, (HWVoiceIn *hw, size_t *size), (hw, size))
++#undef COREAUDIO_IN_WRAPPER_FUNC
++
++static void coreaudio_put_buffer_in(HWVoiceIn *hw, void *buf, size_t size)
++{
++    coreaudioVoiceIn *core = (coreaudioVoiceIn *) hw;
++
++    if (pthread_mutex_lock(&core->buf_mutex)) {
++        return;
++    }
++    audio_generic_put_buffer_in(hw, buf, size);
++    pthread_mutex_unlock(&core->buf_mutex);
++}
++
  static void *coreaudio_audio_init(Audiodev *dev, Error **errp)
+ {
+     return dev;
+@@ -665,7 +754,17 @@
+     .get_buffer_out = coreaudio_get_buffer_out,
+   /* wrapper for audio_generic_put_buffer_out */
+     .put_buffer_out = coreaudio_put_buffer_out,
+-    .enable_out = coreaudio_enable_out
++    .enable_out = coreaudio_enable_out,
++
++    .init_in  = coreaudio_init_in,
++    .fini_in  = coreaudio_fini_in,
++  /* wrapper for audio_generic_read */
++    .read     = coreaudio_read,
++  /* wrapper for audio_generic_get_buffer_in */
++    .get_buffer_in = coreaudio_get_buffer_in,
++  /* wrapper for audio_generic_put_buffer_in */
++    .put_buffer_in = coreaudio_put_buffer_in,
++    .enable_in = coreaudio_enable_in
+ };
+ 
+ static struct audio_driver coreaudio_audio_driver = {
+@@ -675,9 +774,9 @@
+     .fini           = coreaudio_audio_fini,
+     .pcm_ops        = &coreaudio_pcm_ops,
+     .max_voices_out = 1,
+-    .max_voices_in  = 0,
++    .max_voices_in  = 1,
+     .voice_size_out = sizeof (coreaudioVoiceOut),
+-    .voice_size_in  = 0
++    .voice_size_in  = sizeof(coreaudioVoiceIn)
+ };
+ 
+ static void register_audio_coreaudio(void)
 --- a/meson.build
 +++ b/meson.build
 @@ -1790,7 +1790,7 @@
