@@ -809,6 +809,29 @@ nonisolated final class UbuntuInstallPipeline {
         WantedBy=graphical-session-pre.target
         UNIT
         ln -sf ../avm-orca-settings-guard.service $T/etc/systemd/user/graphical-session-pre.target.wants/avm-orca-settings-guard.service
+        # THE SOUND CARD'S BUFFER (2026-10-27, MEASURED on Debian 13 with
+        # Orca's "say the time", median of 20): in a virtual machine,
+        # WirePlumber gives the sound card 1024-frame periods and 8192
+        # frames of headroom, about 170 ms held back, for emulated cards
+        # that answer late. AVM's answers on time (QEMU plays straight to
+        # the Mac), so 256 and 512 are enough: 389 ms became 221 ms (128
+        # and 256 measured the same). WirePlumber 0.5 reads the .conf
+        # file, 0.4 the .lua one; each ignores the other.
+        mkdir -p $T/etc/wireplumber/wireplumber.conf.d $T/etc/wireplumber/main.lua.d
+        cat > $T/etc/wireplumber/wireplumber.conf.d/99-avm-sound.conf <<'WP'
+        monitor.alsa.rules = [
+          {
+            matches = [ { node.name = "~alsa_output.*" } ]
+            actions = { update-props = { api.alsa.period-size = 256, api.alsa.headroom = 512 } }
+          }
+        ]
+        WP
+        cat > $T/etc/wireplumber/main.lua.d/99-avm-sound.lua <<'WP'
+        table.insert(alsa_monitor.rules, {
+          matches = { { { "node.name", "matches", "alsa_output.*" } } },
+          apply_properties = { ["api.alsa.period-size"] = 256, ["api.alsa.headroom"] = 512 },
+        })
+        WP
         curtin in-target -- dconf update
         # dconf update must have compiled both databases from these files;
         # a database older than its keyfile means the settings never landed.

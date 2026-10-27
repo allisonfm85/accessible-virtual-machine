@@ -2153,9 +2153,24 @@ final class VMManager: ObservableObject {
         args += ["-device", "virtio-gpu-pci,id=gpu0"]
         avmLog("buildQEMUArguments: display = ramfb + virtio-gpu-pci id=gpu0 (bisected pair, ramfb first — proven order; issue #4 mechanism record in header)")
 
-        args += ["-audiodev", "spice,id=spiceaudio"]
+        // SOUND (2026-10-27): QEMU plays the guest's sound to the Mac itself,
+        // through the default output audio unit (AVM's QEMU patch
+        // qemu-10.0.12-utm+coreaudio-default-output-unit.patch, which follows
+        // the Mac's output and its rate, so AirPods switching to hands-free
+        // mode at 24 kHz don't silence it). It used to go through SPICE and
+        // spice-gtk's GStreamer pipeline. Measured key-to-speech with Orca
+        // (Tools/measure-audio-latency.sh, median of 20, AirPods at 24 kHz):
+        // SPICE 658 ms at best (its default pipeline lagged past 4 s); QEMU's
+        // own output with 5 ms x 2 buffers 430 ms, with the sound card's
+        // timer off as well 407 ms, and with 2.5 ms x 2 buffers 389 ms,
+        // which is this (2.5 ms x 3 was 405). The timer paces the card's
+        // transfers in 10 ms steps; off, the card moves sound as the output
+        // asks for it. If speech crackles on a busy Mac, the buffers are the
+        // first thing to grow. Sound no longer depends on the SPICE view, so
+        // it also keeps playing while the machine's window is closed.
+        args += ["-audiodev", "coreaudio,id=avmaudio,out.frequency=48000,out.buffer-length=2500,out.buffer-count=2,timer-period=1250"]
         args += ["-device", "intel-hda"]
-        args += ["-device", "hda-duplex,audiodev=spiceaudio"]
+        args += ["-device", "hda-duplex,audiodev=avmaudio,use-timer=off"]
 
         args += [
             "-device", "virtio-serial-pci",

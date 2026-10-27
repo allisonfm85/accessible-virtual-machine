@@ -1204,24 +1204,15 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         let socketURL = URL(fileURLWithPath: socketPath)
         let conn = CSConnection(unixSocketFile: socketURL)
         conn.delegate = self
-        // Audio ENABLED: when true, CSConnection calls spice_audio_get(), wiring
-        // the SPICE audio channel into CocoaSpice's GStreamer pipeline. The
-        // pipeline terminates in osxaudiosink (the osxaudio + autodetect plugins
-        // are statically registered in gst_ios_init, and gst_ios_init() is
-        // already called by CSMain on spiceStart), so guest audio — Narrator,
-        // JAWS, NVDA — reaches the Mac's CoreAudio output. This is the PRIMARY
-        // output channel for a blind user, so it must stay enabled.
-        // KNOWN UPSTREAM ISSUE (sample-proven 2026-07-12): the osxaudiosink
-        // teardown path can deadlock against CoreAudio's IO thread when the
-        // guest stops its audio stream (observed at OOBE's PIN screen),
-        // permanently wedging the SPICE worker — display/input die until the
-        // VM is restarted. The teardown rules in this file keep AVM's main
-        // thread (and QMP-based Stop) alive when that happens.
-        conn.audioEnabled = true
-        // The shorter audio path, if chosen (2026-10-26, experimental; see
-        // SpiceAudioPipeline). Read when playback starts, so set it first.
-        let savedForAudio = VMSession.current.flatMap { session in VMStore.shared?.configurations.first { $0.id == session.configuration.id } }
-        SpiceAudioPipeline.apply(lowLatency: savedForAudio?.usesLowAudioLatency ?? false)
+        // Audio OFF (2026-10-27): QEMU plays the guest's sound to the Mac
+        // itself now (VMManager's -audiodev coreaudio), about a quarter of a
+        // second sooner than this SPICE path did, so the SPICE audio channel
+        // carries nothing. Leaving it off also keeps CocoaSpice's GStreamer
+        // pipeline out of AVM: its osxaudiosink teardown could deadlock
+        // against CoreAudio's IO thread when the guest stopped its audio
+        // stream (sample-proven 2026-07-12, at OOBE's PIN screen), wedging the
+        // SPICE worker until the VM restarted.
+        conn.audioEnabled = false
         self.connection = conn
 
         guard conn.connect() else {

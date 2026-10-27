@@ -129,7 +129,9 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     // MARK: - Sound (2026-10-26)
 
     /// true: the experimental shorter audio path (SpiceAudioPipeline).
-    /// Read it through usesLowAudioLatency.
+    /// Read it through usesLowAudioLatency. Unused since 2026-10-27, when
+    /// QEMU started playing the guest's sound itself (shorter still); kept
+    /// so saved machines keep their record.
     var lowAudioLatency: Bool?
 
     // MARK: - Screen readers in Windows (2026-10-26)

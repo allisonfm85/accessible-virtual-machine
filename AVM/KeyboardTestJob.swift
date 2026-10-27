@@ -58,6 +58,26 @@ enum KeyboardTestJob {
         qmp(#"{"execute":"input-send-event","arguments":{"events":[{"type":"key","data":{"down":\#(down),"key":{"type":"qcode","data":"pause"}}}]}}"#)
     }
 
+    /// `--play-spice-audio --spice <sock> [--low-latency]`: plays a
+    /// machine's sound the way its window does (CocoaSpice, AVM's audio
+    /// pipeline), with nothing else, until stopped; for
+    /// Tools/measure-audio-latency.sh to listen to (2026-10-26).
+    static func playAudioIfAsked(arguments: [String] = CommandLine.arguments) {
+        guard arguments.contains("--play-spice-audio"),
+              let i = arguments.firstIndex(of: "--spice"), arguments.indices.contains(i + 1) else { return }
+        AVMLog.useTestLogFolder()
+        SpiceAudioPipeline.apply(lowLatency: arguments.contains("--low-latency"))
+        let client = Client()
+        client.wantsAudio = true
+        guard client.connect(URL(fileURLWithPath: arguments[i + 1])) else {
+            print("FAILED: couldn't connect")
+            exit(1)
+        }
+        print("PLAYING")
+        fflush(stdout)
+        while true { RunLoop.main.run(until: Date().addingTimeInterval(1)) }
+    }
+
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
         guard arguments.contains(flag) else { return }
         AVMLog.useTestLogFolder()
@@ -170,12 +190,13 @@ enum KeyboardTestJob {
     private final class Client: NSObject, CSConnectionDelegate {
         var connection: CSConnection?
         var input: CSInput?
+        var wantsAudio = false
 
         func connect(_ socket: URL) -> Bool {
             if !CSMain.shared.running { guard CSMain.shared.spiceStart() else { return false } }
             let c = CSConnection(unixSocketFile: socket)
             c.delegate = self
-            c.audioEnabled = false
+            c.audioEnabled = wantsAudio
             connection = c
             return c.connect()
         }
