@@ -246,7 +246,14 @@ final class USBHotPlugWatcher {
         // so it follows the user's choice back. Never for always-ask
         // devices, and never at start, since nothing has just left
         // Windows. The check also clears the vanished copy quietly.
+        // It also respects Keep on the Mac and a remembered "keep on Mac"
+        // (2026-10-25, code audit): before, a braille display unplugged to
+        // take it back, then plugged in again within the minute, went
+        // straight back to Windows whatever the settings said.
+        var keepsOnMac = false
+        if case .keepOnMac = decision { keepsOnMac = true }
         if !atStart,
+           !keepsOnMac,
            classification.protection != .alwaysAsk,
            USBRedirectController.shared.takeFollowThrough(identity) {
             log("arrived: \(identity) left Windows moments ago; following the user's choice back to Windows")

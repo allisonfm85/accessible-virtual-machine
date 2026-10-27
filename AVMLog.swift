@@ -87,7 +87,22 @@
 // interesting lines are the last ones before the freeze.
 import Foundation
 
-final class AVMLog: @unchecked Sendable {
+// MARK: - Where AVM keeps its data (2026-10-25)
+
+/// The folder under Application Support that holds everything AVM stores:
+/// configurations.json, the VMs, logs and install scratch. Every file that
+/// needs it reads it here. A build with the original bundle identifier
+/// keeps the original folder, "AVM"; any other build uses its bundle
+/// identifier, the usual macOS convention, so two differently identified
+/// copies of AVM on one Mac never share or disturb each other's machines.
+enum AVMPaths {
+    nonisolated static let supportFolderName: String = {
+        let id = Bundle.main.bundleIdentifier ?? "com.alllisonmeloy.AVM"
+        return id == "com.alllisonmeloy.AVM" ? "AVM" : id
+    }()
+}
+
+nonisolated final class AVMLog: @unchecked Sendable {
 
     static let shared = AVMLog()
 
@@ -144,7 +159,7 @@ final class AVMLog: @unchecked Sendable {
         FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first?
-            .appendingPathComponent("AVM", isDirectory: true)
+            .appendingPathComponent(AVMPaths.supportFolderName, isDirectory: true)
             .appendingPathComponent("logs", isDirectory: true)
     }
 
@@ -174,9 +189,17 @@ final class AVMLog: @unchecked Sendable {
             out = rx.stringByReplacingMatches(in: out, options: [], range: range, withTemplate: "~")
         }
 
+        // Any capitalisation, and the full name too (2026-10-25, privacy
+        // audit): the Ubuntu account's name defaults to the Mac short name
+        // lowercased and its real name to the full name, and either can come
+        // back in a guest's console log.
         let user = NSUserName()
         if user.count >= 4 {
-            out = out.replacingOccurrences(of: user, with: "~")
+            out = out.replacingOccurrences(of: user, with: "~", options: .caseInsensitive)
+        }
+        let fullName = NSFullUserName()
+        if fullName.count >= 4, fullName != user {
+            out = out.replacingOccurrences(of: fullName, with: "~", options: .caseInsensitive)
         }
 
         return out
