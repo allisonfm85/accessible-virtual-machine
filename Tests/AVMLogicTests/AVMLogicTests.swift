@@ -540,3 +540,42 @@ final class SetupReportTests: XCTestCase {
         XCTAssertEqual(SetupReport.list(["A", "B", "C"]), "A, B and C")
     }
 }
+
+// MARK: - Windows' own limits on the answer file
+
+final class AnswerFileLimitsTests: XCTestCase {
+    /// Windows Setup refuses the whole answer file, at the specialize pass,
+    /// if a RunSynchronousCommand Path is over 259 characters (the install
+    /// test's first run stopped there, 2026-10-26). CommandLine allows 1024.
+    func testEveryCommandIsWithinWindowsLimits() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../../Resources/autounattend.xml").standardizedFileURL
+        var text = try String(contentsOf: url, encoding: .utf8)
+        let answers = WindowsSetupAnswers(
+            locale: "en-GB", inputLocale: "0809:00000809", computerName: "Amenas-PC",
+            timeZone: "GMT Standard Time", privacy: .mostPrivate,
+            localAccount: .init(userName: String(repeating: "a", count: 20), displayName: "Amena",
+                                encodedPassword: WindowsSetupAnswers.encode(password: String(repeating: "p", count: 64))))
+        for (marker, section) in answers.answerFileSections {
+            text = text.replacingOccurrences(of: marker, with: section)
+        }
+        final class Collector: NSObject, XMLParserDelegate {
+            var element = "", buffer = "", found: [(String, String)] = []
+            func parser(_ p: XMLParser, didStartElement e: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]) { element = e; buffer = "" }
+            func parser(_ p: XMLParser, foundCharacters s: String) { buffer += s }
+            func parser(_ p: XMLParser, didEndElement e: String, namespaceURI: String?, qualifiedName: String?) {
+                if ["Path", "CommandLine", "Description"].contains(e) { found.append((e, buffer)) }
+                buffer = ""
+            }
+        }
+        let collector = Collector()
+        let parser = XMLParser(data: Data(text.utf8))
+        parser.delegate = collector
+        XCTAssertTrue(parser.parse())
+        XCTAssertFalse(collector.found.isEmpty)
+        let limits = ["Path": 259, "CommandLine": 1024, "Description": 256]
+        for (element, value) in collector.found {
+            XCTAssertLessThanOrEqual(value.count, limits[element]!, "\(element): \(value.prefix(60))…")
+        }
+    }
+}
