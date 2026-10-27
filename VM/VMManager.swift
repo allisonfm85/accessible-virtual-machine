@@ -1283,7 +1283,18 @@ final class VMManager: ObservableObject {
 
     func pauseVM() async throws {
         guard case .running = state else { return }
-        try await sendQMPCommand("stop", arguments: nil)
+        do {
+            try await sendQMPCommand("stop", arguments: nil)
+        } catch {
+            // No answer in time (2026-10-26, code audit): QEMU may still
+            // have paused, leaving AVM saying "running" over a frozen guest.
+            // Asked what QEMU's state is, and it's let go again if paused.
+            if let status = try? await sendQMPCommand("query-status", arguments: nil) as? [String: Any],
+               (status["running"] as? Bool) == false {
+                _ = try? await sendQMPCommand("cont", arguments: nil)
+            }
+            throw error
+        }
         // Still running when the pause lands (2026-10-26, code audit): a
         // Stop chosen meanwhile set .stopping and sent the power button;
         // marking it paused over that left Stop waiting on a guest frozen
@@ -1622,7 +1633,12 @@ final class VMManager: ObservableObject {
                 // works again.
                 // AVMDONE wins: a marker written by a successful install is
                 // never undone by an AVMFAIL written after it.
-                let names = self.unattendNames(mdirURL: mdirURL, runtimeDir: runtimeDir) ?? ""
+                // Off the main thread (2026-10-26, code audit): this task
+                // runs on the main actor, so mdir ran there once a minute,
+                // stalling VoiceOver while it did.
+                let names = await Task.detached { [self] in
+                    self.unattendNames(mdirURL: mdirURL, runtimeDir: runtimeDir) ?? ""
+                }.value
                 let failed = names.contains("AVMFAIL") && !names.contains("AVMDONE")
                 if failed {
                     let minutes = (minutesSinceFailureMarker ?? -1) + 1

@@ -579,11 +579,20 @@ nonisolated final class WindowsInstallPipeline {
                     return
                 }
 
+                // A time limit (2026-10-26, code audit): an ISO on a drive
+                // unplugged mid-copy left hdiutil or ditto waiting for good,
+                // after "Step N of M", with nothing more said. 45 minutes is
+                // far past any real step; the pipeline then fails and says so.
+                nonisolated(unsafe) var timedOut = false
+                let limit = DispatchWorkItem { timedOut = true; process.terminate() }
+                DispatchQueue.global().asyncAfter(deadline: .now() + 45 * 60, execute: limit)
                 // Read before waitUntilExit to avoid a full-pipe deadlock on large output.
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
-                let output = String(data: data, encoding: .utf8) ?? ""
-                continuation.resume(returning: (process.terminationStatus, output))
+                limit.cancel()
+                var output = String(data: data, encoding: .utf8) ?? ""
+                if timedOut { output += "\n\(executable.lastPathComponent) took more than 45 minutes and was stopped. Is the installer's drive still connected?" }
+                continuation.resume(returning: (timedOut ? -2 : process.terminationStatus, output))
             }
         }
     }

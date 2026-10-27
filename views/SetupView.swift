@@ -62,7 +62,11 @@ struct SetupView: View {
         let fileURL = storageFolder ?? URL(fileURLWithPath: NSHomeDirectory())
         if let values = try? fileURL.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
            let available = values.volumeAvailableCapacity {
-            return max(40, available / (1024 * 1024 * 1024) - 20)
+            // No floor above what fits (2026-10-26, code audit): the
+            // floor of 40 let a disk bigger than the free space be made, and
+            // the install filled the Mac's disk. createVM refuses when even
+            // the 40 GB minimum doesn't fit.
+            return available / (1024 * 1024 * 1024) - 20
         }
         return 500
     }
@@ -242,7 +246,7 @@ struct SetupView: View {
                     Text("Disk Size: \(diskSizeGB) GB")
                         .font(.headline)
                         .accessibilityLabel("Disk size: \(diskSizeGB) gigabytes")
-                    Stepper(value: $diskSizeGB, in: 40...maxDiskInGB, step: 10) { Text("Disk size in gigabytes") }
+                    Stepper(value: $diskSizeGB, in: 40...max(40, maxDiskInGB), step: 10) { Text("Disk size in gigabytes") }
                         .labelsHidden()
                         .accessibilityHint("Adjust with arrow keys. Minimum 40 GB, maximum \(maxDiskInGB) GB based on available space")
                 }
@@ -728,6 +732,19 @@ struct SetupView: View {
 
         guard !vmName.trimmingCharacters(in: .whitespaces).isEmpty else {
             reportGuidance("Please enter a name for the virtual machine.")
+            return
+        }
+
+        // The disk must fit, with 20 GB to spare for the Mac (2026-10-26,
+        // code audit): disks are made sparse, so a too-big one was made
+        // without complaint and the install filled the Mac's disk.
+        guard maxDiskInGB >= 40 else {
+            reportGuidance("There isn't room for a virtual machine on this drive: it needs at least 40 gigabytes, plus 20 to spare. Free some space, or choose another drive for it.")
+            return
+        }
+        if diskSizeGB > maxDiskInGB {
+            diskSizeGB = maxDiskInGB
+            reportGuidance("The disk is now \(maxDiskInGB) gigabytes, the most that fits on this drive with 20 to spare. Choose Create again to use it.")
             return
         }
 

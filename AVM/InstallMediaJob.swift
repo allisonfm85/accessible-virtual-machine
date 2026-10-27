@@ -28,6 +28,7 @@ enum InstallMediaJob {
     /// Called first thing at launch; returns only when not asked.
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
         guard arguments.contains(flag) else { return }
+        AVMLog.useTestLogFolder()
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]

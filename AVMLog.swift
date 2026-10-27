@@ -172,8 +172,21 @@ nonisolated final class AVMLog: @unchecked Sendable {
 
     /// Directory holding the kept log files.
     static var logDirectory: URL? {
-        (try? AVMPaths.supportDirectory())?
+        if let logDirectoryOverride { return logDirectoryOverride }
+        return (try? AVMPaths.supportDirectory())?
             .appendingPathComponent("logs", isDirectory: true)
+    }
+
+    /// Set by the window-less test runs (InstallMediaJob, MacTestJob,
+    /// KeyboardTestJob) before anything is logged (2026-10-26, code audit):
+    /// each run used to open a new log in the real folder, and keeping only
+    /// the newest few pushed out the user's own, the previous launch's
+    /// most of all.
+    nonisolated(unsafe) static var logDirectoryOverride: URL?
+
+    /// The test runs' log folder: beside the system's temporary files.
+    static func useTestLogFolder() {
+        logDirectoryOverride = FileManager.default.temporaryDirectory.appendingPathComponent("avm-test-logs", isDirectory: true)
     }
 
     // MARK: - Sanitizer (Promise 2)

@@ -619,7 +619,7 @@ nonisolated final class UbuntuInstallPipeline {
                 case .writeAnswers:     try stageWriteAnswers(input: input, account: account, scratch: scratch, distro: distro,
                                                               version: identity.info?.version ?? "")
                 case .buildMarkerImage: try await stageBuildMarkerImage(scratch: scratch)
-                case .rebuildISO:       try await stageRebuildISO(input: input, scratch: scratch, distro: distro)
+                case .rebuildISO:       try await stageRebuildISO(input: input, scratch: scratch, distro: distro, account: account)
                 case .promote:          try stagePromote(input: input, scratch: scratch)
                 }
             }
@@ -907,7 +907,7 @@ nonisolated final class UbuntuInstallPipeline {
 
     // MARK: Stage 3 — the ISO
 
-    private func stageRebuildISO(input: Input, scratch: URL, distro: LinuxDistro) async throws {
+    private func stageRebuildISO(input: Input, scratch: URL, distro: LinuxDistro, account: UbuntuAccount) async throws {
         if distro == .fedora {
             try await stageRebuildFedoraISO(input: input, scratch: scratch)
             return
@@ -923,7 +923,7 @@ nonisolated final class UbuntuInstallPipeline {
             throw UbuntuPipelineError.stageFailed(stage: .rebuildISO,
                                                  reason: "Couldn't read the installer's boot menu. (xorriso exit \(extract.code))")
         }
-        guard let edited = distro == .debian ? Self.editedDebianBootMenu(original) : Self.editedBootMenu(original) else {
+        guard let edited = distro == .debian ? Self.editedDebianBootMenu(original, keyboard: Self.debianKeyboardArguments(account)) : Self.editedBootMenu(original) else {
             throw UbuntuPipelineError.stageFailed(stage: .rebuildISO,
                                                  reason: "The installer's boot menu isn't in the form AVM knows, so the answers couldn't be added. This Ubuntu release may be newer than this version of AVM.")
         }
@@ -979,12 +979,27 @@ nonisolated final class UbuntuInstallPipeline {
     /// The first installer entry boots by itself, with the answers, after a
     /// second; the marker guard keeps an installed machine off the
     /// installer, as for Ubuntu.
-    static func editedDebianBootMenu(_ original: String) -> String? {
+    /// The keyboard on the installer's command line (2026-10-26, MEASURED by
+    /// test-linux-install.sh --keyboard gb:mac): Debian's installer settles
+    /// the keyboard before it reads the preseed file, so the preseed's
+    /// keyboard answers were ignored and every install got "us". Account
+    /// values are checked words (UbuntuAccount), safe on the command line.
+    static func debianKeyboardArguments(_ account: UbuntuAccount) -> String {
+        let layout = account.keyboardLayout ?? "us"
+        var words = "keymap=\(layout) keyboard-configuration/layoutcode=\(layout)"
+        if let variant = account.keyboardVariant, !variant.isEmpty {
+            words += " keyboard-configuration/variantcode=\(variant)"
+        }
+        return words
+    }
+
+    static func editedDebianBootMenu(_ original: String, keyboard: String = "") -> String? {
         guard let entry = original.range(of: "linux\\s+/install\\.a64/vmlinuz", options: .regularExpression) else {
             return nil
         }
         var menu = original
-        menu.replaceSubrange(entry, with: "\(original[entry]) \(debianKernelArguments)")
+        let arguments = keyboard.isEmpty ? debianKernelArguments : "\(debianKernelArguments) \(keyboard)"
+        menu.replaceSubrange(entry, with: "\(original[entry]) \(arguments)")
         if let timeout = menu.range(of: "(?m)^set timeout=[0-9]+", options: .regularExpression) {
             menu.replaceSubrange(timeout, with: "set timeout=1")
         } else {
@@ -1002,7 +1017,8 @@ nonisolated final class UbuntuInstallPipeline {
         # Written by AVM. Debian's installer reads this and asks nothing.
         d-i debian-installer/locale string en_US.UTF-8
         d-i keyboard-configuration/xkb-keymap select \(account.keyboardLayout ?? "us")
-        \(account.keyboardVariant.map { "d-i keyboard-configuration/variant select \($0)" } ?? "")
+        d-i keyboard-configuration/layoutcode string \(account.keyboardLayout ?? "us")
+        \(account.keyboardVariant.map { "d-i keyboard-configuration/variantcode string \($0)" } ?? "")
         d-i hw-detect/load_firmware boolean false
         d-i netcfg/choose_interface select auto
         d-i netcfg/get_hostname string \(hostName)
@@ -1074,6 +1090,24 @@ nonisolated final class UbuntuInstallPipeline {
             .replacingOccurrences(of: "/etc/gdm3/custom.conf", with: "/etc/gdm3/daemon.conf")
             .replacingOccurrences(of: "Ubuntu installed by AVM", with: "Debian installed by AVM")
             .replacingOccurrences(of: "at the end of Ubuntu's install", with: "at the end of Debian's install")
+            .replacingOccurrences(of: "T=/target\n", with: "T=/target\n" + debianKeyboardFix(account), options: [], range: nil)
+    }
+
+    /// MEASURED 2026-10-26 (test-linux-install.sh --keyboard gb:mac, then the
+    /// installed system's cdebconf record): Debian's installer settles the
+    /// keyboard from the language before it reads the preseed file or the
+    /// command line's keyboard words, and records "us" for every keyboard
+    /// setting. So the setup script writes the installed system's keyboard
+    /// file itself, which the sign-in screen and the desktop read. Values
+    /// are checked words (UbuntuAccount).
+    static func debianKeyboardFix(_ account: UbuntuAccount) -> String {
+        let layout = account.keyboardLayout ?? "us"
+        let variant = account.keyboardVariant ?? ""
+        return """
+            # The keyboard chosen in AVM's wizard (Debian's installer keeps "us").
+            sed -i -e 's/^XKBLAYOUT=.*/XKBLAYOUT="\(layout)"/' -e 's/^XKBVARIANT=.*/XKBVARIANT="\(variant)"/' $T/etc/default/keyboard
+
+            """
     }
 
     // MARK: Fedora (2026-10-26)
@@ -1526,9 +1560,16 @@ nonisolated final class UbuntuInstallPipeline {
                     continuation.resume(returning: (-1, "Failed to launch \(executable.lastPathComponent): \(error.localizedDescription)"))
                     return
                 }
+                // A time limit, as the Windows pipeline's (2026-10-26).
+                nonisolated(unsafe) var timedOut = false
+                let limit = DispatchWorkItem { timedOut = true; process.terminate() }
+                DispatchQueue.global().asyncAfter(deadline: .now() + 45 * 60, execute: limit)
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
-                continuation.resume(returning: (process.terminationStatus, String(data: data, encoding: .utf8) ?? ""))
+                limit.cancel()
+                var output = String(data: data, encoding: .utf8) ?? ""
+                if timedOut { output += "\n\(executable.lastPathComponent) took more than 45 minutes and was stopped. Is the installer's drive still connected?" }
+                continuation.resume(returning: (timedOut ? -2 : process.terminationStatus, output))
             }
         }
     }

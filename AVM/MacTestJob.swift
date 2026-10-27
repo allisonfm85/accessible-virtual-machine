@@ -33,6 +33,7 @@ enum MacTestJob {
 
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
         guard arguments.contains(flag) else { return }
+        AVMLog.useTestLogFolder()
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -254,13 +255,23 @@ enum MacTestJob {
             let trimmed = part.drop { $0 == "0" }
             return trimmed.isEmpty ? "0" : String(trimmed)
         }.joined(separator: ":")
+        // This machine's own lease, new or renewed since the start
+        // (2026-10-26, code audit): the file being newer and holding the
+        // address wasn't enough, because a reused or restored machine's old
+        // lease is still there, and any other machine renewing touches the
+        // file.
+        func lease(in text: String) -> String? {
+            for block in text.components(separatedBy: "}") where block.contains("hw_address=1,\(wanted)\n") {
+                return block.components(separatedBy: "\n").first { $0.trimmingCharacters(in: .whitespaces).hasPrefix("lease=") }
+            }
+            return nil
+        }
+        let before = (try? String(contentsOfFile: "/var/db/dhcpd_leases", encoding: .utf8)).flatMap(lease(in:))
         let deadline = Date().addingTimeInterval(minutes * 60)
         let started = Date()
         while Date() < deadline {
             if let text = try? String(contentsOfFile: "/var/db/dhcpd_leases", encoding: .utf8),
-               let attributes = try? FileManager.default.attributesOfItem(atPath: "/var/db/dhcpd_leases"),
-               let modified = attributes[.modificationDate] as? Date, modified >= after,
-               text.contains("hw_address=1,\(wanted)\n") {
+               let now = lease(in: text), now != before {
                 print("   (address after \(Int(Date().timeIntervalSince(started))) seconds)")
                 return
             }

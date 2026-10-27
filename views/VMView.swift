@@ -1679,6 +1679,14 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
             avmPublicLog("pointer confine (\(reason)) skipped — no window yet.")
             return
         }
+        // Only for the key window (2026-10-26, code audit): entered with a
+        // sheet or an alert in front, the pointer was hidden and held, and
+        // with no resign-key to come, never let go. The key-status watch
+        // confines it when the window becomes key.
+        guard window.isKeyWindow else {
+            avmPublicLog("pointer confine (\(reason)) skipped — window isn't key.")
+            return
+        }
         let rectInWindow = mtkView.convert(mtkView.bounds, to: nil)
         let rectOnScreen = window.convertToScreen(rectInWindow)
         guard let primary = NSScreen.screens.first else {
@@ -1879,11 +1887,14 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     /// with the mouse conversion; the computation is unchanged.)
     private func applyViewportScale(guestSize: CGSize) {
         guard guestSize.width > 0, guestSize.height > 0 else { return }
+        // Kept first (2026-10-26, code audit): stored after the drawable
+        // check, a guest size that arrived before the view had a drawable
+        // was lost, and an unchanging guest screen never sent another.
+        lastAppliedGuestSize = guestSize
         guard let renderer, let mtkView else { return }
         let drawable = mtkView.drawableSize
         guard drawable.width > 0, drawable.height > 0 else { return }
 
-        lastAppliedGuestSize = guestSize
         let scale = Self.aspectFitScale(drawable: drawable, guest: guestSize)
         guard abs(renderer.viewportScale - scale) > 0.0005 else { return }
         renderer.viewportOrigin = .zero

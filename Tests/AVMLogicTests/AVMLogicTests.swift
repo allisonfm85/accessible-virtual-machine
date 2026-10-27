@@ -742,6 +742,17 @@ final class DebianInstallTests: XCTestCase {
         XCTAssertTrue(edited.contains("set timeout=1"))
         XCTAssertEqual(edited.components(separatedBy: UbuntuInstallPipeline.debianKernelArguments).count, 2, "only the first entry")
         XCTAssertNil(UbuntuInstallPipeline.editedDebianBootMenu("menuentry 'x' { linux /casper/vmlinuz }"))
+        // The keyboard goes on the installer's command line too (2026-10-26).
+        var account = UbuntuAccount(realName: "A", userName: "a", passwordHash: "$6$x$y", signInAutomatically: true)
+        account.keyboardLayout = "gb"
+        account.keyboardVariant = "mac"
+        let words = UbuntuInstallPipeline.debianKeyboardArguments(account)
+        XCTAssertEqual(words, "keymap=gb keyboard-configuration/layoutcode=gb keyboard-configuration/variantcode=mac")
+        let withKeyboard = try XCTUnwrap(UbuntuInstallPipeline.editedDebianBootMenu(menu, keyboard: words))
+        XCTAssertTrue(withKeyboard.contains("\(UbuntuInstallPipeline.debianKernelArguments) \(words)"))
+        let script = UbuntuInstallPipeline.debianSetupScript(account: account)
+        XCTAssertTrue(script.contains(#"s/^XKBLAYOUT=.*/XKBLAYOUT="gb"/"#), "the setup script writes the keyboard itself")
+        XCTAssertTrue(script.contains(#"s/^XKBVARIANT=.*/XKBVARIANT="mac"/"#))
     }
 
     func testPreseedAnswersEverything() {

@@ -678,7 +678,9 @@ private struct DashboardContent: View {
                             shutDown(session)
                         }
                         .accessibilityHint("Gracefully shuts down \(guest)")
-                        .keyboardShortcut(".", modifiers: .command)
+                        // No Command-period (2026-10-26, code audit): it's
+                        // the Mac's own Cancel chord, and here it began a
+                        // shutdown without asking.
                     }
 
                     // Force Stop is offered while shutting down too

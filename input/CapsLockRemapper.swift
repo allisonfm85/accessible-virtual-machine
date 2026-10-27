@@ -491,8 +491,17 @@ final class CapsLockRemapper {
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
 
+        // Both pipes drained at once (2026-10-26, code audit): read one
+        // after the other, a full stderr pipe held hidutil until the
+        // watchdog fired, five seconds on the main thread.
+        nonisolated(unsafe) var errData = Data()
+        let errDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            errDone.signal()
+        }
         let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        errDone.wait()
         process.waitUntilExit()
         watchdog.cancel()
 

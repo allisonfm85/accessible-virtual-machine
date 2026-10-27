@@ -60,6 +60,7 @@ enum KeyboardTestJob {
 
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
         guard arguments.contains(flag) else { return }
+        AVMLog.useTestLogFolder()
         guard let i = arguments.firstIndex(of: "--spice"), arguments.indices.contains(i + 1) else {
             print("Usage: AVM \(flag) --spice <spice.sock>")
             exit(64)

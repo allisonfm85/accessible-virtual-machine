@@ -73,7 +73,11 @@ struct SettingsView: View {
             : ((try? configuration.directoryURL()) ?? URL(fileURLWithPath: NSHomeDirectory()))
         if let values = try? fileURL.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
            let available = values.volumeAvailableCapacity {
-            return max(40, available / (1024 * 1024 * 1024) - 20)
+            // What fits: the disk as it is plus the free space, less 20 GB
+            // for the Mac (2026-10-26, code audit: a floor of 40 let it grow
+            // past the free space). The disk already holds its own size at
+            // most, so growing to this never needs more than is free.
+            return saved.diskSizeGB + max(0, available / (1024 * 1024 * 1024) - 20)
         }
         return 500
     }

@@ -558,6 +558,7 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
             // cleanup() existed with no callers; this is the place the
             // header above left for it.
             FocusLockManager.shared?.cleanup()
+            Announcer.shared.waitUntilQuiet(seconds: 8)
         }
     }
 }

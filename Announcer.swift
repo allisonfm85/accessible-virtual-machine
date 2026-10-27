@@ -136,6 +136,16 @@ final class Announcer {
     /// while "Mac keyboard on" is still being spoken.
     var isSpeaking: Bool { synthesizer.isSpeaking }
 
+    /// Lets what's being said finish, up to `seconds`, before AVM exits
+    /// (2026-10-26, code audit): the last outcomes of a quit ("…is saved",
+    /// a USB device given back) were cut off as the process ended.
+    func waitUntilQuiet(seconds: TimeInterval) {
+        let deadline = Date().addingTimeInterval(seconds)
+        while synthesizer.isSpeaking && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        }
+    }
+
     /// Play the tone's sound immediately, then speak the message with the
     /// system voice. Every tone enqueues behind whatever is speaking, so
     /// nothing is cut off or silently eaten. See INTERRUPTION POLICY in

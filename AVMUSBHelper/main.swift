@@ -204,6 +204,9 @@ final class DeviceRegistry {
     private var entries: [AVMUSBDeviceIdentity: DeviceEntry] = [:]
     /// For the idle exit, which reads it inside queue.sync.
     var isEmpty: Bool { entries.isEmpty }
+    /// Entries whose release never finished; kept so their streams'
+    /// callbacks stay valid. The process exiting releases their devices.
+    private var abandoned: [DeviceEntry] = []
     private var runtimeStarted = false
     // MARK: Attach
     func attach(_ device: AVMUSBDeviceIdentity,
@@ -321,6 +324,17 @@ final class DeviceRegistry {
                     entry.detachReply = nil
                     os_log("release of %{public}@ timed out", log: log, type: .error, device.description)
                     pending(false, "The helper asked the stream for \(device.displayName) to stop, but it did not finish within 10 seconds.")
+                }
+                // Still not back a minute on (2026-10-26, code audit): the
+                // device would be refused as "already attached" until the
+                // helper restarted, and the helper never went idle. The
+                // entry is set aside (kept alive: the stream's callbacks
+                // still point at it), so the device can be attached again.
+                self.queue.asyncAfter(deadline: .now() + 50) {
+                    guard let current = self.entries[device], current === entry, entry.state == .releasing else { return }
+                    os_log("release of %{public}@ never finished; setting it aside", log: log, type: .error, device.description)
+                    self.entries[device] = nil
+                    self.abandoned.append(entry)
                 }
             }
             entry.detachTimeout = timeout

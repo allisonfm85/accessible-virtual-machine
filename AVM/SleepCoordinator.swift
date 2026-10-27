@@ -25,6 +25,10 @@ final class SleepCoordinator {
     private var notifyPort: IONotificationPortRef?
     /// True when AVM paused the VM for sleep, so only that pause is undone.
     private var pausedForSleep = false
+    /// Between the Mac's sleep and its wake (2026-10-26, code audit): a
+    /// pause that lands after the wake (QEMU slower than holdLimit) is let
+    /// go at once, instead of leaving the machine paused with nothing said.
+    private var asleep = false
     /// The longest AVM holds the Mac's sleep for the pause.
     private static let holdLimit: Duration = .seconds(5)
 
@@ -80,9 +84,15 @@ final class SleepCoordinator {
         // Sleep goes ahead after the pause, or after holdLimit if QEMU is
         // slow to answer, whichever comes first; never both.
         let once = AllowOnce(port: port, token: token)
+        asleep = true
         Task { @MainActor in
             do {
                 try await manager.pauseVM()
+                guard self.asleep else {
+                    AVMLog.write("AVM: Sleep — the pause landed after the Mac woke; resuming at once.")
+                    try? await manager.resumeVM()
+                    return
+                }
                 self.pausedForSleep = true
             } catch {
                 AVMLog.write("AVM: Sleep — the pause failed (\(error.localizedDescription)); letting the Mac sleep anyway.")
@@ -96,6 +106,7 @@ final class SleepCoordinator {
     }
 
     private func didWake() {
+        asleep = false
         guard pausedForSleep else { return }
         pausedForSleep = false
         guard let manager = VMManager.shared, manager.state == .paused else { return }

@@ -76,10 +76,9 @@ enum WindowsReinstall {
             throw WindowsReinstallError.failed("AVM couldn't make a new disk, so nothing was changed. Reason: \(error.localizedDescription)")
         }
 
-        // Then everything of the old Windows.
-        for name in ["install-avm.iso", "autounattend.img", "nvram.fd", "tpm-state", RestorePoints.folderName, "firmware-serial.log"] {
-            try? fm.removeItem(at: dir.appendingPathComponent(name))
-        }
+        // The new disk first, then everything of the old Windows (2026-10-26,
+        // code audit): in the other order, a failed swap left the old disk
+        // with its restore points but without their firmware and TPM copies.
         do {
             if fm.fileExists(atPath: disk.path) {
                 _ = try fm.replaceItemAt(disk, withItemAt: fresh)
@@ -87,7 +86,11 @@ enum WindowsReinstall {
                 try fm.moveItem(at: fresh, to: disk)
             }
         } catch {
-            throw WindowsReinstallError.failed("AVM couldn't put the new disk in place. Reason: \(error.localizedDescription) Next: reinstall again.")
+            try? fm.removeItem(at: fresh)
+            throw WindowsReinstallError.failed("AVM couldn't put the new disk in place, so nothing was changed. Reason: \(error.localizedDescription)")
+        }
+        for name in ["install-avm.iso", "autounattend.img", "nvram.fd", "tpm-state", RestorePoints.folderName, "firmware-serial.log"] {
+            try? fm.removeItem(at: dir.appendingPathComponent(name))
         }
         try answers?.save(inVMDirectory: dir)
         AVMLog.write("AVM: Reinstall — \(configuration.name) is ready to install Windows again at its next start.")
