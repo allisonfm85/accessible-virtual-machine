@@ -11,16 +11,23 @@
 # WHAT IT BUILDS
 #   1. UTM's macOS arm64 dependency build (scripts/build_dependencies.sh),
 #      at the pinned UTM commit below, with two changes:
-#        - The GPU stack is left out: ANGLE, libepoxy, the Vulkan loader,
-#          virglrenderer, Mesa, MoltenVK, LLVM and the D3D drivers. AVM
-#          gives the guest plain virtio-gpu-pci with no OpenGL, and links
-#          none of these libraries, so they would only cost hours.
+#        - Only the OpenGL part of the GPU stack is built (2026-10-27):
+#          ANGLE (OpenGL ES on Metal), libepoxy and virglrenderer without
+#          Vulkan (venus) or Direct3D (neptune), for Linux machines' 3D
+#          acceleration (virtio-gpu-gl-pci, VMConfiguration.gpu3D). The
+#          Vulkan loader, Mesa, MoltenVK, LLVM and the D3D drivers are left
+#          out: AVM offers neither Vulkan nor Windows 3D, and they cost
+#          hours.
 #        - AVM's patches in Tools/sysroot-patches are applied after UTM's
 #          own patch for the same package: the GStreamer osxaudio
 #          deadlock fix, a QEMU build fix so UTM's Metal display code
 #          is compiled only when OpenGL is, QEMU's coreaudio playback and
 #          microphone, and usb-camera (the Mac's camera as a USB webcam).
 #          Each patch's header says what it does and where it comes from.
+#          Patches for git clones, which UTM's build doesn't patch, are in
+#          Tools/sysroot-patches/clones, applied just before their build:
+#          ANGLE and libepoxy opening ANGLE's libraries beside
+#          themselves.
 #   2. The install-pipeline tools UTM doesn't build: xorriso 1.5.8.pl02
 #      (the README's minimum), wimlib-imagex and mtools. They link only
 #      macOS's own libraries, as the build phase expects.
@@ -255,12 +262,10 @@ for check in ("python_module_test mako ", "command -v cmake "):
         sys.exit(f"UTM's check_env no longer has: {check}")
     drop(line, check.strip())
 
-# GPU sources.
+# GPU sources, except the OpenGL ones (WebKit for ANGLE, libepoxy,
+# virglrenderer), which Linux 3D acceleration uses.
 for line in [
-    'clone $WEBKIT_REPO $WEBKIT_COMMIT "$WEBKIT_SUBDIRS"\n',
-    "clone $EPOXY_REPO $EPOXY_COMMIT\n",
     "clone $VULKAN_LOADER_REPO $VULKAN_LOADER_COMMIT\n",
-    "clone $VIRGLRENDERER_REPO $VIRGLRENDERER_COMMIT\n",
     "clone $HYPERVISOR_REPO $HYPERVISOR_COMMIT\n",
     "clone $MESA_REPO $MESA_COMMIT\n",
     "clone $MOLTENVK_REPO $MOLTENVK_COMMIT\n",
@@ -271,12 +276,29 @@ for line in [
 ]:
     drop("    " + line, "GPU download")
 
-# GPU builds inside build_qemu_dependencies, up to the iOS-only hypervisor.
+# GPU builds inside build_qemu_dependencies, up to the iOS-only hypervisor:
+# only ANGLE, libepoxy and virglrenderer, without Vulkan or Direct3D
+# (2026-10-27). QEMU's configure finds them and turns on OpenGL and VirGL.
 start = s.find("    # GPU support\n")
 end = s.find("    # Hypervisor for iOS\n")
 if start < 0 or end < start:
     sys.exit("UTM's build_qemu_dependencies no longer has its GPU support block.")
-s = s[:start] + s[end:]
+block = s[start:end]
+for needed in ("    build_angle\n", "meson_build $EPOXY_REPO", "meson_darwin_build $VIRGLRENDERER_REPO"):
+    if needed not in block:
+        sys.exit(f"UTM's GPU support block no longer has: {needed.strip()}")
+s = s[:start] + """    # GPU support: OpenGL only (AVM)
+    # AVM's patches for git clones, which UTM's build doesn't patch:
+    # ANGLE and libepoxy open ANGLE's libraries beside themselves
+    # (Tools/sysroot-patches/clones).
+    git -C "$BUILD_DIR/WebKit.git" checkout -q -- Source/ThirdParty/ANGLE/src
+    patch -d "$BUILD_DIR/WebKit.git" -p1 < "$AVM_CLONE_PATCHES/WebKit+angle-dylibs.patch"
+    build_angle
+    git -C "$BUILD_DIR/libepoxy.git" checkout -q -- .
+    patch -d "$BUILD_DIR/libepoxy.git" -p1 < "$AVM_CLONE_PATCHES/libepoxy+angle-dylibs.patch"
+    meson_build $EPOXY_REPO -Dtests=false -Dglx=no -Degl=yes
+    meson_darwin_build $VIRGLRENDERER_REPO -Dtests=false -Dcheck-gl-errors=false -Dvenus=false -Dneptune=false
+""" + s[end:]
 
 # The GPU driver stages in the main sequence.
 drop("build_vulkan_drivers\nbuild_d3d_drivers\n", "GPU driver stages")
@@ -315,7 +337,7 @@ for p in sorted(patches.glob("*.patch")):
         f.write("\n" + p.read_text())
     print(f"   Added {p.name} after UTM's patches/{target.name}")
 PY
-    info "GPU stack left out (ANGLE, epoxy, Vulkan, virglrenderer, Mesa, MoltenVK, LLVM, D3D)"
+    info "GPU stack: OpenGL only (ANGLE, epoxy, virglrenderer); Vulkan, Mesa, MoltenVK, LLVM and D3D left out"
 
     step "Building UTM's dependencies (most of an hour)"
 
@@ -330,6 +352,7 @@ PY
     (
         cd "$PARENT"
         env PATH="$BUILD_PATH" NCPU="$JOBS" AVM_SOURCES_SHA256="$REPO_ROOT/Tools/sysroot-sources.sha256" \
+            AVM_CLONE_PATCHES="$REPO_ROOT/Tools/sysroot-patches/clones" \
             "$UTM_DIR/scripts/build_dependencies.sh" -p macos -a arm64
     ) 2>&1 | tee "$UTM_LOG" \
         | sed -u -E 's/\x1b\[[0-9;]*m//g; s/\\033\[[0-9;]*m//g' \
@@ -550,6 +573,11 @@ done < <(find "$OUT/bin" "$OUT/lib" "$OUT/Frameworks" -type f \( -perm -u+x -o -
 [ "$brew_refs" = "0" ] || problem "$brew_refs binaries link Homebrew libraries"
 "$OUT/bin/qemu-system-aarch64" -device help 2>/dev/null | grep -q '"usb-camera"' \
     || problem "QEMU has no usb-camera device (Tools/sysroot-patches/qemu-10.0.12-utm+usb-camera.patch)"
+"$OUT/bin/qemu-system-aarch64" -device help 2>/dev/null | grep -q '"virtio-gpu-gl-pci"' \
+    || problem "QEMU has no virtio-gpu-gl-pci: it was built without OpenGL or virglrenderer"
+for lib in libEGL.dylib libGLESv2.dylib libepoxy.0.dylib libvirglrenderer.1.dylib; do
+    [ -f "$OUT/lib/$lib" ] || problem "$lib is missing: Linux 3D acceleration needs it"
+done
 
 [ "$problems" = "0" ] || fail "$problems problems with the sysroot (listed above)."
 info "Every framework and library AVM links is present."

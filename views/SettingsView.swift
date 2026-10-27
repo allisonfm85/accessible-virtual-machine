@@ -135,6 +135,7 @@ struct SettingsView: View {
     @State private var noWindow = false
     @State private var sharePrinters = false
     @State private var shareCamera = false
+    @State private var gpu3D = false
     @State private var sharedFolderPath: String?
     @State private var sharedFolderReadOnly = false
     @State private var brailleFollowsBack = true
@@ -302,6 +303,22 @@ struct SettingsView: View {
             }
             .padding(.horizontal)
 
+            // 3D graphics (2026-10-27), Linux only
+            if configuration.guestOS.isLinux && VMManager.supports3D {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("3D Graphics")
+                        .font(.headline)
+                        .accessibilityAddTraits(.isHeader)
+                    Toggle("Draw \(guest) with your Mac's graphics chip", isOn: $gpu3D)
+                        .accessibilityHint("When on, \(guest)'s desktop and 3D apps use your Mac's GPU")
+                    Text("Makes \(guest)'s desktop smoother and lets apps that need 3D run. While it's on, \(guest) can't be saved with its apps open, and restore points are taken with \(guest) stopped: QEMU can't save 3D graphics yet. Takes effect at the next Start.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal)
+            }
+
             // Clipboard (2026-10-25)
             VStack(alignment: .leading, spacing: 6) {
                 Text("Clipboard")
@@ -387,7 +404,10 @@ struct SettingsView: View {
             Text("Save with Open Apps")
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
-            if saved.usesVirtioDisk && saved.diskBusSwitch == nil {
+            if saved.uses3D && VMManager.supports3D {
+                Text("Off while 3D Graphics is on: QEMU can't save 3D graphics yet. Shut \(guest) down instead; restore points can still be taken with it stopped.")
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if saved.usesVirtioDisk && saved.diskBusSwitch == nil {
                 Text("On. Save keeps \(guest) as it is, open apps and all, and restore points taken while it runs keep open apps too.")
                     .fixedSize(horizontal: false, vertical: true)
             } else if saved.diskBusSwitch != nil {
@@ -860,6 +880,7 @@ struct SettingsView: View {
         noWindow = saved.startsWithoutWindow
         sharePrinters = saved.sharesPrinters
         shareCamera = saved.sharesCamera
+        gpu3D = saved.gpu3D == true
         sharedFolderPath = saved.sharedFolderPath
         sharedFolderReadOnly = saved.sharedFolderIsReadOnly
         brailleFollowsBack = saved.brailleFollowsBack
@@ -893,7 +914,7 @@ struct SettingsView: View {
         // snapshot along anyway.
         let changesMachine = cpuCount != saved.cpuCount || ramSizeGB != saved.ramSizeGB || growTo != nil
             || secureBoot != saved.usesSecureBoot || shareMicrophone != saved.sharesMicrophone
-            || shareCamera != saved.sharesCamera
+            || shareCamera != saved.sharesCamera || gpu3D != (saved.gpu3D == true)
         var discardSaved: VMConfiguration?
         if !isRunning, changesMachine, QEMUSavedState.looksSaved(saved) {
             let alert = NSAlert()
@@ -978,6 +999,7 @@ struct SettingsView: View {
             updated.noWindow = noWindow ? true : nil
             updated.sharePrinters = sharePrinters ? true : nil
             updated.shareCamera = shareCamera ? true : nil
+            updated.gpu3D = gpu3D ? true : nil
             updated.sharedFolderPath = sharedFolderPath
             updated.sharedFolderReadOnly = sharedFolderReadOnly ? true : nil
             updated.brailleFollowThrough = brailleFollowsBack ? nil : "ask"

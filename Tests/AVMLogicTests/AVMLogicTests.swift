@@ -1302,3 +1302,17 @@ final class DiskWatchTests: XCTestCase {
         XCTAssertTrue(DiskWatch.guestWords(machine: "Work PC", drive: full).hasPrefix("Work PC's C: drive is 92 percent full, with 5 gigabytes left."))
     }
 }
+
+// MARK: - 3D graphics (2026-10-27)
+
+final class Graphics3DTests: XCTestCase {
+    func testOnlyLinuxMachinesDrawIn3D() {
+        var linux = VMConfiguration(guestOSName: "debian")
+        XCTAssertFalse(linux.uses3D, "off unless chosen")
+        linux.gpu3D = true
+        XCTAssertTrue(linux.uses3D)
+        var windows = VMConfiguration()
+        windows.gpu3D = true
+        XCTAssertFalse(windows.uses3D, "Windows has no virgl driver")
+    }
+}

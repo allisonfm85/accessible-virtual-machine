@@ -17,6 +17,12 @@
 //   AVM.app/Contents/MacOS/AVM --run-in-guest <command> --vm <folder> --guest <os>
 //   AVM.app/Contents/MacOS/AVM --test-printers --vm <folder> --guest <os>
 //   AVM.app/Contents/MacOS/AVM --test-camera --vm <folder> --guest <os>
+//   AVM.app/Contents/MacOS/AVM --test-3d --vm <folder> --guest <linux os>
+//
+// --test-3d: starts a Linux machine with 3D Graphics (gpu3D), checks its
+// kernel found virgl and that OpenGL there is drawn by virgl (on the
+// Mac's GPU through ANGLE) rather than in software, and that AVM doesn't
+// offer to save it with open apps (QEMU can't save virgl).
 //
 // --test-camera: starts the machine with the Mac's camera (shareCamera),
 // checks the machine has a working camera called Mac Camera, takes a
@@ -87,7 +93,7 @@ enum SaveResumeTestJob {
                 || arguments.contains("--test-duplicate") || arguments.contains("--test-send-file")
                 || arguments.contains("--test-linux-share") || arguments.contains("--test-ctl")
                 || arguments.contains("--test-disk-info") || arguments.contains("--run-in-guest")
-                || arguments.contains("--test-printers") || arguments.contains("--test-camera") else { return }
+                || arguments.contains("--test-printers") || arguments.contains("--test-camera") || arguments.contains("--test-3d") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -104,6 +110,31 @@ enum SaveResumeTestJob {
                 let guest2 = GuestOS(rawValue: value("--guest2") ?? "windows") ?? .windows
                 let passed = await twoMachines(folderURL, guest, URL(fileURLWithPath: second, isDirectory: true), guest2)
                 print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+            }
+            if arguments.contains("--test-3d") {
+                let manager = VMManager()
+                var config = configuration(folder: folderURL, guest: guest)
+                config.gpu3D = true
+                guard await start(manager, config), let agent = manager.guestAgentSocketPath,
+                      await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                try? await Task.sleep(for: .seconds(30))
+                let script = #"""
+                echo "kernel: $(dmesg | grep -i -o -E 'features:.*virgl[^ ]*' | head -1)"
+                ls /dev/dri 2>/dev/null | sed 's/^/dri: /'
+                # A test machine: eglinfo is put in when missing.
+                command -v eglinfo >/dev/null || { command -v apt-get >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -q mesa-utils >/dev/null 2>&1; } \
+                    || { command -v dnf >/dev/null && dnf install -y -q egl-utils >/dev/null 2>&1; }
+                # Debian 13 keeps it out of PATH, in mesa-utils-bin.
+                E=$(command -v eglinfo || dpkg -L mesa-utils-bin 2>/dev/null | grep '/eglinfo$' | head -1)
+                "$E" -B -p surfaceless 2>/dev/null | grep -i -E 'renderer|version string' | sort -u | head -6 | sed 's/^ */opengl: /'
+                """#
+                let text = await exec(agent, program: "/bin/sh", args: ["-c", script]) ?? ""
+                print(text.split(whereSeparator: \.isNewline).map { "   machine: " + $0 }.joined(separator: "\n"))
+                check("the machine's kernel found virgl", text.contains("+virgl"))
+                check("OpenGL there is drawn by virgl, not in software", text.lowercased().contains("virgl") && text.contains("opengl:") && !text.contains("llvmpipe"))
+                check("AVM doesn't offer to save it with open apps", !manager.canSaveState)
+                await shutDown(manager)
+                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
             }
             if arguments.contains("--test-camera") {
                 let manager = VMManager()
@@ -266,6 +297,8 @@ enum SaveResumeTestJob {
         // --camera: any test with the Mac's camera attached (2026-10-27),
         // as --test-save-resume --camera, which checks it can be saved.
         if CommandLine.arguments.contains("--camera") { configuration.shareCamera = true }
+        // --3d: with 3D Graphics, as --run-in-guest --3d for looking around.
+        if CommandLine.arguments.contains("--3d") { configuration.gpu3D = true }
         return configuration
     }
 

@@ -2094,9 +2094,19 @@ final class VMManager: ObservableObject {
         // in guest, same build) — mouse-mode CLIENT with both display
         // channels live. The virtio-serial/vdagent port wiring the agent
         // rides on already exists below (com.redhat.spice.0).
+        // 3D GRAPHICS (2026-10-27): a Linux machine chosen for it, once
+        // installed, draws with the Mac's GPU. SPICE hands CocoaSpice its
+        // frames as OpenGL ES textures (ANGLE on Metal, which the QEMU
+        // process is told to use), and virtio-gpu-gl-pci replaces
+        // virtio-gpu-pci below, same id, so the tablet still follows it.
+        let accelerated = configuration.uses3D && Self.supports3D && !attachInstallMedia
         args += [
             "-spice",
-            "unix=on,addr=\(spiceSocketPath),disable-ticketing=on,agent-mouse=on"
+            // gl is ALWAYS given, off when not 3D: a QEMU built with OpenGL
+            // (UTM's spice-display.c) reads it with no check for absence and
+            // crashed at start without it (2026-10-27, AVM 0.3.0: exit 11 in
+            // qemu_spice_display_early_init, every machine without 3D).
+            "unix=on,addr=\(spiceSocketPath),disable-ticketing=on,agent-mouse=on,gl=\(accelerated ? "es" : "off")"
         ]
 
         // DISPLAY: ramfb + virtio-gpu-pci TOGETHER, ramfb FIRST, ALL PHASES.
@@ -2159,8 +2169,8 @@ final class VMManager: ObservableObject {
         // virtio-gpu-pci — both single-head configurations are proven dead
         // for real use in both phases, and the swapped order is disqualified.
         args += ["-device", "ramfb"]
-        args += ["-device", "virtio-gpu-pci,id=gpu0"]
-        avmLog("buildQEMUArguments: display = ramfb + virtio-gpu-pci id=gpu0 (bisected pair, ramfb first — proven order; issue #4 mechanism record in header)")
+        args += ["-device", accelerated ? "virtio-gpu-gl-pci,id=gpu0" : "virtio-gpu-pci,id=gpu0"]
+        avmLog("buildQEMUArguments: display = ramfb + \(accelerated ? "virtio-gpu-gl-pci (3D, the Mac's GPU)" : "virtio-gpu-pci") id=gpu0 (bisected pair, ramfb first — proven order; issue #4 mechanism record in header)")
 
         // SOUND (2026-10-27): QEMU plays the guest's sound to the Mac itself,
         // through the default output audio unit (AVM's QEMU patch
@@ -2285,7 +2295,9 @@ final class VMManager: ObservableObject {
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments
-        process.environment = ProcessInfo.processInfo.environment
+        // ANGLE draws a 3D machine's OpenGL ES with Metal, as UTM does.
+        // Without 3D nothing reads it.
+        process.environment = ProcessInfo.processInfo.environment.merging(["ANGLE_DEFAULT_PLATFORM": "metal"]) { _, new in new }
 
         let errPipe = Pipe()
         process.standardOutput = FileHandle.nullDevice
@@ -3454,13 +3466,24 @@ extension VMManager {
 
 extension VMManager {
     /// True when the running machine can be saved: an installed machine
-    /// on the virtio disk.
+    /// on the virtio disk, not drawing in 3D (QEMU can't save virgl).
     var canSaveState: Bool {
         guard state == .running || state == .paused,
               let configuration = activeConfiguration,
-              configuration.usesVirtioDisk, installCompleteAtStart else { return false }
+              configuration.usesVirtioDisk, installCompleteAtStart,
+              !(configuration.uses3D && Self.supports3D) else { return false }
         return true
     }
+
+    /// True when this AVM's QEMU can draw in 3D: built from a sysroot
+    /// with ANGLE and virglrenderer (Tools/build-sysroot.sh since
+    /// 2026-10-27). An older sysroot has no virtio-gpu-gl-pci, and a
+    /// machine asking for it wouldn't start, so 3D is neither offered nor
+    /// used then.
+    static let supports3D: Bool = {
+        guard let resources = Bundle.main.resourceURL else { return false }
+        return FileManager.default.fileExists(atPath: resources.appendingPathComponent("libvirglrenderer.1.dylib").path)
+    }()
 
     /// The disk's top node, which snapshot-save and snapshot-load name.
     private func diskNodeName() async throws -> String {
