@@ -579,3 +579,35 @@ final class AnswerFileLimitsTests: XCTestCase {
         }
     }
 }
+
+// MARK: - The keyboard for Windows: HID usages to PC scancodes
+
+final class HIDKeyMapTests: XCTestCase {
+    func testCommonKeys() {
+        XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x04), 0x1E)        // a
+        XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x1D), 0x2C)        // z
+        XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x1E), 0x02)        // 1
+        XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x27), 0x0B)        // 0
+        XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x28), 0x1C)        // Return
+        XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x39), 0x3A)        // Caps Lock: JAWS and NVDA laptop key
+        XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x3A), 0x3B)        // F1
+        XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x45), 0x58)        // F12
+        XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x49), 0x152)       // Insert, the desktop screen reader key
+        XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x52), 0x148)       // Up arrow
+        XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0x62), 0x52)        // keypad 0, also Insert with Num Lock off
+        XCTAssertEqual(HIDKeyMap.scancode(forUsage: 0xE3), 0x15B)       // left Windows (Command on a Mac keyboard)
+        XCTAssertNil(HIDKeyMap.scancode(forUsage: 0x01))                // rollover error
+    }
+
+    /// Two keys never send the same scancode, except the two backslash
+    /// positions PC keyboards share.
+    func testNoUnexpectedDuplicates() {
+        var seen: [Int: Int] = [:]
+        for (usage, code) in HIDKeyMap.table {
+            if let other = seen[code] {
+                XCTAssertEqual(Set([usage, other]), [0x31, 0x32], "usages \(usage) and \(other) both send \(code)")
+            }
+            seen[code] = usage
+        }
+    }
+}

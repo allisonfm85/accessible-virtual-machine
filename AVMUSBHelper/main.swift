@@ -99,6 +99,9 @@ final class IdleWatch {
     private let queue = DispatchQueue(label: "idle")
     private(set) var connectionCount = 0
     private(set) var claimedDeviceCount = 0
+    /// A keyboard for Windows wanted or held (KeyboardHold.swift): the
+    /// helper stays while it is.
+    private(set) var keyboardHeld = false
     /// Synchronous (2026-10-25, code audit): counted before the connection
     /// resumes, so its first attach can never meet an idle exit already on
     /// its way. Called from the listener's queue, never from this one.
@@ -130,8 +133,14 @@ final class IdleWatch {
             }
         }
     }
+    func keyboardChanged(held: Bool) {
+        queue.async {
+            self.keyboardHeld = held
+            if held { self.cancelTimer() } else { self.armIfIdle() }
+        }
+    }
     func armIfIdle() {
-        guard connectionCount == 0, claimedDeviceCount == 0 else { return }
+        guard connectionCount == 0, claimedDeviceCount == 0, !keyboardHeld else { return }
         cancelTimer()
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + idleGracePeriod)
@@ -141,7 +150,7 @@ final class IdleWatch {
             // where every attach runs, so none can be using it as it goes
             // (2026-10-25, code audit: libusb_exit under a running open in
             // a root process).
-            guard self.connectionCount == 0, self.claimedDeviceCount == 0 else { return }
+            guard self.connectionCount == 0, self.claimedDeviceCount == 0, !self.keyboardHeld else { return }
             registry.queue.sync {
                 guard registry.isEmpty else { return }
                 os_log("idle for %{public}.0f s with no connections and no devices; exiting", log: log, type: .default, idleGracePeriod)
@@ -460,6 +469,19 @@ final class HelperService: NSObject, AVMUSBHelperProtocol {
         os_log("version requested", log: log, type: .default)
         reply(AVMUSBHelperNames.machServiceName + " " + helperBuildVersion)
     }
+
+    func listKeyboards(reply: @escaping ([NSDictionary]) -> Void) {
+        reply(KeyboardHold.shared.list())
+    }
+
+    func holdKeyboard(_ keyboardID: String, reply: @escaping (Bool, String?) -> Void) {
+        KeyboardHold.shared.hold(keyboardID, owner: connection, reply: reply)
+    }
+
+    func releaseKeyboard(reply: @escaping () -> Void) {
+        KeyboardHold.shared.release(owner: connection)
+        reply()
+    }
 }
 // MARK: - Listener
 final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
@@ -487,6 +509,7 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
         newConnection.invalidationHandler = {
             os_log("connection invalidated (pid %{public}d)", log: log, type: .default, newConnection.processIdentifier)
             registry.releaseAll(ownedBy: newConnection)
+            KeyboardHold.shared.release(owner: newConnection)
             idle.connectionClosed()
         }
         newConnection.interruptionHandler = {

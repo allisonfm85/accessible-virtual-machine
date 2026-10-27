@@ -239,6 +239,11 @@ struct SettingsView: View {
                 sharedFolderSection
             }
 
+            // Keyboard for Windows (2026-10-26)
+            if configuration.guestOS == .windows {
+                windowsKeyboardSection
+            }
+
             // Sound (2026-10-26)
             VStack(alignment: .leading, spacing: 6) {
                 Text("Sound")
@@ -385,6 +390,67 @@ struct SettingsView: View {
                 Announcer.shared.announce("The restore point was not saved. Reason: \(error.localizedDescription)", tone: .failure)
             }
             restorePointsBusy = false
+        }
+    }
+
+    // MARK: - Keyboard for Windows (2026-10-26)
+
+    @State private var windowsKeyboardID: String?
+    @State private var windowsKeyboardName: String?
+    @State private var connectedKeyboards: [(id: String, name: String)] = []
+    @State private var keyboardsMessage: String?
+
+    private var windowsKeyboardSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Keyboard for Windows")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Text("Choose a second keyboard, USB or Bluetooth, to type only into \(guest) while it runs, whichever app is in front. Your Mac's keyboard stays with the Mac and VoiceOver, so there's nothing to switch. Takes effect the next time \(guest) starts.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Picker("Keyboard for Windows", selection: $windowsKeyboardID) {
+                Text("None: every keyboard types on the Mac").tag(String?.none)
+                ForEach(connectedKeyboards, id: \.id) { keyboard in
+                    Text(keyboard.name).tag(Optional(keyboard.id))
+                }
+                if let id = windowsKeyboardID, !connectedKeyboards.contains(where: { $0.id == id }) {
+                    Text("\(windowsKeyboardName ?? "Keyboard") (not connected now)").tag(Optional(id))
+                }
+            }
+            .onChange(of: windowsKeyboardID) { id in
+                if let id, let keyboard = connectedKeyboards.first(where: { $0.id == id }) {
+                    windowsKeyboardName = keyboard.name
+                }
+            }
+            HStack {
+                Button("Look Again") { Task { await loadKeyboards() } }
+                    .accessibilityHint("Lists the keyboards connected now. Wake a Bluetooth keyboard by pressing a key first.")
+                if let keyboardsMessage {
+                    Text(keyboardsMessage)
+                        .font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.horizontal)
+        .task { await loadKeyboards() }
+    }
+
+    private func loadKeyboards() async {
+        switch await USBHelperClient.shared.listKeyboards() {
+        case .success(let list):
+            connectedKeyboards = list.compactMap { entry in
+                guard (entry["builtIn"] as? NSNumber)?.boolValue != true,
+                      let id = entry["id"] as? String else { return nil }
+                return (id, entry["name"] as? String ?? "Keyboard")
+            }
+            keyboardsMessage = connectedKeyboards.isEmpty
+                ? "No second keyboard is connected. Connect one, or wake it by pressing a key, then choose Look Again."
+                : nil
+        case .failure:
+            connectedKeyboards = []
+            keyboardsMessage = "AVM's helper didn't answer, so keyboards can't be listed. Allow it in System Settings, General, Login Items, then choose Look Again."
         }
     }
 
@@ -669,6 +735,8 @@ struct SettingsView: View {
         sharedFolderReadOnly = saved.sharedFolderIsReadOnly
         brailleFollowsBack = saved.brailleFollowsBack
         lowAudioLatency = saved.usesLowAudioLatency
+        windowsKeyboardID = saved.windowsKeyboardID
+        windowsKeyboardName = saved.windowsKeyboardName
     }
 
     // MARK: - Save Settings
@@ -756,6 +824,8 @@ struct SettingsView: View {
             updated.sharedFolderReadOnly = sharedFolderReadOnly ? true : nil
             updated.brailleFollowThrough = brailleFollowsBack ? nil : "ask"
             updated.lowAudioLatency = lowAudioLatency ? true : nil
+            updated.windowsKeyboardID = windowsKeyboardID
+            updated.windowsKeyboardName = windowsKeyboardID == nil ? nil : windowsKeyboardName
             updated.usbMode = usbMode.rawValue
             updated.usbRememberedDevices = rememberedDevices.isEmpty ? nil : rememberedDevices
             vmStore.save(updated)

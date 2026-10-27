@@ -2092,12 +2092,25 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         // refusal announced, with a re-request until granted) at every button
         // press — see warnIfRelativeCursorMode.
         avmPublicLog("SPICE input channel available — absolute (client-mode) cursor requested for pointer input (issue #4).")
+
+        // The keyboard for Windows (2026-10-26, WindowsKeyboard.swift): its
+        // keys go to this input channel whichever app is in front.
+        WindowsKeyboard.shared.send = { [weak input] code, down in
+            input?.send(down ? .press : .release, code: code)
+        }
+        let id = VMSession.current?.configuration.id
+        if let saved = id.flatMap({ id in VMStore.shared?.configurations.first { $0.id == id } }),
+           let keyboardID = saved.windowsKeyboardID {
+            WindowsKeyboard.shared.start(keyboardID: keyboardID, name: saved.windowsKeyboardName)
+        }
     }
 
     func spiceInputUnavailable(_ connection: CSConnection, input: CSInput) {
         NSLog("AVM: SPICE input channel unavailable.")
         if self.input === input {
             self.input = nil
+            WindowsKeyboard.shared.stop()
+            WindowsKeyboard.shared.send = nil
         }
     }
 

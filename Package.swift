@@ -40,6 +40,7 @@ let package = Package(
                 "AVM/WindowsSetupAnswers.swift",
                 "AVM/GuestAgent.swift",
                 "AVM/SetupReport.swift",
+                "AVM/HIDKeyMap.swift",
             ],
             swiftSettings: appSettings
         ),

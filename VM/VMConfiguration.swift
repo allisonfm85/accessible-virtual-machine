@@ -110,6 +110,14 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// brailleFollowsBack.
     var brailleFollowThrough: String?
 
+    // MARK: - Keyboard for Windows (2026-10-26)
+
+    /// A second keyboard that types only into Windows (WindowsKeyboard
+    /// .swift), by the helper's identifier for it; nil: none. The name is
+    /// for saying which one, even when it isn't connected.
+    var windowsKeyboardID: String?
+    var windowsKeyboardName: String?
+
     // MARK: - Sound (2026-10-26)
 
     /// true: the experimental shorter audio path (SpiceAudioPipeline).
