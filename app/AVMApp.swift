@@ -64,6 +64,7 @@ struct AVMApp: App {
     init() {
         InstallMediaJob.runIfAsked()
         MacTestJob.runIfAsked()
+        KeyboardTestJob.runIfAsked()
     }
 
     var body: some Scene {

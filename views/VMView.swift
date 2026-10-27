@@ -2153,8 +2153,16 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         WindowsKeyboard.shared.send = { [weak input] code, down in
             input?.send(down ? .press : .release, code: code)
         }
-        WindowsKeyboard.shared.sendPause = { [weak input] down in
-            input?.sendPause(down ? .press : .release)
+        // Pause through QEMU's own input, not SPICE (MEASURED 2026-10-26 by
+        // test-windows-install.sh --keyboard): CocoaSpice's sendPause
+        // gets Pause down to Windows but never up, so it repeated as if
+        // held. QMP's input-send-event sends both.
+        WindowsKeyboard.shared.sendPause = { down in
+            Task { @MainActor in
+                try? await VMManager.shared?.sendQMPCommand("input-send-event", arguments: [
+                    "events": [["type": "key", "data": ["down": down, "key": ["type": "qcode", "data": "pause"]]]],
+                ])
+            }
         }
         let id = VMSession.current?.configuration.id
         if let saved = id.flatMap({ id in VMStore.shared?.configurations.first { $0.id == id } }),
