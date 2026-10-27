@@ -4,10 +4,14 @@
 <dict>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>AVM turns your Mac's VoiceOver off while a macOS virtual machine has the keyboard, so its own VoiceOver gets every key, and back on when you leave it.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>AVM lets a virtual machine use your Mac's microphone, when you turn that on in its Settings, for dictation, calls and recordings inside it.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>AVM needs local network access so Windows inside your virtual machine can connect to the internet.</string>
 	<key>NSRemovableVolumesUsageDescription</key>
-	<string>AVM needs access to removable drives so it can send them to your Windows virtual machine.</string>
+	<string>AVM needs access to removable drives to store virtual machines on them, and to send them to your Windows virtual machine.</string>
 	<key>NSUSBDeviceUsageDescription</key>
 	<string>AVM needs USB access to connect peripherals to your Windows virtual machine.</string>
 	<key>SUFeedURL</key>
