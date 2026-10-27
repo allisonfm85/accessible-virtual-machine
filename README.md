@@ -16,7 +16,10 @@ Start with the tester guide: [AVM-TESTER-GUIDE.md](AVM-TESTER-GUIDE.md).
 It covers everything from getting a Windows ISO to reporting problems.
 Problems are reported through this repository's
 [issues](../../issues) — and remember: if AVM fails silently, the
-silence itself is a bug worth reporting.
+silence itself is a bug worth reporting. **Help > Report a Problem**
+puts a report on the clipboard (versions and the end of the diagnostic
+log, without your user name) and opens a new issue for you to paste it
+into.
 
 ## Making a virtual machine's disk larger
 
@@ -129,6 +132,12 @@ matches the checksum its maker publishes. AVM keeps the downloads, so your next 
 them again. If a download fails, AVM says so and Windows installs
 without that screen reader.
 
+## Windows in other languages
+
+Windows Setup runs in the language of the ISO you give it: AVM reads the
+language from the ISO, so a French or German ISO works as an English
+one does.
+
 ## Answers for Windows Setup
 
 The setup wizard asks what Windows Setup would otherwise ask on screens
@@ -141,6 +150,11 @@ sign-in screens and signs in once by itself. AVM keeps the password only
 in Windows' scrambled form, only until the install disc is built, and
 removes the answer file once Windows is installed. Once Windows is
 installed, AVM also deletes its copy of the install disc, about 8.5 GB.
+
+NVDA starts with its laptop keyboard layout, since a Mac keyboard has
+no Insert key or number pad; the wizard has a checkbox for it. The first
+time a machine starts after Windows is installed, AVM says what setup
+installed, or names anything that didn't install and how to install it.
 
 ## Sharing a folder with Windows
 
@@ -175,7 +189,13 @@ go back, choose Restore beside the one you want; AVM asks first, because
 everything since then is lost. A restore point keeps the disk, the
 firmware settings and the TPM, so BitLocker and Windows Hello still match
 afterwards. Each one takes more disk space as Windows changes after it,
-so delete the ones you no longer need.
+so delete the ones you no longer need. AVM saves one called **Fresh
+install** by itself, the first time a machine starts after Windows is set
+up, so a clean Windows is always minutes away.
+
+**Reinstall Windows**, also in Settings, erases Windows on a stopped
+machine and installs it again at the next Start, from the same installer
+and with the same setup answers. It asks first.
 
 ## Braille displays
 

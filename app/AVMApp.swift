@@ -406,6 +406,10 @@ struct AVMApp: App {
             // never received it (tested 2026-10-24). The search field is the
             // system's and stays.
             CommandGroup(replacing: .help) {
+                // Report a Problem… (2026-10-26, ProblemReporter.swift).
+                Button("Report a Problem…") {
+                    ProblemReporter.reportAProblem()
+                }
                 Button("AVM README on GitHub") {
                     AVMLog.write("AVM: Help menu — opening the README on GitHub.")
                     if let url = URL(string: "https://github.com/allisonfm85/accessible-virtual-machine#readme") {

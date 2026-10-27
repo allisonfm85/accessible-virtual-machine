@@ -253,7 +253,9 @@ The window reads top to bottom:
   Windows license is for. Pro is chosen to start with.
 - **Screen Readers**: checkboxes for NVDA (checked to start with) and
   JAWS for ARM. AVM downloads them from their makers and installs them
-  with Windows.
+  with Windows. With NVDA checked, **NVDA uses its laptop keyboard
+  layout** is checked too: on a Mac keyboard, NVDA's key is then Caps
+  Lock.
 - **Windows Setup Answers**: what Windows Setup won't ask you, because
   AVM writes it into this machine's answer file. Each one is filled in
   from your Mac; choose **Let Windows ask** on any of them to answer it in
@@ -709,6 +711,24 @@ firmware settings and the TPM all go back together, so BitLocker and
 Windows Hello keep working. A restore point made with Secure Boot on can
 only be restored with Secure Boot on, and the other way round; AVM says
 so if they differ.
+
+AVM saves a restore point called **Fresh install** by itself, the first
+time you start a machine after Windows is set up. Restoring it gives you a
+brand-new Windows in a minute or two.
+
+To start over completely, choose **Reinstall Windows…** in Settings while
+the machine is shut down. AVM asks first (it erases everything in Windows
+on that machine), asks for the Windows password again if you chose a
+local account, and installs Windows again from the same installer the
+next time you choose Start.
+
+### Telling us about a problem
+
+Choose **Report a Problem…** from the Help menu. AVM copies a short report
+to the clipboard (your AVM, macOS and Mac versions, and the end of the
+diagnostic log, which never has your user name or anything you typed) and
+opens a new GitHub issue. Write what happened, paste the report with
+Command-V, and submit. Nothing is sent until you do.
 
 ### Resetting a virtual machine
 
