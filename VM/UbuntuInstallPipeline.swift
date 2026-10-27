@@ -724,6 +724,7 @@ nonisolated final class UbuntuInstallPipeline {
           updates: security
           packages:
             - spice-vdagent
+            - spice-webdavd
           late-commands:
             - bash /cdrom/nocloud/setup.sh
           error-commands:
@@ -836,6 +837,31 @@ nonisolated final class UbuntuInstallPipeline {
           apply_properties = { ["api.alsa.period-size"] = 256, ["api.alsa.headroom"] = 512 },
         })
         WP
+        # THE MAC'S SHARED FOLDER (2026-10-27): spice-webdavd serves the
+        # folder chosen in AVM's Settings at localhost:9843 in the guest.
+        # At each sign-in it's mounted and bookmarked in Files as "Mac
+        # shared folder", so it's in the sidebar for Orca users too.
+        mkdir -p $T/usr/local/lib/avm $T/etc/xdg/autostart
+        cat > $T/usr/local/lib/avm/mount-mac-folder.sh <<'SHARE'
+        #!/bin/bash
+        for i in $(seq 1 30); do
+          (exec 3<>/dev/tcp/127.0.0.1/9843) 2>/dev/null && break
+          sleep 2
+        done
+        gio mount dav://localhost:9843/ 2>/dev/null
+        b="$HOME/.config/gtk-3.0/bookmarks"
+        mkdir -p "$(dirname "$b")"
+        grep -q '^dav://localhost:9843/' "$b" 2>/dev/null || echo 'dav://localhost:9843/ Mac shared folder' >> "$b"
+        SHARE
+        chmod 755 $T/usr/local/lib/avm/mount-mac-folder.sh
+        cat > $T/etc/xdg/autostart/avm-mac-folder.desktop <<'DESKTOP'
+        [Desktop Entry]
+        Type=Application
+        Name=Mac shared folder
+        Exec=/bin/bash /usr/local/lib/avm/mount-mac-folder.sh
+        NoDisplay=true
+        X-GNOME-Autostart-enabled=true
+        DESKTOP
         curtin in-target -- dconf update
         # dconf update must have compiled both databases from these files;
         # a database older than its keyfile means the settings never landed.
@@ -1103,7 +1129,7 @@ nonisolated final class UbuntuInstallPipeline {
         d-i apt-setup/disable-cdrom-entries boolean true
         d-i apt-setup/non-free-firmware boolean true
         tasksel tasksel/first multiselect standard, gnome-desktop
-        d-i pkgsel/include string orca spice-vdagent qemu-guest-agent spice-webdavd dconf-cli
+        d-i pkgsel/include string orca spice-vdagent qemu-guest-agent spice-webdavd gvfs-fuse dconf-cli
         d-i pkgsel/upgrade select safe-upgrade
         popularity-contest popularity-contest/participate boolean false
         d-i grub-installer/only_debian boolean true

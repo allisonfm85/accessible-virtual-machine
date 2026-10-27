@@ -270,8 +270,8 @@ struct SettingsView: View {
             }
             .padding(.horizontal)
 
-            // Shared folder (Windows only, 2026-10-26)
-            if configuration.guestOS == .windows {
+            // Shared folder (Windows 2026-10-26, Linux 2026-10-27)
+            if configuration.guestOS != .macOS {
                 sharedFolderSection
             }
 
@@ -660,7 +660,9 @@ struct SettingsView: View {
             if sharedFolderPath != nil {
                 Toggle("\(guest) can only read it, not change it", isOn: $sharedFolderReadOnly)
             }
-            Text("\(guest) shows the folder in File Explorer as a network drive. Changes take effect the next time \(guest) starts. Windows installed by this version of AVM is ready for it; for an older Windows, install spice-webdavd from spice-space.org in Windows first.")
+            Text(configuration.guestOS == .windows
+                 ? "\(guest) shows the folder in File Explorer as a network drive. Changes take effect the next time \(guest) starts. Windows installed by this version of AVM is ready for it; for an older Windows, install spice-webdavd from spice-space.org in Windows first."
+                 : "\(guest) shows the folder in Files as Mac shared folder, in the sidebar. Changes take effect the next time \(guest) starts. \(guest) installed by this version of AVM is ready for it.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

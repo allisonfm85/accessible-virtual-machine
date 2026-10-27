@@ -78,6 +78,24 @@ enum KeyboardTestJob {
         while true { RunLoop.main.run(until: Date().addingTimeInterval(1)) }
     }
 
+    /// `AVM --serve-folder <folder> --spice <spice.sock>` (2026-10-27): a
+    /// SPICE client that only serves a folder, as a machine's window does,
+    /// for the shared folder test; runs until it's ended.
+    static func serveFolderIfAsked(arguments: [String] = CommandLine.arguments) {
+        guard let f = arguments.firstIndex(of: "--serve-folder"), arguments.indices.contains(f + 1),
+              let i = arguments.firstIndex(of: "--spice"), arguments.indices.contains(i + 1) else { return }
+        AVMLog.useTestLogFolder()
+        let client = Client()
+        client.sharedFolder = arguments[f + 1]
+        guard client.connect(URL(fileURLWithPath: arguments[i + 1])) else {
+            print("FAILED: couldn't connect")
+            exit(1)
+        }
+        print("SERVING")
+        fflush(stdout)
+        while true { RunLoop.main.run(until: Date().addingTimeInterval(1)) }
+    }
+
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
         guard arguments.contains(flag) else { return }
         AVMLog.useTestLogFolder()
@@ -191,6 +209,7 @@ enum KeyboardTestJob {
         var connection: CSConnection?
         var input: CSInput?
         var wantsAudio = false
+        var sharedFolder: String?
 
         func connect(_ socket: URL) -> Bool {
             if !CSMain.shared.running { guard CSMain.shared.spiceStart() else { return false } }
@@ -201,7 +220,11 @@ enum KeyboardTestJob {
             return c.connect()
         }
 
-        func spiceConnected(_ connection: CSConnection) {}
+        func spiceConnected(_ connection: CSConnection) {
+            if let sharedFolder {
+                connection.session.setSharedDirectory(sharedFolder, readOnly: false)
+            }
+        }
         func spiceDisconnected(_ connection: CSConnection) {}
         func spiceInputAvailable(_ connection: CSConnection, input: CSInput) {
             DispatchQueue.main.async { self.input = input }

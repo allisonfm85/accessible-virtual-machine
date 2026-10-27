@@ -11,6 +11,12 @@
 //   AVM.app/Contents/MacOS/AVM --test-two-machines --vm <folder> --guest <os> --vm2 <folder> --guest2 <os>
 //   AVM.app/Contents/MacOS/AVM --test-duplicate --vm <folder> --guest <os>
 //   AVM.app/Contents/MacOS/AVM --test-send-file --vm <folder> --guest <os>
+//   AVM.app/Contents/MacOS/AVM --test-linux-share --vm <folder> --guest <os>
+//
+// --test-linux-share: a Mac folder served over SPICE (AVM --serve-folder,
+// as a machine's window serves it) is mounted at the user's sign-in by
+// /usr/local/lib/avm/mount-mac-folder.sh, and a file in it reads back in
+// the guest; a file written in the guest appears on the Mac.
 //
 // --test-send-file: sends a 3 MB file of random bytes (three pieces) to
 // the machine's Downloads, twice, and checks both arrive whole, the second
@@ -52,7 +58,8 @@ enum SaveResumeTestJob {
 
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
         guard arguments.contains(flag) || arguments.contains("--test-microphone") || arguments.contains("--test-two-machines")
-                || arguments.contains("--test-duplicate") || arguments.contains("--test-send-file") else { return }
+                || arguments.contains("--test-duplicate") || arguments.contains("--test-send-file")
+                || arguments.contains("--test-linux-share") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -68,6 +75,10 @@ enum SaveResumeTestJob {
             if arguments.contains("--test-two-machines"), let second = value("--vm2") {
                 let guest2 = GuestOS(rawValue: value("--guest2") ?? "windows") ?? .windows
                 let passed = await twoMachines(folderURL, guest, URL(fileURLWithPath: second, isDirectory: true), guest2)
+                print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+            }
+            if arguments.contains("--test-linux-share") {
+                let passed = await linuxShare(folderURL, guest)
                 print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
             }
             if arguments.contains("--test-send-file") {
@@ -170,6 +181,47 @@ enum SaveResumeTestJob {
         let frames = words.firstIndex(of: "frames").flatMap { words.indices.contains($0 + 1) ? Int(words[$0 + 1]) : nil } ?? 0
         check("the guest recorded", frames > 48_000)
         check("the recording isn't silence (the Mac's microphone reached it)", level > 0)
+        await shutDown(manager)
+        return ok
+    }
+
+    private static func linuxShare(_ folder: URL, _ guest: GuestOS) async -> Bool {
+        let shared = FileManager.default.temporaryDirectory.appendingPathComponent("avm-share-test-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: shared) }
+        try? "from the Mac\n".write(to: shared.appendingPathComponent("hello.txt"), atomically: true, encoding: .utf8)
+        let manager = VMManager()
+        guard await start(manager, configuration(folder: folder, guest: guest)),
+              let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else {
+            check("the machine started and answers", false); await shutDown(manager); return false
+        }
+        let server = Process()
+        server.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        server.arguments = ["--serve-folder", shared.path, "--spice", manager.spiceSocketPath]
+        server.standardOutput = FileHandle.nullDevice
+        try? server.run()
+        defer { server.terminate() }
+        try? await Task.sleep(for: .seconds(25))
+        print("== Mounting it as the user signs in would, and reading it")
+        let out = await exec(agent, program: "/bin/sh", args: ["-c", """
+            U=$(getent passwd 1000 | cut -d: -f1); UID_=1000
+            [ -x /usr/local/lib/avm/mount-mac-folder.sh ] && echo "script there" || echo "script missing"
+            [ -e /etc/xdg/autostart/avm-mac-folder.desktop ] && echo "autostart there" || echo "autostart missing"
+            systemctl is-active spice-webdavd 2>&1 | sed 's/^/webdavd: /'
+            ss -ltn 2>/dev/null | grep -q ':9843' && echo "listening on 9843" || echo "not listening on 9843"
+            runuser -u "$U" -- env XDG_RUNTIME_DIR=/run/user/$UID_ DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$UID_/bus HOME=/home/$U /bin/bash /usr/local/lib/avm/mount-mac-folder.sh
+            runuser -u "$U" -- env XDG_RUNTIME_DIR=/run/user/$UID_ DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$UID_/bus gio mount dav://localhost:9843/ 2>&1 | sed 's/^/gio: /'
+            G="runuser -u $U -- env XDG_RUNTIME_DIR=/run/user/$UID_ DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$UID_/bus"
+            $G gio cat dav://localhost:9843/hello.txt 2>&1
+            echo "from the guest" | $G gio save dav://localhost:9843/back.txt 2>&1 && echo "wrote back"
+            grep -c 'Mac shared folder' /home/$U/.config/gtk-3.0/bookmarks
+            """])
+        print((out ?? "no answer").split(whereSeparator: \.isNewline).map { "   " + $0 }.joined(separator: "\n"))
+        check("the sign-in script is installed", out?.contains("script there") == true && out?.contains("autostart there") == true)
+        check("the Mac's file reads back in the guest", out?.contains("from the Mac") == true)
+        try? await Task.sleep(for: .seconds(2))
+        check("a file written in the guest is on the Mac", (try? String(contentsOf: shared.appendingPathComponent("back.txt"), encoding: .utf8))?.contains("from the guest") == true)
+        check("it's bookmarked in Files", out?.split(whereSeparator: \.isNewline).last == "1")
         await shutDown(manager)
         return ok
     }

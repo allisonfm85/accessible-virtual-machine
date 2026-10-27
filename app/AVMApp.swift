@@ -69,6 +69,7 @@ struct AVMApp: App {
         MacTestJob.runIfAsked()
         KeyboardTestJob.runIfAsked()
         KeyboardTestJob.playAudioIfAsked()
+        KeyboardTestJob.serveFolderIfAsked()
         SaveResumeTestJob.runIfAsked()
     }
 
