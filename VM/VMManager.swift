@@ -1015,6 +1015,8 @@ final class VMManager: ObservableObject {
             appendConsole("AVM: \(configuration.guestOS.displayName) is already installed on this VM. Booting from the installed disk; install media will not be attached.\n")
             if configuration.guestOS == .ubuntu {
                 removeFinishedUbuntuMedia(runtimeDir: runtimeDir)
+            } else {
+                removeFinishedWindowsMedia(runtimeDir: runtimeDir)
             }
         } else {
             // Build the unattended install media FIRST if this VM has an install ISO
@@ -2409,6 +2411,24 @@ final class VMManager: ObservableObject {
     /// and install-avm.iso is the one place the account's password hash
     /// still lives (UbuntuInstallPipeline.swift header). Delete it, never
     /// the UNATTEND volume: that holds the marker the REINSTALL GUARD reads.
+    /// Windows' rebuilt install DVD, about 8.5 GB per machine, is read only
+    /// during setup, and once the install-complete marker exists it is never
+    /// attached again (REINSTALL GUARD), so it is deleted (2026-10-26). The
+    /// UNATTEND volume stays: it holds that marker. The user's own ISO is
+    /// never touched.
+    private func removeFinishedWindowsMedia(runtimeDir: URL) {
+        let iso = runtimeDir.appendingPathComponent("install-avm.iso")
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: iso.path))?[.size] as? NSNumber else { return }
+        do {
+            try FileManager.default.removeItem(at: iso)
+            let gb = String(format: "%.1f", size.doubleValue / 1_000_000_000)
+            avmLog("removeFinishedWindowsMedia: deleted install-avm.iso (install complete), \(gb) GB freed")
+            appendConsole("AVM: Windows is installed, so its \(gb) GB install disc copy was deleted.\n")
+        } catch {
+            avmLog("removeFinishedWindowsMedia: couldn't delete install-avm.iso: \(error.localizedDescription)")
+        }
+    }
+
     private func removeFinishedUbuntuMedia(runtimeDir: URL) {
         let iso = runtimeDir.appendingPathComponent("install-avm.iso")
         guard FileManager.default.fileExists(atPath: iso.path) else { return }
