@@ -166,6 +166,11 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// Template (a duplicate) instead of Start. Read it through isATemplate.
     var isTemplate: Bool?
 
+    /// true: Start runs it in the background, with no window (2026-10-27,
+    /// as Hyper-V's and VMware's headless machines); Enter opens one.
+    /// Read it through startsWithoutWindow.
+    var noWindow: Bool?
+
     // MARK: - Defaults
 
     init(
@@ -222,6 +227,7 @@ extension VMConfiguration {
     var usesLowAudioLatency: Bool { lowAudioLatency == true }
     var usesVirtioDisk: Bool { diskBus == "virtio" }
     var isATemplate: Bool { isTemplate == true }
+    var startsWithoutWindow: Bool { noWindow == true }
     /// Known screen readers only, in a fixed order; unknown words ignored.
     var windowsScreenReaders: [ScreenReader] {
         let chosen = Set(windowsScreenReaderNames ?? [])

@@ -336,7 +336,7 @@ struct ContentView: View {
             MacGuestRunner.shared.start(config)
             return
         }
-        MachineSessions.shared.start(config, vmStore: vmStore, focusLock: focusLock)
+        MachineSessions.shared.start(config, vmStore: vmStore, focusLock: focusLock, windowless: config.startsWithoutWindow)
     }
 }
 
@@ -763,7 +763,7 @@ private struct DashboardContent: View {
             MacGuestRunner.shared.start(config)
             return
         }
-        MachineSessions.shared.start(config, vmStore: vmStore, focusLock: focusLock)
+        MachineSessions.shared.start(config, vmStore: vmStore, focusLock: focusLock, windowless: config.startsWithoutWindow)
     }
 }
 

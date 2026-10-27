@@ -132,6 +132,7 @@ struct SettingsView: View {
     @State private var shareClipboard = true
     @State private var shareMicrophone = false
     @State private var isTemplate = false
+    @State private var noWindow = false
     @State private var sharedFolderPath: String?
     @State private var sharedFolderReadOnly = false
     @State private var brailleFollowsBack = true
@@ -228,6 +229,20 @@ struct SettingsView: View {
                 .accessibilityElement(children: .combine)
                 .padding(.horizontal)
             }
+
+            // Without a window (2026-10-27)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Window")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                Toggle("Start without a window", isOn: $noWindow)
+                    .accessibilityHint("When on, \(guest) runs in the background after Start; Enter in its row opens its window")
+                Text("For a machine you reach over the network or with avmctl, or one that just needs to run. Its sound still plays. The clipboard, shared folder and keyboard for Windows join it once its window opens.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal)
 
             // Template (2026-10-27)
             VStack(alignment: .leading, spacing: 6) {
@@ -812,6 +827,7 @@ struct SettingsView: View {
         shareClipboard = saved.sharesClipboard
         shareMicrophone = saved.sharesMicrophone
         isTemplate = saved.isATemplate
+        noWindow = saved.startsWithoutWindow
         sharedFolderPath = saved.sharedFolderPath
         sharedFolderReadOnly = saved.sharedFolderIsReadOnly
         brailleFollowsBack = saved.brailleFollowsBack
@@ -926,6 +942,7 @@ struct SettingsView: View {
             updated.shareClipboard = shareClipboard ? nil : false
             updated.shareMicrophone = shareMicrophone ? true : nil
             updated.isTemplate = isTemplate ? true : nil
+            updated.noWindow = noWindow ? true : nil
             updated.sharedFolderPath = sharedFolderPath
             updated.sharedFolderReadOnly = sharedFolderReadOnly ? true : nil
             updated.brailleFollowThrough = brailleFollowsBack ? nil : "ask"

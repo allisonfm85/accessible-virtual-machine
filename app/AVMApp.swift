@@ -64,6 +64,7 @@ struct AVMApp: App {
     /// (AccessibilityAudit.swift, 2026-10-26) checks AVM's own screens the
     /// same way, window-less as far as the user can tell, and exits.
     init() {
+        ControlClient.runIfAsked()
         AccessibilityAudit.runIfAsked()
         InstallMediaJob.runIfAsked()
         MacTestJob.runIfAsked()
@@ -550,6 +551,7 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
             MacVoiceOver.recoverAtLaunch()
             // Pause a running VM before the Mac sleeps (2026-10-26).
             SleepCoordinator.shared.start()
+            ControlServer.shared.start()
         }
     }
 

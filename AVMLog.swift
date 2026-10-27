@@ -112,6 +112,11 @@ enum AVMPaths {
     /// Not created here; callers that need it create it, as before.
     nonisolated static func supportDirectory() throws -> URL {
         if let override = supportDirectoryOverride { return override }
+        // The avmctl test's own folder (2026-10-27): its `AVM ctl` children
+        // find the test's control socket, never the user's AVM.
+        if let test = ProcessInfo.processInfo.environment["AVM_TEST_SUPPORT_DIR"], !test.isEmpty {
+            return URL(fileURLWithPath: test, isDirectory: true)
+        }
         return try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                            appropriateFor: nil, create: true)
             .appendingPathComponent(supportFolderName, isDirectory: true)

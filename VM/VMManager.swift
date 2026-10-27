@@ -3792,16 +3792,18 @@ extension VMManager {
     /// third; the agent's messages stay well under its limit).
     private static let sendChunk = 1 << 20
 
-    func sendFile(_ file: URL) async {
+    /// True if it arrived.
+    @discardableResult
+    func sendFile(_ file: URL) async -> Bool {
         let machine = machineName
         guard state == .running, let configuration = activeConfiguration else {
             Announcer.shared.announce("\(machine) isn't running, so nothing was sent.", tone: .failure)
-            return
+            return false
         }
         let name = file.lastPathComponent
         guard let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value else {
             Announcer.shared.announce("AVM can't read \(name), so nothing was sent.", tone: .failure)
-            return
+            return false
         }
         Announcer.shared.announce("Sending \(name) to \(machine).", tone: .info)
         do {
@@ -3860,9 +3862,11 @@ extension VMManager {
             let landed = (target as NSString).lastPathComponent
             avmLog("sendFile: \(sent) bytes sent")
             Announcer.shared.announce("\(landed) is in Downloads in \(machine).", tone: .success)
+            return true
         } catch {
             avmLog("sendFile: failed: \(error.localizedDescription)")
             Announcer.shared.announce("\(name) wasn't sent to \(machine). Reason: \(error.localizedDescription) Next: check \(machine) has finished starting, then try again.", tone: .failure)
+            return false
         }
     }
 

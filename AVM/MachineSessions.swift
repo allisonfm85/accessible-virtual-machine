@@ -32,6 +32,10 @@ final class MachineSessions: ObservableObject {
     @Published var lastError: String?
 
     private var windows: [UUID: MachineWindow] = [:]
+    /// For a window made later: a machine started without one gets one
+    /// when it's entered.
+    private weak var vmStore: VMStore?
+    private weak var focusLock: FocusLockManager?
     private var watchers: [UUID: AnyCancellable] = [:]
     /// Machines that have left "stopped" since their Start: a session's
     /// state starts as stopped, which mustn't end it.
@@ -54,9 +58,13 @@ final class MachineSessions: ObservableObject {
     }
 
     /// Starts a machine in its own session and window. Spoken on failure.
-    /// With no store and focus lock (the test job), there's no window.
+    /// With no store and focus lock (the test job), or `windowless` (its
+    /// setting, or avmctl start --no-window), there's no window until it's
+    /// entered.
     @discardableResult
-    func start(_ config: VMConfiguration, vmStore: VMStore?, focusLock: FocusLockManager?) -> VMSession {
+    func start(_ config: VMConfiguration, vmStore: VMStore?, focusLock: FocusLockManager?, windowless: Bool = false) -> VMSession {
+        if let vmStore { self.vmStore = vmStore }
+        if let focusLock { self.focusLock = focusLock }
         if sessions[config.id] != nil {
             Announcer.shared.announce("\(config.name) is already running.", tone: .info)
             enter(config.id)
@@ -65,8 +73,10 @@ final class MachineSessions: ObservableObject {
         lastError = nil
         let session = VMSession(configuration: config)
         sessions[config.id] = session
-        if let vmStore, let focusLock {
+        if let vmStore, let focusLock, !windowless {
             windows[config.id] = MachineWindow(session: session, vmStore: vmStore, focusLock: focusLock)
+        } else if windowless {
+            Announcer.shared.announce("Starting \(config.name) without a window. Enter it from AVM's list to see it.", tone: .info)
         }
         makeCurrent(config.id)
         watchers[config.id] = session.$vmState
@@ -108,9 +118,15 @@ final class MachineSessions: ObservableObject {
         }
     }
 
-    /// Brings the machine's window forward and gives it the keyboard.
+    /// Brings the machine's window forward and gives it the keyboard. A
+    /// machine running without a window gets one now.
     func enter(_ id: UUID) {
         guard let session = sessions[id], session.vmState == .running || session.vmState == .paused else { return }
+        if windows[id] == nil, let vmStore = vmStore ?? VMStore.shared, let focusLock = focusLock ?? FocusLockManager.shared {
+            let window = MachineWindow(session: session, vmStore: vmStore, focusLock: focusLock)
+            windows[id] = window
+            window.showFirstTime()
+        }
         if let lock = FocusLockManager.shared, lock.isLocked, currentID != id {
             lock.unlock()
         }

@@ -12,6 +12,11 @@
 //   AVM.app/Contents/MacOS/AVM --test-duplicate --vm <folder> --guest <os>
 //   AVM.app/Contents/MacOS/AVM --test-send-file --vm <folder> --guest <os>
 //   AVM.app/Contents/MacOS/AVM --test-linux-share --vm <folder> --guest <os>
+//   AVM.app/Contents/MacOS/AVM --test-ctl --vm <folder> --guest <os>
+//
+// --test-ctl: a control socket in a temporary AVM folder, and real
+// `AVM ctl` commands against it: list, start --no-window, status,
+// send-file, save, start (carries on), stop.
 //
 // --test-linux-share: a Mac folder served over SPICE (AVM --serve-folder,
 // as a machine's window serves it) is mounted at the user's sign-in by
@@ -59,7 +64,7 @@ enum SaveResumeTestJob {
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
         guard arguments.contains(flag) || arguments.contains("--test-microphone") || arguments.contains("--test-two-machines")
                 || arguments.contains("--test-duplicate") || arguments.contains("--test-send-file")
-                || arguments.contains("--test-linux-share") else { return }
+                || arguments.contains("--test-linux-share") || arguments.contains("--test-ctl") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -75,6 +80,10 @@ enum SaveResumeTestJob {
             if arguments.contains("--test-two-machines"), let second = value("--vm2") {
                 let guest2 = GuestOS(rawValue: value("--guest2") ?? "windows") ?? .windows
                 let passed = await twoMachines(folderURL, guest, URL(fileURLWithPath: second, isDirectory: true), guest2)
+                print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+            }
+            if arguments.contains("--test-ctl") {
+                let passed = await controlTest(folderURL, guest)
                 print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
             }
             if arguments.contains("--test-linux-share") {
@@ -182,6 +191,78 @@ enum SaveResumeTestJob {
         check("the guest recorded", frames > 48_000)
         check("the recording isn't silence (the Mac's microphone reached it)", level > 0)
         await shutDown(manager)
+        return ok
+    }
+
+    /// Runs `AVM ctl …` as the user would, against this test's socket.
+    private static func ctl(_ words: [String], support: URL) async -> (ok: Bool, out: String) {
+        await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+            process.arguments = ["ctl"] + words
+            var env = ProcessInfo.processInfo.environment
+            env["AVM_TEST_SUPPORT_DIR"] = support.path
+            process.environment = env
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            try? process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return (process.terminationStatus == 0, String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+        }.value
+    }
+
+    private static func controlTest(_ folder: URL, _ guest: GuestOS) async -> Bool {
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent("avm-ctl-\(UUID().uuidString.prefix(8))")
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        AVMPaths.supportDirectoryOverride = support
+        defer { try? FileManager.default.removeItem(at: support) }
+        let store = VMStore()
+        var config = configuration(folder: folder, guest: guest)
+        config.name = "Ctl Test"
+        store.save(config)
+        ControlServer.shared.start()
+        func run(_ words: [String]) async -> (ok: Bool, out: String) {
+            let result = await ctl(words, support: support)
+            print("   $ avmctl \(words.joined(separator: " "))\n\(result.out.split(whereSeparator: \.isNewline).map { "     " + $0 }.joined(separator: "\n"))")
+            return result
+        }
+        print("== avmctl")
+        let list = await run(["list"])
+        check("list names it, shut down", list.ok && list.out.contains("Ctl Test") && list.out.contains("shut down"))
+        let start = await run(["start", "ctl test", "--no-window"])
+        check("start (any case, no window) works", start.ok)
+        guard let session = MachineSessions.shared.session(for: config.id) else { check("it's running", false); return false }
+        for _ in 0..<600 where session.vmState != .running { try? await Task.sleep(for: .milliseconds(500)) }
+        guard let agent = session.manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else {
+            check("its guest agent answers", false); session.forceStop(); return false
+        }
+        try? await Task.sleep(for: .seconds(15))
+        let status = await run(["status", "Ctl Test"])
+        check("status says running", status.ok && status.out.contains("running"))
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("avmctl note.txt")
+        try? "sent by avmctl\n".write(to: file, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let send = await run(["send-file", "Ctl Test", file.path])
+        check("send-file works", send.ok)
+        let save = await run(["save", "Ctl Test"])
+        check("save works", save.ok)
+        for _ in 0..<40 where MachineSessions.shared.session(for: config.id) != nil { try? await Task.sleep(for: .milliseconds(250)) }
+        let saved = await run(["status", "Ctl Test"])
+        check("status says saved", saved.out.contains("saved"))
+        let again = await run(["start", "Ctl Test", "--no-window"])
+        check("start carries on", again.ok)
+        guard let session2 = MachineSessions.shared.session(for: config.id) else { return false }
+        for _ in 0..<120 where session2.vmState != .running { try? await Task.sleep(for: .milliseconds(500)) }
+        let landed = guest == .windows ? nil : await exec(session2.manager.guestAgentSocketPath ?? "", program: "/bin/sh",
+                                                         args: ["-c", "cat /home/*/Downloads/'avmctl note.txt'; rm -f /home/*/Downloads/'avmctl note.txt'"])
+        if guest != .windows { check("the sent file is in Downloads", landed?.contains("sent by avmctl") == true) }
+        let stop = await run(["stop", "Ctl Test"])
+        check("stop works", stop.ok)
+        for _ in 0..<240 where MachineSessions.shared.session(for: config.id) != nil { try? await Task.sleep(for: .milliseconds(500)) }
+        check("it shut down", MachineSessions.shared.session(for: config.id) == nil)
+        let unknown = await run(["status", "No Such Machine"])
+        check("an unknown machine is refused", !unknown.ok && unknown.out.contains("no virtual machine called"))
         return ok
     }
 
