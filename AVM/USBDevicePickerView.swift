@@ -39,6 +39,15 @@ struct USBDevicePickerView: View {
             }
         }
 
+        /// The device list's name, spoken by VoiceOver (2026-10-26,
+        /// accessibility audit: "Device, radio group" didn't say what for).
+        var listLabel: String {
+            switch self {
+            case .attach: return "Device to attach"
+            case .detach: return "Device to return to the Mac"
+            }
+        }
+
         var actionTitle: String {
             switch self {
             case .attach: return "Attach"
@@ -65,7 +74,7 @@ struct USBDevicePickerView: View {
                 .font(.body)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Picker("Device", selection: $selected) {
+            Picker(mode.listLabel, selection: $selected) {
                 ForEach(devices, id: \.description) { device in
                     Text(device.displayName)
                         .accessibilityHint("ID \(device.vidPidString), bus \(device.busNumber), address \(device.deviceAddress).")
