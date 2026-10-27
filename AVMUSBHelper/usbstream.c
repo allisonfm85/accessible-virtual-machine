@@ -49,10 +49,18 @@ static void fill(char *buf, size_t len, const char *text)
 static void *event_thread_main(void *arg)
 {
     (void)arg;
+    /* An error from one pass used to end this thread for good, while
+     * g_started stayed 1 (2026-10-25, code audit): every stream then held
+     * its device with no transfers completing, a keyboard or braille display
+     * gone from the Mac and dead in the guest. Errors are logged and the
+     * loop carries on after a short pause; only g_event_run ends it. */
     while (g_event_run) {
         int r = libusb_handle_events(g_ctx);
-        if (r != 0 && r != LIBUSB_ERROR_INTERRUPTED)
-            break;
+        if (r != 0 && r != LIBUSB_ERROR_INTERRUPTED) {
+            fprintf(stderr, "usbstream: libusb_handle_events: %s; continuing\n",
+                    libusb_error_name(r));
+            usleep(100000);
+        }
     }
     return NULL;
 }

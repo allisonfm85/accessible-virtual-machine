@@ -426,6 +426,18 @@ of this is AVM.
 - **Command-F5** turns VoiceOver on and off. This is macOS, not AVM, but
   it is half the routine.
 
+
+**Force Stop asks first,** with Cancel as the default, wherever you find
+it, because it turns Windows off at once. It is also offered while Windows
+is shutting down, in case Windows stops answering.
+
+**Quitting with Windows running.** If you quit AVM, or close its window,
+while Windows is running, AVM asks first. Cancel is the default, so Return keeps you where
+you are. **Shut Down Windows and Quit** shuts Windows down properly and
+quits AVM when it has finished; you can keep using AVM meanwhile. **Quit
+Now** turns Windows off at once, like pulling the plug. Either way, any
+USB devices go back to your Mac first.
+
 Note on Command-Shift-S: in this build it starts a machine only when you
 have exactly one machine configured and nothing is running. With no
 machines, or more than one, you get a beep and an explanation instead of a
@@ -597,6 +609,18 @@ its own commands), run it a second time with AVM in place of qemu-system.
 
 Then force-quit and report what happened.
 
+### Secure Boot and Insider builds
+
+Machines made with this version have Secure Boot, with Microsoft's keys,
+which Windows needs before it offers Insider preview builds. For a machine
+made earlier, stop it, open its Settings, turn on **Secure Boot**, and
+choose Save Settings. AVM asks first, because it resets the machine's
+firmware settings, keeping a copy. Windows normally starts again on its
+own. If BitLocker or device encryption is on in Windows, it may ask for
+your recovery key, so have it ready. Turning Secure Boot off again puts
+the old settings back. If Windows doesn't start after the switch, turn
+Secure Boot off and report it, with a diagnostic log.
+
 ### Resetting a virtual machine
 
 **Command-Shift-R** resets the machine. It is the equivalent of the reset
@@ -694,9 +718,11 @@ files can be deleted afterward.
   creation. You go through Microsoft's own setup with Narrator.
 - **No ISO downloader.** You supply the Windows image yourself.
 
-USB passthrough is here, except for USB drives. Next is firmware work:
-stopping Windows Update from blocking updates over the TPM and processor
-checks (issues 16 and 17), and Secure Boot. After that comes graphics
+USB passthrough is here, except for USB drives. New machines now have
+Secure Boot, and existing ones can turn it on in Settings (see section
+13). Next is the rest of the firmware work: stopping Windows Update from
+blocking updates over the TPM and processor checks (issues 16 and 17).
+After that comes graphics
 acceleration. If a USB device you need doesn't work in Windows, please
 report it, with its name and a diagnostic log.
 
@@ -827,15 +853,14 @@ tilde wherever a file path would have contained it. You can check both
 claims by reading the log yourself. It is plain text, and you are
 encouraged to.
 
-One honest exception exists: a diagnostic keyboard mode used during
-development, off by default, that can only be switched on deliberately
-with a Terminal command. Turning it on announces itself in the log. If you
-never run that command, it never runs.
+A diagnostic keyboard mode exists for development, but only in developer
+builds of AVM. In the build you are testing it does not exist at all, and
+no setting or command can turn it on.
 
 During installation, AVM also samples the guest's screen image, but only
-to detect a frozen installer. No image is kept. Each frame is reduced to a
-checksum and deleted. A frame is kept only if the watchdog declares a
-failure, and the log says so when that happens.
+to detect a frozen installer. Each sample replaces the previous one in the
+machine's folder, and the last one is deleted when the watching ends. No
+sample goes into the diagnostic log.
 
 One cosmetic note: if your Mac user name happens to be an ordinary English
 word, the privacy scrubber may occasionally replace that word with a tilde
