@@ -2,13 +2,17 @@
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
   <settings pass="windowsPE">
     <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <!-- AVM_SETUP_LANGUAGE (2026-10-26): the ISO's own language, read from
+           install.wim by Stage 4 (en-US when it can't be read). An English
+           value on a French ISO, say, stops Setup at its first screen. The
+           wizard's region and keyboard for Windows itself are in oobeSystem. -->
       <SetupUILanguage>
-        <UILanguage>en-US</UILanguage>
+        <UILanguage>AVM_SETUP_LANGUAGE</UILanguage>
       </SetupUILanguage>
-      <InputLocale>en-US</InputLocale>
-      <SystemLocale>en-US</SystemLocale>
-      <UILanguage>en-US</UILanguage>
-      <UserLocale>en-US</UserLocale>
+      <InputLocale>AVM_SETUP_LANGUAGE</InputLocale>
+      <SystemLocale>AVM_SETUP_LANGUAGE</SystemLocale>
+      <UILanguage>AVM_SETUP_LANGUAGE</UILanguage>
+      <UserLocale>AVM_SETUP_LANGUAGE</UserLocale>
     </component>
     <component name="Microsoft-Windows-Setup" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
       <UserData>
@@ -148,7 +152,112 @@
           <Description>AVM: install SPICE vdagent from UNATTEND volume</Description>
           <Path>cmd /c for %d in (C D E F G H I J K L) do @if exist %d:\VDAGENT.MSI msiexec /i %d:\VDAGENT.MSI /qn /norestart /L*v %d:\VDAGENT.LOG</Path>
         </RunSynchronousCommand>
+        <!-- AVM SCREEN READERS (2026-10-26). The pipeline's Stage 3 puts the
+             installers the user chose in AVMSR\ on the install DVD, after
+             downloading them from NV Access and Freedom Scientific and
+             checking their SHA-256. Nothing chosen, no folder, and these do
+             nothing. JAWS is installed silently here and, unlicensed,
+             runs in 40-minute demo mode until the user activates it.
+             NVDA is only COPIED here, to %SystemRoot%\Setup\AVM, and
+             installed at the first sign-in (oobeSystem, below): this pass
+             runs as SYSTEM with no user session, and NVDA's installer
+             fails there (exit 255; the launcher then kept talking from its
+             temporary folder through OOBE and crashed at sign-in; seen on a
+             test install 2026-10-26). -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>4</Order>
+          <Description>AVM: copy the NVDA installer for the first sign-in</Description>
+          <Path>cmd /c for %d in (D E F G H I J K L M) do @if exist %d:\AVMSR\NVDA.EXE (mkdir "%SystemRoot%\Setup\AVM" &amp; copy /y %d:\AVMSR\NVDA.EXE "%SystemRoot%\Setup\AVM\NVDA.EXE")</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>5</Order>
+          <Description>AVM: install JAWS from the install media</Description>
+          <Path>cmd /c for %d in (D E F G H I J K L M) do @if exist %d:\AVMSR\JAWS.EXE %d:\AVMSR\JAWS.EXE /quiet /norestart</Path>
+        </RunSynchronousCommand>
+        <!-- AVM SHARED FOLDER (2026-10-26). spice-webdavd, from AVMEXTRA\ on
+             the install DVD, shows the Mac folder chosen in AVM's Settings
+             as a network drive. With no folder shared it does nothing. -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>6</Order>
+          <Description>AVM: install the SPICE shared-folder service</Description>
+          <Path>cmd /c for %d in (D E F G H I J K L M) do @if exist %d:\AVMEXTRA\WEBDAVD.MSI msiexec /i %d:\AVMEXTRA\WEBDAVD.MSI /qn /norestart</Path>
+        </RunSynchronousCommand>
+        <!-- AVM GUEST AGENT (2026-10-26). The QEMU guest agent, from the DVD,
+             lets AVM set Windows' clock when the Mac wakes. -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>7</Order>
+          <Description>AVM: install the QEMU guest agent</Description>
+          <Path>cmd /c for %d in (D E F G H I J K L M) do @if exist %d:\AVMEXTRA\QEMUGA.MSI msiexec /i %d:\AVMEXTRA\QEMUGA.MSI /qn /norestart</Path>
+        </RunSynchronousCommand>
+        <!-- AVM SETUP REPORT (2026-10-26). What the steps above left
+             installed, written to AVMSTATUS.TXT on the UNATTEND volume, so
+             AVM (and Tools/test-windows-install.sh) can read it from the Mac
+             without anyone at the screen. Each line checks for the result,
+             not the installer's exit code. -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>8</Order>
+          <Description>AVM: report what setup installed</Description>
+          <Path>cmd /c for %d in (C D E F G H I J K L) do @if exist %d:\AVMDONE.TAG (echo specialize-done&gt;%d:\AVMSTATUS.TXT &amp; (if exist "%SystemRoot%\Setup\AVM\NVDA.EXE" echo nvda-staged&gt;&gt;%d:\AVMSTATUS.TXT) &amp; (if exist "%ProgramFiles%\Freedom Scientific\JAWS" echo jaws-installed&gt;&gt;%d:\AVMSTATUS.TXT) &amp; (sc query spice-agent &gt;nul 2&gt;&amp;1 &amp;&amp; echo vdagent-installed&gt;&gt;%d:\AVMSTATUS.TXT) &amp; (sc query spice-webdavd &gt;nul 2&gt;&amp;1 &amp;&amp; echo webdavd-installed&gt;&gt;%d:\AVMSTATUS.TXT) &amp; (sc query QEMU-GA &gt;nul 2&gt;&amp;1 &amp;&amp; echo qemu-ga-installed&gt;&gt;%d:\AVMSTATUS.TXT))</Path>
+        </RunSynchronousCommand>
       </RunSynchronous>
+    </component>
+    <!-- AVM COMPUTER NAME (2026-10-26): the wizard's computer name, as a
+         specialize-pass Shell-Setup component (WindowsSetupAnswers.swift). -->
+    <!--AVM_SPECIALIZE_SHELL-->
+  </settings>
+  <settings pass="oobeSystem">
+    <!-- AVM REGION (2026-10-26). Stage 4 replaces the marker below with the
+         region and keyboard chosen in the wizard (WindowsSetupAnswers.swift,
+         WindowsRegion.swift), so OOBE skips its region and keyboard pages;
+         an unanswered one is left out, and Windows asks. The same goes for
+         every AVM_ marker below. -->
+    <!--AVM_INTERNATIONAL-->
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <!-- At the first sign-in: install NVDA as the signed-in user (an
+           administrator, the case NVDA's silent installer is built for),
+           then start the screen reader that was installed, so the desktop
+           talks right away. NVDA is preferred when both are installed, so
+           they never both speak; JAWS starts only without NVDA. NVDA 2026
+           is 64-bit (Program Files); older ones were in Program Files
+           (x86). The installer copy is removed afterwards. -->
+      <!--AVM_AUTOLOGON-->
+      <FirstLogonCommands>
+        <SynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Description>AVM: install NVDA</Description>
+          <CommandLine>cmd /c if exist "%SystemRoot%\Setup\AVM\NVDA.EXE" "%SystemRoot%\Setup\AVM\NVDA.EXE" --install-silent --enable-start-on-logon=True</CommandLine>
+        </SynchronousCommand>
+        <!--AVM_NVDA_SETTINGS-->
+        <SynchronousCommand wcm:action="add">
+          <Order>3</Order>
+          <Description>AVM: start the installed screen reader</Description>
+          <CommandLine>cmd /c if exist "%ProgramFiles%\NVDA\nvda.exe" (start "" "%ProgramFiles%\NVDA\nvda.exe") else if exist "%ProgramFiles(x86)%\NVDA\nvda.exe" (start "" "%ProgramFiles(x86)%\NVDA\nvda.exe") else for /d %v in ("%ProgramFiles%\Freedom Scientific\JAWS\*") do @if exist "%v\jfw.exe" start "" "%v\jfw.exe"</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>4</Order>
+          <Description>AVM: remove the NVDA installer copy</Description>
+          <CommandLine>cmd /c rmdir /s /q "%SystemRoot%\Setup\AVM"</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>5</Order>
+          <Description>AVM: report what the first sign-in installed</Description>
+          <CommandLine>cmd /c for %d in (C D E F G H I J K L) do @if exist %d:\AVMDONE.TAG ((if exist "%ProgramFiles%\NVDA\nvda.exe" (echo nvda-installed&gt;&gt;%d:\AVMSTATUS.TXT) else if exist "%ProgramFiles(x86)%\NVDA\nvda.exe" (echo nvda-installed&gt;&gt;%d:\AVMSTATUS.TXT)) &amp; echo first-sign-in-done&gt;&gt;%d:\AVMSTATUS.TXT)</CommandLine>
+        </SynchronousCommand>
+      </FirstLogonCommands>
+      <!-- Fewer Narrator-only screens (2026-10-26): no license page (the
+           license is accepted by installing, as on any OEM PC), no Wi-Fi
+           page (the VM's network is wired), and "Choose privacy settings"
+           answered from the wizard: 3, the most private (no optional data,
+           no tailored experiences), or 1, Windows' recommended settings.
+           With a local account the account pages go too; with a Microsoft
+           account they stay. -->
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <!--AVM_OOBE_ACCOUNT-->
+        <ProtectYourPC>AVM_PROTECT_YOUR_PC</ProtectYourPC>
+      </OOBE>
+      <!--AVM_TIMEZONE_ACCOUNTS-->
     </component>
   </settings>
 </unattend>

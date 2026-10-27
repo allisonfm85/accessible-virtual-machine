@@ -267,15 +267,19 @@ final class USBRedirectController: ObservableObject {
             return false
         }
 
+        // RESERVED BEFORE THE AWAIT (2026-10-25, code audit): the port used
+        // to be recorded only after QEMU answered, so two attaches running at
+        // once (the picker and a plug-in send) could both pick the same free
+        // port, and the second removed the first one's socket and chardev.
+        portByDevice[device] = port
         do {
             try await manager.attachUSBRedirect(port: port, socketPath: socketPath)
         } catch {
+            portByDevice[device] = nil
             log("QMP attach failed for \(device.description): \(error)")
             say("QEMU refused the USB redirection port. Step: QMP device add. Reason: \(error.localizedDescription). Next: check the diagnostic log.", tone: .failure, quiet: quiet)
             return false
         }
-
-        portByDevice[device] = port
         log("port \(port) -> \(device.description)")
         switch await USBHelperClient.shared.attach(device, socketPath: socketPath) {
         case .success:
