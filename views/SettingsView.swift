@@ -264,6 +264,11 @@ struct SettingsView: View {
             // Restore Points (2026-10-25)
             restorePointsSection
 
+            // Reinstall Windows (2026-10-26)
+            if configuration.guestOS == .windows {
+                reinstallSection
+            }
+
             // Actions
             HStack(spacing: 16) {
                 Button("Close") {
@@ -380,6 +385,61 @@ struct SettingsView: View {
                 Announcer.shared.announce("The restore point was not saved. Reason: \(error.localizedDescription)", tone: .failure)
             }
             restorePointsBusy = false
+        }
+    }
+
+    // MARK: - Reinstall Windows (2026-10-26)
+
+    @State private var reinstalling = false
+
+    private var reinstallSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Reinstall Windows")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Text(isRunning
+                 ? "Stop \(guest) to reinstall it."
+                 : "Erases Windows on this machine and installs it again at the next Start, from the same installer and with the same setup answers. A Fresh install restore point is quicker, if you have one.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(reinstalling ? "Preparing…" : "Reinstall Windows…") { reinstallWindows() }
+                .disabled(isRunning || reinstalling || saved.storageIsMissing)
+                .accessibilityHint("Asks first. Everything in Windows on this machine is erased.")
+        }
+        .padding(.horizontal)
+    }
+
+    private func reinstallWindows() {
+        let alert = NSAlert()
+        alert.messageText = "Erase Windows on \(saved.name) and install it again?"
+        alert.informativeText = "Everything in Windows on this machine is erased: files, apps, settings and restore points. When you next start it, Windows installs as it did the first time, from the same installer and with the same setup answers. This can't be undone."
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Erase and Reinstall")
+        var passwordField: NSSecureTextField? = nil
+        if WindowsReinstall.needsPassword(saved) {
+            let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+            field.placeholderString = "Password"
+            field.setAccessibilityLabel("Password for the Windows account \(WindowsReinstall.localUserName(saved) ?? "")")
+            alert.accessoryView = field
+            alert.informativeText += " Type the Windows account's password again below; leave it empty for no password."
+            passwordField = field
+            alert.window.initialFirstResponder = field
+        }
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        reinstalling = true
+        let configuration = saved
+        let password = passwordField?.stringValue
+        Task { @MainActor in
+            do {
+                try await WindowsReinstall.prepare(configuration, password: password)
+                restorePoints = []
+                Announcer.shared.announce("\(configuration.name) is ready to reinstall. Choose Start, and Windows installs as it did the first time.", tone: .success)
+            } catch {
+                Announcer.shared.announce("\(configuration.name) was not reinstalled. Reason: \(error.localizedDescription)", tone: .failure)
+            }
+            reinstalling = false
         }
     }
 
