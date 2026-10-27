@@ -67,6 +67,7 @@ final class VMConfigurationTests: XCTestCase {
         XCTAssertFalse(config.usesSecureBoot)
         XCTAssertTrue(config.sharesClipboard)
         XCTAssertEqual(config.effectiveUSBMode, .ask)
+        XCTAssertTrue(config.brailleFollowsBack, "existing VMs keep the behavior they had")
     }
 
     func testUnknownWordsReadAsDefaults() throws {

@@ -100,6 +100,16 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// two clipboards apart. Read it through sharesClipboard.
     var shareClipboard: Bool?
 
+    // MARK: - Braille display follow-through (2026-10-26)
+
+    /// What happens when a braille display comes back within a minute of
+    /// leaving Windows. "send" (or nil): it follows the user's earlier choice
+    /// back to Windows, as a Monarch needs when it switches modes. "ask":
+    /// AVM asks, as for any braille display, because unplugging it to take
+    /// it back from Windows looks the same. Read it through
+    /// brailleFollowsBack.
+    var brailleFollowThrough: String?
+
     // MARK: - Sound (2026-10-26)
 
     /// true: the experimental shorter audio path (SpiceAudioPipeline).
@@ -155,6 +165,7 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
 extension VMConfiguration {
     var usesSecureBoot: Bool { secureBoot == true }
     var sharesClipboard: Bool { shareClipboard ?? true }
+    var brailleFollowsBack: Bool { brailleFollowThrough != "ask" }
     /// The shared folder, if one is chosen and is a folder right now (an
     /// unplugged drive shares nothing rather than failing the start).
     var sharedFolderURL: URL? {

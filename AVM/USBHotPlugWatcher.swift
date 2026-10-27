@@ -252,8 +252,16 @@ final class USBHotPlugWatcher {
         // straight back to Windows whatever the settings said.
         var keepsOnMac = false
         if case .keepOnMac = decision { keepsOnMac = true }
+        // A braille display follows only if that VM's setting says so
+        // (2026-10-26): Settings, "When a braille display comes back".
+        let brailleAsks = classification.protection == .brailleDisplay
+            && VMStore.shared?.configurations.first(where: { $0.id == vmID })?.brailleFollowsBack == false
+        if brailleAsks {
+            log("arrived: \(identity) is a braille display and this VM asks about one coming back; not following through")
+        }
         if !atStart,
            !keepsOnMac,
+           !brailleAsks,
            classification.protection != .alwaysAsk,
            USBRedirectController.shared.takeFollowThrough(identity) {
             log("arrived: \(identity) left Windows moments ago; following the user's choice back to Windows")

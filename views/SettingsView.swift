@@ -125,6 +125,7 @@ struct SettingsView: View {
     @State private var shareClipboard = true
     @State private var sharedFolderPath: String?
     @State private var sharedFolderReadOnly = false
+    @State private var brailleFollowsBack = true
     @State private var lowAudioLatency = false
     @State private var restorePoints: [RestorePoint] = []
     @State private var restorePointsBusy = false
@@ -545,6 +546,21 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            // Braille follow-through (2026-10-26). Same short-label pattern
+            // as the picker above.
+            Text("When a braille display comes back within a minute of leaving \(guest):")
+                .fixedSize(horizontal: false, vertical: true)
+            Picker("Braille display comes back", selection: $brailleFollowsBack) {
+                Text("Send it back to \(guest)").tag(true)
+                Text("Ask first").tag(false)
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+            Text("Some displays, such as the Monarch, disconnect for a moment when they switch modes; Send it back keeps them in \(guest). Choose Ask first if you unplug your display to bring it back to the Mac.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             Text("Remembered devices")
                 .font(.subheadline)
                 .accessibilityAddTraits(.isHeader)
@@ -591,6 +607,7 @@ struct SettingsView: View {
         shareClipboard = saved.sharesClipboard
         sharedFolderPath = saved.sharedFolderPath
         sharedFolderReadOnly = saved.sharedFolderIsReadOnly
+        brailleFollowsBack = saved.brailleFollowsBack
         lowAudioLatency = saved.usesLowAudioLatency
     }
 
@@ -677,6 +694,7 @@ struct SettingsView: View {
             updated.shareClipboard = shareClipboard ? nil : false
             updated.sharedFolderPath = sharedFolderPath
             updated.sharedFolderReadOnly = sharedFolderReadOnly ? true : nil
+            updated.brailleFollowThrough = brailleFollowsBack ? nil : "ask"
             updated.lowAudioLatency = lowAudioLatency ? true : nil
             updated.usbMode = usbMode.rawValue
             updated.usbRememberedDevices = rememberedDevices.isEmpty ? nil : rememberedDevices
