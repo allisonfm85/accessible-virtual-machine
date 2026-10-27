@@ -27,6 +27,7 @@
 #ifndef AVM_USBSTREAM_H
 #define AVM_USBSTREAM_H
 
+#include <sys/types.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -69,7 +70,8 @@ int avm_usb_runtime_start(char *step, size_t step_len,
 void avm_usb_runtime_stop(void);
 
 /* Open the device at bus/address, check it is vendor:product, connect to
- * the unix socket QEMU listens on, and hand the device to usbredirhost
+ * the unix socket QEMU listens on (and check the process at the other end
+ * runs as socket_owner), and hand the device to usbredirhost
  * (which claims every interface and sends the hello + device_connect).
  * Returns the stream, or NULL with step/detail filled. On NULL nothing
  * is left claimed. verbose nonzero selects usbredir debug logging.
@@ -79,6 +81,7 @@ avm_usb_stream *avm_usb_stream_attach(uint16_t vendor_id,
                                       uint8_t bus_number,
                                       uint8_t device_address,
                                       const char *socket_path,
+                                      uid_t socket_owner,
                                       int verbose,
                                       avm_usb_event_fn callback,
                                       void *context,

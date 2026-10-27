@@ -201,7 +201,20 @@ final class CapsLockRemapper {
         // the apply is exactly what the saved copy is for. There is no window
         // in which we have changed the system without having recorded how to
         // put it back.
-        if let encoded = try? JSONEncoder().encode(existing),
+        //
+        // NEVER SAVE AVM'S OWN REMAP AS THE ORIGINAL (2026-10-25, code audit):
+        // if an earlier restore failed, the system still carries Caps Lock to
+        // F19 and the flag is still set. Saving that as the "original" meant
+        // the next successful restore wrote the remap back and cleared the
+        // flag, leaving Caps Lock dead with nothing left to recover it. So
+        // AVM's own entry is filtered out, and an original saved earlier and
+        // not yet restored is kept as it is.
+        let original = existing.filter { !($0.src == Self.capsLockUsage && $0.dst == Self.f19Usage) }
+        let unrestored = UserDefaults.standard.bool(forKey: Self.activeKey)
+            && UserDefaults.standard.string(forKey: Self.savedMappingKey) != nil
+        if unrestored {
+            AVMLog.write("AVM: CapsLockRemapper — an earlier original is still saved (not yet restored); keeping it.")
+        } else if let encoded = try? JSONEncoder().encode(original),
            let json = String(data: encoded, encoding: .utf8) {
             UserDefaults.standard.set(json, forKey: Self.savedMappingKey)
         } else {
@@ -217,13 +230,20 @@ final class CapsLockRemapper {
         if writeMapping(merged) {
             AVMLog.write("AVM: CapsLockRemapper — APPLIED (preserved \(preserved.count) existing entr\(preserved.count == 1 ? "y" : "ies")). Success is silent by design.")
         } else {
-            // The write failed, so the system is unchanged. Clear the flag so
-            // launch recovery does not later "restore" over a system we never
-            // touched.
-            UserDefaults.standard.set(false, forKey: Self.activeKey)
-            UserDefaults.standard.removeObject(forKey: Self.savedMappingKey)
-            UserDefaults.standard.synchronize()
-            AVMLog.write("AVM: CapsLockRemapper — apply FAILED; flag cleared.")
+            // The write failed, so the system is unchanged by THIS apply.
+            // Clear the flag so launch recovery does not later "restore" over
+            // a system we never touched, UNLESS an earlier restore failed
+            // (2026-10-26, keyboard audit): then the system still carries
+            // AVM's remap from before, and the flag and saved original are
+            // the only way back, so both stay.
+            if unrestored {
+                AVMLog.write("AVM: CapsLockRemapper — apply FAILED; an earlier remap is still in place, so the recovery record is kept.")
+            } else {
+                UserDefaults.standard.set(false, forKey: Self.activeKey)
+                UserDefaults.standard.removeObject(forKey: Self.savedMappingKey)
+                UserDefaults.standard.synchronize()
+                AVMLog.write("AVM: CapsLockRemapper — apply FAILED; flag cleared.")
+            }
             Announcer.shared.announce(
                 "Caps Lock setup failed. Screen reader commands may not work.",
                 tone: .failure)
