@@ -93,6 +93,12 @@ If BitLocker is on, Windows may ask for its recovery key after the switch.
 The firmware is UTM's Secure Boot build of edk2; its licences ship with
 it, in edk2-licenses.txt.
 
+## When the Mac sleeps
+
+Before the Mac sleeps, AVM pauses a running machine. When the Mac wakes,
+AVM resumes it and tells you. A machine you paused yourself stays
+paused. Windows' clock may take a minute to catch up.
+
 ## Braille displays
 
 When you plug in a USB device while Windows is running, AVM checks whether it's a braille display before doing anything with it. A braille display is never sent to Windows without asking, even when "Always use in Windows" is chosen in Settings. If you check "Remember my choice for this device," AVM will use your choice from then on.

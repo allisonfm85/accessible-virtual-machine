@@ -486,6 +486,12 @@ guess. Use the dashboard's Start button in that case.
 
 ---
 
+### When the Mac sleeps
+
+If the Mac sleeps with Windows running, AVM pauses Windows first and
+resumes it when the Mac wakes, and tells you. Give Windows' clock a
+minute to catch up.
+
 ## 12. Sounds and announcements
 
 AVM speaks in the Mac's system voice and plays three sounds:

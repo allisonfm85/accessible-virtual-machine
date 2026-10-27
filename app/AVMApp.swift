@@ -402,6 +402,8 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
         NSLog("AVM: AppDelegate — applicationDidFinishLaunching; running Caps Lock recovery check.")
         MainActor.assumeIsolated {
             CapsLockRemapper.shared.recoverAtLaunch()
+            // Pause a running VM before the Mac sleeps (2026-10-26).
+            SleepCoordinator.shared.start()
         }
     }
 
