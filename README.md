@@ -138,6 +138,15 @@ command line with `xcodebuild AVM_SYSROOT=/your/path`.
 The bundled xorriso must be 1.5.8.pl02 or later — earlier versions
 produce install ISOs the Windows boot loader cannot read.
 
+## Tests
+
+`swift test` runs the logic tests: password hashing, the log sanitizer,
+saved settings, and the Ubuntu account checks. They need no sysroot, so
+they run on any Mac with Xcode. If you
+build in a folder under ~/Documents, add
+`--scratch-path ~/Library/Caches/AVM-build/swiftpm`: file syncing adds
+file attributes there that stop the tests from being signed.
+
 ## Privacy
 
 AVM cannot capture what you type into Windows: the code path for
