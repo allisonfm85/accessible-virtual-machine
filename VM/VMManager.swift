@@ -813,7 +813,28 @@ final class VMManager: ObservableObject {
             self?.appendConsole("AVM: \(progress.visible)\n")
         }
 
-        let input = PipelineInput(
+        // Screen readers first (2026-10-26), so Windows talks from its first
+        // sign-in. A failed download is spoken and skipped: Narrator is
+        // still there, and the install shouldn't wait on a vendor's server.
+        var readerFiles: [String: URL] = [:]
+        if !configuration.windowsScreenReaders.isEmpty,
+           let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let cache = support
+                .appendingPathComponent(AVMPaths.supportFolderName, isDirectory: true)
+                .appendingPathComponent("screen-readers", isDirectory: true)
+            let got = await ScreenReaderInstallers.fetchAll(configuration.windowsScreenReaders, into: cache) { [weak self] message, isProblem in
+                await MainActor.run {
+                    self?.installProgress = message
+                    self?.appendConsole("AVM: \(message)\n")
+                    Announcer.shared.announce(message, tone: isProblem ? .failure : .info)
+                }
+            }
+            for (reader, file) in got {
+                readerFiles[reader.mediaFileName] = file
+            }
+        }
+
+        var input = PipelineInput(
             vmID: configuration.id,
             sourceISOPath: iso,
             runtimeDir: runtimeDir,
@@ -829,6 +850,7 @@ final class VMManager: ObservableObject {
                 return await self.handleInstallWarning(reason)
             }
         )
+        input.screenReaderInstallers = readerFiles
 
         do {
             let output = try await pipeline.run(input)

@@ -373,6 +373,11 @@ nonisolated struct PipelineInput {
     /// CONCURRENCY: this closure is invoked OFF the main actor. A closure that
     /// shows UI must hop to the main actor itself (e.g. await MainActor.run).
     var confirmWarning: ((String) async -> Bool)?
+    /// Screen reader installers to put on the install media (2026-10-26):
+    /// the name Windows sees (ScreenReader.mediaFileName) to the checked
+    /// download. Stage 3 copies them into AVMSR\ at the media's root, and
+    /// the answer file's specialize pass installs whatever it finds there.
+    var screenReaderInstallers: [String: URL] = [:]
 }
 
 /// The verified artifacts the pipeline produces, living in the VM runtime dir.
@@ -1142,6 +1147,24 @@ nonisolated final class WindowsInstallPipeline {
         }
 
         pipelineLog("stageDropVirtioDrivers: staged \(virtioRequiredFiles.map { $0.driver }.joined(separator: ", ")) into $WinPEDriver$ and verified required files")
+
+        // Screen readers (2026-10-26). Copied, not linked: the rebuilt ISO
+        // must carry the file itself.
+        let readerDir = tree.appendingPathComponent("AVMSR", isDirectory: true)
+        try? fm.removeItem(at: readerDir)
+        guard !input.screenReaderInstallers.isEmpty else { return }
+        do {
+            try fm.createDirectory(at: readerDir, withIntermediateDirectories: true)
+            for (name, source) in input.screenReaderInstallers.sorted(by: { $0.key < $1.key }) {
+                try fm.copyItem(at: source, to: readerDir.appendingPathComponent(name))
+            }
+        } catch {
+            throw PipelineError.stageFailed(
+                stage: .dropVirtioDrivers,
+                reason: "Couldn't copy the screen reader installers into the installer. (\(error.localizedDescription))"
+            )
+        }
+        pipelineLog("stageDropVirtioDrivers: staged screen readers \(input.screenReaderInstallers.keys.sorted().joined(separator: ", ")) into AVMSR")
     }
 
     // MARK: - Stage 4 — Build answer image (implemented)

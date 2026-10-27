@@ -103,6 +103,13 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// Read it through usesLowAudioLatency.
     var lowAudioLatency: Bool?
 
+    // MARK: - Screen readers in Windows (2026-10-26)
+
+    /// Screen readers AVM installs during Windows setup: ScreenReader raw
+    /// values. nil or empty means none, Narrator only, as before. Read it
+    /// through windowsScreenReaders.
+    var windowsScreenReaderNames: [String]?
+
     // MARK: - Defaults
 
     init(
@@ -121,6 +128,7 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         storageFolderPath: String? = nil,
         secureBoot: Bool? = nil,
         shareClipboard: Bool? = nil,
+        windowsScreenReaderNames: [String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -137,6 +145,7 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         self.storageFolderPath = storageFolderPath
         self.secureBoot = secureBoot
         self.shareClipboard = shareClipboard
+        self.windowsScreenReaderNames = windowsScreenReaderNames
     }
 }
 
@@ -144,6 +153,11 @@ extension VMConfiguration {
     var usesSecureBoot: Bool { secureBoot == true }
     var sharesClipboard: Bool { shareClipboard ?? true }
     var usesLowAudioLatency: Bool { lowAudioLatency == true }
+    /// Known screen readers only, in a fixed order; unknown words ignored.
+    var windowsScreenReaders: [ScreenReader] {
+        let chosen = Set(windowsScreenReaderNames ?? [])
+        return ScreenReader.allCases.filter { chosen.contains($0.rawValue) }
+    }
 }
 
 // MARK: - Storage location
@@ -329,6 +343,43 @@ struct RememberedUSBDevice: Codable, Hashable, Identifiable {
             && self.serialNumber == serialNumber
     }
 }
+
+// MARK: - Screen readers (2026-10-26)
+
+/// Screen readers AVM can install in Windows during setup. Raw values are
+/// the words windowsScreenReaderNames stores.
+nonisolated enum ScreenReader: String, CaseIterable, Identifiable, Sendable {
+    case nvda
+    case jaws
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .nvda: return "NVDA"
+        case .jaws: return "JAWS"
+        }
+    }
+
+    /// Its name on the install media: short and upper case, so every
+    /// namespace on the rebuilt ISO carries it unchanged.
+    var mediaFileName: String {
+        switch self {
+        case .nvda: return "NVDA.EXE"
+        case .jaws: return "JAWS.EXE"
+        }
+    }
+
+    /// The only host its installer may come from. A download link
+    /// anywhere else is refused, even if a manifest names it.
+    var vendorHost: String {
+        switch self {
+        case .nvda: return "download.nvaccess.org"
+        case .jaws: return "software.vfo.digital"
+        }
+    }
+}
+
 // MARK: - QEMU option values (2026-10-25)
 
 /// A value for a comma-separated QEMU option: QEMU reads a comma as the

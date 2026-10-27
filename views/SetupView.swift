@@ -88,6 +88,11 @@ struct SetupView: View {
     /// Windows installer is picked. Pro is the default, as it was when AVM
     /// chose without asking.
     @State private var windowsEdition: WindowsEdition = .pro
+    /// Screen readers installed during Windows setup (2026-10-26). NVDA is
+    /// on by default: it's free, so Windows talks from the first sign-in.
+    /// JAWS needs the user's own license, so it's their choice.
+    @State private var installNVDA = true
+    @State private var installJAWS = false
     /// Where the VM is stored (2026-10-25, roadmap item 3). nil means on
     /// this Mac, in Application Support, as always. Otherwise a folder the
     /// user chose, usually on an external drive; AVM makes an "AVM Virtual
@@ -232,6 +237,7 @@ struct SetupView: View {
 
                 if installerKind == .windows {
                     windowsEditionSection
+                    screenReaderSection
                 }
 
                 if isUbuntu {
@@ -382,6 +388,29 @@ struct SetupView: View {
             .pickerStyle(.radioGroup)
             .labelsHidden()
             .accessibilityLabel("Windows edition")
+        }
+    }
+
+    // MARK: - Windows screen readers
+
+    private var chosenScreenReaders: [String] {
+        var names: [String] = []
+        if installNVDA { names.append(ScreenReader.nvda.rawValue) }
+        if installJAWS { names.append(ScreenReader.jaws.rawValue) }
+        return names
+    }
+
+    private var screenReaderSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Screen Readers")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Text("Windows Setup speaks with Narrator. AVM can also install these, downloaded from their makers, so one is talking when you first sign in. If you choose both, NVDA starts at sign-in.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Toggle("Install NVDA (free, from NV Access)", isOn: $installNVDA)
+            Toggle("Install JAWS for ARM (from Freedom Scientific)", isOn: $installJAWS)
+                .accessibilityHint("A 1.5 gigabyte download. Without a license, JAWS runs for 40 minutes at a time; activate it in Windows with your own license.")
         }
     }
 
@@ -588,6 +617,7 @@ struct SetupView: View {
             // TPM AVM already gives it, Windows sees a PC that meets its
             // requirements, Insider builds included.
             secureBoot: isUbuntu ? nil : true,
+            windowsScreenReaderNames: isUbuntu ? nil : chosenScreenReaders
         )
 
         isCreating = true

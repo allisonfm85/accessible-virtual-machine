@@ -250,3 +250,70 @@ final class StreamSocketCheckTests: XCTestCase {
     }
 }
 
+// MARK: - Screen readers installed with Windows
+
+final class ScreenReaderInstallerTests: XCTestCase {
+    /// The shape of a winget installer manifest: one entry per architecture.
+    private let manifest = """
+    PackageIdentifier: FreedomScientific.JAWS.2026
+    Installers:
+    - Architecture: x64
+      InstallerUrl: https://software.vfo.digital/JAWS/x64.exe
+      InstallerSha256: 1111111111111111111111111111111111111111111111111111111111111111
+    - Architecture: arm64
+      InstallerUrl: https://software.vfo.digital/JAWS/arm64.exe
+      InstallerSha256: c73c2a2a5a057cf0383e8409ef6ae1b00e8fb8b78b58036e4457daae095c73d5
+    ManifestType: installer
+    """
+
+    func testPicksTheARMInstaller() throws {
+        let found = try ScreenReaderInstallers.installer(.jaws, version: "1", yaml: manifest, architecture: "arm64")
+        XCTAssertEqual(found.url.lastPathComponent, "arm64.exe")
+        XCTAssertEqual(found.checksum, .sha256("C73C2A2A5A057CF0383E8409EF6AE1B00E8FB8B78B58036E4457DAAE095C73D5"))
+    }
+
+    /// NV Access's feed is newer than winget's list: 2026.3 was out while
+    /// winget still listed 2026.2.
+    func testReadsNVAccessUpdateFeed() throws {
+        let feed = """
+        apiCompatTo: 2026.1.0
+        apiVersion: 2026.3.0
+        launcherHash: c5e02b5b12da149d92b8802172e6d683e7c77175
+        launcherUrl: https://download.nvaccess.org/releases/2026.3/nvda_2026.3.exe
+        version: 2026.3
+        """
+        let found = try ScreenReaderInstallers.nvAccessRelease(text: feed)
+        XCTAssertEqual(found.version, "2026.3")
+        XCTAssertEqual(found.url.host, ScreenReader.nvda.vendorHost)
+        XCTAssertEqual(found.checksum, .sha1("C5E02B5B12DA149D92B8802172E6D683E7C77175"))
+        XCTAssertThrowsError(try ScreenReaderInstallers.nvAccessRelease(text: "version: 2026.3"))
+    }
+
+    func testAMissingArchitectureIsAnError() {
+        XCTAssertThrowsError(try ScreenReaderInstallers.installer(.jaws, version: "1", yaml: manifest, architecture: "x86"))
+    }
+
+    func testPinnedDownloadsAreOnTheMakersOwnHosts() {
+        for reader in ScreenReader.allCases {
+            let pinned = ScreenReaderInstallers.pinned[reader]
+            XCTAssertEqual(pinned?.url.host, reader.vendorHost)
+            XCTAssertEqual(pinned?.url.scheme, "https")
+            if case .sha256(let hash) = pinned?.checksum { XCTAssertEqual(hash.count, 64) } else { XCTFail("pinned versions use SHA-256") }
+        }
+    }
+
+    func testOnlyChosenReadersAreInstalled() {
+        var config = VMConfiguration()
+        XCTAssertTrue(config.windowsScreenReaders.isEmpty, "older VMs: Narrator only")
+        config.windowsScreenReaderNames = ["jaws", "orca", "nvda"]
+        XCTAssertEqual(config.windowsScreenReaders, [.nvda, .jaws])
+    }
+
+    func testTheChecksumIsOfTheFile() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("abc".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        XCTAssertEqual(try ScreenReaderInstallers.sha256(of: file),
+                       "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD")
+    }
+}

@@ -112,6 +112,23 @@ text, rich text and pictures, through the SPICE agent AVM installs in
 Windows. AVM never records what is copied. To keep the two clipboards
 apart, turn off Share the clipboard in that machine's Settings.
 
+## Screen readers from the first sign-in
+
+When you make a Windows machine, AVM can install NVDA and JAWS for ARM,
+so a screen reader is talking the moment you first sign in. JAWS installs
+during Windows setup; NVDA installs at your first sign-in, as you, which
+is what its installer needs. Narrator speaks through setup itself. NVDA is chosen by default. JAWS is your choice, because it
+needs your own license. Without one it runs for 40 minutes at a time;
+activate it in Windows. If you choose both, NVDA starts at sign-in.
+
+AVM doesn't ship either one. It downloads each from its maker: NVDA's
+newest release from NV Access's own update feed, JAWS's from winget's
+public package list, or a known version if those can't be reached. A
+download is used only if it comes from the maker's own server and
+matches the checksum its maker publishes. AVM keeps the downloads, so your next machine doesn't download
+them again. If a download fails, AVM says so and Windows installs
+without that screen reader.
+
 ## When the Mac sleeps
 
 Before the Mac sleeps, AVM pauses a running machine. When the Mac wakes,
@@ -194,8 +211,8 @@ produce install ISOs the Windows boot loader cannot read.
 ## Tests
 
 `swift test` runs the logic tests: password hashing, the log sanitizer,
-saved settings, the Ubuntu account checks, and the root USB helper's socket
-check. They need no sysroot, so
+saved settings, the Ubuntu account checks, the root USB helper's socket
+check, and the screen reader download checks. They need no sysroot, so
 they run on any Mac with Xcode. If you
 build in a folder under ~/Documents, add
 `--scratch-path ~/Library/Caches/AVM-build/swiftpm`: file syncing adds

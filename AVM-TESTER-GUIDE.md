@@ -374,10 +374,13 @@ the opposite of what you expected.
 
 ## 9. Screen readers in Windows
 
-Most people's journey looks the same: use Narrator to get through Windows
-setup, because it is built in and needs no download. Then install JAWS or
-NVDA once Windows is yours. Both work in AVM. Use whichever screen reader
-you use.
+Narrator gets you through Windows setup, because it is built in. When
+you make the machine, AVM can also install NVDA, JAWS for ARM, or both,
+so one of them is talking when you first sign in. NVDA is on by default.
+JAWS needs your own license; without one it runs for 40 minutes at a
+time. If you choose both, NVDA starts at sign-in, and you can start JAWS
+yourself. You can also install either one yourself later. Use whichever
+screen reader you use.
 
 ### Narrator
 
