@@ -426,6 +426,18 @@ of this is AVM.
 - **Command-F5** turns VoiceOver on and off. This is macOS, not AVM, but
   it is half the routine.
 
+
+**Force Stop asks first,** with Cancel as the default, wherever you find
+it, because it turns Windows off at once. It is also offered while Windows
+is shutting down, in case Windows stops answering.
+
+**Quitting with Windows running.** If you quit AVM, or close its window,
+while Windows is running, AVM asks first. Cancel is the default, so Return keeps you where
+you are. **Shut Down Windows and Quit** shuts Windows down properly and
+quits AVM when it has finished; you can keep using AVM meanwhile. **Quit
+Now** turns Windows off at once, like pulling the plug. Either way, any
+USB devices go back to your Mac first.
+
 Note on Command-Shift-S: in this build it starts a machine only when you
 have exactly one machine configured and nothing is running. With no
 machines, or more than one, you get a beep and an explanation instead of a
@@ -827,15 +839,14 @@ tilde wherever a file path would have contained it. You can check both
 claims by reading the log yourself. It is plain text, and you are
 encouraged to.
 
-One honest exception exists: a diagnostic keyboard mode used during
-development, off by default, that can only be switched on deliberately
-with a Terminal command. Turning it on announces itself in the log. If you
-never run that command, it never runs.
+A diagnostic keyboard mode exists for development, but only in developer
+builds of AVM. In the build you are testing it does not exist at all, and
+no setting or command can turn it on.
 
 During installation, AVM also samples the guest's screen image, but only
-to detect a frozen installer. No image is kept. Each frame is reduced to a
-checksum and deleted. A frame is kept only if the watchdog declares a
-failure, and the log says so when that happens.
+to detect a frozen installer. Each sample replaces the previous one in the
+machine's folder, and the last one is deleted when the watching ends. No
+sample goes into the diagnostic log.
 
 One cosmetic note: if your Mac user name happens to be an ordinary English
 word, the privacy scrubber may occasionally replace that word with a tilde
