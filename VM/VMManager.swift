@@ -467,6 +467,8 @@ final class VMManager: ObservableObject {
 
     private var vmRuntimeDir: URL?
     private var vmSocketDir: URL?
+    /// The QEMU guest agent's socket (GuestAgent.swift), in vmSocketDir.
+    var guestAgentSocketPath: String? { vmSocketDir?.appendingPathComponent("qga.sock").path }
 
     // Boot keypress: an async Task (NOT a Timer) that sends Enter repeatedly
     // across the early boot window to satisfy Windows' "Press any key to boot
@@ -1063,7 +1065,7 @@ final class VMManager: ObservableObject {
         avmLog("startVM: diagnostic QMP socket path: \(qmp2Path)")
         avmLog("startVM: SPICE socket path: \(spicePath)")
 
-        for path in [spicePath, qmpPath, qmp2Path, tpmPath] {
+        for path in [spicePath, qmpPath, qmp2Path, tpmPath, socketDir.appendingPathComponent("qga.sock").path] {
             try? FileManager.default.removeItem(atPath: path)
         }
 
@@ -2074,6 +2076,15 @@ final class VMManager: ObservableObject {
             "-chardev", "spicevmc,id=vdagent,name=vdagent",
             "-device", "virtserialport,chardev=vdagent,name=com.redhat.spice.0"
         ]
+        // QEMU guest agent (2026-10-26): its own port, for setting Windows'
+        // clock after the Mac sleeps (GuestAgent.swift). Windows without the
+        // agent just never opens it.
+        if let qga = guestAgentSocketPath {
+            args += [
+                "-chardev", "socket,id=qga0,path=\(QEMUOption.value(qga)),server=on,wait=off",
+                "-device", "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0"
+            ]
+        }
         // Shared folder (2026-10-26): the SPICE WebDAV channel, only when a
         // folder is chosen. CocoaSpice shares ~/Documents/Public on any
         // WebDAV channel unless told otherwise, so no channel, no sharing;
@@ -3117,6 +3128,35 @@ enum AVMError: LocalizedError {
             return "QMP command failed: \(desc)"
         case .diskCreationFailed(let output):
             return "QEMU disk image creation failed: \(output)"
+        }
+    }
+}
+
+// MARK: - Install media with no VM (2026-10-26; InstallMediaJob.swift)
+
+extension VMManager {
+    /// The first start's media build, into a folder of the caller's.
+    func buildInstallMedia(configuration: VMConfiguration, into folder: URL) async throws {
+        try await ensureInstallMedia(configuration: configuration, runtimeDir: folder)
+    }
+}
+
+// MARK: - Guest agent (2026-10-26; protocol in AVM/GuestAgent.swift)
+
+extension VMManager {
+    /// Sets Windows' clock to the Mac's. Returns true if the agent did it.
+    @discardableResult
+    func setGuestClock() async -> Bool {
+        guard let path = guestAgentSocketPath else { return false }
+        let command = GuestAgent.setTimeCommand()
+        do {
+            let replies = try await Task.detached { try GuestAgent.run([command], socketPath: path) }.value
+            let ok = replies.first?.contains(#""return""#) == true
+            AVMLog.write("AVM: GuestAgent — set the guest clock: \(ok ? "done" : replies.first ?? "no reply")")
+            return ok
+        } catch {
+            AVMLog.write("AVM: GuestAgent — couldn't set the guest clock (\(error.localizedDescription)); Windows will correct it at its next time sync.")
+            return false
         }
     }
 }

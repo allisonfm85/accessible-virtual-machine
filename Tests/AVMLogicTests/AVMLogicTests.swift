@@ -443,3 +443,61 @@ final class WindowsSetupAnswersTests: XCTestCase {
         XCTAssertEqual(WindowsSetupAnswers.load(fromVMDirectory: dir)?.localAccount?.userName, "amena")
     }
 }
+
+// MARK: - The QEMU guest agent's protocol
+
+final class GuestAgentTests: XCTestCase {
+    /// A stand-in agent: answers guest-sync with its id, after a stale
+    /// reply from an earlier request, and guest-set-time with success.
+    func testSyncsThenSetsTheTime() throws {
+        let path = "/tmp/avm-qga-test-\(getpid()).sock"
+        unlink(path)
+        let server = socket(AF_UNIX, SOCK_STREAM, 0)
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        _ = withUnsafeMutableBytes(of: &address.sun_path) { buffer in path.utf8CString.withUnsafeBytes { buffer.copyMemory(from: $0) } }
+        XCTAssertEqual(withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(server, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }, 0)
+        XCTAssertEqual(listen(server, 1), 0)
+        defer { Darwin.close(server); unlink(path) }
+
+        let received = Locked<[String]>([])
+        let agent = Thread {
+            let client = accept(server, nil, nil)
+            defer { Darwin.close(client) }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            var text = ""
+            func reply(_ line: String) { let b = Array((line + "\n").utf8); _ = write(client, b, b.count) }
+            while true {
+                let n = read(client, &buffer, buffer.count)
+                if n <= 0 { return }
+                text += String(decoding: buffer[0..<n], as: UTF8.self)
+                while let newline = text.firstIndex(of: "\n") {
+                    let line = String(text[..<newline]); text.removeSubrange(...newline)
+                    received.mutate { $0.append(line) }
+                    if line.contains("guest-sync"), let id = line.split(separator: ":").last?.filter(\.isNumber) {
+                        reply(#"{"return": 12345}"#)          // stale
+                        reply(#"{"return": \#(id)}"#)
+                    } else if line.contains("guest-set-time") {
+                        reply(#"{"return": {}}"#)
+                    }
+                }
+            }
+        }
+        agent.start()
+        let replies = try GuestAgent.run([GuestAgent.setTimeCommand(now: Date(timeIntervalSince1970: 1_800_000_000))], socketPath: path)
+        XCTAssertEqual(replies, [#"{"return": {}}"#])
+        XCTAssertTrue(received.value.last?.contains(#""time":1800000000000000000"#) == true)
+    }
+
+    func testNoAgentIsAnErrorNotAHang() {
+        XCTAssertThrowsError(try GuestAgent.run([GuestAgent.setTimeCommand()], socketPath: "/tmp/avm-no-such-agent.sock", timeout: 1))
+    }
+}
+
+final class Locked<T>: @unchecked Sendable {
+    private var stored: T
+    private let lock = NSLock()
+    init(_ value: T) { stored = value }
+    var value: T { lock.lock(); defer { lock.unlock() }; return stored }
+    func mutate(_ change: (inout T) -> Void) { lock.lock(); change(&stored); lock.unlock() }
+}

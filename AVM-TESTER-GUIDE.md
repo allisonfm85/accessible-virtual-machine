@@ -251,6 +251,25 @@ The window reads top to bottom:
 - **Windows Edition** appears once you've chosen a Windows ISO: Pro, Home,
   or Home Single Language, as radio buttons. Choose the edition your
   Windows license is for. Pro is chosen to start with.
+- **Screen Readers**: checkboxes for NVDA (checked to start with) and
+  JAWS for ARM. AVM downloads them from their makers and installs them
+  with Windows.
+- **Windows Setup Answers**: what Windows Setup won't ask you, because
+  AVM writes it into this machine's answer file. Each one is filled in
+  from your Mac; choose **Let Windows ask** on any of them to answer it in
+  Windows instead.
+  - **Region**, **Keyboard** and **Time zone** are pop-up menus. Type a
+    few letters to jump to a choice.
+  - **Computer name** is a text field. Leave it empty to use the name
+    shown, made from the machine's name.
+  - **Privacy**: radio buttons for the most private choice (the default)
+    or Windows' recommended settings.
+  - **Windows account**: radio buttons. **Microsoft account** means you
+    sign in during setup, as before. **Local account on this PC** asks
+    for your name, a user name and a password (it can be empty), and
+    Windows then skips its sign-in screens and signs in by itself the
+    first time, so NVDA installs and starts with nothing for you to do.
+    You can add a Microsoft account later in Windows' Settings.
 - **Cancel** and **Create Virtual Machine**. Escape cancels, and
   Command-Return creates. While the machine is being created the button
   reads "Creating virtual machine, please wait". It takes a moment,

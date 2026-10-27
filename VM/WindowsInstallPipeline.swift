@@ -1164,6 +1164,12 @@ nonisolated final class WindowsInstallPipeline {
                 throw PipelineError.stageFailed(stage: .dropVirtioDrivers, reason: "The bundled shared-folder service is missing from the app. This is a build problem, not something you did.")
             }
             try fm.copyItem(at: webdavd, to: extraDir.appendingPathComponent("WEBDAVD.MSI"))
+            // The QEMU guest agent (2026-10-26), x64 as well: sets the clock
+            // after the Mac sleeps. Optional: without it, setup goes on.
+            let guestAgent = try resourceDirURL(named: "vdagent").appendingPathComponent("qemu-ga-x86_64.msi")
+            if fm.fileExists(atPath: guestAgent.path) {
+                try fm.copyItem(at: guestAgent, to: extraDir.appendingPathComponent("QEMUGA.MSI"))
+            }
         } catch let error as PipelineError {
             throw error
         } catch {

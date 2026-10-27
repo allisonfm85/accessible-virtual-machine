@@ -129,6 +129,19 @@ matches the checksum its maker publishes. AVM keeps the downloads, so your next 
 them again. If a download fails, AVM says so and Windows installs
 without that screen reader.
 
+## Answers for Windows Setup
+
+The setup wizard asks what Windows Setup would otherwise ask on screens
+you can only get through with Narrator, and writes the answers into that
+machine's own answer file: region, keyboard, time zone, computer name,
+privacy settings, and the account. Each answer is filled in from your
+Mac. The account can be a Microsoft account, signed in during setup, or
+a local account from a name and password you type, which skips the
+sign-in screens and signs in once by itself. AVM keeps the password only
+in Windows' scrambled form, only until the install disc is built, and
+removes the answer file once Windows is installed. Once Windows is
+installed, AVM also deletes its copy of the install disc, about 8.5 GB.
+
 ## Sharing a folder with Windows
 
 In a Windows machine's Settings, choose Choose Folder to Share. Windows
@@ -141,8 +154,10 @@ from spice-space.org first.
 ## When the Mac sleeps
 
 Before the Mac sleeps, AVM pauses a running machine. When the Mac wakes,
-AVM resumes it and tells you. A machine you paused yourself stays
-paused. Windows' clock may take a minute to catch up.
+AVM resumes it, sets Windows' clock to the Mac's through the QEMU guest
+agent it installs with Windows, and tells you. A machine you paused
+yourself stays paused. Windows installed by an older AVM has no guest
+agent, so its clock catches up at its next time sync.
 
 ## Sound
 

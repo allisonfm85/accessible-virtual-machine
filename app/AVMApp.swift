@@ -55,6 +55,13 @@ struct AVMApp: App {
     /// for why one became necessary.
     @NSApplicationDelegateAdaptor(AVMAppDelegate.self) private var appDelegate
 
+    /// --build-install-media (InstallMediaJob.swift) builds install media
+    /// with no window and exits before anything else starts; any other
+    /// launch carries on as always.
+    init() {
+        InstallMediaJob.runIfAsked()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()

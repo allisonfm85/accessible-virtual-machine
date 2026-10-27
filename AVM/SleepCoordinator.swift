@@ -104,7 +104,15 @@ final class SleepCoordinator {
             do {
                 try await manager.resumeVM()
                 AVMLog.write("AVM: Sleep — the Mac woke; the VM is running again.")
-                Announcer.shared.announce("\(guest) was paused while the Mac slept, and is running again. Its clock may take a minute to catch up.", tone: .info)
+                // The guest agent sets the clock at once (GuestAgent.swift);
+                // without it, Windows catches up at its next time sync.
+                let clockSet = await manager.setGuestClock()
+                Announcer.shared.announce(
+                    clockSet
+                        ? "\(guest) was paused while the Mac slept, and is running again."
+                        : "\(guest) was paused while the Mac slept, and is running again. Its clock may take a while to catch up.",
+                    tone: .info
+                )
             } catch {
                 Announcer.shared.announce("\(guest) was paused while the Mac slept and could not be resumed. Reason: \(error.localizedDescription) Next: choose Resume on the dashboard.", tone: .failure)
             }

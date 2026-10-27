@@ -38,6 +38,7 @@ let package = Package(
                 "AVM/ScreenReaderInstallers.swift",
                 "AVM/WindowsRegion.swift",
                 "AVM/WindowsSetupAnswers.swift",
+                "AVM/GuestAgent.swift",
             ],
             swiftSettings: appSettings
         ),
