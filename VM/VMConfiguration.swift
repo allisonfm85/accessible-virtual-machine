@@ -63,6 +63,24 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// it through guestOS, never directly.
     var guestOSName: String?
 
+    // MARK: - Windows edition (2026-10-25)
+
+    /// Which edition Windows Setup installs: a WindowsEdition raw value.
+    /// Plain text for the same reason as usbMode. nil, or a word this AVM
+    /// doesn't know, means the install pipeline's own default (Windows 11
+    /// Pro), exactly as before the setup wizard asked. Read it through
+    /// windowsEdition, never directly.
+    var windowsEditionName: String?
+
+    // MARK: - Secure Boot (2026-10-25, roadmap item 8)
+
+    /// true: the VM boots UTM's Secure Boot firmware, whose variable store
+    /// carries Microsoft's KEK and db certificates with Secure Boot on, so
+    /// Windows Update's Secure Boot check passes (Insider builds). nil or
+    /// false: the original firmware, exactly as before. New Windows VMs
+    /// get true from the setup wizard; existing ones change it in Settings.
+    var secureBoot: Bool?
+
     // MARK: - Defaults
 
     init(
@@ -76,7 +94,9 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         sharedFolderPath: String? = nil,
         usbMode: String? = nil,
         usbRememberedDevices: [RememberedUSBDevice]? = nil,
-        guestOSName: String? = nil
+        guestOSName: String? = nil,
+        windowsEditionName: String? = nil,
+        secureBoot: Bool? = nil,
     ) {
         self.id = id
         self.name = name
@@ -89,8 +109,15 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         self.usbMode = usbMode
         self.usbRememberedDevices = usbRememberedDevices
         self.guestOSName = guestOSName
+        self.windowsEditionName = windowsEditionName
+        self.secureBoot = secureBoot
     }
 }
+
+extension VMConfiguration {
+    var usesSecureBoot: Bool { secureBoot == true }
+}
+
 
 // MARK: - Guest operating system
 
@@ -113,6 +140,46 @@ enum GuestOS: String {
 extension VMConfiguration {
     var guestOS: GuestOS {
         guestOSName.flatMap(GuestOS.init(rawValue:)) ?? .windows
+    }
+}
+
+// MARK: - Windows edition
+
+/// The Windows 11 editions the setup wizard offers. Raw values are the
+/// words windowsEditionName stores.
+enum WindowsEdition: String, CaseIterable, Identifiable {
+    case pro
+    case home
+    case homeSingleLanguage
+
+    var id: String { rawValue }
+
+    /// The edition's name inside install.wim, which the answer file's
+    /// /IMAGE/NAME selects. Spoken and shown as is.
+    var imageName: String {
+        switch self {
+        case .pro: return "Windows 11 Pro"
+        case .home: return "Windows 11 Home"
+        case .homeSingleLanguage: return "Windows 11 Home Single Language"
+        }
+    }
+
+    /// Microsoft's public generic install key for the edition. It tells
+    /// Setup which edition to install and activates nothing; Windows asks
+    /// for the user's own key or digital license later.
+    var genericProductKey: String {
+        switch self {
+        case .pro: return "VK7JG-NPHTM-C97JM-9MPGT-3V66T"
+        case .home: return "YTMG3-N6DKC-DKB77-7M9GH-8HVX7"
+        case .homeSingleLanguage: return "BT79Q-G7N6G-PGBYW-4YWX6-6F4BT"
+        }
+    }
+}
+
+extension VMConfiguration {
+    /// The chosen edition, or nil for the pipeline's default.
+    var windowsEdition: WindowsEdition? {
+        windowsEditionName.flatMap(WindowsEdition.init(rawValue:))
     }
 }
 
@@ -174,3 +241,14 @@ struct RememberedUSBDevice: Codable, Hashable, Identifiable {
             && self.serialNumber == serialNumber
     }
 }
+// MARK: - QEMU option values (2026-10-25)
+
+/// A value for a comma-separated QEMU option: QEMU reads a comma as the
+/// start of the next option and escapes a literal one by doubling it.
+/// Used by VMManager.qemuOptionValue for every file path it passes.
+nonisolated enum QEMUOption {
+    static func value(_ path: String) -> String {
+        path.replacingOccurrences(of: ",", with: ",,")
+    }
+}
+

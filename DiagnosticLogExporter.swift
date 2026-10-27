@@ -177,7 +177,7 @@ enum DiagnosticLogExporter {
         // one. Same Application Support root AVMLog anchors to.
         if let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             let vmsDir = appSupport
-                .appendingPathComponent("AVM", isDirectory: true)
+                .appendingPathComponent(AVMPaths.supportFolderName, isDirectory: true)
                 .appendingPathComponent("vms", isDirectory: true)
             if let entries = try? fm.contentsOfDirectory(at: vmsDir, includingPropertiesForKeys: [.isDirectoryKey]) {
                 // Sorted so bundle contents are deterministic run to run.
@@ -225,16 +225,25 @@ enum DiagnosticLogExporter {
         let fm = FileManager.default
         // The save panel already asked the user about replacing an existing
         // item with this name; honoring that answer means actually replacing
-        // it rather than failing on "file exists".
+        // it rather than failing on "file exists". It goes to the Trash
+        // (2026-10-25, code audit), like everything else AVM replaces: a
+        // folder that happened to share the name used to be deleted outright.
         if fm.fileExists(atPath: destination.path) {
-            try fm.removeItem(at: destination)
+            try fm.trashItem(at: destination, resultingItemURL: nil)
         }
         try fm.createDirectory(at: destination, withIntermediateDirectories: true)
 
         var copied = 0
         for source in sources {
-            try fm.copyItem(at: source.url,
-                            to: destination.appendingPathComponent(source.destinationName))
+            let target = destination.appendingPathComponent(source.destinationName)
+            if source.destinationName.hasPrefix("firmware-serial") {
+                // Written by the guest, not by AVM, so never passed through
+                // the sanitizer (2026-10-25, privacy audit). It is here.
+                let text = String(decoding: try Data(contentsOf: source.url), as: UTF8.self)
+                try Data(AVMLog.sanitize(text).utf8).write(to: target)
+            } else {
+                try fm.copyItem(at: source.url, to: target)
+            }
             copied += 1
         }
         return copied

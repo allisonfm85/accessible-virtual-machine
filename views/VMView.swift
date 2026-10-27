@@ -530,7 +530,14 @@ private func avmPublicLog(_ message: String) {
 /// When enabled, the app self-declares in the unified log at first key event
 /// (the NSLog in the initializer below), so a log capture can always be
 /// audited for whether key logging was on.
+///
+/// DEBUG BUILDS ONLY (2026-10-25, privacy audit): in a release build this is
+/// false, with no setting that can change it. The flag above used to work in
+/// release builds too, and any program the user runs can write a defaults
+/// key or pass it on the command line, which made the README's promise,
+/// that AVM cannot capture what you type, untrue for the build testers use.
 enum KeyEventLogging {
+    #if DEBUG
     static let isEnabled: Bool = {
         let on = UserDefaults.standard.bool(forKey: "AVMKeyEventLogging")
         if on {
@@ -538,6 +545,9 @@ enum KeyEventLogging {
         }
         return on
     }()
+    #else
+    static let isEnabled = false
+    #endif
 }
 
 // MARK: - SwiftUI Entry Point
@@ -597,17 +607,34 @@ struct VMView: View {
                 }
                 .keyboardShortcut(.escape, modifiers: [.control, .command])
                 .accessibilityHint("Unlocks focus and returns keyboard control to macOS")
+                // Same shutdown as the dashboard's Stop (2026-10-25, code
+                // audit). This used stop(), which does nothing while paused,
+                // and dropped every failure, so the user heard only "Mac
+                // keyboard on" while the VM kept running. stopGracefully
+                // resumes a paused VM, speaks the shutdown, and its failure
+                // is spoken here. The session ends by itself when the VM
+                // reaches Stopped (SessionGate).
                 Button("Stop \(guest)") {
+                    focusLock.unlock()
                     Task {
-                        do { try await session.stop() }
-                        catch {}
-                        focusLock.unlock()
+                        do {
+                            try await session.stopGracefully()
+                        } catch {
+                            Announcer.shared.announce(
+                                "\(guest) could not be shut down. Reason: \(error.localizedDescription) Next: try Stop again, or use Force Stop.",
+                                tone: .failure
+                            )
+                        }
                     }
                 }
                 .accessibilityHint("Shuts down the \(guest) virtual machine")
                 Button("Force Stop") {
-                    session.forceStop()
-                    focusLock.unlock()
+                    // Asks first, as on the dashboard: a VoiceOver press can
+                    // reach this button even while the keyboard is in the VM.
+                    if confirmForceStop(guest: guest) {
+                        session.forceStop()
+                        focusLock.unlock()
+                    }
                 }
                 .accessibilityHint("Immediately kills the virtual machine. Use only if Stop is unresponsive.")
             }

@@ -81,6 +81,10 @@ struct SetupView: View {
     @State private var showingFilePicker = false
     @State private var notices: [Notice] = []
     @State private var isCreating = false
+    /// Which Windows edition Setup installs (2026-10-25). Shown once a
+    /// Windows installer is picked. Pro is the default, as it was when AVM
+    /// chose without asking.
+    @State private var windowsEdition: WindowsEdition = .pro
 
     // MARK: - Ubuntu (2026-10-19)
     //
@@ -118,6 +122,8 @@ struct SetupView: View {
     // MARK: - Body
 
     var body: some View {
+        // Scrolls (2026-10-25): the window has grown past small screens.
+        ScrollView {
         VStack(spacing: 24) {
 
             Text("Setup Wizard")
@@ -205,6 +211,10 @@ struct SetupView: View {
                     .accessibilityHint("Opens a file picker to select your Windows or Ubuntu installer ISO")
                 }
 
+                if installerKind == .windows {
+                    windowsEditionSection
+                }
+
                 if isUbuntu {
                     ubuntuAccountSection
                 }
@@ -249,6 +259,7 @@ struct SetupView: View {
             }
         }
         .padding(32)
+        }
         .frame(minWidth: 480, minHeight: 600)
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -269,6 +280,27 @@ struct SetupView: View {
             case .failure(let error):
                 reportFailure(error.localizedDescription)
             }
+        }
+    }
+
+    // MARK: - Windows edition
+
+    private var windowsEditionSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Windows Edition")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Text("Choose the edition your Windows license is for. If you're not sure, choose Pro. AVM checks that the installer has it before installing.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker("Windows edition", selection: $windowsEdition) {
+                ForEach(WindowsEdition.allCases) { edition in
+                    Text(edition.imageName).tag(edition)
+                }
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+            .accessibilityLabel("Windows edition")
         }
     }
 
@@ -293,6 +325,12 @@ struct SetupView: View {
                 .accessibilityLabel("Ubuntu user name")
                 .accessibilityHint("Lower-case letters, digits, hyphens and underscores, starting with a letter")
 
+            // The keyboard Ubuntu gets (2026-10-25): the password must type
+            // the same in Ubuntu as it does here, so this is said up front.
+            Text(ubuntuKeyboardNote)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             SecureField("Password", text: $ubuntuPassword)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Ubuntu password")
@@ -305,6 +343,14 @@ struct SetupView: View {
             Toggle("Sign in automatically", isOn: $ubuntuSignInAutomatically)
                 .accessibilityHint("When on, Ubuntu starts straight to the desktop with no password prompt")
         }
+    }
+
+    private var ubuntuKeyboardNote: String {
+        let current = UbuntuKeyboard.current()
+        if let layout = current.layout {
+            return "Ubuntu's keyboard will be \(layout.name), to match your Mac, so your password types the same in Ubuntu."
+        }
+        return "Your Mac's keyboard, \(current.macName), isn't one AVM can match, so Ubuntu will use a U.S. keyboard. Choose a password that types the same on a U.S. keyboard, such as one made of letters and digits that sit in the same places."
     }
 
     /// The installer's kind, as shown and spoken after the file name.
@@ -411,11 +457,14 @@ struct SetupView: View {
                 reportGuidance("The two Ubuntu passwords don't match. Please type them again.")
                 return
             }
+            let keyboard = UbuntuKeyboard.current().layout
             ubuntuAccount = UbuntuAccount(
                 realName: realName,
                 userName: ubuntuUserName,
                 passwordHash: SHA512Crypt.hash(password: ubuntuPassword),
-                signInAutomatically: ubuntuSignInAutomatically
+                signInAutomatically: ubuntuSignInAutomatically,
+                keyboardLayout: keyboard?.layout,
+                keyboardVariant: keyboard?.variant
             )
         }
 
@@ -453,7 +502,12 @@ struct SetupView: View {
             diskSizeGB: diskSizeGB,
             diskImagePath: diskPath,
             installISOPath: installerURL.path,
-            guestOSName: isUbuntu ? GuestOS.ubuntu.rawValue : nil
+            guestOSName: isUbuntu ? GuestOS.ubuntu.rawValue : nil,
+            windowsEditionName: isUbuntu ? nil : windowsEdition.rawValue,
+            // Secure Boot for every new Windows VM (2026-10-25): with the
+            // TPM AVM already gives it, Windows sees a PC that meets its
+            // requirements, Insider builds included.
+            secureBoot: isUbuntu ? nil : true,
         )
 
         isCreating = true
