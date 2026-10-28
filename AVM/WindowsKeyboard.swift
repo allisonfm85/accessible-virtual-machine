@@ -74,12 +74,18 @@ final class WindowsKeyboard {
 
     private init() {}
 
+    /// Which start a wait belongs to (2026-10-28): a stop and a new start
+    /// during the approval wait left two waits for one keyboard.
+    private var startGeneration = 0
+
     func start(keyboardID: String, name: String?, target: VMManager? = nil) {
         guard self.keyboardID == nil else { return }
         self.keyboardID = keyboardID
         self.target = target
         keyboardName = name ?? "The keyboard for Windows"
         announcedHeld = false
+        startGeneration += 1
+        let generation = startGeneration
         AVMLog.write("AVM: WindowsKeyboard — asking the helper for the keyboard for Windows.")
         Task { @MainActor in
             var result = await USBHelperClient.shared.holdKeyboard(keyboardID)
@@ -90,8 +96,8 @@ final class WindowsKeyboard {
             if case .failure(.notEnabled(.requiresApproval)) = result {
                 AVMLog.write("AVM: WindowsKeyboard — waiting for the helper's approval.")
                 Announcer.shared.announce("\(keyboardName) goes to Windows once AVM's helper is allowed in Login Items.", tone: .info)
-                if await USBHelperClient.shared.waitForApproval(while: { self.keyboardID == keyboardID }) {
-                    guard self.keyboardID == keyboardID else { return }
+                if await USBHelperClient.shared.waitForApproval(while: { self.keyboardID == keyboardID && self.startGeneration == generation }) {
+                    guard self.keyboardID == keyboardID, self.startGeneration == generation else { return }
                     result = await USBHelperClient.shared.holdKeyboard(keyboardID)
                 }
             }

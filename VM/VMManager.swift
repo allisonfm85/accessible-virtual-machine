@@ -259,6 +259,35 @@ private func avmLog(_ msg: String) {
     AVMLog.write(msg)
 }
 
+/// QEMU's stderr, no more than 200 chunks in any 10 seconds (2026-10-28,
+/// deep audit: a fuzzed usb-hid-bridge printed 6,000 warnings in 40 s,
+/// each one a log line and a main-actor console append). The rest is
+/// counted and reported in one line when the window ends. On QEMU's
+/// reader thread, so it keeps its own lock.
+final class StderrGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var windowStart = Date()
+    private var passed = 0
+    private var suppressed = 0
+    static let limit = 200
+    static let window: TimeInterval = 10
+
+    /// nil: drop this chunk. Otherwise the text to log, with a note about
+    /// what was dropped before it when a window has just ended.
+    func admit(_ text: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        let now = Date()
+        var prefix = ""
+        if now.timeIntervalSince(windowStart) > Self.window {
+            if suppressed > 0 { prefix = "(\(suppressed) more lines of QEMU stderr not logged) " }
+            windowStart = now; passed = 0; suppressed = 0
+        }
+        passed += 1
+        if passed > Self.limit { suppressed += 1; return nil }
+        return prefix + text
+    }
+}
+
 // MARK: - App-wide VM activity (2026-10-25)
 
 /// The running VM's state, for code that lives outside the window: the
@@ -334,6 +363,14 @@ final class VMManager: ObservableObject {
             // several at once); MachineSessions.makeCurrent moves the
             // watcher when another machine comes to the front.
             guard VMManager.shared === self || VMManager.shared == nil else { break }
+            // Not from a machine still running (2026-10-28, deep audit):
+            // moving the watcher drops that machine's pending questions.
+            // It moves when that machine has stopped, as makeCurrent does.
+            if let watched = USBHotPlugWatcher.shared.vmID, watched != activeConfiguration?.id,
+               MachineSessions.shared.session(for: watched) != nil {
+                AVMLog.write("VMManager: running; the USB watcher stays with the machine it watches", category: "USBHotPlug")
+                break
+            }
             if let id = activeConfiguration?.id {
                 USBHotPlugWatcher.shared.start(vmID: id)
                 // Sends any device held while Windows was paused.
@@ -690,6 +727,13 @@ final class VMManager: ObservableObject {
         let imgPath = runtimeDir.appendingPathComponent("autounattend.img").path
         guard FileManager.default.fileExists(atPath: imgPath) else {
             avmLog("checkInstallCompleteMarker: no autounattend.img yet — fresh VM, normal install path")
+            // A reinstall took the volume with it (2026-10-28): what AVM saw
+            // on it before is forgotten, so an interrupted reinstall starts
+            // again from the DVD.
+            if configuration.installMarkerSeen == true, var saved = VMStore.shared?.configurations.first(where: { $0.id == configuration.id }) {
+                saved.installMarkerSeen = nil
+                VMStore.shared?.save(saved)
+            }
             return false
         }
 
@@ -713,13 +757,23 @@ final class VMManager: ObservableObject {
 
         let found = listing.output.uppercased().contains("AVMDONE")
         avmLog("checkInstallCompleteMarker: marker \(found ? "PRESENT" : "absent") on \(imgPath)")
-        // No marker on a volume that reads fine, but a disk with gigabytes
-        // on it (2026-10-28, code review): the volume is a drive Windows
-        // can see and empty, and attaching the installer to this disk
-        // would run the answer file over it. Installed, said loudly.
-        if !found, diskLooksInstalled(runtimeDir: runtimeDir) {
-            avmLog("checkInstallCompleteMarker: NO marker, but the disk has data — treating as installed; the install media is NOT attached")
-            appendConsole("AVM: the install marker is missing from the UNATTEND volume, but the disk holds data, so it's treated as installed.\n")
+        if found, configuration.installMarkerSeen != true {
+            // Remembered (2026-10-28): see below.
+            var updated = VMStore.shared?.configurations.first { $0.id == configuration.id } ?? configuration
+            updated.installMarkerSeen = true
+            VMStore.shared?.save(updated)
+            if activeConfiguration?.id == configuration.id { activeConfiguration?.installMarkerSeen = true }
+        }
+        // No marker on a volume that reads fine, on a machine whose marker
+        // AVM has seen before, with a disk holding gigabytes (2026-10-28,
+        // code review): the volume is a drive Windows can see and empty,
+        // and attaching the installer to this disk would run the answer
+        // file over it. Installed, said loudly. Only once seen: during an
+        // interrupted install the disk also holds gigabytes, and that one
+        // must start again from the DVD (2026-10-28, second review).
+        if !found, configuration.installMarkerSeen == true, diskLooksInstalled(runtimeDir: runtimeDir) {
+            avmLog("checkInstallCompleteMarker: NO marker, but it was seen before and the disk has data — treating as installed; the install media is NOT attached")
+            appendConsole("AVM: the install marker is missing from the UNATTEND volume, but \(configuration.guestOS.displayName) was installed before and the disk holds data, so it's treated as installed.\n")
             return true
         }
         return found
@@ -916,7 +970,7 @@ final class VMManager: ObservableObject {
             // Said here: this is thrown before the pipeline's own spoken
             // failures, and the dashboard only shows it (2026-10-26, code
             // audit).
-            Announcer.shared.announce("\(configuration.name) can't install Windows: AVM no longer has the password for the account \(account.userName). Next: make a new virtual machine with the same installer.", tone: .failure)
+            Announcer.shared.announce("\(configuration.name) can't install Windows: AVM no longer has the password for your Windows account. Next: make a new virtual machine with the same installer.", tone: .failure)
             throw PipelineError.stageFailed(
                 stage: .buildAnswerImage,
                 reason: "AVM no longer has the password for the Windows account \(account.userName), which it forgets once the install media is built. Next: make a new virtual machine with the same installer."
@@ -1079,6 +1133,12 @@ final class VMManager: ObservableObject {
         do {
             try await continueStart(configuration: configuration, qemuURL: qemuURL)
         } catch {
+            if error is CancellationError {
+                // Force Stop or Quit already ended this machine; another
+                // session may own the folder now (2026-10-28, second review).
+                avmLog("startVM: cut short; nothing more to end")
+                throw error
+            }
             abandonFailedStart(configuration: configuration, error: error)
             throw error
         }
@@ -1086,6 +1146,29 @@ final class VMManager: ObservableObject {
 
     /// Everything startVM does once the state is .starting.
     private func continueStart(configuration: VMConfiguration, qemuURL: URL) async throws {
+        var configuration = configuration
+        // Remote Desktop's port, before QEMU is asked to bind it (2026-10-28,
+        // second review): something else on it made QEMU exit at once,
+        // with only "stopped unexpectedly" to show. The next free port is
+        // taken instead, kept, and said.
+        if configuration.remoteDesktopOn, let wanted = configuration.remoteDesktopPort {
+            let port = RemoteDesktop.freePort(from: wanted, network: configuration.remoteDesktopReachesNetwork,
+                                              among: VMStore.shared?.configurations ?? [], except: configuration.id)
+            if port != wanted {
+                configuration.remoteDesktopPort = port
+                if var saved = VMStore.shared?.configurations.first(where: { $0.id == configuration.id }) {
+                    saved.remoteDesktopPort = port
+                    VMStore.shared?.save(saved)
+                }
+                let addresses = RemoteDesktop.addresses(for: configuration, port: port)
+                avmLog("startVM: Remote Desktop port \(wanted) is in use on the Mac; using \(port)")
+                Announcer.shared.announce("Port \(wanted) is in use on your Mac, so \(configuration.name)'s Remote Desktop moved to port \(port). In the Windows App, use \(addresses.name), or \(addresses.ip).", tone: .info)
+            } else if !RemoteDesktop.isPortFree(port, network: configuration.remoteDesktopReachesNetwork) {
+                avmLog("startVM: Remote Desktop port \(port) and the next ones are all in use; starting without the forwarding")
+                configuration.remoteDesktopPort = nil
+                Announcer.shared.announce("Port \(port) is in use on your Mac, and so are the next ones, so \(configuration.name) starts without Remote Desktop this time.", tone: .failure)
+            }
+        }
         let runtimeDir = try prepareRuntimeDirectory(for: configuration)
         vmRuntimeDir = runtimeDir
 
@@ -1102,11 +1185,21 @@ final class VMManager: ObservableObject {
         // SAVED STATE (2026-10-27): an installed machine on the virtio disk
         // that was saved carries on from there (QEMUSavedState). No
         // restore point is taken at such a Start: its disk is mid-session.
+        var keepDVDWithoutBoot = false
         let resumePlan = installComplete && configuration.usesVirtioDisk
             ? await QEMUSavedState.plan(configuration: configuration, runtimeDir: runtimeDir)
             : nil
         let resuming = resumePlan != nil
         if let resumePlan { avmLog("startVM: this Start carries on from \(resumePlan.tag)") }
+        // A saved state on a machine that is back on its old disk connection
+        // (2026-10-28, second review): it can't be carried on here, and left
+        // on the disk it would be loaded over newer work the day Save is
+        // turned on again. Let go of now, and said.
+        if installComplete, !configuration.usesVirtioDisk, QEMUSavedState.looksSaved(configuration) {
+            avmLog("startVM: a saved state on an NVMe start; discarding it")
+            await QEMUSavedState.discard(configuration: configuration)
+            Announcer.shared.announce("\(configuration.name) was saved with its apps open on its other disk connection, which it isn't using now, so it starts fresh. Anything that wasn't saved in its apps is lost.", tone: .info)
+        }
 
         if installComplete {
             avmLog("startVM: install-complete marker PRESENT — skipping media build/attach and boot keypress")
@@ -1114,12 +1207,16 @@ final class VMManager: ObservableObject {
             if configuration.guestOS.isLinux {
                 removeFinishedUbuntuMedia(runtimeDir: runtimeDir)
             } else {
-                let signedIn = speakSetupReport(configuration: configuration, runtimeDir: runtimeDir, retire: !resuming)
-                removeFinishedWindowsMedia(runtimeDir: runtimeDir)
+                let signedIn = speakSetupReport(configuration: configuration, runtimeDir: runtimeDir)
+                keepDVDWithoutBoot = !removeFinishedWindowsMedia(runtimeDir: runtimeDir)
                 if resuming {
                     avmLog("startVM: no restore point at this Start (carrying on from a saved state)")
-                } else if signedIn {
+                    // Owed to the next plain Start (2026-10-28, second review):
+                    // the report is retired, so it isn't said at every resume.
+                    if signedIn { rememberFreshPointPending(configuration, true) }
+                } else if signedIn || configuration.freshInstallPointPending == true {
                     await saveFreshInstallRestorePoint(configuration: configuration, runtimeDir: runtimeDir)
+                    if configuration.freshInstallPointPending == true { rememberFreshPointPending(configuration, false) }
                 } else {
                     await saveWeeklyRestorePoint(configuration: configuration, runtimeDir: runtimeDir)
                 }
@@ -1142,6 +1239,10 @@ final class VMManager: ObservableObject {
                 throw error
             }
         }
+        // Before the socket folder is touched (2026-10-28, second review):
+        // a start cut short during the media build went on to clear the
+        // sockets of the session that had replaced it.
+        try ensureStillStarting()
 
         let socketDir = try Self.privateSocketDirectory(for: configuration.id)
         vmSocketDir = socketDir
@@ -1189,7 +1290,8 @@ final class VMManager: ObservableObject {
             diagnosticQMPSocketPath: qmp2Path,
             tpmArguments: tpmArgs,
             runtimeDir: runtimeDir,
-            attachInstallMedia: !installComplete
+            attachInstallMedia: !installComplete,
+            attachDVDWithoutBoot: keepDVDWithoutBoot
         )
         // Paused until the saved state is loaded into it.
         if resuming { args.append("-S") }
@@ -2024,7 +2126,8 @@ final class VMManager: ObservableObject {
         diagnosticQMPSocketPath: String,
         tpmArguments: [String],
         runtimeDir: URL,
-        attachInstallMedia: Bool
+        attachInstallMedia: Bool,
+        attachDVDWithoutBoot: Bool = false
     ) -> [String] {
 
         var args: [String] = []
@@ -2155,6 +2258,17 @@ final class VMManager: ObservableObject {
         // nvme disk (bootindex=1) boots the installed Windows.
         if !attachInstallMedia {
             avmLog("buildQEMUArguments: install media attach suppressed (install-complete marker present)")
+            // Specialize hasn't finished with the DVD (2026-10-28, second
+            // review): it rides along without a boot index, so the disk
+            // boots and Setup's remaining steps find D:\AVMSR.
+            let kept = runtimeDir.appendingPathComponent("install-avm.iso").path
+            if attachDVDWithoutBoot, FileManager.default.fileExists(atPath: kept) {
+                args += [
+                    "-drive", "if=none,id=cdrom0,file=\(Self.qemuOptionValue(kept)),media=cdrom,readonly=on",
+                    "-device", "usb-storage,drive=cdrom0,bus=usb.0,port=3,removable=on"
+                ]
+                avmLog("buildQEMUArguments: the install DVD rides along without booting, for Setup's remaining steps")
+            }
         } else if let iso = configuration.installISOPath, !iso.isEmpty {
             // INSTALL MEDIA: the AVM-BUILT install ISO (install-avm.iso in the
             // runtime dir — the winpeshl /legacy + $WinPEDriver$ + rebuilt image
@@ -2328,7 +2442,7 @@ final class VMManager: ObservableObject {
         // with their own drivers. It opens the Mac's camera only while
         // something in the guest reads it. Root port 3 is the install
         // media's, free once installed; a camera is only offered then.
-        if configuration.sharesCamera, !attachInstallMedia {
+        if configuration.sharesCamera, !attachInstallMedia, !attachDVDWithoutBoot {
             args += ["-device", "usb-camera,id=camera0,bus=usb.0,port=3"]
             avmLog("buildQEMUArguments: the Mac's camera as a USB camera on port 3")
         }
@@ -2449,6 +2563,7 @@ final class VMManager: ObservableObject {
         // point) and it violated the trust story: AVM writes no loose files
         // to the user's Desktop.
         let errHandle = errPipe.fileHandleForReading
+        let gate = StderrGate()
         errHandle.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty else {
@@ -2459,7 +2574,7 @@ final class VMManager: ObservableObject {
                 handle.readabilityHandler = nil
                 return
             }
-            if let text = String(data: data, encoding: .utf8) {
+            if let raw = String(data: data, encoding: .utf8), let text = gate.admit(raw) {
                 avmLog("QEMU stderr: \(text)")
                 Task { @MainActor [weak self] in
                     self?.appendConsole("QEMU: \(text)")
@@ -2685,7 +2800,7 @@ final class VMManager: ObservableObject {
                 self.restartingAfterInstall = false
                 avmLog("restartAfterInstall: start FAILED: \(error.localizedDescription)")
                 Announcer.shared.announce(
-                    "\(guest) is installed, but AVM couldn't start it again. Reason: \(error.localizedDescription) Next: press Start.",
+                    "\(guest) is installed, but AVM couldn't start it again. Reason: \(error is CancellationError ? "it was stopped." : error.localizedDescription) Next: press Start.",
                     tone: .failure
                 )
             }
@@ -2720,20 +2835,26 @@ final class VMManager: ObservableObject {
     /// attached again (REINSTALL GUARD), so it is deleted (2026-10-26). The
     /// UNATTEND volume stays: it holds that marker. The user's own ISO is
     /// never touched.
-    private func removeFinishedWindowsMedia(runtimeDir: URL) {
+    /// True when the DVD is gone or not needed; false when it's kept for
+    /// Setup's remaining steps (and rides along at this start).
+    @discardableResult
+    private func removeFinishedWindowsMedia(runtimeDir: URL) -> Bool {
         removeAnswerFile(runtimeDir: runtimeDir)
+        let iso = runtimeDir.appendingPathComponent("install-avm.iso")
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: iso.path))?[.size] as? NSNumber else { return true }
         // Only once specialize has used the DVD (2026-10-28, code review):
         // its marker is written first, and NVDA, JAWS and the agents are
         // copied from the DVD after; stopped in between, the next Start
-        // deleted the DVD and the steps silently skipped.
+        // deleted the DVD and the steps silently skipped. A machine with no
+        // report at all was installed by an AVM from before the report, and
+        // is finished (second review).
         let report = (mtools(["mtype", "-i", "IMG", "::AVMSTATUS.TXT"], runtimeDir: runtimeDir)?.output ?? "")
             + (mtools(["mtype", "-i", "IMG", "::AVMSTAT.OLD"], runtimeDir: runtimeDir)?.output ?? "")
-        guard report.contains("specialize-done") else {
+        let reportLines = report.split(whereSeparator: \.isNewline).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard reportLines.isEmpty || report.contains("specialize-done") else {
             avmLog("removeFinishedWindowsMedia: specialize hasn't finished; keeping install-avm.iso")
-            return
+            return false
         }
-        let iso = runtimeDir.appendingPathComponent("install-avm.iso")
-        guard let size = (try? FileManager.default.attributesOfItem(atPath: iso.path))?[.size] as? NSNumber else { return }
         do {
             try FileManager.default.removeItem(at: iso)
             let gb = String(format: "%.1f", size.doubleValue / 1_000_000_000)
@@ -2742,6 +2863,14 @@ final class VMManager: ObservableObject {
         } catch {
             avmLog("removeFinishedWindowsMedia: couldn't delete install-avm.iso: \(error.localizedDescription)")
         }
+        return true
+    }
+
+    /// The "Fresh install" point owed from a resumed first sign-in.
+    private func rememberFreshPointPending(_ configuration: VMConfiguration, _ pending: Bool) {
+        guard var saved = VMStore.shared?.configurations.first(where: { $0.id == configuration.id }) else { return }
+        saved.freshInstallPointPending = pending ? true : nil
+        VMStore.shared?.save(saved)
     }
 
     /// Runs the bundled mtools on the UNATTEND volume; nil if it couldn't.
@@ -2774,7 +2903,7 @@ final class VMManager: ObservableObject {
     /// (SetupReport.swift), then rename the report so it is said once.
     /// Returns true when the report says the first sign-in has finished.
     @discardableResult
-    private func speakSetupReport(configuration: VMConfiguration, runtimeDir: URL, retire: Bool = true) -> Bool {
+    private func speakSetupReport(configuration: VMConfiguration, runtimeDir: URL) -> Bool {
         guard let read = mtools(["mtype", "-i", "IMG", "::AVMSTATUS.TXT"], runtimeDir: runtimeDir), read.status == 0,
               let summary = SetupReport.summary(
                 reportText: read.output.replacingOccurrences(of: "\r", with: ""),
@@ -2782,17 +2911,16 @@ final class VMManager: ObservableObject {
                 expectsNVDA: configuration.windowsScreenReaders.contains(.nvda)) else { return false }
         avmLog("speakSetupReport: \(summary.complete ? "complete" : "incomplete"): \(read.output.split(whereSeparator: \.isNewline).joined(separator: ", "))")
         appendConsole("AVM: \(summary.message)\n")
-        Announcer.shared.announce(summary.message, tone: summary.complete ? .success : .failure)
+        // The failure sound only for something missing (2026-10-28, second
+        // review): before the first sign-in nothing has failed.
+        Announcer.shared.announce(summary.message, tone: summary.failed ? .failure : (summary.signedIn ? .success : .info))
         // Retired only once the first sign-in has written its part
         // (2026-10-26, code audit): retired earlier (the user stopped
         // Windows during setup), the sign-in's lines went to a new report
         // with no specialize lines, which never parsed, so NVDA's result was
         // never said and no restore point was ever made.
         let signedIn = read.output.contains("first-sign-in-done")
-        // Not on a Start that carries on from a saved state (2026-10-28,
-        // code review): no restore point is taken then, and retiring the
-        // report meant the "Fresh install" point was never made.
-        if signedIn, retire {
+        if signedIn {
             _ = mtools(["mdel", "-i", "IMG", "::AVMSTAT.OLD"], runtimeDir: runtimeDir)
             _ = mtools(["mren", "-i", "IMG", "::AVMSTATUS.TXT", "::AVMSTAT.OLD"], runtimeDir: runtimeDir)
         }
@@ -3126,6 +3254,12 @@ final class VMManager: ObservableObject {
         var timeoutIterations = 0
 
         while true {
+            // QEMU gone (2026-10-28, the crash-during-save test): the
+            // teardown closed this handle, and reading on waited out the
+            // whole timeout, 10 minutes for a save, with the machine long
+            // reported stopped; a reused descriptor number would even read
+            // another file's bytes.
+            guard qmpConnected, qmpSocket === socket else { throw AVMError.qmpSocketClosed }
             let n = Darwin.read(socket.fileDescriptor, &buf, 1)
             if n > 0 {
                 result.append(buf[0])
@@ -3719,7 +3853,7 @@ extension VMManager {
         // devices back, then failed.
         guard state == .running || state == .paused,
               let configuration = activeConfiguration,
-              startedOnVirtioDisk, installCompleteAtStart,
+              startedOnVirtioDisk, configuration.usesVirtioDisk, installCompleteAtStart,
               !(configuration.uses3D && Self.supports3D) else { return false }
         return true
     }
@@ -3828,11 +3962,18 @@ extension VMManager {
                                      arguments: ["tag": QEMUSavedState.tag, "devices": [node]], limit: .seconds(120))
             }
             // snapshot-save lets a running machine go again by itself; a
-            // paused one stays paused.
-            Announcer.shared.announce("\(guest) couldn't be saved, so it's still running. Reason: \(error.localizedDescription)", tone: .failure)
+            // paused one stays paused. A QEMU that died during the save was
+            // announced by handleQEMUProcessExit; "still running" would be
+            // untrue (2026-10-28, the crash-during-save test).
+            if state == .running || state == .paused {
+                Announcer.shared.announce("\(guest) couldn't be saved, so it's still running. Reason: \(error.localizedDescription)", tone: .failure)
+            }
             return false
         }
         avmLog("saveStateAndStop: saved in \(String(format: "%.1f", Date().timeIntervalSince(started))) s; quitting QEMU")
+        // A marker from a resume whose query failed would delete this save
+        // at the next Start (2026-10-28, second review).
+        try? FileManager.default.removeItem(at: runtimeDir.appendingPathComponent(QEMUSavedState.loadedMarker))
         try? "Saved \(Date())\n".write(to: QEMUSavedState.hint(in: runtimeDir), atomically: true, encoding: .utf8)
         state = .stopping
         _ = try? await sendQMPCommand("quit", arguments: nil)
@@ -4288,10 +4429,10 @@ extension VMManager {
                     """
                     out = try await agentRun("/bin/sh", ["-c", script], limit: .seconds(180))
                 }
-                avmLog("printers: \(printer.queue): \(out.trimmingCharacters(in: .whitespacesAndNewlines).suffix(200))")
+                avmLog("printers: a printer: \(out.trimmingCharacters(in: .whitespacesAndNewlines).suffix(200))")
                 if out.contains("added") { added.append(printer.name) }
             } catch {
-                avmLog("printers: \(printer.queue) not added: \(error.localizedDescription)")
+                avmLog("printers: a printer not added: \(error.localizedDescription)")
             }
         }
         guard !added.isEmpty else { return }

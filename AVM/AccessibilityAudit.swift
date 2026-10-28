@@ -107,6 +107,14 @@ enum AccessibilityAudit {
         }
         let keep = arguments.contains("--keep")
         let only = value("--only")
+        // --pictures FOLDER (2026-10-28): each screen as an image, in light
+        // and dark appearance, for a sighted look at what VoiceOver reads.
+        Auditor.pictures = value("--pictures").map { URL(fileURLWithPath: $0, isDirectory: true) }
+        if let pictures = Auditor.pictures { try? FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true) }
+        // --dark: the whole run in dark appearance (a window's own appearance
+        // switch didn't redraw for the picture).
+        Auditor.dark = arguments.contains("--dark")
+        if Auditor.dark { NSApplication.shared.appearance = NSAppearance(named: .darkAqua) }
         let folder = URL(fileURLWithPath: out, isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 
@@ -333,6 +341,9 @@ private final class Auditor {
             Screen(name: "Ubuntu Settings", size: NSSize(width: 760, height: 2000), headings: title("Settings")) {
                 host(SettingsView(configuration: s.ubuntu, isRunning: false))
             },
+            Screen(name: "Windows Settings, running", size: NSSize(width: 760, height: 2400), headings: title("Settings")) {
+                host(SettingsView(configuration: s.windows, isRunning: true))
+            },
             Screen(name: "New macOS Virtual Machine", size: NSSize(width: 640, height: 900), headings: title("New macOS Virtual Machine")) {
                 host(MacSetupView())
             },
@@ -355,6 +366,37 @@ private final class Auditor {
     }
 
     // MARK: One screen
+
+    nonisolated(unsafe) static var pictures: URL?
+    nonisolated(unsafe) static var dark = false
+
+    /// The window as an image, in the appearance it has now.
+    func picture(_ window: NSWindow, _ hosting: NSView, _ screen: Screen, _ appearance: String) {
+        guard let folder = Self.pictures,
+              let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { return }
+        hosting.cacheDisplay(in: hosting.bounds, to: rep)
+        // The view draws on a clear backdrop; on screen the window frame
+        // paints the background behind it. Paint it here too, or dark mode
+        // comes out as white text on white.
+        let pixels = NSRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh)
+        guard let out = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: rep.pixelsWide, pixelsHigh: rep.pixelsHigh,
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let context = NSGraphicsContext(bitmapImageRep: out) else { return }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        window.effectiveAppearance.performAsCurrentDrawingAppearance {
+            NSColor.windowBackgroundColor.setFill()
+            pixels.fill()
+        }
+        // Over it, not instead of it: draw(in:) alone copies the clear
+        // corners in.
+        rep.draw(in: pixels, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: false, hints: nil)
+        NSGraphicsContext.restoreGraphicsState()
+        guard let png = out.representation(using: .png, properties: [:]) else { return }
+        let name = screen.name.replacingOccurrences(of: "/", with: "-") + " (\(appearance)).png"
+        try? png.write(to: folder.appendingPathComponent(name))
+    }
 
     func audit(_ screen: Screen) async {
         let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -40_000, y: -40_000), size: screen.size),
@@ -390,6 +432,10 @@ private final class Auditor {
         } else {
             findings.append(Finding(level: .error, screen: screen.name, role: "AXWindow", path: "window",
                                     problem: "Not checked: SwiftUI gave this window no controls to read, even after AXEnhancedUserInterface was set. Look at it with VoiceOver instead."))
+        }
+        if Self.pictures != nil {
+            window.displayIfNeeded()
+            picture(window, hosting, screen, Self.dark ? "dark" : "light")
         }
         let errors = findings.filter { $0.screen == screen.name && $0.level == .error }.count
         let warnings = findings.filter { $0.screen == screen.name && $0.level == .warning }.count
@@ -755,6 +801,11 @@ private struct Samples {
         let windowsFolder = try windows.directoryURL()
         try fm.createDirectory(at: windowsFolder, withIntermediateDirectories: true)
         windows.diskImagePath = windowsFolder.appendingPathComponent("disk.qcow2").path
+        // Remote Desktop on, and saved with open apps (2026-10-28): the
+        // controls that only appear then are in the audit too.
+        windows.remoteDesktopUser = "tester"
+        windows.remoteDesktopPort = 3389
+        try "Saved\n".write(to: windowsFolder.appendingPathComponent(QEMUSavedState.hintFile), atomically: true, encoding: .utf8)
         try makeQcow2(at: windowsFolder.appendingPathComponent("disk.qcow2"))
         _ = try await RestorePoints.create(vmDirectory: windowsFolder, label: "Fresh install", secureBoot: false)
         try? await Task.sleep(nanoseconds: 5_000_000)   // restore point tags are milliseconds
@@ -763,6 +814,7 @@ private struct Samples {
 
         var ubuntu = VMConfiguration(name: "Ubuntu Desktop", cpuCount: 4, ramSizeGB: 8, diskSizeGB: 64,
                                      guestOSName: GuestOS.ubuntu.rawValue)
+        ubuntu.isTemplate = true   // a template's row has its own button (2026-10-28)
         let ubuntuFolder = try ubuntu.directoryURL()
         try fm.createDirectory(at: ubuntuFolder, withIntermediateDirectories: true)
         ubuntu.diskImagePath = ubuntuFolder.appendingPathComponent("disk.qcow2").path

@@ -76,6 +76,10 @@ final class ControlServer {
         // that sent nothing stop every task in AVM.
         var wait = timeval(tv_sec: 5, tv_usec: 0)
         setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &wait, socklen_t(MemoryLayout<timeval>.size))
+        // No SIGPIPE from a client that left before its reply (2026-10-28,
+        // fuzz), on the socket itself as well as process-wide (AVMApp.init).
+        var on: Int32 = 1
+        setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
         DispatchQueue.global(qos: .utility).async {
             let line = Self.readLine(client)
             Task { @MainActor in

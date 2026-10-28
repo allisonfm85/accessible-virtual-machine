@@ -826,6 +826,9 @@ struct SettingsView: View {
                             .accessibilityLabel("Password for Remote Desktop")
                     }
                     Toggle("Show the password", isOn: $remoteDesktopShowPassword)
+                    Text("Reachable from")
+                        .font(.caption)
+                        .accessibilityHidden(true)
                     Picker("Reachable from", selection: $remoteDesktopReach) {
                         Text("This Mac only").tag("mac")
                         Text("My whole network: iPad, phone, other Macs").tag("network")
@@ -835,7 +838,9 @@ struct SettingsView: View {
                         .font(.caption)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Text("AVM keeps the password in your Mac's keychain, and the account in \(guest) is made or updated each time it starts. If you give the name of an account \(guest) already has, that account's password becomes this one.")
+                Text(configuration.guestOS == .windows
+                     ? "AVM keeps the password in your Mac's keychain and makes the account in \(guest). If you give the name of an account \(guest) already has, its password becomes this one, once; a password you change later inside \(guest) is left alone unless you type a new one here."
+                     : "AVM keeps the password in your Mac's keychain and makes the account in \(guest), with xrdp. The remote session has no sound, and it should use a different account from the one signed in at \(guest)'s own screen.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -865,13 +870,18 @@ struct SettingsView: View {
             }
             let user = updated.remoteDesktopUser ?? ""
             let password = remoteDesktopPassword.isEmpty ? (RemoteDesktop.password(for: id) ?? "") : remoteDesktopPassword
+            // The account's password is set when it's new to this machine or
+            // typed anew (2026-10-28); an existing account's is otherwise kept.
+            let mark = RemoteDesktop.mark(for: password)
+            let setPassword = updated.remoteDesktopPasswordMark != mark
             Task { @MainActor in
                 if let oldPort, oldPort != port { await manager.stopForwardingRemoteDesktop(port: oldPort) }
                 let forwarded = await manager.forwardRemoteDesktopNow(configuration: updated, port: port)
                 RemoteDesktopAdvertiser.shared.publish(updated, port: port)
                 Announcer.shared.announce("Setting up Remote Desktop in \(guest). This takes a minute.", tone: .info)
-                switch await manager.setUpRemoteDesktop(configuration: updated, user: user, password: password) {
+                switch await manager.setUpRemoteDesktop(configuration: updated, user: user, password: password, setPassword: setPassword) {
                 case .ready(let words):
+                    if setPassword { RemoteDesktop.recordPasswordMark(mark, for: id) }
                     let addresses = RemoteDesktop.addresses(for: updated, port: port)
                     Announcer.shared.announce("\(words) In the Windows App, add a PC named \(addresses.name), or \(addresses.ip).\(forwarded ? "" : " The Mac's port couldn't be forwarded yet; restart \(guest) if the Windows App can't reach it.")", tone: .success)
                 case .unsupported(let words), .failed(let words):
@@ -1092,8 +1102,14 @@ struct SettingsView: View {
         }
         if remoteDesktopOn, !windowsIsHome {
             let user = remoteDesktopUser.trimmingCharacters(in: .whitespaces)
-            if user.isEmpty || user.count > 20 || user.rangeOfCharacter(from: CharacterSet(charactersIn: "\"/\\[]:;|=,+*?<>@'")) != nil {
+            if user.isEmpty || user.count > 20 || user.rangeOfCharacter(from: CharacterSet(charactersIn: "\"/\\[]:;|=,+*?<>@'\u{2018}\u{2019}\u{201A}\u{201B}\u{201C}\u{201D}")) != nil || user.hasSuffix(".") {
                 validationErrors = ["Remote Desktop needs a user name of up to 20 characters, without quotes, slashes, colons or brackets."]
+                Announcer.shared.announce(validationErrors[0], tone: .failure)
+                return
+            }
+            // Linux's useradd takes less (2026-10-28, second review).
+            if configuration.guestOS != .windows, user.range(of: "^[a-z_][a-z0-9_-]*$", options: .regularExpression) == nil {
+                validationErrors = ["On Linux, the Remote Desktop user name must be lowercase letters, digits, dashes and underscores, starting with a letter."]
                 Announcer.shared.announce(validationErrors[0], tone: .failure)
                 return
             }
@@ -1221,6 +1237,7 @@ struct SettingsView: View {
                 updated.remoteDesktopUser = nil
                 updated.remoteDesktopReach = nil
                 updated.remoteDesktopPort = nil
+                updated.remoteDesktopPasswordMark = nil
             }
             updated.usbMode = usbMode.rawValue
             // Only if changed here (2026-10-26, code audit): a device

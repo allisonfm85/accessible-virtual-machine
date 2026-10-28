@@ -40,6 +40,9 @@ struct USBDeviceClassification {
         case brailleDisplay = "braille display"
         /// Always ask, with no Remember option.
         case alwaysAsk = "always ask"
+        /// Stays on the Mac without a word: a USB hub (2026-10-28), which
+        /// Windows can't take and Always mode used to try.
+        case keepOnMac = "stays on the Mac"
     }
 
     let protection: Protection
@@ -88,6 +91,9 @@ enum USBDeviceClassifier {
             case (0x41, _): braille.append("HID braille")
             case (0x01, 0x06), (0x01, 0x07): inputParts.append("keyboard")
             case (0x01, 0x01), (0x01, 0x02): inputParts.append("mouse")
+            // Digitizers (2026-10-28, deep audit): a pen tablet, touch screen
+            // or touchpad is a pointing device too.
+            case (0x0D, 0x01), (0x0D, 0x02), (0x0D, 0x04), (0x0D, 0x05): inputParts.append("mouse")
             default: break
             }
         }
@@ -115,14 +121,26 @@ enum USBDeviceClassifier {
 
         // 3. The Mac's current audio output or alert output.
         let output = currentUSBOutput()
-        if let location = intProperty(service, "locationID"), output.locations.contains(location) {
+        let usageText = hid.usages.map { String(format: "%02x/%02x", $0.page, $0.usage) }
+        // By location, or by serial number (2026-10-28, deep audit): Core
+        // Audio's id for a USB device puts its serial number where a device
+        // without one has its location, and a headset with a serial was
+        // never matched, so Always mode could send VoiceOver's own output.
+        let codes = USBDeviceEnumerator.classCodes(for: service)
+        let location = intProperty(service, "locationID").map { String($0, radix: 16).lowercased() }
+        let serial = stringProperty(service, "USB Serial Number")?.trimmingCharacters(in: .whitespaces).lowercased()
+        let isCurrentOutput = (location.map { output.keys.contains($0) } ?? false)
+            || (serial.map { !$0.isEmpty && output.keys.contains($0) } ?? false)
+        if isCurrentOutput {
             audio.append("the Mac's current audio output")
-        } else if output.unreadable,
-                  USBDeviceEnumerator.classCodes(for: service).interfaces.contains(0x01) {
+        } else if output.unreadable, codes.interfaces.contains(0x01) {
             audio.append("may be the Mac's current audio output")
         }
+        // A hub (2026-10-28): nothing to send; quietly the Mac's.
+        if codes.device == 0x09 || (codes.interfaces.contains(0x09) && hid.usages.isEmpty && !codes.interfaces.contains(0x01)) {
+            return USBDeviceClassification(protection: .keepOnMac, reasons: ["USB hub"], hidUsages: usageText, kind: .ordinary)
+        }
 
-        let usageText = hid.usages.map { String(format: "%02x/%02x", $0.page, $0.usage) }
         if !audio.isEmpty {
             return USBDeviceClassification(protection: .alwaysAsk, reasons: unique(audio + braille + inputParts), hidUsages: usageText, kind: .soundOutput)
         }
@@ -227,8 +245,11 @@ enum USBDeviceClassifier {
     /// Location IDs of USB devices the Mac is playing sound or alerts
     /// through right now. unreadable is true when an output is a USB
     /// device but its location can't be read from Core Audio.
-    static func currentUSBOutput() -> (locations: Set<Int>, unreadable: Bool) {
-        var locations = Set<Int>()
+    /// The Mac's current USB sound outputs, by the field of Core Audio's
+    /// device id that names the device: its serial number when it has one,
+    /// else its location id in hex (2026-10-28). Lowercased.
+    static func currentUSBOutput() -> (keys: Set<String>, unreadable: Bool) {
+        var keys = Set<String>()
         var unreadable = false
         let selectors = [kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDefaultSystemOutputDevice]
         for selector in selectors {
@@ -255,13 +276,13 @@ enum USBDeviceClassifier {
             }
             // Read from the end: a product name can contain a colon.
             let fields = (uid.takeRetainedValue() as String).split(separator: ":", omittingEmptySubsequences: false)
-            if fields.count >= 3, let location = Int(fields[fields.count - 2], radix: 16) {
-                locations.insert(location)
+            if fields.count >= 3 {
+                keys.insert(fields[fields.count - 2].trimmingCharacters(in: .whitespaces).lowercased())
             } else {
                 unreadable = true
             }
         }
-        return (locations, unreadable)
+        return (keys, unreadable)
     }
 
     // MARK: Registry helpers
@@ -289,6 +310,11 @@ enum USBDeviceClassifier {
     private static func intProperty(_ entry: io_registry_entry_t, _ key: String) -> Int? {
         guard let raw = IORegistryEntryCreateCFProperty(entry, key as CFString, kCFAllocatorDefault, 0) else { return nil }
         return (raw.takeRetainedValue() as? NSNumber)?.intValue
+    }
+
+    private static func stringProperty(_ entry: io_registry_entry_t, _ key: String) -> String? {
+        guard let raw = IORegistryEntryCreateCFProperty(entry, key as CFString, kCFAllocatorDefault, 0) else { return nil }
+        return raw.takeRetainedValue() as? String
     }
 
     private static func unique(_ items: [String]) -> [String] {

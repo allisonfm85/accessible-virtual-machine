@@ -99,7 +99,10 @@ final class MachineSessions: ObservableObject {
                 // Not a start cut short by Force Stop or Quit (2026-10-28,
                 // code review): that's no error to show.
                 if !(error is CancellationError) { lastError = error.localizedDescription }
-                end(config.id)
+                // Only its own session (2026-10-28, second review): a start cut
+                // short by Force Stop ended here after a new Start had made
+                // another session for the same machine, and ended that one.
+                if sessions[config.id] === session { end(config.id) }
             }
         }
         return session
@@ -131,15 +134,18 @@ final class MachineSessions: ObservableObject {
     /// machine running without a window gets one now.
     func enter(_ id: UUID) {
         guard let session = sessions[id], session.vmState == .running || session.vmState == .paused else { return }
+        // Current first (2026-10-28, second review): a window made now for a
+        // machine running without one otherwise saw the keyboard in another
+        // machine and said "Enter it from AVM's list" while being entered.
+        if let lock = FocusLockManager.shared, lock.isLocked, currentID != id {
+            lock.unlock(bringListForward: false)
+        }
+        makeCurrent(id)
         if windows[id] == nil, let vmStore = vmStore ?? VMStore.shared, let focusLock = focusLock ?? FocusLockManager.shared {
             let window = MachineWindow(session: session, vmStore: vmStore, focusLock: focusLock)
             windows[id] = window
-            window.showFirstTime()
+            window.showFirstTime(entering: true)
         }
-        if let lock = FocusLockManager.shared, lock.isLocked, currentID != id {
-            lock.unlock()
-        }
-        makeCurrent(id)
         windows[id]?.show()
         if let view = windows[id]?.captureView {
             FocusLockManager.shared?.registerCaptureView(view)
@@ -308,7 +314,9 @@ final class MachineWindow: NSObject, NSWindowDelegate {
     /// takes the keyboard as it appears (VMView.onAppear). Not while the
     /// keyboard is in another machine (2026-10-27, code audit): the window
     /// waits behind, and Enter brings it forward.
-    func showFirstTime() {
+    /// `entering`: Enter is bringing it forward now, so none of the "later"
+    /// words below apply (2026-10-28).
+    func showFirstTime(entering: Bool = false) {
         guard !shownOnce else { return }
         shownOnce = true
         let root = VMView(session: session)
@@ -322,7 +330,9 @@ final class MachineWindow: NSObject, NSWindowDelegate {
         // (MachineDisplays).
         MachineDisplays.placeOpening(window, for: latestConfiguration)
         let elsewhere = focusLock.isLocked && MachineSessions.shared.currentID != session.configuration.id
-        if elsewhere {
+        if entering {
+            show()
+        } else if elsewhere {
             window.orderBack(nil)
             Announcer.shared.announce("\(session.configuration.name) is running. Enter it from AVM's list when you're ready.", tone: .info)
         } else if !session.entersOnFirstShow {
@@ -354,7 +364,9 @@ final class MachineWindow: NSObject, NSWindowDelegate {
         // The keyboard was in another machine (2026-10-28, code review): it
         // comes back to the Mac, so the lock never outlives its window.
         if let lock = FocusLockManager.shared, lock.isLocked, MachineSessions.shared.currentID != session.configuration.id {
-            lock.unlock()
+            // Without bringing the list forward (2026-10-28, second review):
+            // this window was just chosen.
+            lock.unlock(bringListForward: false)
         }
         MachineSessions.shared.makeCurrent(session.configuration.id)
     }

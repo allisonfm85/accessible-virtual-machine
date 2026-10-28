@@ -405,6 +405,24 @@ final class USBHelperClient: NSObject, ObservableObject {
         disconnectIfIdle()
     }
 
+    /// Before Sparkle relaunches AVM (2026-10-28): asks the helper to exit
+    /// and waits for its answer, at most `wait`. Sparkle calls its delegate
+    /// on the main thread, so this uses a connection of its own and never
+    /// the main actor (a MainActor task can't run while the main thread
+    /// waits).
+    nonisolated static func askHelperToExitNow(wait: TimeInterval = 3) {
+        let connection = NSXPCConnection(machServiceName: AVMUSBHelperNames.machServiceName, options: .privileged)
+        connection.remoteObjectInterface = AVMUSBHelperInterfaces.helper()
+        connection.resume()
+        let done = DispatchSemaphore(value: 0)
+        let proxy = connection.remoteObjectProxyWithErrorHandler { _ in done.signal() } as? AVMUSBHelperProtocol
+        if let proxy {
+            proxy.restart { done.signal() }
+            _ = done.wait(timeout: .now() + wait)
+        }
+        connection.invalidate()
+    }
+
     /// A helper from before an update (2026-10-28, code review): it keeps
     /// running for its idle grace period, and the new AVM would talk to
     /// it. Once per run, before a device is taken: a helper answering with
@@ -413,7 +431,13 @@ final class USBHelperClient: NSObject, ObservableObject {
     func ensureCurrentHelper() async {
         guard !helperChecked else { return }
         helperChecked = true
-        guard case .success(let version) = await fetchHelperVersion() else { return }
+        // The helper answers "service-name version" (2026-10-28, second
+        // review: compared whole, it never matched, and every run restarted
+        // the helper at its first device). The connection stays up: the
+        // hold that follows uses it, and a disconnect here fired the
+        // "helper lost" handlers into that hold.
+        guard case .success(let answer) = await fetchHelperVersion(keepConnection: true) else { return }
+        let version = answer.split(separator: " ").last.map(String.init) ?? answer
         guard version != AVMUSBHelperNames.helperBuildVersion else { return }
         log("the running helper is \(version), this AVM expects \(AVMUSBHelperNames.helperBuildVersion); restarting it")
         _ = await restartHelper()
@@ -475,22 +499,26 @@ final class USBHelperClient: NSObject, ObservableObject {
         c.remoteObjectInterface = AVMUSBHelperInterfaces.helper()
         c.exportedInterface = AVMUSBHelperInterfaces.client()
         c.exportedObject = receiver
-        c.invalidationHandler = { [weak self] in
+        c.invalidationHandler = { [weak self, weak c] in
             Task { @MainActor in
-                self?.log("connection invalidated")
-                self?.connection = nil
-                self?.keyboardHelperLost()
-                self?.devicesHelperLost()
-                self?.bluetoothHeld.removeAll()
+                // Only for the connection it belongs to (2026-10-28, second
+                // review): an old one's late handler tore down a new hold.
+                guard let self, let c, self.connection === c else { return }
+                self.log("connection invalidated")
+                self.connection = nil
+                self.keyboardHelperLost()
+                self.devicesHelperLost()
+                self.bluetoothHeld.removeAll()
                 BluetoothDevices.shared.helperLost()
             }
         }
-        c.interruptionHandler = { [weak self] in
+        c.interruptionHandler = { [weak self, weak c] in
             Task { @MainActor in
-                self?.log("connection interrupted (helper exited or crashed)")
-                self?.keyboardHelperLost()
-                self?.devicesHelperLost()
-                self?.bluetoothHeld.removeAll()
+                guard let self, let c, self.connection === c else { return }
+                self.log("connection interrupted (helper exited or crashed)")
+                self.keyboardHelperLost()
+                self.devicesHelperLost()
+                self.bluetoothHeld.removeAll()
                 BluetoothDevices.shared.helperLost()
             }
         }
@@ -535,7 +563,7 @@ final class USBHelperClient: NSObject, ObservableObject {
 
     /// Ask the helper who it is. The first end-to-end proof: register,
     /// launchd start, code-signing gate, reply.
-    func fetchHelperVersion(retrying: Bool = false) async -> Result<String, USBHelperError> {
+    func fetchHelperVersion(retrying: Bool = false, keepConnection: Bool = false) async -> Result<String, USBHelperError> {
         guard ensureRegistered() else {
             return .failure(.notEnabled(status))
         }
@@ -552,7 +580,7 @@ final class USBHelperClient: NSObject, ObservableObject {
                 cont.resume(returning: .success(version))
             }
         }
-        disconnectIfIdle()
+        if !keepConnection { disconnectIfIdle() }
         if case .failure(.helperUnavailable) = result, retrying == false, recoverLostRegistration() {
             return await fetchHelperVersion(retrying: true)
         }

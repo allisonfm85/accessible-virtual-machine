@@ -136,6 +136,8 @@ final class BackgroundMode: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
         if MainWindowCloseGuard.hasMainWindow {
             MainWindowCloseGuard.bringMainWindowForward()
+        } else if let open = MainWindowCloseGuard.openMainWindow {
+            open()
         } else {
             // No main window to bring (2026-10-28, code review: launched
             // with none, Show AVM showed nothing): opening AVM again makes

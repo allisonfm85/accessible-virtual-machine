@@ -236,7 +236,7 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +    while (s->rx_len >= 3) {
 +        size_t len = s->rx[1] | s->rx[2] << 8;
 +        if (len > HB_MAX_REPORT) {
-+            warn_report("usb-hid-bridge: a frame of %zu bytes; dropping what was read", len);
++            warn_report_once("usb-hid-bridge: a frame of %zu bytes; dropping what was read", len);
 +            s->rx_len = 0;
 +            return;
 +        }

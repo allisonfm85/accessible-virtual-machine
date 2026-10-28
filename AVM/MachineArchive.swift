@@ -315,6 +315,13 @@ enum MachineArchive {
         config.windowsKeyboardAppleISO = nil
         config.displayID = nil
         config.displayName = nil
+        // Remote Desktop too (2026-10-28, second review): the copy has no
+        // keychain password, would claim the same port, and a package
+        // from elsewhere would open a port to an account its sender knows.
+        config.remoteDesktopUser = nil
+        config.remoteDesktopReach = nil
+        config.remoteDesktopPort = nil
+        config.remoteDesktopPasswordMark = nil
         return config
     }
 

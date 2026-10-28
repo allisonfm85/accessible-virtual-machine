@@ -221,7 +221,7 @@ run_one() {
             # open -W has come back before the test ended (2026-10-28: a
             # 4-minute test reported in 3 s): the verdict, or the test's
             # AVM gone, is what ends the wait, within the limit.
-            local waited=0
+            local waited=$(( $(date +%s) - start ))
             while ! grep -qE "^(PASSED|FAILED)" "$log" 2>/dev/null && pgrep -f "$BIN" >/dev/null 2>&1 && [ $waited -lt "$LIMIT" ]; do
                 sleep 2; waited=$((waited + 2))
             done
@@ -252,7 +252,7 @@ done
 echo
 echo "== Report"
 passed=0; skipped=0
-for r in "${RESULTS[@]}"; do
+for r in ${RESULTS[@]+"${RESULTS[@]}"}; do
     IFS='|' read -r name verdict took detail <<< "$r"
     case "$verdict" in PASSED) passed=$((passed + 1)) ;; SKIPPED) skipped=$((skipped + 1)) ;; esac
     printf '   %-10s %-34s %4s s  %s\n' "$verdict" "$name" "$took" "$detail"

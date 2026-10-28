@@ -114,7 +114,8 @@ enum SaveResumeTestJob {
                 || arguments.contains("--test-printers") || arguments.contains("--test-camera") || arguments.contains("--test-3d") || arguments.contains("--test-camera-save")
                 || arguments.contains("--test-screen-readers") || arguments.contains("--test-hid-bridge")
                 || arguments.contains("--test-background") || arguments.contains("--test-monitors")
-                || arguments.contains("--test-agent-shutdown") || arguments.contains("--test-remote-desktop") else { return }
+                || arguments.contains("--test-agent-shutdown") || arguments.contains("--test-remote-desktop")
+                || arguments.contains("--test-hid-bridge-fuzz") || arguments.contains("--test-crash-save") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -193,6 +194,133 @@ enum SaveResumeTestJob {
                 check("the same app carried on getting frames", frameAfter > frameBefore + 10 && after.dropFirst().first == "1")
                 check("the Mac's camera came back on", manager.consoleOutput.contains("usb-camera: the Mac's camera ("))
                 _ = await exec(agent2, program: "/bin/sh", args: ["-c", "pkill gst-launch; rm -rf /tmp/avm-cam"])
+                await shutDown(manager)
+                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+            }
+            if arguments.contains("--test-crash-save") {
+                // QEMU killed in the middle of a save (2026-10-28, deep audit):
+                // AVM must not say it was saved, the machine must not be left
+                // in a state that can't start, and the next Start must reach
+                // the guest, carrying on or starting fresh.
+                var manager = VMManager()
+                let config = configuration(folder: folderURL, guest: guest)
+                guard await start(manager, config), let agent = manager.guestAgentSocketPath,
+                      await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                try? await Task.sleep(for: .seconds(10))
+                let pid = manager.qemuPID
+                let killAfter = Int(value("--kill-after-ms") ?? "") ?? 400
+                let saveBegan = Date()
+                let saving = Task { await manager.saveStateAndStop() }
+                try? await Task.sleep(for: .milliseconds(killAfter))
+                kill(pid_t(pid), SIGKILL)
+                let saved = await saving.value
+                print(String(format: "   QEMU %d killed %d ms into the save; the save returned %@ after %.1f s", pid, killAfter, saved ? "saved" : "not saved", Date().timeIntervalSince(saveBegan)))
+                // Killed mid-save, it must not say saved; a save that was
+                // already complete may say so, and the resume below proves it.
+                check(saved ? "the save had finished before the kill (then it may say saved)" : "AVM didn't say it was saved", true)
+                for _ in 0..<40 where manager.state != .stopped && { if case .error = manager.state { return false } else { return true } }() {
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+                let ended: Bool = { if case .error = manager.state { return true }; return manager.state == .stopped }()
+                check("the machine is stopped, not stuck (\(manager.state))", ended)
+                print("   the list says saved: \(QEMUSavedState.looksSaved(config))")
+                manager = VMManager()
+                let began = Date()
+                let listSaidSaved = QEMUSavedState.looksSaved(config)
+                check("the list's word matches the save's (\(listSaidSaved ? "saved" : "not saved"))", listSaidSaved == saved)
+                guard await start(manager, config) else { check("the next Start works", false); print("FAILED"); exit(1) }
+                check("the next Start works", true)
+                guard let agent2 = manager.guestAgentSocketPath, await waitForAgent(agent2, seconds: 300) else {
+                    check("the guest answers after it", false); await shutDown(manager); print("FAILED"); exit(1)
+                }
+                check("the guest answers after it (\(Int(Date().timeIntervalSince(began))) s)", true)
+                print("   the list says saved now: \(QEMUSavedState.looksSaved(config))")
+                await shutDown(manager)
+                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+            }
+            if arguments.contains("--test-hid-bridge-fuzz") {
+                // The bridge's frame parser against garbage (2026-10-28, deep
+                // audit): random bytes, lengths up to 65535, unknown types,
+                // frames cut short, in bursts, for 40 seconds. QEMU must
+                // still answer afterwards, and the device must still detach.
+                let manager = VMManager()
+                guard await start(manager, configuration(folder: folderURL, guest: guest)),
+                      let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                try? await Task.sleep(for: .seconds(10))
+                let descriptor = Data([0x06, 0x00, 0xff, 0x09, 0x01, 0xa1, 0x01,
+                                       0x85, 0x01, 0x09, 0x02, 0x15, 0x00, 0x26, 0xff, 0x00, 0x75, 0x08, 0x95, 0x08, 0x81, 0x02,
+                                       0x85, 0x02, 0x09, 0x03, 0x75, 0x08, 0x95, 0x08, 0x91, 0x02, 0xc0])
+                let port = 5
+                guard let socketPath = manager.hidBridgeSocketPath(port: port) else { print("FAILED"); exit(1) }
+                do {
+                    try await manager.attachHIDBridge(port: port, socketPath: socketPath, descriptor: descriptor,
+                                                      vendor: 0x46f4, product: 0x0012, name: "AVM fuzz")
+                } catch { check("QEMU added the bridge device (\(error.localizedDescription))", false); print("FAILED"); exit(1) }
+                func dial() -> Int32 {
+                    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+                    var address = sockaddr_un()
+                    address.sun_family = sa_family_t(AF_UNIX)
+                    withUnsafeMutableBytes(of: &address.sun_path) { raw in
+                        let bytes = Array(socketPath.utf8); raw.copyBytes(from: bytes); raw[bytes.count] = 0
+                    }
+                    let ok = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }
+                    if ok != 0 { close(fd); return -1 }
+                    var on: Int32 = 1
+                    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+                    return fd
+                }
+                var fd = dial()
+                check("the helper's side connected", fd >= 0)
+                var sent = 0, reconnects = 0
+                var generator = SystemRandomNumberGenerator()
+                let until = Date().addingTimeInterval(40)
+                while Date() < until {
+                    var burst = Data()
+                    for _ in 0..<64 {
+                        switch Int.random(in: 0..<6, using: &generator) {
+                        case 0:  // a well-formed input report
+                            burst.append(contentsOf: [1, 9, 0, 1] + (0..<8).map { _ in UInt8.random(in: 0...255, using: &generator) })
+                        case 1:  // a huge length
+                            burst.append(contentsOf: [UInt8.random(in: 1...3, using: &generator), 0xff, 0xff])
+                            burst.append(contentsOf: (0..<Int.random(in: 0..<300, using: &generator)).map { _ in UInt8.random(in: 0...255, using: &generator) })
+                        case 2:  // an unknown type
+                            burst.append(contentsOf: [UInt8.random(in: 4...255, using: &generator), 4, 0, 1, 2, 3, 4])
+                        case 3:  // cut short
+                            burst.append(contentsOf: [1, 9, 0, 1, 2])
+                        case 4:  // zero length
+                            burst.append(contentsOf: [1, 0, 0])
+                        default: // pure noise
+                            burst.append(contentsOf: (0..<Int.random(in: 1..<200, using: &generator)).map { _ in UInt8.random(in: 0...255, using: &generator) })
+                        }
+                    }
+                    let n = burst.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+                    if n <= 0 {
+                        close(fd); reconnects += 1
+                        try? await Task.sleep(for: .milliseconds(200))
+                        fd = dial()
+                        if fd < 0 { break }
+                    } else { sent += n }
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+                if fd >= 0 { close(fd) }
+                print("   sent \(sent) bytes of garbage, reconnected \(reconnects) times")
+                let alive = (try? await manager.sendQMPCommand("query-status", arguments: nil)) != nil
+                check("QEMU still answers", alive)
+                // x-query-usb shows the class's product name, not the string
+                // descriptor; the device id is what names it.
+                var usb = ""
+                for _ in 0..<3 where !usb.contains("hidbridge-dev-\(port)") {
+                    usb = (try? await manager.sendQMPCommand("x-query-usb", arguments: nil)).map { "\($0)" } ?? ""
+                    if !usb.contains("hidbridge-dev-\(port)") { try? await Task.sleep(for: .seconds(2)) }
+                }
+                if !usb.contains("hidbridge-dev-\(port)") { print("   QEMU's USB list: \(usb.prefix(400))") }
+                check("the bridge device is still there", usb.contains("hidbridge-dev-\(port)"))
+                let answers = await exec(agent, program: "/bin/sh", args: ["-c", "echo OK"])
+                check("the guest still runs", (answers ?? "").contains("OK"))
+                await manager.detachHIDBridge(port: port)
+                try? await Task.sleep(for: .seconds(2))
+                let after = (try? await manager.sendQMPCommand("x-query-usb", arguments: nil)).map { "\($0)" } ?? ""
+                check("the bridge device was removed", !after.isEmpty && !after.contains("hidbridge-dev-\(port)"))
                 await shutDown(manager)
                 print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
             }

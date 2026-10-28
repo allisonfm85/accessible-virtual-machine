@@ -79,11 +79,16 @@ enum WindowsReinstall {
         // The new disk first, then everything of the old Windows (2026-10-26,
         // code audit): in the other order, a failed swap left the old disk
         // with its restore points but without their firmware and TPM copies.
-        // The answers first (2026-10-28, code review): saved after the swap,
-        // a failed save said "not reinstalled" with Windows already gone.
+        // The answers first, written aside (2026-10-28, code review and
+        // second review): saved after the swap, a failed save said "not
+        // reinstalled" with Windows already gone; saved in place before it,
+        // a failed swap left the password in a folder that had forgotten it.
+        let staging = dir.appendingPathComponent(".reinstall-\(UUID().uuidString)", isDirectory: true)
         do {
-            try answers?.save(inVMDirectory: dir)
+            try fm.createDirectory(at: staging, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try answers?.save(inVMDirectory: staging)
         } catch {
+            try? fm.removeItem(at: staging)
             try? fm.removeItem(at: fresh)
             throw WindowsReinstallError.failed("AVM couldn't save the setup answers, so nothing was changed. Reason: \(error.localizedDescription)")
         }
@@ -94,9 +99,16 @@ enum WindowsReinstall {
                 try fm.moveItem(at: fresh, to: disk)
             }
         } catch {
+            try? fm.removeItem(at: staging)
             try? fm.removeItem(at: fresh)
             throw WindowsReinstallError.failed("AVM couldn't put the new disk in place, so nothing was changed. Reason: \(error.localizedDescription)")
         }
+        let answersFile = staging.appendingPathComponent(WindowsSetupAnswers.fileName)
+        if fm.fileExists(atPath: answersFile.path) {
+            try? fm.removeItem(at: dir.appendingPathComponent(WindowsSetupAnswers.fileName))
+            try? fm.moveItem(at: answersFile, to: dir.appendingPathComponent(WindowsSetupAnswers.fileName))
+        }
+        try? fm.removeItem(at: staging)
         // The install marker right away: an empty disk with the marker
         // still there would boot to the firmware shell as "installed".
         try? fm.removeItem(at: dir.appendingPathComponent("autounattend.img"))

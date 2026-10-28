@@ -35,7 +35,7 @@ nonisolated enum SetupReport {
 
     /// What to say, and whether everything was there. nil: no report (a
     /// Windows installed before AVM wrote one), so nothing is said.
-    static func summary(reportText: String, expectsJAWS: Bool, expectsNVDA: Bool) -> (message: String, complete: Bool)? {
+    static func summary(reportText: String, expectsJAWS: Bool, expectsNVDA: Bool) -> (message: String, complete: Bool, failed: Bool, signedIn: Bool)? {
         let lines = Set(reportText.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) })
         guard lines.contains("specialize-done") else { return nil }
 
@@ -64,7 +64,7 @@ nonisolated enum SetupReport {
         if expectsNVDA && !signedIn {
             message += " NVDA installs when you first sign in to Windows."
         }
-        return (message, missing.isEmpty && signedIn)
+        return (message, missing.isEmpty && signedIn, !missing.isEmpty, signedIn)
     }
 
     /// "A, B and C".

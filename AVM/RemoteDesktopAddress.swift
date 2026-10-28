@@ -7,6 +7,7 @@
 
 import Foundation
 import Security
+import CryptoKit
 
 // MARK: - What a machine's settings say
 
@@ -57,6 +58,42 @@ nonisolated enum RemoteDesktop {
         return (name, ip)
     }
 
+    /// A mark of a password, for remoteDesktopPasswordMark: not the
+    /// password, and not enough to find it.
+    static func mark(for password: String) -> String {
+        let digest = SHA256.hash(data: Data(("avm-remote-desktop:" + password).utf8))
+        return digest.prefix(12).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// True when nothing on the Mac listens on the port at the address QEMU
+    /// would bind (2026-10-28): QEMU fails to start otherwise, with only
+    /// "stopped unexpectedly" to show for it.
+    static func isPortFree(_ port: Int, network: Bool) -> Bool {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return true }
+        defer { close(fd) }
+        var on: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size))
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(port).bigEndian
+        address.sin_addr.s_addr = network ? INADDR_ANY.bigEndian : inet_addr("127.0.0.1")
+        let bound = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+        return bound == 0
+    }
+
+    /// The port to use at a start: the machine's own when it's free, else
+    /// the next free one that no other machine has.
+    static func freePort(from wanted: Int, network: Bool, among all: [VMConfiguration], except id: UUID) -> Int {
+        let taken = Set(all.filter { $0.id != id && $0.remoteDesktopOn }.compactMap(\.remoteDesktopPort))
+        var port = wanted
+        while port < wanted + 60 {
+            if !taken.contains(port) || port == wanted, isPortFree(port, network: network) { return port }
+            port += 1
+        }
+        return wanted
+    }
+
     /// The Mac's IPv4 address on its network, if it has one.
     static func macAddress() -> String? {
         var first: UnsafeMutablePointer<ifaddrs>?
@@ -72,9 +109,11 @@ nonisolated enum RemoteDesktop {
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             guard getnameinfo(address, socklen_t(address.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
             let text = String(cString: host)
-            // Wi-Fi and Ethernet first; anything else only if there's nothing better.
+            // Wi-Fi and Ethernet first; anything else only if there's nothing
+            // better; never a self-assigned address (2026-10-28, en0 too).
+            if text.hasPrefix("169.254.") { continue }
             if name == "en0" { return text }
-            if found == nil, !text.hasPrefix("169.254.") { found = text }
+            if found == nil { found = text }
         }
         return found
     }
@@ -106,6 +145,13 @@ nonisolated enum RemoteDesktop {
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
         return String(decoding: data, as: UTF8.self)
+    }
+
+    /// The password now in the machine is the keychain's (2026-10-28).
+    @MainActor static func recordPasswordMark(_ mark: String?, for id: UUID) {
+        guard var config = VMStore.shared?.configurations.first(where: { $0.id == id }) else { return }
+        config.remoteDesktopPasswordMark = mark
+        VMStore.shared?.save(config)
     }
 
     static func forgetPassword(for id: UUID) {

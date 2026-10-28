@@ -189,6 +189,13 @@ final class USBRedirectController: ObservableObject {
 
     /// Drops this device's follow-through record. The send gate calls it
     /// when it finishes, so its own bounces never count as leaving Windows.
+    /// The watch ended (the machine stopped, 2026-10-28, deep audit): no
+    /// device follows "the user's choice" into the next machine.
+    func clearAllFollowThrough() {
+        leftWindowsAt.removeAll()
+        leftWindowsCopy.removeAll()
+    }
+
     func clearFollowThrough(_ device: AVMUSBDeviceIdentity) {
         let key = Self.followKey(device)
         leftWindowsAt[key] = nil
@@ -438,6 +445,13 @@ final class USBRedirectController: ObservableObject {
     }
 
     func releaseReservedPort(_ key: String) {
+        reserved[key] = nil
+    }
+
+    /// Only when the reservation is still this send's (2026-10-28, second
+    /// review): released after a wait, a key could belong to a newer send.
+    func releaseReservedPort(_ key: String, port: Int) {
+        guard reserved[key]?.port == port else { return }
         reserved[key] = nil
     }
 

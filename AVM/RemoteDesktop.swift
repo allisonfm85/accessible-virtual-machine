@@ -86,7 +86,7 @@ final class RemoteDesktopAdvertiser {
             entry.service = service
         }
         entries[config.id] = entry
-        AVMLog.write("AVM: Remote Desktop — \(host.dropLast()) published for \(config.name), port \(port), at \(addressText)")
+        AVMLog.write("AVM: Remote Desktop — \(host.dropLast()) published for \(config.name), port \(port)")
         return true
     }
 
@@ -112,65 +112,76 @@ extension VMManager {
     /// Makes the account and turns the Remote Desktop host on in the
     /// running machine. The password goes only into the machine (and the
     /// keychain, by the caller); never into the log.
-    func setUpRemoteDesktop(configuration: VMConfiguration, user: String, password: String) async -> RemoteDesktopSetup {
+    /// `setPassword` false: an account that exists keeps its password (a
+    /// new one gets this one); true: it's set, as after the user typed one.
+    func setUpRemoteDesktop(configuration: VMConfiguration, user: String, password: String, setPassword: Bool = true) async -> RemoteDesktopSetup {
         guard case .running = state, let agent = guestAgentSocketPath, FileManager.default.fileExists(atPath: agent) else {
             return .failed("\(configuration.name) isn't running with its agent yet. Start it, wait a minute, then try again.")
         }
-        AVMLog.write("remoteDesktop: setting up the account \(user) in \(configuration.name)")
+        AVMLog.write("remoteDesktop: setting up the Remote Desktop account in \(configuration.name) (password \(setPassword ? "set" : "kept"))")
         do {
             if configuration.guestOS == .windows {
-                return try await setUpWindowsRemoteDesktop(configuration: configuration, user: user, password: password)
+                return try await setUpWindowsRemoteDesktop(configuration: configuration, user: user, password: password, setPassword: setPassword)
             } else {
-                return try await setUpLinuxRemoteDesktop(configuration: configuration, user: user, password: password)
+                return try await setUpLinuxRemoteDesktop(configuration: configuration, user: user, password: password, setPassword: setPassword)
             }
         } catch {
-            AVMLog.write("remoteDesktop: setup failed: \(error.localizedDescription)")
-            return .failed("Remote Desktop couldn't be set up in \(configuration.name). Reason: \(error.localizedDescription)")
+            // Only the first line, and never spoken (2026-10-28, second
+            // review): a script's error can quote the line that failed.
+            let first = error.localizedDescription.split(whereSeparator: \.isNewline).first.map(String.init) ?? "no detail"
+            AVMLog.write("remoteDesktop: setup failed: \(first.prefix(160))")
+            return .failed("Remote Desktop couldn't be set up in \(configuration.name). The reason is in AVM's diagnostic log.")
         }
     }
 
-    private func setUpWindowsRemoteDesktop(configuration: VMConfiguration, user: String, password: String) async throws -> RemoteDesktopSetup {
-        func quoted(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "''") + "'" }
-        // Group by SID, not name: "Remote Desktop Users" is translated on a
-        // non-English Windows.
+    private func setUpWindowsRemoteDesktop(configuration: VMConfiguration, user: String, password: String, setPassword: Bool) async throws -> RemoteDesktopSetup {
+        // The name and password arrive on standard input, never in the
+        // script (2026-10-28, second review): a quote in either broke the
+        // script's text, and PowerShell's error quoted the line, password
+        // and all, into the log and speech. The group by SID and the
+        // firewall rules by their group id, not their translated names.
         let script = """
         $ErrorActionPreference = 'Stop'
+        $in = New-Object IO.StreamReader([Console]::OpenStandardInput(), (New-Object Text.UTF8Encoding $false))
+        $u = $in.ReadLine(); $pw = $in.ReadLine(); $setPassword = ($in.ReadLine() -eq 'set')
         $edition = (Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion').EditionID
         if ($edition -like 'Core*') { 'HOME'; exit 0 }
-        $u = \(quoted(user)); $p = ConvertTo-SecureString \(quoted(password)) -AsPlainText -Force
+        $p = ConvertTo-SecureString $pw -AsPlainText -Force
         if (Get-LocalUser -Name $u -ErrorAction SilentlyContinue) {
-          Set-LocalUser -Name $u -Password $p -PasswordNeverExpires $true
+          if ($setPassword) { Set-LocalUser -Name $u -Password $p -PasswordNeverExpires $true }
         } else {
           New-LocalUser -Name $u -Password $p -PasswordNeverExpires -AccountNeverExpires | Out-Null
         }
         Add-LocalGroupMember -SID 'S-1-5-32-555' -Member $u -ErrorAction SilentlyContinue
         Set-ItemProperty 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name fDenyTSConnections -Value 0
         Set-ItemProperty 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp' -Name UserAuthentication -Value 1
-        Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue
+        Enable-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -ErrorAction SilentlyContinue
         Set-Service -Name TermService -StartupType Automatic
         Start-Service -Name TermService -ErrorAction SilentlyContinue
         'READY'
         """
-        let out = try await agentRun("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], limit: .seconds(180))
+        let input = "\(user)\r\n\(password)\r\n\(setPassword ? "set" : "keep")\r\n"
+        let out = try await agentRun("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], limit: .seconds(180), input: input)
         if out.contains("HOME") {
             return .unsupported("This Windows is the Home edition, which has no Remote Desktop host built in. Remote Desktop needs Windows 11 Pro.")
         }
         guard out.contains("READY") else {
-            throw AVMError.qmpCommandFailed(out.trimmingCharacters(in: .whitespacesAndNewlines).suffix(300).description)
+            throw AVMError.qmpCommandFailed(out.trimmingCharacters(in: .whitespacesAndNewlines).description)
         }
         return .ready("Remote Desktop is on in \(configuration.name), with the account \(user).")
     }
 
-    private func setUpLinuxRemoteDesktop(configuration: VMConfiguration, user: String, password: String) async throws -> RemoteDesktopSetup {
+    private func setUpLinuxRemoteDesktop(configuration: VMConfiguration, user: String, password: String, setPassword: Bool) async throws -> RemoteDesktopSetup {
         // The account; its password by standard input, never on a command
-        // line the guest could list.
+        // line the guest could list, and only when it's new or changed.
         let account = """
         set -e
         export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-        id -u "$1" >/dev/null 2>&1 || useradd -m -s /bin/bash "$1"
-        chpasswd
+        new=
+        id -u "$1" >/dev/null 2>&1 || { useradd -m -s /bin/bash "$1"; new=1; }
+        if [ "$2" = set ] || [ -n "$new" ]; then chpasswd; fi
         """
-        _ = try await agentRun("/bin/sh", ["-c", account, "sh", user], limit: .seconds(60), input: "\(user):\(password)\n")
+        _ = try await agentRun("/bin/sh", ["-c", account, "sh", user, setPassword ? "set" : "keep"], limit: .seconds(60), input: "\(user):\(password)\n")
         // xrdp, from the distribution, and its service.
         let host = """
         set -e
@@ -190,7 +201,7 @@ extension VMManager {
             return .unsupported("AVM doesn't know how to install xrdp on this Linux. Install xrdp yourself, then connect with the account \(user).")
         }
         guard out.contains("READY") else {
-            throw AVMError.qmpCommandFailed(out.trimmingCharacters(in: .whitespacesAndNewlines).suffix(300).description)
+            throw AVMError.qmpCommandFailed(out.trimmingCharacters(in: .whitespacesAndNewlines).description)
         }
         return .ready("Remote Desktop is on in \(configuration.name), with the account \(user).")
     }
@@ -236,9 +247,12 @@ extension VMManager {
             if (try? await agentCall(["execute": "guest-ping"], timeout: 4)) != nil { break }
         }
         guard case .running = state else { return }
-        switch await setUpRemoteDesktop(configuration: configuration, user: user, password: password) {
+        let mark = RemoteDesktop.mark(for: password)
+        let setPassword = configuration.remoteDesktopPasswordMark != mark
+        switch await setUpRemoteDesktop(configuration: configuration, user: user, password: password, setPassword: setPassword) {
         case .ready(let words):
             AVMLog.write("remoteDesktop: \(words)")
+            if setPassword { RemoteDesktop.recordPasswordMark(mark, for: configuration.id) }
         case .unsupported(let words), .failed(let words):
             Announcer.shared.announce(words, tone: .failure)
         }

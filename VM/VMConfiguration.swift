@@ -36,6 +36,17 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// Absolute path to the installation ISO, if one is attached.
     /// Nil means no optical drive is present.
     var installISOPath: String?
+    /// true once a Start has found the install-complete marker on the
+    /// UNATTEND volume (2026-10-28). From then on, a volume without the
+    /// marker but a disk holding data is still treated as installed (the
+    /// marker's volume is a drive Windows can see and empty); before then,
+    /// no marker means the install isn't finished, and an interrupted one
+    /// starts again from the DVD.
+    var installMarkerSeen: Bool?
+    /// A "Fresh install" restore point is owed (2026-10-28): the first
+    /// sign-in was seen on a Start that carried on from a saved state,
+    /// where no point can be taken; the next plain Start takes it.
+    var freshInstallPointPending: Bool?
 
     // MARK: - Shared folder
 
@@ -120,6 +131,12 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// The port on the Mac forwarded to the machine's 3389, kept once
     /// chosen so the address stays the same.
     var remoteDesktopPort: Int?
+    /// A mark of the password last set in the machine (not the password):
+    /// the account's password is set again only when the one in the
+    /// keychain differs (2026-10-28), never at every start, since an
+    /// administrator's reset of an existing account loses what Windows
+    /// encrypted under the old one.
+    var remoteDesktopPasswordMark: String?
 
     /// true: the machine has a USB camera fed by the Mac's camera
     /// (2026-10-27, AVM's QEMU usb-camera). Off unless chosen. Read it

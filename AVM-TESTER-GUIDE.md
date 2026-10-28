@@ -683,9 +683,14 @@ PC with that name, and sign in with the user name and password you
 chose. Windows 11 Home has no Remote Desktop host, so AVM says so there;
 macOS machines don't do Remote Desktop. If you give the name of an
 account the machine already has, that account's password becomes the
-one you typed. The first time a machine is reachable from your whole
-network, macOS may ask whether to allow incoming connections to
-qemu-system-aarch64; allow it.
+one you typed, once; a password you change later inside the machine is
+left alone unless you type a new one in AVM. On Linux the remote
+session, through xrdp, has no sound, and it should use a different
+account from the one signed in at the machine's own screen. If the port
+AVM chose is in use on your Mac when the machine starts, AVM moves to
+the next free one and tells you the new address. The first time a
+machine is reachable from your whole network, macOS may ask whether to
+allow incoming connections to qemu-system-aarch64; allow it.
 
 ### Sharing a folder
 

@@ -91,6 +91,7 @@ struct ContentView: View {
     @State private var usbPicker: USBPickerRequest? = nil
     @State private var bluetoothWindow: BluetoothWindowRequest? = nil
     @State private var showingBackgroundSettings = false
+    @Environment(\.openWindow) private var openWindow
     @State private var errorMessage: String? = nil
 
     // MARK: - Body
@@ -107,7 +108,7 @@ struct ContentView: View {
                 }
                 .padding(32)
             }
-            .frame(minWidth: 480, minHeight: 560)
+            .frame(minWidth: 760, minHeight: 560)
         }
         // Inject the environment objects HERE, on the outermost Group, so they
         // flow to EVERY descendant (DashboardContent, the machine rows, and
@@ -271,6 +272,7 @@ struct ContentView: View {
         }
         // The machine chosen to start when AVM opens (2026-10-28), once.
         .onAppear {
+            MainWindowCloseGuard.openMainWindow = { openWindow(id: "main") }
             BackgroundMode.shared.autoStartIfChosen(in: vmStore.configurations) { startVM(config: $0, takesKeyboard: $1) }
         }
         // Speak Status (Cmd-Shift-I, 2026-10-25). Always .info: asking is
@@ -438,9 +440,12 @@ private struct DashboardContent: View {
                     Text("Your Virtual Machines")
                         .font(.headline)
 
+                    // Two lines a row (2026-10-28, sighted use): the name and
+                    // what it has, then its state and buttons, none of them
+                    // wrapped or cut short.
                     ForEach(vmStore.configurations) { config in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .firstTextBaseline, spacing: 12) {
                                 Text(config.name)
                                     .font(.body)
                                     .accessibilityAddTraits(.isHeader)
@@ -451,8 +456,7 @@ private struct DashboardContent: View {
                                     .accessibilityLabel("\(config.cpuCount) cores, \(config.ramSizeGB) gigabytes RAM, \(config.diskSizeGB) gigabytes disk\(storageNote(config).map { ", \($0)" } ?? "")")
                             }
 
-                            Spacer()
-
+                            HStack(spacing: 8) {
                             // macOS machines run beside QEMU, in their own
                             // window (2026-10-26): their row says how they
                             // are and runs them.
@@ -495,8 +499,10 @@ private struct DashboardContent: View {
                                 .accessibilityLabel("Delete \(config.name)")
                                 .accessibilityHint("Moves this virtual machine and all of its files to the Trash. Asks for confirmation first.")
                             }
+                            }
+                            .fixedSize(horizontal: true, vertical: false)
                         }
-                        .padding(.vertical, 4)
+                        .padding(.vertical, 6)
                     }
                 }
                 .padding(.horizontal)
@@ -792,6 +798,8 @@ private struct DashboardContent: View {
         Toggle("Start When AVM Opens", isOn: Binding(
             get: { background.autoStartID == config.id },
             set: { BackgroundMode.shared.setAutoStart(config, $0) }))
+        .lineLimit(1)
+        .fixedSize()
         .accessibilityLabel("Start \(config.name) when AVM opens")
         .accessibilityHint("One machine at most. With Open AVM When You Log In, in Background and Startup, it starts when you log in.")
     }

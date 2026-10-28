@@ -81,7 +81,10 @@ final class BluetoothDevices: ObservableObject {
         // continues this too.
         if case .failure(.notEnabled(.requiresApproval)) = held {
             say("\(device.name) goes to \(machine.machineName) once AVM's helper is allowed in Login Items.", tone: .info)
-            if await USBHelperClient.shared.waitForApproval(while: { if case .running = machine.state { return true } else { return false } }) {
+            let approved = await USBHelperClient.shared.waitForApproval(while: { if case .running = machine.state { return true } else { return false } })
+            // Only for a machine still running (2026-10-28): one that
+            // stopped during the wait has no socket to hold against.
+            if approved, case .running = machine.state {
                 held = await USBHelperClient.shared.holdBluetooth(device.id, socketPath: socket, peerPID: machine.qemuPID)
             }
         }
@@ -135,7 +138,7 @@ final class BluetoothDevices: ObservableObject {
         // review): freed first, the next send could take it meanwhile.
         Task {
             await machine.detachHIDBridge(port: entry.port)
-            USBRedirectController.shared.releaseReservedPort(portKey(id))
+            USBRedirectController.shared.releaseReservedPort(portKey(id), port: entry.port)
         }
         say("\(entry.name) went back to the Mac\(detail.map { ": \($0)" } ?? ""). Send it again from Bluetooth Devices when it's back.", tone: .info)
     }
@@ -159,7 +162,7 @@ final class BluetoothDevices: ObservableObject {
             if let machine = entry.machine, case .running = machine.state {
                 Task {
                     await machine.detachHIDBridge(port: entry.port)
-                    USBRedirectController.shared.releaseReservedPort(portKey(id))
+                    USBRedirectController.shared.releaseReservedPort(portKey(id), port: entry.port)
                 }
             } else {
                 USBRedirectController.shared.releaseReservedPort(portKey(id))

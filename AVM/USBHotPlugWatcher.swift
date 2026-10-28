@@ -117,6 +117,7 @@ final class USBHotPlugWatcher {
     func stop(reason: String) {
         guard vmID != nil || notifyPort != nil else { return }
         USBPlugPrompt.shared.vmStopped()
+        USBRedirectController.shared.clearAllFollowThrough()
         if arrivedIterator != 0 { IOObjectRelease(arrivedIterator); arrivedIterator = 0 }
         if removedIterator != 0 { IOObjectRelease(removedIterator); removedIterator = 0 }
         if let port = notifyPort { IONotificationPortDestroy(port); notifyPort = nil }

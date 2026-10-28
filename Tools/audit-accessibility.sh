@@ -10,7 +10,7 @@
 # report. Your own virtual machines are never opened. It takes about half
 # a minute and says nothing out loud.
 #
-#   Tools/audit-accessibility.sh [--app PATH] [--out FOLDER] [--only SCREEN] [--keep]
+#   Tools/audit-accessibility.sh [--app PATH] [--out FOLDER] [--only SCREEN] [--keep] [--pictures FOLDER] [--dark]
 #
 # --out keeps the report (accessibility-report.txt) and everything read
 # (accessibility-tree.txt) in FOLDER; without it they go in a temporary
@@ -29,6 +29,8 @@ while [ $# -gt 0 ]; do
         --out) OUT="$2"; shift 2 ;;
         --only) EXTRA+=(--only "$2"); shift 2 ;;
         --keep) EXTRA+=(--keep); shift ;;
+        --pictures) EXTRA+=(--pictures "$2"); shift 2 ;;
+        --dark) EXTRA+=(--dark); shift ;;
         -h|--help) sed -n 2,19p "$0"; exit 0 ;;
         *) echo "Unknown option $1. Run with --help."; exit 64 ;;
     esac

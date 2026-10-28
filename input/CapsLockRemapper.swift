@@ -433,7 +433,14 @@ final class CapsLockRemapper {
             }
             results.append(KeyMapping(src: src, dst: dst))
         }
-        return results
+        // One of each (2026-10-28, deep audit): `--get` prints a block per
+        // HID service, 241 of them on one Mac, every one holding the same
+        // mapping. Collected as they came, a user's own remap was saved 241
+        // times, restored 241 times, and the next read gave 241 squared,
+        // more than a command line can hold, so applying it failed for
+        // good. `--set` writes one list to every service anyway.
+        var seen = Set<String>()
+        return results.filter { seen.insert("\($0.src)>\($0.dst)").inserted }
     }
 
     nonisolated private static func field(_ name: String, in text: String) -> UInt64? {

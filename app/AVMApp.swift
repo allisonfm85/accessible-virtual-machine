@@ -65,6 +65,13 @@ struct AVMApp: App {
     /// (AccessibilityAudit.swift, 2026-10-26) checks AVM's own screens the
     /// same way, window-less as far as the user can tell, and exits.
     init() {
+        // A client that goes away mid-reply must not take AVM down
+        // (2026-10-28, control-socket fuzz): a write to a closed socket
+        // raises SIGPIPE, whose default ends the process, machines and all.
+        // Ignored here, that write fails with EPIPE, which every socket
+        // writer already handles (avmctl's server, QMP once QEMU has died,
+        // the guest agent).
+        signal(SIGPIPE, SIG_IGN)
         ControlClient.runIfAsked()
         AccessibilityAudit.runIfAsked()
         InstallMediaJob.runIfAsked()
@@ -76,7 +83,7 @@ struct AVMApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main") {
             ContentView()
                 .environmentObject(vmStore)
                 .environmentObject(focusLock)
@@ -646,6 +653,10 @@ final class MainWindowCloseGuard: NSObject, NSWindowDelegate {
 
     /// False when AVM has no main window (macOS restored none at launch).
     static var hasMainWindow: Bool { shared.mainWindow != nil }
+    /// SwiftUI's opener for the list window, kept by ContentView once it has
+    /// appeared (2026-10-28): a reopen event makes no window while a
+    /// machine's window is up.
+    static var openMainWindow: (() -> Void)?
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if QuitCoordinator.vmIsActive {

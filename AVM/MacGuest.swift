@@ -595,7 +595,7 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
     }
 
     func enter(spoken: String? = nil) {
-        guard let window, let machineView else {
+        guard let window, machineView != nil else {
             NSSound.beep()
             return
         }

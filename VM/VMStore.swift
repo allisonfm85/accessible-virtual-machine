@@ -214,6 +214,7 @@ final class VMStore: ObservableObject {
 
     init() {
         configurations = loadAll()
+        AVMLog.setPrivateWords(configurations.compactMap(\.remoteDesktopUser))
         VMStore.shared = self
     }
 
@@ -290,6 +291,7 @@ final class VMStore: ObservableObject {
     // MARK: - Add or Update
 
     func save(_ configuration: VMConfiguration) {
+        defer { AVMLog.setPrivateWords(configurations.compactMap(\.remoteDesktopUser)) }
         if let index = configurations.firstIndex(where: { $0.id == configuration.id }) {
             configurations[index] = configuration
         } else {

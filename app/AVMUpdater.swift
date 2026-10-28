@@ -91,13 +91,11 @@ final class UpdateAnnouncer: NSObject, SPUUpdaterDelegate {
     /// review): it used to keep running for its idle grace period, and
     /// the new AVM talked to it.
     nonisolated func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
-        let done = DispatchSemaphore(value: 0)
-        Task { @MainActor in
-            AVMLog.write("AVM: Updates — relaunching; asking the USB helper to exit first.")
-            _ = await USBHelperClient.shared.restartHelper()
-            done.signal()
-        }
-        _ = done.wait(timeout: .now() + 4)
+        // On the main thread (Sparkle's), so no main-actor work here
+        // (2026-10-28, second review: a MainActor task was waited for from
+        // the main thread, and could never run).
+        NSLog("AVM: Updates — relaunching; asking the USB helper to exit first.")
+        USBHelperClient.askHelperToExitNow(wait: 3)
     }
 
     nonisolated func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {

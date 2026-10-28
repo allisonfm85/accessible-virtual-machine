@@ -218,8 +218,31 @@ nonisolated final class AVMLog: @unchecked Sendable {
     /// are effectively unique and safe to replace.
     ///
     /// nonisolated static so it can be reasoned about and tested on its own.
+    /// Words the log must not carry besides the Mac's user name
+    /// (2026-10-28, deep audit): Remote Desktop account names, which
+    /// VMStore registers. Whole words, any case.
+    nonisolated private static let privateLock = NSLock()
+    nonisolated(unsafe) private static var privateWords: [String] = []
+    nonisolated static func setPrivateWords(_ words: [String]) {
+        privateLock.lock(); defer { privateLock.unlock() }
+        privateWords = Array(Set(words.filter { $0.count >= 3 })).sorted { $0.count > $1.count }
+    }
+    nonisolated private static let ipv4Regex = try? NSRegularExpression(pattern: "\\b(?:[0-9]{1,3}\\.){3}[0-9]{1,3}\\b")
+
     nonisolated static func sanitize(_ s: String) -> String {
         var out = s
+        privateLock.lock()
+        let words = privateWords
+        privateLock.unlock()
+        for word in words {
+            if let rx = try? NSRegularExpression(pattern: "\\b" + NSRegularExpression.escapedPattern(for: word) + "\\b", options: .caseInsensitive) {
+                out = rx.stringByReplacingMatches(in: out, options: [], range: NSRange(out.startIndex..<out.endIndex, in: out), withTemplate: "the Remote Desktop account")
+            }
+        }
+        // The Mac's network address (2026-10-28): Remote Desktop speaks it.
+        if let rx = ipv4Regex {
+            out = rx.stringByReplacingMatches(in: out, options: [], range: NSRange(out.startIndex..<out.endIndex, in: out), withTemplate: "an IP address")
+        }
 
         if let rx = homePathRegex {
             let range = NSRange(out.startIndex..<out.endIndex, in: out)

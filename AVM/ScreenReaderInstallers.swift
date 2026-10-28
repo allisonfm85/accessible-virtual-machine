@@ -234,8 +234,13 @@ nonisolated enum ScreenReaderInstallers {
     private static func removeOlderCopies(of reader: ScreenReader, keeping file: URL, in cache: URL) {
         let fm = FileManager.default
         for name in (try? fm.contentsOfDirectory(atPath: cache.path)) ?? []
-        where name.hasPrefix("\(reader.rawValue)-") && name != file.lastPathComponent && !name.contains(".part") {
-            try? fm.removeItem(at: cache.appendingPathComponent(name))
+        where name.hasPrefix("\(reader.rawValue)-") && name != file.lastPathComponent {
+            let url = cache.appendingPathComponent(name)
+            // A piece another download is writing is left alone for a day.
+            if name.contains(".part"),
+               let changed = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
+               Date().timeIntervalSince(changed) < 86_400 { continue }
+            try? fm.removeItem(at: url)
         }
     }
 
@@ -268,6 +273,9 @@ nonisolated enum ScreenReaderInstallers {
         // Its own name per download (2026-10-28, code review): two machines
         // starting at once shared one, and one's move took the other's file.
         let part = file.appendingPathExtension("part-\(UUID().uuidString.prefix(8))")
+        // Whatever happens, the piece doesn't stay (2026-10-28, second
+        // review: a failed final move left 1.5 GB behind for good).
+        defer { try? FileManager.default.removeItem(at: part) }
         let box = TaskBox()
         // Large downloads (JAWS is 1.5 GB) say how far they've got.
         let progress = Task {

@@ -259,7 +259,9 @@ class FocusLockManager: ObservableObject {
     }
 
     // MARK: - Unlock (Return to Mac)
-    func unlock() {
+    /// `bringListForward` false: the caller is putting another window in
+    /// front (2026-10-28), so the list stays where it is.
+    func unlock(bringListForward: Bool = true) {
         AVMLog.write("AVM: FocusLock.unlock() called — isLocked was \(isLocked)")
         guard isLocked else {
             AVMLog.write("AVM: FocusLock.unlock() — already unlocked, no-op.")
@@ -277,7 +279,7 @@ class FocusLockManager: ObservableObject {
         Announcer.shared.announce("Entering Mac", tone: .leaveGuest)
         AVMLog.write("AVM: FocusLock.unlock() — NOW UNLOCKED (isLocked=false).")
         // From a machine's own window (2026-10-27), back to the list.
-        MachineSessions.shared.returnedToMac()
+        if bringListForward { MachineSessions.shared.returnedToMac() }
     }
 
     // MARK: - First-responder enforcement
