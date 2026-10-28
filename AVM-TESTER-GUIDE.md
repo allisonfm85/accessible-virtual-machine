@@ -787,6 +787,17 @@ that it never nudges you into interrupting a healthy repair.
 If AVM does raise the alarm, it has already established that the disk is
 not moving either.
 
+### Shut Down takes a long time
+
+Shut Down presses the machine's power button, and Windows can ignore
+that: at its lock screen, or when an app is asking whether to save
+your work. After a minute without a shutdown, AVM asks Windows again
+through the agent it installed, which closes open apps the way
+Windows' own Shut Down does, and says so. After two minutes it reminds
+you that Force Stop is there. Force Stop is like pulling the plug, so
+give the agent its chance first; a Windows update can take several
+minutes to finish.
+
 ### Windows is silent and does not respond, but the machine seems alive
 
 Windows recovery screens, like Startup Repair and the recovery

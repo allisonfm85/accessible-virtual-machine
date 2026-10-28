@@ -37,20 +37,22 @@ nonisolated enum GuestAgent {
     }
 
     /// Sends commands in order and returns each reply line, or throws.
-    static func run(_ commands: [String], socketPath: String, timeout: TimeInterval = 4) throws -> [String] {
+    /// `replies` false: the commands are sent after the sync and no answer
+    /// is read (guest-shutdown answers with nothing, 2026-10-28).
+    static func run(_ commands: [String], socketPath: String, timeout: TimeInterval = 4, replies: Bool = true) throws -> [String] {
         let lock = lock(for: socketPath)
         lock.lock(); defer { lock.unlock() }
         let deadline = Date().addingTimeInterval(15)
         while true {
             do {
-                return try once(commands, socketPath: socketPath, timeout: timeout)
+                return try once(commands, socketPath: socketPath, timeout: timeout, replies: replies)
             } catch let error as AgentError where error.refused && Date() < deadline {
                 Thread.sleep(forTimeInterval: 0.2)
             }
         }
     }
 
-    private static func once(_ commands: [String], socketPath: String, timeout: TimeInterval) throws -> [String] {
+    private static func once(_ commands: [String], socketPath: String, timeout: TimeInterval, replies wantReplies: Bool = true) throws -> [String] {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw AgentError("no socket") }
         defer { close(fd) }
@@ -110,7 +112,7 @@ nonisolated enum GuestAgent {
         var replies: [String] = []
         for command in commands {
             try send(command)
-            replies.append(try readLine())
+            if wantReplies { replies.append(try readLine()) }
         }
         return replies
     }

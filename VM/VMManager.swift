@@ -1330,6 +1330,27 @@ final class VMManager: ObservableObject {
         }
     }
 
+    /// Asks the guest's own agent to shut down (2026-10-28, a tester:
+    /// Windows sometimes hangs at Shut Down). The power button that stopVM
+    /// presses is an ACPI event Windows can sit on: at its lock screen, or
+    /// with an app asking whether to save. The agent's guest-shutdown goes
+    /// through Windows' shutdown call, which closes apps, so it's the
+    /// second step, after the button has had its chance. True when the
+    /// agent took the request; false with no agent (never installed, or
+    /// Windows already too far gone to answer).
+    func askGuestToShutDown() async -> Bool {
+        guard let path = guestAgentSocketPath, FileManager.default.fileExists(atPath: path) else { return false }
+        let command = #"{"execute":"guest-shutdown","arguments":{"mode":"powerdown"}}"#
+        do {
+            _ = try await Task.detached(operation: { try GuestAgent.run([command], socketPath: path, timeout: 4, replies: false) }).value
+            avmLog("askGuestToShutDown: the guest agent took the shutdown request")
+            return true
+        } catch {
+            avmLog("askGuestToShutDown: no answer from the guest agent (\(error.localizedDescription))")
+            return false
+        }
+    }
+
     func forceStopVM() {
         // A Force Stop while AVM restarts Ubuntu after its install is the
         // user's choice: the restart stands down (restartAfterInstall).

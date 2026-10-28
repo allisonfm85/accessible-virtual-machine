@@ -113,7 +113,8 @@ enum SaveResumeTestJob {
                 || arguments.contains("--test-disk-info") || arguments.contains("--run-in-guest")
                 || arguments.contains("--test-printers") || arguments.contains("--test-camera") || arguments.contains("--test-3d") || arguments.contains("--test-camera-save")
                 || arguments.contains("--test-screen-readers") || arguments.contains("--test-hid-bridge")
-                || arguments.contains("--test-background") || arguments.contains("--test-monitors") else { return }
+                || arguments.contains("--test-background") || arguments.contains("--test-monitors")
+                || arguments.contains("--test-agent-shutdown") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -193,6 +194,22 @@ enum SaveResumeTestJob {
                 check("the Mac's camera came back on", manager.consoleOutput.contains("usb-camera: the Mac's camera ("))
                 _ = await exec(agent2, program: "/bin/sh", args: ["-c", "pkill gst-launch; rm -rf /tmp/avm-cam"])
                 await shutDown(manager)
+                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+            }
+            if arguments.contains("--test-agent-shutdown") {
+                // The second step of Shut Down (2026-10-28): the guest's
+                // agent is asked, and the machine stops.
+                let manager = VMManager()
+                guard await start(manager, configuration(folder: folderURL, guest: guest)),
+                      let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                try? await Task.sleep(for: .seconds(10))
+                let asked = await manager.askGuestToShutDown()
+                check("the guest agent took the shutdown request", asked)
+                let began = Date()
+                for _ in 0..<240 where manager.state != .stopped { try? await Task.sleep(for: .milliseconds(500)) }
+                print(String(format: "   stopped after %.0f s", Date().timeIntervalSince(began)))
+                check("the machine shut down", manager.state == .stopped)
+                if manager.state != .stopped { await shutDown(manager) }
                 print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
             }
             if arguments.contains("--test-background") {

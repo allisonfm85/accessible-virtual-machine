@@ -132,8 +132,14 @@ final class VMSession: ObservableObject {
         }
 
         let reminderAfter: TimeInterval = 120
+        // The guest's agent is asked after a minute (2026-10-28, a tester:
+        // Windows sometimes hangs at Shut Down): the power button is an
+        // ACPI event Windows can ignore at its lock screen or behind a
+        // "save your work?" question; the agent's request closes apps.
+        let agentAfter: TimeInterval = 60
         let started = Date()
         var reminded = false
+        var askedAgent = false
         while true {
             switch manager.state {
             case .stopped:
@@ -150,6 +156,15 @@ final class VMSession: ObservableObject {
                 return
             default:
                 break
+            }
+            if !askedAgent, Date().timeIntervalSince(started) >= agentAfter {
+                askedAgent = true
+                if await manager.askGuestToShutDown() {
+                    AVMLog.write("VMSession: stopGracefully: no shutdown after \(Int(agentAfter)) seconds; asked the guest agent")
+                    Announcer.shared.announce("\(configuration.name) hasn't shut down yet. AVM is asking it again through its agent, which closes its open apps.", tone: .info)
+                } else {
+                    AVMLog.write("VMSession: stopGracefully: no shutdown after \(Int(agentAfter)) seconds, and no guest agent to ask")
+                }
             }
             if !reminded, Date().timeIntervalSince(started) >= reminderAfter {
                 reminded = true
