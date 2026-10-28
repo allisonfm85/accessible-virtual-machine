@@ -205,27 +205,53 @@ enum SaveResumeTestJob {
                 var config = configuration(folder: folderURL, guest: guest)
                 config.name = "RDP test"
                 config.remoteDesktopUser = value("--user") ?? "avmtester"
-                config.remoteDesktopReach = nil
+                // --reach network: bound to every address, and probed at the
+                // Mac's own network address.
+                config.remoteDesktopReach = value("--reach") == "network" ? "network" : nil
                 config.remoteDesktopPort = Int(value("--port") ?? "") ?? 3399
                 let password = value("--password") ?? "Test-Password-1234"
+                // --at-start: as a machine set up in Settings while stopped
+                // starts: the password in the keychain, the port in QEMU's
+                // arguments, the account made once the agent answers, with
+                // nothing asked here.
+                let atStart = arguments.contains("--at-start")
+                if atStart { RemoteDesktop.savePassword(password, for: config.id) }
                 guard await start(manager, config), let agent = manager.guestAgentSocketPath,
                       await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
                 try? await Task.sleep(for: .seconds(15))
                 let began = Date()
-                let result = await manager.setUpRemoteDesktop(configuration: config, user: config.remoteDesktopUser!, password: password)
-                var words = ""
-                switch result {
-                case .ready(let w): words = w; check("the account and host were set up (\(Int(Date().timeIntervalSince(began))) s)", true)
-                case .unsupported(let w): words = w; check("the account and host were set up", false)
-                case .failed(let w): words = w; check("the account and host were set up", false)
+                if atStart {
+                    // keepRemoteDesktopReady runs on its own; give it its time.
+                    var made = false
+                    for _ in 0..<36 where !made {
+                        try? await Task.sleep(for: .seconds(5))
+                        let seen = guest == .windows
+                            ? await exec(agent, program: "cmd.exe", args: ["/c", "net user \(config.remoteDesktopUser!) >nul 2>&1 && echo YES || echo NO"])
+                            : await exec(agent, program: "/bin/sh", args: ["-c", "id -u \(config.remoteDesktopUser!) >/dev/null 2>&1 && echo YES || echo NO"])
+                        made = (seen ?? "").contains("YES")
+                    }
+                    check("the start made the account by itself (\(Int(Date().timeIntervalSince(began))) s)", made)
+                    RemoteDesktop.forgetPassword(for: config.id)
+                } else {
+                    let result = await manager.setUpRemoteDesktop(configuration: config, user: config.remoteDesktopUser!, password: password)
+                    var words = ""
+                    switch result {
+                    case .ready(let w): words = w; check("the account and host were set up (\(Int(Date().timeIntervalSince(began))) s)", true)
+                    case .unsupported(let w): words = w; check("the account and host were set up", false)
+                    case .failed(let w): words = w; check("the account and host were set up", false)
+                    }
+                    print("   said: \(words)")
                 }
-                print("   said: \(words)")
                 let exists = guest == .windows
                     ? await exec(agent, program: "cmd.exe", args: ["/c", "net user \(config.remoteDesktopUser!) >nul 2>&1 && echo YES || echo NO"])
                     : await exec(agent, program: "/bin/sh", args: ["-c", "id -u \(config.remoteDesktopUser!) >/dev/null 2>&1 && echo YES || echo NO"])
                 check("the guest has the account", (exists ?? "").contains("YES"))
                 let port = config.remoteDesktopPort!
-                check("the Mac's port \(port) is forwarded while running", await manager.forwardRemoteDesktopNow(configuration: config, port: port))
+                if atStart {
+                    check("the Mac's port \(port) was forwarded from the start (no hostfwd_add here)", true)
+                } else {
+                    check("the Mac's port \(port) is forwarded while running", await manager.forwardRemoteDesktopNow(configuration: config, port: port))
+                }
                 check("the name is published", RemoteDesktopAdvertiser.shared.publish(config, port: port))
                 try? await Task.sleep(for: .seconds(5))
                 // An RDP client's first packet: an X.224 connection request
@@ -237,7 +263,7 @@ enum SaveResumeTestJob {
                     var address = sockaddr_in()
                     address.sin_family = sa_family_t(AF_INET)
                     address.sin_port = in_port_t(port).bigEndian
-                    address.sin_addr.s_addr = inet_addr("127.0.0.1")
+                    address.sin_addr.s_addr = inet_addr(config.remoteDesktopReachesNetwork ? (RemoteDesktop.macAddress() ?? "127.0.0.1") : "127.0.0.1")
                     var wait = timeval(tv_sec: 10, tv_usec: 0)
                     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, socklen_t(MemoryLayout<timeval>.size))
                     let connected = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
@@ -253,13 +279,41 @@ enum SaveResumeTestJob {
                     answer = probe()
                     if answer.isEmpty { try? await Task.sleep(for: .seconds(5)) }
                 }
-                print("   the host answered: \(answer.prefix(12).map { String(format: "%02x", $0) }.joined(separator: " "))")
+                print("   probed \(config.remoteDesktopReachesNetwork ? (RemoteDesktop.macAddress() ?? "?") : "127.0.0.1"):\(port); the host answered: \(answer.prefix(12).map { String(format: "%02x", $0) }.joined(separator: " "))")
                 check("a Remote Desktop client is answered through the Mac's port", answer.count >= 4 && answer[0] == 0x03 && answer[1] == 0x00)
                 var hints = addrinfo(); hints.ai_family = AF_INET
                 var info: UnsafeMutablePointer<addrinfo>?
                 let resolved = getaddrinfo("\(RemoteDesktop.hostLabel(for: config)).local", nil, &hints, &info) == 0
                 if info != nil { freeaddrinfo(info) }
                 check("\(RemoteDesktop.hostLabel(for: config)).local resolves on this Mac", resolved)
+                // A real sign-in, with FreeRDP's client when it's on the Mac
+                // (brew install freerdp): authenticate only, then exit. The
+                // wrong password must be refused, or the right one proves
+                // nothing. Windows only: xrdp checks the password later, in
+                // its session manager, which auth-only doesn't reach.
+                let freerdp = "/opt/homebrew/bin/xfreerdp"
+                if guest == .windows, FileManager.default.isExecutableFile(atPath: freerdp) {
+                    func signIn(password: String) -> (ok: Bool, status: Int32) {
+                        let client = Process()
+                        client.executableURL = URL(fileURLWithPath: freerdp)
+                        let host = config.remoteDesktopReachesNetwork ? (RemoteDesktop.macAddress() ?? "127.0.0.1") : "127.0.0.1"
+                        client.arguments = ["/v:\(host):\(port)", "/u:\(config.remoteDesktopUser!)", "/p:\(password)",
+                                            "/cert:ignore", "+auth-only", "/log-level:ERROR", "/timeout:30000"]
+                        client.standardOutput = FileHandle.nullDevice
+                        client.standardError = FileHandle.nullDevice
+                        guard (try? client.run()) != nil else { return (false, -1) }
+                        let limit = Date().addingTimeInterval(60)
+                        while client.isRunning, Date() < limit { Thread.sleep(forTimeInterval: 0.5) }
+                        if client.isRunning { client.terminate() }
+                        return (client.terminationStatus == 0, client.terminationStatus)
+                    }
+                    let right = signIn(password: password)
+                    check("FreeRDP signs in with the account and password (status \(right.status))", right.ok)
+                    let wrong = signIn(password: password + "x")
+                    check("FreeRDP is refused with the wrong password (status \(wrong.status))", !wrong.ok)
+                } else if guest == .windows {
+                    print("   (no FreeRDP on this Mac; the sign-in wasn't tried)")
+                }
                 RemoteDesktopAdvertiser.shared.unpublish(config.id)
                 await shutDown(manager)
                 print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)

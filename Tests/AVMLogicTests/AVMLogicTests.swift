@@ -1342,3 +1342,68 @@ final class Graphics3DTests: XCTestCase {
         XCTAssertFalse(windows.uses3D, "Windows has no virgl driver")
     }
 }
+
+// MARK: - Remote Desktop (2026-10-28, RemoteDesktopAddress.swift)
+
+final class RemoteDesktopTests: XCTestCase {
+    private func machine(_ name: String, user: String? = nil, port: Int? = nil, reach: String? = nil) -> VMConfiguration {
+        var config = VMConfiguration(name: name)
+        config.remoteDesktopUser = user
+        config.remoteDesktopPort = port
+        config.remoteDesktopReach = reach
+        return config
+    }
+
+    func testTheFirstMachineGetsTheStandardPort() {
+        let a = machine("Work PC", user: "me")
+        XCTAssertEqual(RemoteDesktop.port(for: a, among: [a]), 3389)
+    }
+
+    func testTheNextMachineGetsTheNextFreePort() {
+        let a = machine("Work PC", user: "me", port: 3389)
+        let b = machine("Games", user: "me", port: 3390)
+        let c = machine("Debian", user: "me")
+        XCTAssertEqual(RemoteDesktop.port(for: c, among: [a, b, c]), 3391)
+        XCTAssertEqual(RemoteDesktop.port(for: a, among: [a, b, c]), 3389, "a port is kept once chosen")
+    }
+
+    func testAMachineWithRemoteDesktopOffHoldsNoPort() {
+        var off = machine("Old", port: 3389)
+        off.remoteDesktopUser = nil
+        let new = machine("New", user: "me")
+        XCTAssertEqual(RemoteDesktop.port(for: new, among: [off, new]), 3389)
+    }
+
+    func testTheNameIsAHostName() {
+        XCTAssertEqual(RemoteDesktop.hostLabel(for: machine("Amena-PC")), "amena-pc")
+        XCTAssertEqual(RemoteDesktop.hostLabel(for: machine("Windows 11 test 2")), "windows-11-test-2")
+        XCTAssertEqual(RemoteDesktop.hostLabel(for: machine("Café français!")), "cafe-francais")
+        XCTAssertEqual(RemoteDesktop.hostLabel(for: machine("日本語")), "avm-machine")
+        XCTAssertEqual(RemoteDesktop.hostLabel(for: machine("--odd--")), "odd")
+    }
+
+    func testTheForwardingRuleBindsWhereChosen() {
+        XCTAssertEqual(RemoteDesktop.forwardingRule(for: machine("A", user: "me"), port: 3389), "tcp:127.0.0.1:3389-:3389")
+        XCTAssertEqual(RemoteDesktop.forwardingRule(for: machine("A", user: "me", reach: "network"), port: 3390), "tcp:0.0.0.0:3390-:3389")
+    }
+
+    func testTheAddressesToType() {
+        let first = RemoteDesktop.addresses(for: machine("Amena-PC", user: "me"), port: 3389)
+        XCTAssertEqual(first.name, "amena-pc.local")
+        XCTAssertEqual(first.ip, "127.0.0.1")
+        let second = RemoteDesktop.addresses(for: machine("Games", user: "me"), port: 3390)
+        XCTAssertEqual(second.name, "games.local:3390")
+        XCTAssertEqual(second.ip, "127.0.0.1:3390")
+        let onTheNetwork = RemoteDesktop.addresses(for: machine("Games", user: "me", reach: "network"), port: 3390)
+        XCTAssertTrue(onTheNetwork.ip.hasSuffix(":3390"))
+        XCTAssertFalse(onTheNetwork.ip.hasPrefix("127."), "a machine on the network is given the Mac's address")
+    }
+
+    func testOnAndOff() {
+        XCTAssertFalse(machine("A").remoteDesktopOn)
+        XCTAssertFalse(machine("A", user: "").remoteDesktopOn)
+        XCTAssertTrue(machine("A", user: "me").remoteDesktopOn)
+        XCTAssertTrue(machine("A", user: "me", reach: "network").remoteDesktopReachesNetwork)
+        XCTAssertFalse(machine("A", user: "me").remoteDesktopReachesNetwork)
+    }
+}
