@@ -131,6 +131,7 @@ struct SettingsView: View {
     @State private var secureBoot = false
     @State private var shareClipboard = true
     @State private var shareMicrophone = false
+    @State private var soundSmoothness: SoundSmoothness = .balanced
     @State private var isTemplate = false
     @State private var noWindow = false
     @State private var sharePrinters = false
@@ -274,6 +275,24 @@ struct SettingsView: View {
                 Toggle("Use as a template", isOn: $isTemplate)
                     .accessibilityHint("When on, this machine stays as it is, and its row makes new machines from it instead of starting it")
                 Text("Set up a machine the way you like, with your screen reader and apps, then make it a template: each new machine from it starts out just like it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal)
+
+            // Sound (2026-10-28, SoundSmoothness)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Sound")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                Picker("Sound", selection: $soundSmoothness) {
+                    ForEach(SoundSmoothness.allCases) { choice in
+                        Text(choice.title).tag(choice)
+                    }
+                }
+                .choicePopUp("Chooses between hearing speech from \(guest) sooner and sound that doesn't crackle when your Mac is busy")
+                Text("If sound or speech from \(guest) crackles, choose Smoothest. Fastest gets speech to you about 40 milliseconds sooner, but can crackle while your Mac is busy. Takes effect at the next Start.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -921,6 +940,7 @@ struct SettingsView: View {
         secureBoot = saved.usesSecureBoot
         shareClipboard = saved.sharesClipboard
         shareMicrophone = saved.sharesMicrophone
+        soundSmoothness = saved.soundSmoothness
         isTemplate = saved.isATemplate
         noWindow = saved.startsWithoutWindow
         sharePrinters = saved.sharesPrinters
@@ -1042,6 +1062,7 @@ struct SettingsView: View {
             }
             updated.shareClipboard = shareClipboard ? nil : false
             updated.shareMicrophone = shareMicrophone ? true : nil
+            updated.soundBuffer = soundSmoothness == .balanced ? nil : soundSmoothness.rawValue
             updated.isTemplate = isTemplate ? true : nil
             updated.noWindow = noWindow ? true : nil
             updated.sharePrinters = sharePrinters ? true : nil

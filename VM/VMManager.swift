@@ -2244,7 +2244,12 @@ final class VMManager: ObservableObject {
         let microphone = configuration.sharesMicrophone
             ? "in.frequency=48000,in.buffer-length=10000,in.buffer-count=2"
             : "in.voices=0"
-        args += ["-audiodev", "coreaudio,id=avmaudio,out.frequency=48000,out.buffer-length=2500,out.buffer-count=2,timer-period=1250,\(microphone)"]
+        // How big the buffers are is the machine's Sound setting
+        // (2026-10-28, SoundSmoothness): 2.5 ms x 2 crackled in Windows on
+        // a tester's Mac, so balanced, 5 ms x 3, is the default.
+        let output = configuration.soundSmoothness.buffer
+        args += ["-audiodev", "coreaudio,id=avmaudio,out.frequency=48000,out.buffer-length=\(output.microseconds),out.buffer-count=\(output.count),timer-period=1250,\(microphone)"]
+        avmLog("buildQEMUArguments: sound \(configuration.soundSmoothness.rawValue), \(output.microseconds) us x \(output.count)")
         args += ["-device", "intel-hda"]
         args += ["-device", "hda-duplex,audiodev=avmaudio,use-timer=off"]
 

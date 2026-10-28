@@ -104,6 +104,11 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// unless chosen. Read it through sharesMicrophone.
     var shareMicrophone: Bool?
 
+    /// How much sound QEMU holds ahead for the Mac (2026-10-28, a tester's
+    /// crackle): SoundSmoothness's raw value; nil: balanced. Read it
+    /// through soundSmoothness.
+    var soundBuffer: String?
+
     /// true: the machine has a USB camera fed by the Mac's camera
     /// (2026-10-27, AVM's QEMU usb-camera). Off unless chosen. Read it
     /// through sharesCamera.
@@ -240,6 +245,7 @@ extension VMConfiguration {
     var usesSecureBoot: Bool { secureBoot == true }
     var sharesClipboard: Bool { shareClipboard ?? true }
     var sharesMicrophone: Bool { shareMicrophone == true }
+    var soundSmoothness: SoundSmoothness { soundBuffer.flatMap(SoundSmoothness.init(rawValue:)) ?? .balanced }
     var brailleFollowsBack: Bool { brailleFollowThrough != "ask" }
     /// The shared folder, if one is chosen and is a folder right now (an
     /// unplugged drive shares nothing rather than failing the start).
@@ -529,6 +535,38 @@ nonisolated enum SpiceAudioPipeline {
             setenv(environmentName, lowLatency, 1)
         } else {
             unsetenv(environmentName)
+        }
+    }
+}
+
+// MARK: - Sound smoothness (2026-10-28)
+
+/// The trade between how soon speech is heard and how smoothly sound plays
+/// on a busy Mac: the size and number of QEMU's output buffers. Measured
+/// key-to-speech with Orca (VMManager's SOUND note): 2.5 ms x 2 was 389 ms,
+/// 5 ms x 2 430 ms. Smallest crackled in Windows on a tester's Mac
+/// (2026-10-28), so the middle one is the default.
+enum SoundSmoothness: String, CaseIterable, Identifiable {
+    case fastest
+    case balanced
+    case smoothest
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fastest: return "Fastest speech: may crackle on a busy Mac"
+        case .balanced: return "Balanced"
+        case .smoothest: return "Smoothest sound: speech a little later"
+        }
+    }
+
+    /// QEMU's out.buffer-length (microseconds) and out.buffer-count.
+    var buffer: (microseconds: Int, count: Int) {
+        switch self {
+        case .fastest: return (2500, 2)
+        case .balanced: return (5000, 3)
+        case .smoothest: return (10000, 4)
         }
     }
 }

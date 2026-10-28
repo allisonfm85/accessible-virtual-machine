@@ -619,6 +619,11 @@ dashboard's Start buttons work too.
   described at the end of section 14.
 - **Headsets and speakers work for listening.** Windows audio plays
   through whatever output your Mac is using.
+- **If sound crackles,** open the machine's Settings, then Sound, and
+  choose **Smoothest sound**. **Balanced** is the default. **Fastest
+  speech** gets speech to you about 40 milliseconds sooner, but it can
+  crackle while your Mac is busy. The change takes effect at the next
+  Start.
 - **Other USB devices can go straight to Windows.** When you plug one in
   while Windows is running, AVM sends it or asks first, depending on your
   USB Devices setting. Braille displays and USB microphones work this way.
