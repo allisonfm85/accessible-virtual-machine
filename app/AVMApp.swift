@@ -396,12 +396,18 @@ struct AVMApp: App {
                     AVMLog.write("AVM: Attach USB Device menu — posting request to ContentView.", category: "USBHelper")
                     NotificationCenter.default.post(name: .avmAttachUSBFromMenu, object: nil)
                 }
+                // A shortcut (2026-10-27): sending a device that stayed on
+                // the Mac, without unplugging it, is the common case.
+                .keyboardShortcut("u", modifiers: [.command, .shift])
                 .disabled(!activity.isRunning)
                 Button("Detach USB Device…") {
                     AVMLog.write("AVM: Detach USB Device menu — posting request to ContentView.", category: "USBHelper")
                     NotificationCenter.default.post(name: .avmDetachUSBFromMenu, object: nil)
                 }
                 .disabled(usbRedirect.portByDevice.isEmpty)
+                Button("Restart USB Helper") {
+                    Task { await USBRedirectController.shared.restartHelper() }
+                }
 
                 Divider()
 

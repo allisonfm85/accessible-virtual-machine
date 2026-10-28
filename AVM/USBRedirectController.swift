@@ -337,6 +337,31 @@ final class USBRedirectController: ObservableObject {
         }
     }
 
+    // MARK: Restart USB Helper (2026-10-27)
+
+    /// Returns every device to the Mac, restarts the root helper, and says
+    /// how it went. For a device that stays on the Mac when it shouldn't,
+    /// from the dashboard or the Virtual Machine menu.
+    private(set) var restartingHelper = false
+
+    func restartHelper() async {
+        guard !restartingHelper else { return }
+        restartingHelper = true
+        defer { restartingHelper = false }
+        let held = redirectedDevices
+        announce(held.isEmpty ? "Restarting AVM's USB helper." : "Returning USB devices to the Mac and restarting AVM's USB helper.", tone: .info)
+        for device in held { await detach(device) }
+        switch await USBHelperClient.shared.restartHelper() {
+        case .success:
+            announce("AVM's USB helper restarted. Plug the device in again, or choose Attach USB Device.", tone: .success)
+        case .failure(.notEnabled):
+            break   // the client has asked for its approval
+        case .failure(let error):
+            log("restart failed: \(error)")
+            announce("AVM's USB helper didn't restart. Reason: \(error). Next: quit and reopen AVM, or restart your Mac.", tone: .failure)
+        }
+    }
+
     // MARK: USB drives
 
     /// Set to false once Apple lets AVM capture USB storage. See the

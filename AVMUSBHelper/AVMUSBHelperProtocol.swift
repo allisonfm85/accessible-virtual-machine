@@ -223,6 +223,10 @@ nonisolated public protocol AVMUSBHelperProtocol {
 
     /// Give the keyboard back to the Mac.
     func releaseKeyboard(reply: @escaping () -> Void)
+
+    /// Restart USB Helper (2026-10-27): the helper replies, lets go of
+    /// everything and exits; launchd starts a fresh one at the next call.
+    func restart(reply: @escaping () -> Void)
 }
 
 // MARK: - AVM side (the helper calls this back)

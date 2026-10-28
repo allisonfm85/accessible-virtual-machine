@@ -326,6 +326,34 @@ final class USBHelperClient: NSObject, ObservableObject {
         return refreshStatus() == .enabled
     }
 
+    /// Restart USB Helper (2026-10-27): asks the helper to exit, then
+    /// calls it again, which makes launchd start a fresh one, and returns
+    /// that one's version. The caller returns devices to the Mac first.
+    func restartHelper() async -> Result<String, USBHelperError> {
+        guard ensureRegistered() else { return .failure(.notEnabled(status)) }
+        log("restart: asking the helper to exit")
+        let c = connect()
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let proxy = c.remoteObjectProxyWithErrorHandler { _ in cont.resume() } as? AVMUSBHelperProtocol
+            guard let proxy else { cont.resume(); return }
+            proxy.restart { cont.resume() }
+        }
+        try? await Task.sleep(for: .seconds(2))
+        let fresh = connect()
+        let version: String? = await withCheckedContinuation { cont in
+            let proxy = fresh.remoteObjectProxyWithErrorHandler { _ in cont.resume(returning: nil) } as? AVMUSBHelperProtocol
+            guard let proxy else { cont.resume(returning: nil); return }
+            proxy.helperVersion { cont.resume(returning: $0) }
+        }
+        disconnectIfIdle()
+        guard let version else {
+            log("restart: the helper didn't answer afterwards")
+            return .failure(.xpc("the helper didn't start again"))
+        }
+        log("restart: a fresh helper answered (\(version))")
+        return .success(version)
+    }
+
     /// Polls status until the approval lands, then says so (1e:
     /// "USB helper approved, continuing" is spoken so the person
     /// standing in System Settings hears the handshake complete).

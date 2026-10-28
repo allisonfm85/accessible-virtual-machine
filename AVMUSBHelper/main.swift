@@ -507,6 +507,19 @@ final class HelperService: NSObject, AVMUSBHelperProtocol {
         KeyboardHold.shared.release(owner: connection)
         reply()
     }
+
+    /// Restart USB Helper (2026-10-27). AVM returns its devices to the Mac
+    /// first; whatever is still held is let go when the process ends.
+    /// libusb is stopped on the registry's queue, as for the idle exit.
+    func restart(reply: @escaping () -> Void) {
+        os_log("restart requested by pid %{public}d; exiting so launchd starts a fresh helper",
+               log: log, type: .default, connection?.processIdentifier ?? 0)
+        reply()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
+            registry.queue.sync { avm_usb_runtime_stop() }
+            exit(0)
+        }
+    }
 }
 // MARK: - Listener
 final class ListenerDelegate: NSObject, NSXPCListenerDelegate {

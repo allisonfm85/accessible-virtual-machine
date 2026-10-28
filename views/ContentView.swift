@@ -493,6 +493,13 @@ private struct DashboardContent: View {
                 }
                 .accessibilityHint("Downloads macOS from Apple and makes a macOS virtual machine")
 
+                // Restart USB Helper (2026-10-27): for a USB device that stays
+                // on the Mac when it shouldn't.
+                Button("Restart USB Helper") {
+                    Task { await USBRedirectController.shared.restartHelper() }
+                }
+                .accessibilityHint("Returns USB devices to the Mac and restarts the part of AVM that sends them to a virtual machine. Use it if a device won't go across.")
+
                 // Import (2026-10-26): here too, because on a new Mac an
                 // exported machine is what the user has instead of a wizard.
                 Button("Import Virtual Machine…") {
@@ -806,6 +813,14 @@ private struct QEMUMachineRow: View {
             Button("Send File…") { chooseFileToSend(session) }
                 .accessibilityLabel("Send a file to \(name)")
                 .accessibilityHint("Copies a file from your Mac into Downloads in \(name)")
+            // On the row too (2026-10-27): a device that stayed on the Mac
+            // can be sent without unplugging it.
+            Button("Attach USB Device…") {
+                MachineSessions.shared.makeCurrent(session.configuration.id)
+                NotificationCenter.default.post(name: .avmAttachUSBFromMenu, object: nil)
+            }
+            .accessibilityLabel("Attach a USB device to \(name)")
+            .accessibilityHint("Lists the USB devices plugged into your Mac and sends the one you choose. Command Shift U.")
             Button("Pause") {
                 Task {
                     do { try await session.pause() }
