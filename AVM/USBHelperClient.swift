@@ -345,6 +345,7 @@ final class USBHelperClient: NSObject, ObservableObject {
 
     func listBluetoothDevices() async -> Result<[BluetoothDeviceInfo], USBHelperError> {
         guard ensureRegistered() else { return .failure(.notEnabled(status)) }
+        await ensureCurrentHelper()
         let c = connect()
         let result: Result<[BluetoothDeviceInfo], USBHelperError> = await withCheckedContinuation { cont in
             let proxy = c.remoteObjectProxyWithErrorHandler { error in
@@ -366,8 +367,9 @@ final class USBHelperClient: NSObject, ObservableObject {
         return result
     }
 
-    func holdBluetooth(_ id: String, socketPath: String) async -> Result<Void, USBHelperError> {
+    func holdBluetooth(_ id: String, socketPath: String, peerPID: Int) async -> Result<Void, USBHelperError> {
         guard ensureRegistered() else { return .failure(.notEnabled(status)) }
+        await ensureCurrentHelper()
         bluetoothHeld.insert(id)
         let c = connect()
         let result: Result<Void, USBHelperError> = await withCheckedContinuation { cont in
@@ -375,7 +377,7 @@ final class USBHelperClient: NSObject, ObservableObject {
                 cont.resume(returning: .failure(USBHelperError.fromXPC(error)))
             } as? AVMUSBHelperProtocol
             guard let proxy else { cont.resume(returning: .failure(.xpc("could not build the helper proxy"))); return }
-            proxy.holdBluetoothDevice(id, streamSocketPath: socketPath) { ok, reason in
+            proxy.holdBluetoothDevice(id, streamSocketPath: socketPath, peerPID: peerPID) { ok, reason in
                 cont.resume(returning: ok ? .success(()) : .failure(.helper(step: "taking the Bluetooth device", detail: reason ?? "")))
             }
         }
@@ -401,6 +403,20 @@ final class USBHelperClient: NSObject, ObservableObject {
     func forgetBluetooth(_ id: String) {
         bluetoothHeld.remove(id)
         disconnectIfIdle()
+    }
+
+    /// A helper from before an update (2026-10-28, code review): it keeps
+    /// running for its idle grace period, and the new AVM would talk to
+    /// it. Once per run, before a device is taken: a helper answering with
+    /// another version is asked to exit, so launchd starts this build's.
+    private var helperChecked = false
+    func ensureCurrentHelper() async {
+        guard !helperChecked else { return }
+        helperChecked = true
+        guard case .success(let version) = await fetchHelperVersion() else { return }
+        guard version != AVMUSBHelperNames.helperBuildVersion else { return }
+        log("the running helper is \(version), this AVM expects \(AVMUSBHelperNames.helperBuildVersion); restarting it")
+        _ = await restartHelper()
     }
 
     /// Restart USB Helper (2026-10-27): asks the helper to exit, then
@@ -569,6 +585,7 @@ final class USBHelperClient: NSObject, ObservableObject {
 
     func holdKeyboard(_ keyboardID: String) async -> Result<Void, USBHelperError> {
         guard ensureRegistered() else { return .failure(.notEnabled(status)) }
+        await ensureCurrentHelper()
         keyboardActive = true
         keyboardGeneration += 1
         let c = connect()
@@ -621,10 +638,12 @@ final class USBHelperClient: NSObject, ObservableObject {
 
     func attach(_ device: AVMUSBDeviceIdentity,
                 socketPath: String,
+                peerPID: Int,
                 retrying: Bool = false) async -> Result<Void, USBHelperError> {
         guard ensureRegistered() else {
             return .failure(.notEnabled(status))
         }
+        await ensureCurrentHelper()
         announcedAttachFailures.remove(device)
         reached.remove(device)
         pendingDevices.insert(device)
@@ -648,7 +667,7 @@ final class USBHelperClient: NSObject, ObservableObject {
                 cont.resume(returning: .failure(.xpc("could not build the helper proxy")))
                 return
             }
-            proxy.attach(device, streamSocketPath: socketPath) { ok, step, detail in
+            proxy.attach(device, streamSocketPath: socketPath, peerPID: peerPID) { ok, step, detail in
                 if ok {
                     cont.resume(returning: .success(()))
                 } else {
@@ -667,7 +686,7 @@ final class USBHelperClient: NSObject, ObservableObject {
             log("attach: helper refused \(device.description): \(error)")
             disconnectIfIdle()
             if case .helperUnavailable = error, retrying == false, recoverLostRegistration() {
-                return await attach(device, socketPath: socketPath, retrying: true)
+                return await attach(device, socketPath: socketPath, peerPID: peerPID, retrying: true)
             }
             if isQuiet(device) {
                 log("attach: failure not spoken; the send gate is handling \(device.description)")

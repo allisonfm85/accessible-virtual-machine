@@ -75,14 +75,14 @@ final class BluetoothDevices: ObservableObject {
             say("\(machine.machineName) couldn't add \(device.name). Reason: \(error.localizedDescription)", tone: .failure)
             return false
         }
-        var held = await USBHelperClient.shared.holdBluetooth(device.id, socketPath: socket)
+        var held = await USBHelperClient.shared.holdBluetooth(device.id, socketPath: socket, peerPID: machine.qemuPID)
         // The helper is waiting for its approval in Login Items (2026-10-28,
         // code review): wait, then ask again, so "approved, continuing"
         // continues this too.
         if case .failure(.notEnabled(.requiresApproval)) = held {
             say("\(device.name) goes to \(machine.machineName) once AVM's helper is allowed in Login Items.", tone: .info)
             if await USBHelperClient.shared.waitForApproval(while: { if case .running = machine.state { return true } else { return false } }) {
-                held = await USBHelperClient.shared.holdBluetooth(device.id, socketPath: socket)
+                held = await USBHelperClient.shared.holdBluetooth(device.id, socketPath: socket, peerPID: machine.qemuPID)
             }
         }
         switch held {

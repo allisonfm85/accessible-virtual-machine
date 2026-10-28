@@ -153,7 +153,7 @@ final class BluetoothHold {
 
     // MARK: Holding
 
-    func hold(_ id: String, streamSocketPath: String, owner connection: NSXPCConnection?,
+    func hold(_ id: String, streamSocketPath: String, peerPID: Int, owner connection: NSXPCConnection?,
               reply: @escaping (Bool, String?) -> Void) {
         queue.async {
             guard let connection else { reply(false, "The helper could not tell who asked."); return }
@@ -177,7 +177,7 @@ final class BluetoothHold {
                 reply(false, reason)
                 return
             }
-            let socket = Self.connectSocket(streamSocketPath, owner: uid)
+            let socket = Self.connectSocket(streamSocketPath, owner: uid, peerPID: pid_t(clamping: peerPID))
             guard socket >= 0 else {
                 reply(false, "The helper couldn't reach the virtual machine's socket.")
                 return
@@ -270,11 +270,22 @@ final class BluetoothHold {
         guard payload.count <= 1024 else { return true }
         var frame = Data([type, UInt8(payload.count & 0xff), UInt8(payload.count >> 8)])
         frame.append(payload)
+        // Without blocking (2026-10-28, security review): a machine not
+        // draining its side (paused) held up every other Bluetooth device
+        // and every hold and release behind it. A frame that can't start
+        // is dropped, as a lost HID report is; one begun is finished,
+        // waiting up to 2 seconds so the framing stays whole.
         return frame.withUnsafeBytes { raw -> Bool in
             var offset = 0
             while offset < raw.count {
-                let n = write(entry.socket, raw.baseAddress! + offset, raw.count - offset)
+                let n = send(entry.socket, raw.baseAddress! + offset, raw.count - offset, MSG_DONTWAIT)
                 if n < 0 && errno == EINTR { continue }
+                if n < 0 && errno == EAGAIN {
+                    if offset == 0 { return true }
+                    var ready = pollfd(fd: entry.socket, events: Int16(POLLOUT), revents: 0)
+                    guard poll(&ready, 1, 2000) > 0 else { return false }
+                    continue
+                }
                 if n <= 0 { return false }
                 offset += n
             }
@@ -372,7 +383,7 @@ final class BluetoothHold {
     /// usbstream.c does (2026-10-28, code review): the path check can't
     /// see a symlink swapped in after it. A write to a stuck peer gives up
     /// after two seconds rather than blocking every Bluetooth device.
-    private static func connectSocket(_ path: String, owner: uid_t) -> Int32 {
+    private static func connectSocket(_ path: String, owner: uid_t, peerPID: pid_t) -> Int32 {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return -1 }
         var address = sockaddr_un()
@@ -393,6 +404,15 @@ final class BluetoothHold {
         var peerGID: gid_t = 0
         guard getpeereid(fd, &peerUID, &peerGID) == 0, peerUID == owner else {
             os_log("bluetooth hold refused: the socket's other side isn't the user who asked", log: log, type: .error)
+            close(fd)
+            return -1
+        }
+        // And QEMU itself (2026-10-28, security review): the same user's
+        // other processes could listen at that path instead.
+        var gotPID: pid_t = 0
+        var pidLen = socklen_t(MemoryLayout<pid_t>.size)
+        if peerPID > 0, getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &gotPID, &pidLen) != 0 || gotPID != peerPID {
+            os_log("bluetooth hold refused: another process is listening on the machine's socket", log: log, type: .error)
             close(fd)
             return -1
         }

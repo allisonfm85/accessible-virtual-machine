@@ -749,6 +749,7 @@ private struct DashboardContent: View {
                     .accessibilityLabel("Start \(config.name)")
                     .accessibilityHint("Starts this macOS virtual machine in its own window")
                     .disabled(macGuest.runningID != nil)
+                autoStartToggle(config)
             }
             Button("Settings") { openSettings(config) }
                 .accessibilityLabel("Settings for \(config.name)")

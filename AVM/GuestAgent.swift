@@ -85,6 +85,9 @@ nonisolated enum GuestAgent {
                     pending.removeSubrange(...newline)
                     return line
                 }
+                // Bounded (2026-10-28, security review): a guest sending
+                // bytes with no line end mustn't grow this without limit.
+                guard pending.count < 16 * 1024 * 1024 else { throw AgentError("the guest agent sent too much without an answer") }
                 var chunk = [UInt8](repeating: 0, count: 4096)
                 let n = read(fd, &chunk, chunk.count)
                 guard n > 0 else { throw AgentError(n == 0 ? "closed" : "no answer") }
@@ -98,7 +101,11 @@ nonisolated enum GuestAgent {
 
         let id = Int.random(in: 1...Int(Int32.max))
         try send(#"{"execute":"guest-sync","arguments":{"id":\#(id)}}"#)
-        while try !readLine().contains("\(id)") {}
+        var skipped = 0
+        while try !readLine().contains("\(id)") {
+            skipped += 1
+            guard skipped < 1000 else { throw AgentError("the guest agent didn't answer the sync") }
+        }
 
         var replies: [String] = []
         for command in commands {

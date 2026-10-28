@@ -79,6 +79,14 @@ enum WindowsReinstall {
         // The new disk first, then everything of the old Windows (2026-10-26,
         // code audit): in the other order, a failed swap left the old disk
         // with its restore points but without their firmware and TPM copies.
+        // The answers first (2026-10-28, code review): saved after the swap,
+        // a failed save said "not reinstalled" with Windows already gone.
+        do {
+            try answers?.save(inVMDirectory: dir)
+        } catch {
+            try? fm.removeItem(at: fresh)
+            throw WindowsReinstallError.failed("AVM couldn't save the setup answers, so nothing was changed. Reason: \(error.localizedDescription)")
+        }
         do {
             if fm.fileExists(atPath: disk.path) {
                 _ = try fm.replaceItemAt(disk, withItemAt: fresh)
@@ -89,10 +97,13 @@ enum WindowsReinstall {
             try? fm.removeItem(at: fresh)
             throw WindowsReinstallError.failed("AVM couldn't put the new disk in place, so nothing was changed. Reason: \(error.localizedDescription)")
         }
-        for name in ["install-avm.iso", "autounattend.img", "nvram.fd", "tpm-state", RestorePoints.folderName, "firmware-serial.log"] {
+        // The install marker right away: an empty disk with the marker
+        // still there would boot to the firmware shell as "installed".
+        try? fm.removeItem(at: dir.appendingPathComponent("autounattend.img"))
+        for name in ["install-avm.iso", "nvram.fd", "tpm-state", RestorePoints.folderName, "firmware-serial.log",
+                     QEMUSavedState.hintFile, QEMUSavedState.loadedMarker, QEMUSavedState.resumeFile] {
             try? fm.removeItem(at: dir.appendingPathComponent(name))
         }
-        try answers?.save(inVMDirectory: dir)
         AVMLog.write("AVM: Reinstall — \(configuration.name) is ready to install Windows again at its next start.")
     }
 }

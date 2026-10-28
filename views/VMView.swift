@@ -766,8 +766,14 @@ final class SPICEKeyCaptureView: MTKView {
         if KeyEventLogging.isEnabled {
             NSLog("AVM: focus — keyDown received, keyCode=\(event.keyCode), locked=\(coordinator?.isLocked ?? false)")
         }
-        // Do NOT call super — that would beep/forward to the responder chain.
-        coordinator?.handleKey(event: event, pressed: true)
+        // Locked: the key is the guest's, so never super (that would beep
+        // or forward it). Unlocked (2026-10-28, code review): AppKit has it,
+        // so typing isn't swallowed in silence.
+        if coordinator?.isLocked == true {
+            coordinator?.handleKey(event: event, pressed: true)
+        } else {
+            super.keyDown(with: event)
+        }
     }
 
     override func keyUp(with event: NSEvent) {
@@ -1601,7 +1607,8 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         }
 
         let vk = Int(event.keyCode)
-        if let scancode = Self.scancode(forVirtualKey: vk) {
+        // Caps Lock was sent above as a tap; nothing more for it.
+        if vk != kVK_CapsLock, let scancode = Self.scancode(forVirtualKey: vk) {
             // Left and right apart (2026-10-26, keyboard audit): the
             // device-independent .shift stays set while the OTHER Shift is
             // held, so releasing one Shift was sent as a second press and it
@@ -1621,10 +1628,13 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         // keyUp events were withheld by AppKit while Command was down. Release
         // them now. We compare against the count of "interesting" modifiers
         // (command/control/option/shift) to detect a release transition.
-        let interesting: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
-        let nowCount = flags.intersection(interesting).rawValue.nonzeroBitCount
-        let prevCount = previousModifiers.intersection(interesting).rawValue.nonzeroBitCount
-        if nowCount < prevCount && !pressedScancodes.isEmpty {
+        // Only when Command leaves (2026-10-28, code review): AppKit
+        // withholds keyUp only while Command is down. Flushing on any
+        // modifier release let go of a held Caps Lock (the F19 courier) or
+        // a held arrow when Shift came up first, so a screen reader's next
+        // keys arrived bare.
+        let commandLeft = previousModifiers.contains(.command) && !flags.contains(.command)
+        if commandLeft && !pressedScancodes.isEmpty {
             releaseAllPressedKeys()
         }
 
@@ -2366,6 +2376,20 @@ extension SPICECoordinator {
         case kVK_PageUp:        return 0x100 | 0x49
         case kVK_PageDown:      return 0x100 | 0x51
         case kVK_ForwardDelete: return 0x100 | 0x53
+        // Keys of ISO, PC and Japanese keyboards (2026-10-28, code review):
+        // the key left of 1 on a European Mac keyboard, Insert and NumLock
+        // as macOS reports a PC keyboard's, keypad =, PrtSc and ScrLk, and
+        // the JIS keys.
+        case kVK_ISO_Section: return 0x56
+        case kVK_Help: return 0x100 | 0x52
+        case kVK_ANSI_KeypadClear: return 0x45
+        case kVK_ANSI_KeypadEquals: return 0x59
+        case kVK_F13: return 0x100 | 0x37
+        case kVK_F14: return 0x46
+        case kVK_JIS_Yen: return 0x7D
+        case kVK_JIS_Underscore: return 0x73
+        case kVK_JIS_Kana: return 0x70
+        case kVK_JIS_Eisu: return 0x7B
         case kVK_LeftArrow:     return 0x100 | 0x4B
         case kVK_RightArrow:    return 0x100 | 0x4D
         case kVK_UpArrow:       return 0x100 | 0x48

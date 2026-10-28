@@ -300,6 +300,21 @@ enum MachineArchive {
         config.storageFolderPath = nil
         config.diskImagePath = folder.appendingPathComponent(diskFileName(for: original)).path
         config.name = uniqueName(original.name, existing: existingNames)
+        // Nothing of the other Mac's (2026-10-28, security review): a
+        // package from someone else carried a shared folder, which its
+        // disk's software would have read and written on this Mac, and the
+        // microphone, camera and printers. They're chosen again here.
+        config.sharedFolderPath = nil
+        config.sharedFolderReadOnly = nil
+        config.shareMicrophone = nil
+        config.shareCamera = nil
+        config.sharePrinters = nil
+        config.usbRememberedDevices = nil
+        config.windowsKeyboardID = nil
+        config.windowsKeyboardName = nil
+        config.windowsKeyboardAppleISO = nil
+        config.displayID = nil
+        config.displayName = nil
         return config
     }
 

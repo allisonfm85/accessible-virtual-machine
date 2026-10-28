@@ -541,7 +541,7 @@ struct SettingsView: View {
         Announcer.shared.announce("Saving the restore point.", tone: .info)
         Task { @MainActor in
             do {
-                _ = try await RestorePoints.create(vmDirectory: dir, label: name, secureBoot: saved.usesSecureBoot)
+                _ = try await RestorePoints.create(vmDirectory: dir, label: name, secureBoot: saved.usesSecureBoot, diskBus: saved.diskBus ?? "nvme")
                 await loadRestorePoints()
                 Announcer.shared.announce("Restore point saved: \(name).", tone: .success)
             } catch {
@@ -729,6 +729,19 @@ struct SettingsView: View {
             do {
                 if wasSaved { await QEMUSavedState.discard(configuration: saved) }
                 try await RestorePoints.restore(point, vmDirectory: dir, currentSecureBoot: saved.usesSecureBoot)
+                // The disk bus comes back with it (2026-10-28, code review):
+                // a point from before the move to the virtio disk has no
+                // virtio driver, and would not boot on it.
+                var busNote = ""
+                if let bus = point.diskBus, bus != (saved.diskBus ?? "nvme") {
+                    var updated = saved
+                    updated.diskBus = bus == "nvme" ? nil : bus
+                    updated.diskBusSwitch = nil
+                    vmStore.save(updated)
+                    busNote = bus == "nvme"
+                        ? " It's back on its original disk connection too; Save with Open Apps is off until you turn it on again."
+                        : " It's on the virtio disk again, as it was then."
+                }
                 // The disk's size comes back with it, if it has grown since.
                 var sizeNote = ""
                 if let size = try? await RestorePoints.diskSizeGB(vmDirectory: dir), size > 0, size != saved.diskSizeGB {
@@ -738,7 +751,7 @@ struct SettingsView: View {
                     diskSizeGB = size
                     sizeNote = " Its disk is \(size) gigabytes again, as it was then."
                 }
-                Announcer.shared.announce("\(saved.name) is back to \(point.label).\(sizeNote) Start it when you're ready.", tone: .success)
+                Announcer.shared.announce("\(saved.name) is back to \(point.label).\(sizeNote)\(busNote) Start it when you're ready.", tone: .success)
             } catch {
                 Announcer.shared.announce("\(saved.name) was not restored. Reason: \(error.localizedDescription)", tone: .failure)
             }

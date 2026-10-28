@@ -182,8 +182,8 @@ nonisolated struct UbuntuAccount: Codable, Equatable {
         if trimmed.unicodeScalars.count > 160 {   // the installer counts code points
             return "Your name for the Ubuntu account can be at most 160 characters."
         }
-        if trimmed.rangeOfCharacter(from: CharacterSet(charactersIn: ":,=").union(.controlCharacters)) != nil {
-            return "Your name for the Ubuntu account can't contain a colon, a comma or an equals sign."
+        if trimmed.rangeOfCharacter(from: CharacterSet(charactersIn: ":,=\\").union(.controlCharacters)) != nil {
+            return "Your name for the Ubuntu account can't contain a colon, a comma, an equals sign or a backslash."
         }
         return nil
     }

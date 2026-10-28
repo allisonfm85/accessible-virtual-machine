@@ -29,7 +29,7 @@ import os.log
 // MARK: - Identity
 /// Bumped whenever the helper's behavior changes so AVM can tell a
 /// stale helper from a current one.
-let helperBuildVersion = "0.2.0-stream"
+let helperBuildVersion = AVMUSBHelperNames.helperBuildVersion
 let log = OSLog(subsystem: AVMUSBHelperNames.machServiceName, category: "helper")
 /// usbredir debug logging for every stream. Off in normal use: it is
 /// chatty, and a root process should not narrate USB traffic into the
@@ -219,6 +219,7 @@ final class DeviceRegistry {
     // MARK: Attach
     func attach(_ device: AVMUSBDeviceIdentity,
                 streamSocketPath: String,
+                peerPID: Int,
                 connection: NSXPCConnection?,
                 reply: @escaping (Bool, String?, String?) -> Void) {
         // The socket path comes from the client, and this process is root:
@@ -272,7 +273,7 @@ final class DeviceRegistry {
                    device.description, streamSocketPath)
             let stream = avm_usb_stream_attach(device.vendorID, device.productID,
                                                device.busNumber, device.deviceAddress,
-                                               streamSocketPath, uid,
+                                               streamSocketPath, uid, pid_t(clamping: peerPID),
                                                verboseStreamLogging ? 1 : 0,
                                                streamEventCallback, context,
                                                &step, step.count, &detail, detail.count)
@@ -479,10 +480,11 @@ final class HelperService: NSObject, AVMUSBHelperProtocol {
     weak var connection: NSXPCConnection?
     func attach(_ device: AVMUSBDeviceIdentity,
                 streamSocketPath: String,
+                peerPID: Int,
                 reply: @escaping (Bool, String?, String?) -> Void) {
         os_log("attach requested for %{public}@ to %{public}@", log: log, type: .default,
                device.description, streamSocketPath)
-        registry.attach(device, streamSocketPath: streamSocketPath, connection: connection, reply: reply)
+        registry.attach(device, streamSocketPath: streamSocketPath, peerPID: peerPID, connection: connection, reply: reply)
     }
     func detach(_ device: AVMUSBDeviceIdentity,
                 reply: @escaping (Bool, String?) -> Void) {
@@ -523,8 +525,8 @@ final class HelperService: NSObject, AVMUSBHelperProtocol {
         reply(BluetoothHold.shared.list())
     }
 
-    func holdBluetoothDevice(_ id: String, streamSocketPath: String, reply: @escaping (Bool, String?) -> Void) {
-        BluetoothHold.shared.hold(id, streamSocketPath: streamSocketPath, owner: connection, reply: reply)
+    func holdBluetoothDevice(_ id: String, streamSocketPath: String, peerPID: Int, reply: @escaping (Bool, String?) -> Void) {
+        BluetoothHold.shared.hold(id, streamSocketPath: streamSocketPath, peerPID: peerPID, owner: connection, reply: reply)
     }
 
     func releaseBluetoothDevice(_ id: String, reply: @escaping () -> Void) {
@@ -536,6 +538,15 @@ final class HelperService: NSObject, AVMUSBHelperProtocol {
     /// first; whatever is still held is let go when the process ends.
     /// libusb is stopped on the registry's queue, as for the idle exit.
     func restart(reply: @escaping () -> Void) {
+        // Only the person at the screen (2026-10-28, security review): a
+        // background user's AVM must not drop the console user's devices.
+        var consoleUID: uid_t = 0
+        guard let uid = connection?.effectiveUserIdentifier,
+              SCDynamicStoreCopyConsoleUser(nil, &consoleUID, nil) != nil, consoleUID == uid else {
+            os_log("restart refused: the asking user isn't at the screen", log: log, type: .default)
+            reply()
+            return
+        }
         os_log("restart requested by pid %{public}d; exiting so launchd starts a fresh helper",
                log: log, type: .default, connection?.processIdentifier ?? 0)
         reply()

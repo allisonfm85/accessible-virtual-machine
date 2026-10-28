@@ -301,7 +301,7 @@ final class USBRedirectController: ObservableObject {
             return false
         }
         log("port \(port) -> \(device.description)")
-        switch await USBHelperClient.shared.attach(device, socketPath: socketPath) {
+        switch await USBHelperClient.shared.attach(device, socketPath: socketPath, peerPID: manager.qemuPID) {
         case .success:
             log("helper accepted \(device.description); waiting for the attached event")
             return true

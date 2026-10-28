@@ -87,6 +87,19 @@ final class AVMUpdater: ObservableObject {
 
 /// Says that an update was found and where its window is (header).
 final class UpdateAnnouncer: NSObject, SPUUpdaterDelegate {
+    /// The helper exits before the new AVM starts (2026-10-28, code
+    /// review): it used to keep running for its idle grace period, and
+    /// the new AVM talked to it.
+    nonisolated func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
+        let done = DispatchSemaphore(value: 0)
+        Task { @MainActor in
+            AVMLog.write("AVM: Updates — relaunching; asking the USB helper to exit first.")
+            _ = await USBHelperClient.shared.restartHelper()
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + 4)
+    }
+
     nonisolated func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
         let version = item.displayVersionString
         Task { @MainActor in

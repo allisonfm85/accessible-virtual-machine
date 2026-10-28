@@ -442,13 +442,21 @@ class FocusLockManager: ObservableObject {
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         let installed = InstallEventHandler(
             GetApplicationEventTarget(),
-            { _, _, userData -> OSStatus in
+            { _, event, userData -> OSStatus in
                 guard let userData = userData else {
                     return OSStatus(eventNotHandledErr)
                 }
                 let manager = Unmanaged<FocusLockManager>
                     .fromOpaque(userData)
                     .takeUnretainedValue()
+                // Its own hotkey only (2026-10-28, code review): a macOS
+                // machine's chord registers beside it.
+                var id = EventHotKeyID()
+                GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                                  nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
+                guard id.signature == manager.hotkeyID.signature, id.id == manager.hotkeyID.id else {
+                    return OSStatus(eventNotHandledErr)
+                }
                 DispatchQueue.main.async {
                     // Escape-only by design: the chord always means "take me
                     // to the Mac." See the header. Never lock from here.

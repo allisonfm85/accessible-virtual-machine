@@ -77,7 +77,8 @@ nonisolated enum MacPrinters {
               ["ipp", "ipps", "http", "https"].contains(scheme), let host = url.host,
               let address = ipv4(host) else { return nil }
         let port = url.port ?? 631
-        return "ipp://\(address):\(port)\(url.path.isEmpty ? "/ipp/print" : url.path)"
+        let path = url.path.filter { $0.isASCII && ($0.isLetter || $0.isNumber || "/_.-".contains($0)) }
+        return "ipp://\(address):\(port)\(path.isEmpty ? "/ipp/print" : path)"
     }
 
     /// A Bonjour service's IPv4 address, port and resource path (its "rp"),
@@ -100,8 +101,12 @@ nonisolated enum MacPrinters {
         net.stop()
         guard net.port > 0 else { return nil }
         var path = "ipp/print"
+        // Only path characters (2026-10-28, security review): the TXT record
+        // comes from the network, and the path goes into a script in the
+        // guest.
         if let txt = net.txtRecordData(), let rp = NetService.dictionary(fromTXTRecord: txt)["rp"] {
-            path = String(decoding: rp, as: UTF8.self)
+            let clean = String(decoding: rp, as: UTF8.self).filter { $0.isASCII && ($0.isLetter || $0.isNumber || "/_.-".contains($0)) }
+            if !clean.isEmpty { path = clean }
         }
         let address = (net.addresses ?? []).lazy.compactMap { data -> String? in
             data.withUnsafeBytes { raw -> String? in

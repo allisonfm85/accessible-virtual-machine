@@ -96,7 +96,9 @@ final class MachineSessions: ObservableObject {
             do {
                 try await session.start()
             } catch {
-                lastError = error.localizedDescription
+                // Not a start cut short by Force Stop or Quit (2026-10-28,
+                // code review): that's no error to show.
+                if !(error is CancellationError) { lastError = error.localizedDescription }
                 end(config.id)
             }
         }
@@ -142,7 +144,31 @@ final class MachineSessions: ObservableObject {
         if let view = windows[id]?.captureView {
             FocusLockManager.shared?.registerCaptureView(view)
         }
-        FocusLockManager.shared?.lock()
+        // Once AVM is active (2026-10-28, code review): from the menu bar
+        // item, activate() hasn't landed yet, and lock() refused with
+        // "switch to AVM" though AVM was coming forward.
+        if NSApp.isActive {
+            FocusLockManager.shared?.lock()
+        } else {
+            var token: NSObjectProtocol?
+            var done = false
+            token = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    guard !done else { return }
+                    done = true
+                    if let token { NotificationCenter.default.removeObserver(token) }
+                    FocusLockManager.shared?.lock()
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                MainActor.assumeIsolated {
+                    guard !done else { return }
+                    done = true
+                    if let token { NotificationCenter.default.removeObserver(token) }
+                    FocusLockManager.shared?.lock()
+                }
+            }
+        }
     }
 
     private func stateChanged(_ id: UUID, state: VMRuntimeState, restarting: Bool) {

@@ -71,21 +71,28 @@ final class ControlServer {
         // Only this user (the folder is theirs too, but be sure).
         var uid: uid_t = 0, gid: gid_t = 0
         guard getpeereid(client, &uid, &gid) == 0, uid == getuid() else { close(client); return }
-        Task.detached {
+        // On its own thread, with a time limit (2026-10-28, security
+        // review): blocking reads on Swift's task threads let a client
+        // that sent nothing stop every task in AVM.
+        var wait = timeval(tv_sec: 5, tv_usec: 0)
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &wait, socklen_t(MemoryLayout<timeval>.size))
+        DispatchQueue.global(qos: .utility).async {
             let line = Self.readLine(client)
-            let reply = await MainActor.run { () -> Task<[String: Any], Never> in
-                Task { await ControlServer.shared.handle(line) }
-            }.value
-            let data = (try? JSONSerialization.data(withJSONObject: reply)) ?? Data("{}".utf8)
-            Self.write(client, data + Data("\n".utf8))
-            close(client)
+            Task { @MainActor in
+                let reply = await ControlServer.shared.handle(line)
+                let data = (try? JSONSerialization.data(withJSONObject: reply)) ?? Data("{}".utf8)
+                DispatchQueue.global(qos: .utility).async {
+                    Self.write(client, data + Data("\n".utf8))
+                    close(client)
+                }
+            }
         }
     }
 
     nonisolated static func readLine(_ fd: Int32) -> Data {
         var data = Data()
         var byte: UInt8 = 0
-        while read(fd, &byte, 1) == 1, byte != 10 { data.append(byte) }
+        while data.count < 65536, read(fd, &byte, 1) == 1, byte != 10 { data.append(byte) }
         return data
     }
 

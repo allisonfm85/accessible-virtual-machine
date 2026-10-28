@@ -430,6 +430,11 @@ nonisolated struct RestorePoint: Identifiable, Hashable, Sendable {
     /// Taken while the machine ran (2026-10-27): its memory is in the
     /// snapshot too, and restoring it carries on with open apps.
     var withMemory = false
+    /// The disk bus the machine was on (2026-10-28): "nvme" or "virtio";
+    /// nil for a point made before this was recorded. A machine moved to
+    /// the virtio disk since can't boot a point from before the move, so
+    /// a restore puts the bus back too (SettingsView).
+    var diskBus: String? = nil
     var id: String { tag }
 }
 
@@ -470,24 +475,27 @@ nonisolated enum RestorePoints {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let secure = FileManager.default.fileExists(atPath: folder.appendingPathComponent("secure-boot").path)
             let memory = (snap["vm-state-size"] as? Double ?? 0) > 0
+            let bus = (try? String(contentsOf: folder.appendingPathComponent("disk-bus"), encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             return RestorePoint(tag: tag, label: (label?.isEmpty == false ? label! : "Restore point"),
-                                date: Date(timeIntervalSince1970: seconds), secureBoot: secure, withMemory: memory)
+                                date: Date(timeIntervalSince1970: seconds), secureBoot: secure, withMemory: memory,
+                                diskBus: bus?.isEmpty == false ? bus : nil)
         }
         .sorted { $0.date > $1.date }
     }
 
-    static func create(vmDirectory dir: URL, label: String, secureBoot: Bool) async throws -> RestorePoint {
+    static func create(vmDirectory dir: URL, label: String, secureBoot: Bool, diskBus: String? = nil) async throws -> RestorePoint {
         let tag = newTag()
         _ = try await qemuImg(["snapshot", "-c", tag, disk(dir).path])
         do {
-            try writeFolder(vmDirectory: dir, tag: tag, label: label, secureBoot: secureBoot)
+            try writeFolder(vmDirectory: dir, tag: tag, label: label, secureBoot: secureBoot, diskBus: diskBus)
         } catch {
             // Half a restore point is worse than none: take the snapshot back.
             _ = try? await qemuImg(["snapshot", "-d", tag, disk(dir).path])
             throw error
         }
         AVMLog.write("AVM: RestorePoints — created \(tag).")
-        return RestorePoint(tag: tag, label: label, date: Date(), secureBoot: secureBoot)
+        return RestorePoint(tag: tag, label: label, date: Date(), secureBoot: secureBoot, diskBus: diskBus)
     }
 
     static func newTag() -> String { "avm-\(Int(Date().timeIntervalSince1970 * 1000))" }
@@ -495,7 +503,7 @@ nonisolated enum RestorePoints {
     /// The restore point's folder: copies of the firmware settings and the
     /// TPM, its label, and whether Secure Boot was on. A folder that
     /// couldn't be finished is removed, and that's thrown.
-    static func writeFolder(vmDirectory dir: URL, tag: String, label: String, secureBoot: Bool) throws {
+    static func writeFolder(vmDirectory dir: URL, tag: String, label: String, secureBoot: Bool, diskBus: String? = nil) throws {
         let fm = FileManager.default
         let folder = dir.appendingPathComponent(folderName).appendingPathComponent(tag)
         do {
@@ -511,6 +519,9 @@ nonisolated enum RestorePoints {
             try label.write(to: folder.appendingPathComponent("label.txt"), atomically: true, encoding: .utf8)
             if secureBoot {
                 fm.createFile(atPath: folder.appendingPathComponent("secure-boot").path, contents: nil)
+            }
+            if let diskBus {
+                try diskBus.write(to: folder.appendingPathComponent("disk-bus"), atomically: true, encoding: .utf8)
             }
         } catch {
             try? fm.removeItem(at: folder)

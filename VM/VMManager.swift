@@ -343,7 +343,10 @@ final class VMManager: ObservableObject {
             }
         case .stopped, .error:
             // Only if it was watching for this machine.
-            if let id = activeConfiguration?.id, USBHotPlugWatcher.shared.vmID != id { break }
+            // Only this machine's (2026-10-28, code review): a start that
+            // failed before it had a configuration stopped another
+            // machine's watcher.
+            guard let id = activeConfiguration?.id, USBHotPlugWatcher.shared.vmID == id else { break }
             USBHotPlugWatcher.shared.stop(reason: state == .stopped ? "VM stopped" : "VM error")
         default:
             break
@@ -420,6 +423,9 @@ final class VMManager: ObservableObject {
     // MARK: Private — QEMU process
 
     private var qemuProcess: Process?
+    /// QEMU's pid while it runs, for the helper to check it's the one
+    /// listening on a machine's socket (2026-10-28); 0 when there's none.
+    var qemuPID: Int { Int(qemuProcess?.processIdentifier ?? 0) }
     private var qemuStdErrPipe: Pipe?
 
     // MARK: Private — QMP
@@ -535,6 +541,7 @@ final class VMManager: ObservableObject {
             .split(whereSeparator: { $0 == "\n" || $0 == " " })
             .compactMap { Int32($0) }
             .filter { $0 > 0 && $0 != ProcessInfo.processInfo.processIdentifier }
+            .filter(Self.isOrphaned)
 
         guard !pids.isEmpty else {
             avmLog("reapOrphanedQEMU: no orphaned QEMU found for \(uuid)")
@@ -578,6 +585,7 @@ final class VMManager: ObservableObject {
             .split(whereSeparator: { $0 == "\n" || $0 == " " })
             .compactMap { Int32($0) }
             .filter { $0 > 0 && $0 != ProcessInfo.processInfo.processIdentifier }
+            .filter(Self.isOrphaned)
 
         if pids.isEmpty {
             avmLog("reapOrphanedSwtpm: no orphaned swtpm found for \(uuid)")
@@ -705,6 +713,15 @@ final class VMManager: ObservableObject {
 
         let found = listing.output.uppercased().contains("AVMDONE")
         avmLog("checkInstallCompleteMarker: marker \(found ? "PRESENT" : "absent") on \(imgPath)")
+        // No marker on a volume that reads fine, but a disk with gigabytes
+        // on it (2026-10-28, code review): the volume is a drive Windows
+        // can see and empty, and attaching the installer to this disk
+        // would run the answer file over it. Installed, said loudly.
+        if !found, diskLooksInstalled(runtimeDir: runtimeDir) {
+            avmLog("checkInstallCompleteMarker: NO marker, but the disk has data — treating as installed; the install media is NOT attached")
+            appendConsole("AVM: the install marker is missing from the UNATTEND volume, but the disk holds data, so it's treated as installed.\n")
+            return true
+        }
         return found
     }
 
@@ -912,6 +929,9 @@ final class VMManager: ObservableObject {
             let output = try await pipeline.run(input)
             avmLog("ensureInstallMedia: pipeline complete — \(output.rebuiltISOPath)")
             WindowsSetupAnswers.forgetPassword(inVMDirectory: runtimeDir)
+            // Not after a Force Stop during the build (2026-10-28, code
+            // review): the next check ends the start.
+            guard case .starting = state else { return }
             appendConsole("AVM: Install media ready.\n")
             installProgress = "Install media ready."
             // What to expect, said before the silence starts (2026-10-27,
@@ -972,6 +992,9 @@ final class VMManager: ObservableObject {
                 runtimeDir: runtimeDir,
                 diskName: configuration.usesVirtioDisk ? "vda" : "nvme0n1"
             ))
+            // Not after a Force Stop during the build (2026-10-28, code
+            // review): the next check ends the start.
+            guard case .starting = state else { return }
             appendConsole("AVM: Install media ready.\n")
             installProgress = "Install media ready."
             Announcer.shared.announce(
@@ -1091,7 +1114,7 @@ final class VMManager: ObservableObject {
             if configuration.guestOS.isLinux {
                 removeFinishedUbuntuMedia(runtimeDir: runtimeDir)
             } else {
-                let signedIn = speakSetupReport(configuration: configuration, runtimeDir: runtimeDir)
+                let signedIn = speakSetupReport(configuration: configuration, runtimeDir: runtimeDir, retire: !resuming)
                 removeFinishedWindowsMedia(runtimeDir: runtimeDir)
                 if resuming {
                     avmLog("startVM: no restore point at this Start (carrying on from a saved state)")
@@ -1196,6 +1219,7 @@ final class VMManager: ObservableObject {
 
         if let resumePlan {
             await resumeSavedState(resumePlan, configuration: configuration, runtimeDir: runtimeDir)
+            try ensureStillStarting()
         }
 
         state = .running
@@ -1957,6 +1981,7 @@ final class VMManager: ObservableObject {
 
         for _ in 0 ..< 20 {
             if FileManager.default.fileExists(atPath: socketPath) { return }
+            if !process.isRunning { break }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         throw AVMError.swtpmDidNotStart
@@ -2662,6 +2687,16 @@ final class VMManager: ObservableObject {
     /// never touched.
     private func removeFinishedWindowsMedia(runtimeDir: URL) {
         removeAnswerFile(runtimeDir: runtimeDir)
+        // Only once specialize has used the DVD (2026-10-28, code review):
+        // its marker is written first, and NVDA, JAWS and the agents are
+        // copied from the DVD after; stopped in between, the next Start
+        // deleted the DVD and the steps silently skipped.
+        let report = (mtools(["mtype", "-i", "IMG", "::AVMSTATUS.TXT"], runtimeDir: runtimeDir)?.output ?? "")
+            + (mtools(["mtype", "-i", "IMG", "::AVMSTAT.OLD"], runtimeDir: runtimeDir)?.output ?? "")
+        guard report.contains("specialize-done") else {
+            avmLog("removeFinishedWindowsMedia: specialize hasn't finished; keeping install-avm.iso")
+            return
+        }
         let iso = runtimeDir.appendingPathComponent("install-avm.iso")
         guard let size = (try? FileManager.default.attributesOfItem(atPath: iso.path))?[.size] as? NSNumber else { return }
         do {
@@ -2704,7 +2739,7 @@ final class VMManager: ObservableObject {
     /// (SetupReport.swift), then rename the report so it is said once.
     /// Returns true when the report says the first sign-in has finished.
     @discardableResult
-    private func speakSetupReport(configuration: VMConfiguration, runtimeDir: URL) -> Bool {
+    private func speakSetupReport(configuration: VMConfiguration, runtimeDir: URL, retire: Bool = true) -> Bool {
         guard let read = mtools(["mtype", "-i", "IMG", "::AVMSTATUS.TXT"], runtimeDir: runtimeDir), read.status == 0,
               let summary = SetupReport.summary(
                 reportText: read.output.replacingOccurrences(of: "\r", with: ""),
@@ -2719,7 +2754,10 @@ final class VMManager: ObservableObject {
         // with no specialize lines, which never parsed, so NVDA's result was
         // never said and no restore point was ever made.
         let signedIn = read.output.contains("first-sign-in-done")
-        if signedIn {
+        // Not on a Start that carries on from a saved state (2026-10-28,
+        // code review): no restore point is taken then, and retiring the
+        // report meant the "Fresh install" point was never made.
+        if signedIn, retire {
             _ = mtools(["mdel", "-i", "IMG", "::AVMSTAT.OLD"], runtimeDir: runtimeDir)
             _ = mtools(["mren", "-i", "IMG", "::AVMSTATUS.TXT", "::AVMSTAT.OLD"], runtimeDir: runtimeDir)
         }
@@ -2734,7 +2772,7 @@ final class VMManager: ObservableObject {
     private func saveFreshInstallRestorePoint(configuration: VMConfiguration, runtimeDir: URL) async {
         guard let existing = try? await RestorePoints.list(vmDirectory: runtimeDir), existing.isEmpty else { return }
         do {
-            _ = try await RestorePoints.create(vmDirectory: runtimeDir, label: "Fresh install", secureBoot: configuration.usesSecureBoot)
+            _ = try await RestorePoints.create(vmDirectory: runtimeDir, label: "Fresh install", secureBoot: configuration.usesSecureBoot, diskBus: configuration.diskBus ?? "nvme")
             appendConsole("AVM: Saved a restore point called Fresh install.\n")
             Announcer.shared.announce("AVM saved a restore point called Fresh install, so you can return to a new Windows from Settings at any time.", tone: .info)
         } catch {
@@ -2766,7 +2804,7 @@ final class VMManager: ObservableObject {
         if let newest = automatic.first, Date().timeIntervalSince(newest.date) < 7 * 24 * 3600 { return }
         let label = "\(Self.automaticLabelPrefix), \(Date().formatted(date: .abbreviated, time: .omitted))"
         do {
-            let point = try await RestorePoints.create(vmDirectory: runtimeDir, label: label, secureBoot: configuration.usesSecureBoot)
+            let point = try await RestorePoints.create(vmDirectory: runtimeDir, label: label, secureBoot: configuration.usesSecureBoot, diskBus: configuration.diskBus ?? "nvme")
             FileManager.default.createFile(atPath: marker(point).path, contents: nil)
             for old in automatic.dropFirst(1) {
                 try? await RestorePoints.delete(old, vmDirectory: runtimeDir)
@@ -2871,6 +2909,7 @@ final class VMManager: ObservableObject {
 
     private func connectToQMP(socketPath: String) async throws {
         for attempt in 1 ... 50 {
+            try ensureStillStarting()
             avmLog("connectToQMP: attempt \(attempt)")
             // qemuProcess is nil once the exit handler has run (2026-10-28,
             // code review: the loop used to wait its full 10 s then).
@@ -3031,8 +3070,15 @@ final class VMManager: ObservableObject {
         let data = (command + "\n").data(using: .utf8)!
         try data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) throws -> Void in
             guard let ptr = bytes.baseAddress else { return }
-            let written = Darwin.write(socket.fileDescriptor, ptr, data.count)
-            if written < 0 { throw AVMError.qmpWriteFailed }
+            // All of it (2026-10-28, code review): a short write on the
+            // non-blocking socket left half a line.
+            var offset = 0
+            while offset < data.count {
+                let written = Darwin.write(socket.fileDescriptor, ptr + offset, data.count - offset)
+                if written < 0 && errno == EAGAIN { usleep(1000); continue }
+                if written < 0 { throw AVMError.qmpWriteFailed }
+                offset += written
+            }
         }
     }
 
@@ -3438,6 +3484,23 @@ final class VMManager: ObservableObject {
 
     // MARK: - Cleanup
 
+    /// A process whose parent is gone (2026-10-28, code review): the
+    /// reapers used to kill a QEMU or swtpm another copy of AVM was still
+    /// running (its machine then "stopped unexpectedly").
+    nonisolated static func isOrphaned(_ pid: Int32) -> Bool {
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-o", "ppid=", "-p", "\(pid)"]
+        let out = Pipe()
+        ps.standardOutput = out
+        ps.standardError = FileHandle.nullDevice
+        guard (try? ps.run()) != nil else { return true }
+        let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        ps.waitUntilExit()
+        guard let ppid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) else { return true }
+        return ppid <= 1 || kill(ppid, 0) != 0
+    }
+
     private func cleanUp() {
         diskWatchTask?.cancel()
         diskWatchTask = nil
@@ -3658,12 +3721,16 @@ extension VMManager {
         let deadline = clock.now + limit
         while true {
             try await Task.sleep(for: .milliseconds(200))
-            let jobs = try await sendQMPCommand("query-jobs", arguments: nil) as? [[String: Any]] ?? []
+            // With the job's own limit (2026-10-28, code review): QEMU runs
+            // the save or load before answering the next command, so this
+            // query waits the whole time, and 5 s called a long load failed,
+            // reset the loaded machine and deleted the saved state.
+            let jobs = try await sendQMPCommand("query-jobs", arguments: nil, timeout: TimeInterval(limit.components.seconds)) as? [[String: Any]] ?? []
             guard let job = jobs.first(where: { $0["id"] as? String == id }) else {
                 throw AVMError.qmpCommandFailed("QEMU lost track of the \(command) job")
             }
             if job["status"] as? String == "concluded" {
-                _ = try? await sendQMPCommand("job-dismiss", arguments: ["id": id])
+                _ = try? await sendQMPCommand("job-dismiss", arguments: ["id": id], timeout: TimeInterval(limit.components.seconds))
                 if let error = job["error"] as? String { throw AVMError.qmpCommandFailed(error) }
                 return
             }
@@ -3682,7 +3749,7 @@ extension VMManager {
             throw AVMError.qmpCommandFailed("this machine can't take a restore point while it runs")
         }
         let tag = RestorePoints.newTag()
-        try RestorePoints.writeFolder(vmDirectory: runtimeDir, tag: tag, label: label, secureBoot: configuration.usesSecureBoot)
+        try RestorePoints.writeFolder(vmDirectory: runtimeDir, tag: tag, label: label, secureBoot: configuration.usesSecureBoot, diskBus: configuration.diskBus ?? "nvme")
         do {
             let node = try await diskNodeName()
             try await runQMPJob("snapshot-save", id: "avm-point",
@@ -4013,12 +4080,15 @@ extension VMManager {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 folder = (user.isEmpty ? "C:\\Users\\Public" : user) + "\\Downloads"
             } else {
-                let home = try await agentRun("/bin/sh", ["-c", "getent passwd 1000 | cut -d: -f6,1 | tr ':' ' '"], limit: .seconds(30))
-                    .trimmingCharacters(in: .whitespacesAndNewlines).split(separator: " ")
+                // Split on ':' (2026-10-28, code review): a home with a space
+                // in it broke on spaces.
+                let home = try await agentRun("/bin/sh", ["-c", "getent passwd 1000 | cut -d: -f1,6"], limit: .seconds(30))
+                    .trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ":", maxSplits: 1)
                 guard home.count == 2 else { throw AVMError.qmpCommandFailed("there's no user in \(machine) to send it to") }
                 owner = String(home[0])
                 folder = String(home[1]) + "/Downloads"
-                _ = try await agentRun("/bin/mkdir", ["-p", folder])
+                // Theirs, not root's, when it's made here (the agent is root).
+                _ = try await agentRun("/bin/sh", ["-c", "[ -d \"$1\" ] || { mkdir -p \"$1\" && chown \"$2:$2\" \"$1\"; }", "sh", folder, home[0].description])
             }
             let separator = windows ? "\\" : "/"
             // Never over a file already there: "name 2.ext" and so on.
@@ -4156,7 +4226,7 @@ extension VMManager {
                 if configuration.guestOS == .windows {
                     let url = printer.uri.replacingOccurrences(of: "ipp://", with: "http://")
                     let script = """
-                    $n = '\(shown.replacingOccurrences(of: "'", with: "''"))'; $u = '\(url)'
+                    $n = '\(shown.replacingOccurrences(of: "'", with: "''"))'; $u = '\(url.replacingOccurrences(of: "'", with: "''"))'
                     $p = Get-Printer -Name $n -ErrorAction SilentlyContinue
                     # The address AVM gave it is kept in its comment: Windows
                     # names the port itself (WSD-...), so that can't say.
@@ -4170,7 +4240,7 @@ extension VMManager {
                 } else {
                     let queue = "AVM-" + printer.queue.filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
                     let script = """
-                    q='\(queue)'; u='\(printer.uri)'
+                    q='\(queue)'; u='\(printer.uri.replacingOccurrences(of: "'", with: ""))'
                     if lpstat -v "$q" 2>/dev/null | grep -qF "$u"; then echo same; exit 0; fi
                     lpadmin -p "$q" -D '\(shown.replacingOccurrences(of: "'", with: ""))' -E -v "$u" -m everywhere && echo added
                     lpstat -d 2>&1 | grep -q 'no system default' && lpadmin -d "$q"

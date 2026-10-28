@@ -221,7 +221,10 @@ it back, on this Mac or another, choose **Import Virtual Machine…** in
 the same menu, or the button of that name on the dashboard, and pick the
 .avmvm folder. The machine comes back as a new entry in your list, so
 importing next to the original, or twice, is safe; if the name is taken,
-AVM adds a number and says so.
+AVM adds a number and says so. An imported machine brings nothing of the
+other Mac's with it: its shared folder, microphone, camera, printers,
+keyboard for Windows and monitor are off until you choose them again in
+its Settings, so a package from someone else can't reach into your Mac.
 
 Things to know:
 
@@ -721,9 +724,9 @@ Announcements you may hear, and what they mean:
 
 ### If speech lags behind your keys
 
-Turn on Shorter speech delay in the machine's Settings, then start the
-machine again. It keeps less sound waiting on the Mac. It is
-experimental: if the sound crackles, turn it off, and please tell us.
+In the machine's Settings, under Sound, choose Fastest speech, then
+start the machine again. It keeps less sound waiting on the Mac. If the
+sound crackles, go back to Balanced, and please tell us.
 
 ## 13. When something seems wrong
 

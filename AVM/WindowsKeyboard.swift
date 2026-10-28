@@ -49,9 +49,13 @@ final class WindowsKeyboard {
     private func sendThroughQMP(_ key: [String: Any], down: Bool) {
         let previous = lastSend
         nonisolated(unsafe) let event: [String: Any] = ["type": "key", "data": ["down": down, "key": key]]
+        // The machine is chosen now (2026-10-28, code review): stop() let
+        // go of held keys and then cleared the target, so the releases
+        // went to whichever machine was current.
+        let machine = target ?? VMManager.shared
         lastSend = Task { @MainActor in
             await previous?.value
-            _ = try? await (self.target ?? VMManager.shared)?.sendQMPCommand("input-send-event", arguments: ["events": [event]])
+            _ = try? await machine?.sendQMPCommand("input-send-event", arguments: ["events": [event]])
         }
     }
     /// An Apple ISO keyboard: § and ` swapped back (HIDKeyMap.isoSwapped).

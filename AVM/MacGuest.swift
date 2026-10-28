@@ -427,7 +427,7 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
             case .success:
                 AVMLog.write("AVM: MacGuest — \(config.name) started.")
                 Announcer.shared.announce("\(config.name) is running.", tone: .success)
-                self.enter()
+                self.enterUnlessInAnotherMachine()
                 self.offerVoiceOverOnce(config)
             case .failure(let error):
                 self.ended(spoken: "\(config.name) could not start. Reason: \(error.localizedDescription)", tone: .failure)
@@ -461,7 +461,7 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
                         case .success:
                             AVMLog.write("AVM: MacGuest — \(config.name) resumed from its saved state.")
                             Announcer.shared.announce("\(config.name) is running again.", tone: .success)
-                            self.enter()
+                            self.enterUnlessInAnotherMachine()
                         case .failure(let error):
                             self.ended(spoken: "\(config.name) could not resume. Reason: \(error.localizedDescription) Start it again to start it as usual.", tone: .failure)
                         }
@@ -582,6 +582,18 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
 
     /// Gives macOS the keyboard: its window in front, its screen first
     /// responder. Command-Shift-E.
+    /// A start finishing while the keyboard is in a Windows or Linux
+    /// machine (2026-10-28, code review): entering then put two locks on
+    /// at once, and the first Control-Command-Escape left the wrong one.
+    /// The machine waits; Enter macOS brings it.
+    private func enterUnlessInAnotherMachine() {
+        if let lock = FocusLockManager.shared, lock.isLocked {
+            Announcer.shared.announce("\(guestName) is running. Choose Enter \(guestName) when you're ready for it.", tone: .info)
+            return
+        }
+        enter()
+    }
+
     func enter(spoken: String? = nil) {
         guard let window, let machineView else {
             NSSound.beep()

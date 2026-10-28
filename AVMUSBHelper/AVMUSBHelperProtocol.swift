@@ -31,6 +31,12 @@ nonisolated public enum AVMUSBHelperNames {
     /// Lives at AVM.app/Contents/Library/LaunchDaemons/.
     public static let launchdPlistName = "com.alllisonmeloy.AVM.usbhelper.plist"
 
+    /// The helper this AVM expects (2026-10-28, code review). Bumped with
+    /// every change to the helper or its protocol: after an update, the
+    /// helper from before keeps running for its idle grace period, and
+    /// AVM asks one that answers with another version to exit first.
+    public static let helperBuildVersion = "0.3.12"
+
     /// The bundle identifier of the app that is allowed to talk to the helper.
     public static let clientBundleIdentifier = "com.alllisonmeloy.AVM"
 }
@@ -190,8 +196,11 @@ nonisolated public protocol AVMUSBHelperProtocol {
     /// streamSocketPath. QEMU listens; the helper dials.
     /// Reply: success, failing step (nil on success), detail.
     /// Attach calls stack. Each device is an independent claim.
+    /// peerPID: the QEMU listening on the socket, which the helper checks
+    /// it is talking to (2026-10-28); 0 when AVM doesn't know.
     func attach(_ device: AVMUSBDeviceIdentity,
                 streamSocketPath: String,
+                peerPID: Int,
                 reply: @escaping (Bool, String?, String?) -> Void)
 
     /// Release one device. Reply: success, detail.
@@ -240,7 +249,7 @@ nonisolated public protocol AVMUSBHelperProtocol {
 
     /// Take the device with this id and relay it to the usb-hid-bridge
     /// socket. Replies whether it was taken, and why not.
-    func holdBluetoothDevice(_ id: String, streamSocketPath: String, reply: @escaping (Bool, String?) -> Void)
+    func holdBluetoothDevice(_ id: String, streamSocketPath: String, peerPID: Int, reply: @escaping (Bool, String?) -> Void)
 
     /// Give the device back to the Mac.
     func releaseBluetoothDevice(_ id: String, reply: @escaping () -> Void)
