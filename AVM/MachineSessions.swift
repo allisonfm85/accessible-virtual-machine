@@ -168,6 +168,7 @@ final class MachineSessions: ObservableObject {
         begun.remove(id)
         AVMLog.write("AVM: MachineSessions — a machine ended; \(sessions.count) still running.")
         AVMPasteboard.shared.refreshEnabled()
+        BackgroundMode.shared.machineStopped()
         if currentID == id {
             currentID = nil
             if let next = sessions.keys.first {
@@ -177,6 +178,12 @@ final class MachineSessions: ObservableObject {
                 VMActivity.shared.follow(.stopped)
             }
         }
+    }
+
+    /// Machine windows that are open, for the second display
+    /// (BackgroundMode).
+    var windowsForDisplay: [NSWindow] {
+        windows.values.map(\.nsWindow).filter(\.isVisible)
     }
 
     /// Every manager, for quitting and sleep.
@@ -245,6 +252,8 @@ final class MachineWindow: NSObject, NSWindowDelegate {
         if window.frameAutosaveName.isEmpty || !window.setFrameUsingName(window.frameAutosaveName) {
             window.center()
         }
+        // On the second display, when chosen (BackgroundMode).
+        BackgroundMode.shared.placeMachineWindow(window)
         let elsewhere = focusLock.isLocked && MachineSessions.shared.currentID != session.configuration.id
         if elsewhere {
             window.orderBack(nil)
@@ -266,6 +275,7 @@ final class MachineWindow: NSObject, NSWindowDelegate {
     }
 
     var isKey: Bool { window.isKeyWindow }
+    var nsWindow: NSWindow { window }
 
     func windowDidBecomeKey(_ notification: Notification) {
         MachineSessions.shared.makeCurrent(session.configuration.id)

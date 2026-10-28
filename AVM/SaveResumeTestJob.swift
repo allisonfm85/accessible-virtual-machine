@@ -21,6 +21,7 @@
 //   AVM.app/Contents/MacOS/AVM --test-camera-save --vm <folder> --guest <linux os>
 //   AVM.app/Contents/MacOS/AVM --test-screen-readers [--jaws] [--into <folder>]
 //   AVM.app/Contents/MacOS/AVM --test-hid-bridge --vm <folder> --guest <os>
+//   AVM.app/Contents/MacOS/AVM --test-background --vm <folder> --guest <os>
 //
 // --test-hid-bridge: the Bluetooth path without a Bluetooth device. Adds a
 // usb-hid-bridge (AVM's QEMU patch) with a made-up HID device, plays the
@@ -97,6 +98,7 @@
 // Prints each step with how long it took; exits 0 if every check passed.
 
 import Foundation
+import AppKit
 import CommonCrypto
 
 @MainActor
@@ -110,7 +112,8 @@ enum SaveResumeTestJob {
                 || arguments.contains("--test-linux-share") || arguments.contains("--test-ctl")
                 || arguments.contains("--test-disk-info") || arguments.contains("--run-in-guest")
                 || arguments.contains("--test-printers") || arguments.contains("--test-camera") || arguments.contains("--test-3d") || arguments.contains("--test-camera-save")
-                || arguments.contains("--test-screen-readers") || arguments.contains("--test-hid-bridge") else { return }
+                || arguments.contains("--test-screen-readers") || arguments.contains("--test-hid-bridge")
+                || arguments.contains("--test-background") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -184,6 +187,10 @@ enum SaveResumeTestJob {
                 _ = await exec(agent2, program: "/bin/sh", args: ["-c", "pkill gst-launch; rm -rf /tmp/avm-cam"])
                 await shutDown(manager)
                 print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+            }
+            if arguments.contains("--test-background") {
+                let passed = await background(folderURL, guest)
+                print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
             }
             if arguments.contains("--test-hid-bridge") {
                 let manager = VMManager()
@@ -732,6 +739,59 @@ enum SaveResumeTestJob {
         }
         check("both ended", machines.sessions.isEmpty)
         if let copyFolder { try? FileManager.default.removeItem(at: copyFolder) }
+        return ok
+    }
+
+    /// --test-background (2026-10-28, BackgroundMode.swift): AVM leaves
+    /// Command-Tab and hides only while a machine with a keyboard for
+    /// Windows runs, comes back from the menu bar item, and is an ordinary
+    /// app again once the machine stops. The setting is put back after.
+    private static func background(_ folder: URL, _ guest: GuestOS) async -> Bool {
+        let mode = BackgroundMode.shared
+        let chosenBefore = mode.runInBackground
+        defer { mode.runInBackground = chosenBefore }
+        var config = configuration(folder: folder, guest: guest)
+        config.name = "Background test"
+        mode.runInBackground = true
+        NSApp.setActivationPolicy(.regular)
+        print("== With no machine running")
+        mode.goToBackgroundIfChosen()
+        check("AVM stays in Command-Tab", NSApp.activationPolicy() == .regular && !mode.inBackground)
+
+        print("== A machine without a keyboard for Windows")
+        let machines = MachineSessions.shared
+        var plain = machines.start(config, vmStore: nil, focusLock: nil)
+        for _ in 0..<600 where plain.vmState != .running { try? await Task.sleep(for: .milliseconds(500)) }
+        check("it's running", plain.vmState == .running)
+        mode.goToBackgroundIfChosen()
+        check("AVM stays in Command-Tab", NSApp.activationPolicy() == .regular && !mode.inBackground)
+        plain.forceStop()
+        for _ in 0..<40 where machines.session(for: config.id) != nil { try? await Task.sleep(for: .milliseconds(250)) }
+
+        print("== A machine with a keyboard for Windows")
+        // An id no keyboard has: the helper finds nothing to take.
+        config.windowsKeyboardID = "avm-background-test"
+        plain = machines.start(config, vmStore: nil, focusLock: nil)
+        for _ in 0..<600 where plain.vmState != .running { try? await Task.sleep(for: .milliseconds(500)) }
+        check("it's running", plain.vmState == .running)
+        mode.goToBackgroundIfChosen()
+        check("AVM leaves Command-Tab and the Dock", NSApp.activationPolicy() == .accessory && mode.inBackground)
+        check("AVM is hidden", NSApp.isHidden)
+        mode.comeForward()
+        // Unhiding finishes on the next turns of the run loop.
+        try? await Task.sleep(for: .seconds(1))
+        check("Show AVM brings it back", NSApp.activationPolicy() == .regular && !mode.inBackground && !NSApp.isHidden)
+        mode.goToBackgroundIfChosen()
+        check("it goes back again", NSApp.activationPolicy() == .accessory)
+
+        print("== The machine stops")
+        plain.forceStop()
+        for _ in 0..<40 where machines.session(for: config.id) != nil { try? await Task.sleep(for: .milliseconds(250)) }
+        check("AVM is in Command-Tab again", NSApp.activationPolicy() == .regular && !mode.inBackground)
+
+        print("== The setting off")
+        mode.runInBackground = false
+        check("the choice is saved", UserDefaults.standard.bool(forKey: "AVMRunInBackground") == false)
         return ok
     }
 

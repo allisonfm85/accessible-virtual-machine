@@ -30,6 +30,8 @@ extension Notification.Name {
     static let avmAttachUSBFromMenu = Notification.Name("avmAttachUSBFromMenu")
     /// Bluetooth Devices… (2026-10-27, BluetoothDevices.swift).
     static let avmBluetoothDevices = Notification.Name("avmBluetoothDevices")
+    /// Background and Startup… (2026-10-28, BackgroundMode.swift).
+    static let avmBackgroundSettings = Notification.Name("avmBackgroundSettings")
     static let avmDetachUSBFromMenu = Notification.Name("avmDetachUSBFromMenu")
 
     /// Posted by the Virtual Machine menu's "Speak Status" item
@@ -88,6 +90,7 @@ struct ContentView: View {
     @State private var showingReclaim = false
     @State private var usbPicker: USBPickerRequest? = nil
     @State private var bluetoothWindow: BluetoothWindowRequest? = nil
+    @State private var showingBackgroundSettings = false
     @State private var errorMessage: String? = nil
 
     // MARK: - Body
@@ -259,6 +262,17 @@ struct ContentView: View {
         .sheet(item: $bluetoothWindow) { request in
             BluetoothDevicesView(machine: request.machine)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .avmBackgroundSettings)) { _ in
+            showingBackgroundSettings = true
+        }
+        .sheet(isPresented: $showingBackgroundSettings) {
+            BackgroundSettingsView()
+                .environmentObject(vmStore)
+        }
+        // The machine chosen to start when AVM opens (2026-10-28), once.
+        .onAppear {
+            BackgroundMode.shared.autoStartIfChosen(in: vmStore.configurations) { startVM(config: $0) }
+        }
         // Speak Status (Cmd-Shift-I, 2026-10-25). Always .info: asking is
         // not an outcome, so no verdict sound, even when the answer is an
         // error state. Privacy check: machine names, states and USB product
@@ -401,6 +415,7 @@ private struct DashboardContent: View {
     /// Every running Windows or Linux machine; each row observes its own
     /// session (QEMUMachineRow), so it redraws as that machine changes.
     @ObservedObject private var machines = MachineSessions.shared
+    @ObservedObject private var background = BackgroundMode.shared
     @Binding var errorMessage: String?
     @Binding var showingSetup: Bool
     @Binding var settingsTarget: VMConfiguration?
@@ -466,6 +481,9 @@ private struct DashboardContent: View {
                                 .accessibilityLabel("Settings for \(config.name)")
                                 .accessibilityHint("Opens settings for this virtual machine")
 
+                                if !config.isATemplate {
+                                    autoStartToggle(config)
+                                }
                                 exportButton(config)
                                 duplicateButton(config)
 
@@ -514,6 +532,12 @@ private struct DashboardContent: View {
 
                 // Restart USB Helper (2026-10-27): for a USB device that stays
                 // on the Mac when it shouldn't.
+                // Background and Startup (2026-10-28, BackgroundMode.swift).
+                Button("Background and Startup…") {
+                    NotificationCenter.default.post(name: .avmBackgroundSettings, object: nil)
+                }
+                .accessibilityHint("Open AVM at login, run it in the background with a keyboard for Windows, and use a second display")
+
                 Button("Restart USB Helper") {
                     Task { await USBRedirectController.shared.restartHelper() }
                 }
@@ -757,6 +781,16 @@ private struct DashboardContent: View {
         }
         .accessibilityLabel("New machine from \(config.name)")
         .accessibilityHint("Makes a new machine just like this template, which stays as it is. Asks for its name. To change the template itself, turn off Use as a Template in its Settings.")
+    }
+
+    // MARK: Start when AVM opens (2026-10-28, BackgroundMode.swift)
+
+    private func autoStartToggle(_ config: VMConfiguration) -> some View {
+        Toggle("Start When AVM Opens", isOn: Binding(
+            get: { background.autoStartID == config.id },
+            set: { BackgroundMode.shared.setAutoStart(config, $0) }))
+        .accessibilityLabel("Start \(config.name) when AVM opens")
+        .accessibilityHint("One machine at most. With Open AVM When You Log In, in Background and Startup, it starts when you log in.")
     }
 
     // MARK: Export (2026-10-26)

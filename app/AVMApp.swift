@@ -53,6 +53,7 @@ struct AVMApp: App {
     /// A running macOS machine (MacGuest.swift): Enter goes to it when no
     /// QEMU machine is running.
     @ObservedObject private var macGuest = MacGuestRunner.shared
+    @ObservedObject private var backgroundMode = BackgroundMode.shared
 
     /// AVM's FIRST app delegate (added 2026-07-26). See AVMAppDelegate below
     /// for why one became necessary.
@@ -102,6 +103,10 @@ struct AVMApp: App {
                     updater.checkForUpdates()
                 }
                 .disabled(!updater.canCheckForUpdates)
+                // Background and Startup… (2026-10-28, BackgroundMode.swift).
+                Button("Background and Startup…") {
+                    NotificationCenter.default.post(name: .avmBackgroundSettings, object: nil)
+                }
             }
 
             // Save Diagnostic Log… (File menu) — STAGE D (2026-08-06). The
@@ -501,6 +506,15 @@ struct AVMApp: App {
                 }
             }
         }
+
+        // AVM's menu bar item while Run in the Background is on
+        // (2026-10-28, BackgroundMode.swift): the way back to AVM when it
+        // isn't in Command-Tab or the Dock.
+        MenuBarExtra("AVM", systemImage: "pc", isInserted: Binding(
+            get: { backgroundMode.runInBackground },
+            set: { _ in })) {
+            BackgroundMenu()
+        }
     }
 }
 
@@ -563,7 +577,18 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
             // Pause a running VM before the Mac sleeps (2026-10-26).
             SleepCoordinator.shared.start()
             ControlServer.shared.start()
+            // Run in the background and the second display (2026-10-28).
+            BackgroundMode.shared.start()
         }
+    }
+
+    /// AVM opened again (Finder, Spotlight, the Dock) while it's in the
+    /// background: it comes forward (BackgroundMode).
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        MainActor.assumeIsolated {
+            if BackgroundMode.shared.inBackground { BackgroundMode.shared.comeForward() }
+        }
+        return true
     }
 
     /// Quitting with a VM running (2026-10-25). See QuitCoordinator.

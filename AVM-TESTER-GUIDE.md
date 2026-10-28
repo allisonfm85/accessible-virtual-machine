@@ -590,6 +590,20 @@ dashboard's Start buttons work too.
   a Mac. For an Apple keyboard with a § key, turn on "It's an Apple
   keyboard with a § key (ISO)", so § and ` come out where they're
   printed.
+- **AVM in the background, and at login.** Background and Startup, on
+  the dashboard and in the AVM menu, has three choices, all off until
+  you turn them on. *Open AVM when you log in.* *Run in the background
+  with a keyboard for Windows*: while a machine with a keyboard for
+  Windows runs, switching away from AVM takes it out of Command-Tab and
+  the Dock and hides it. Windows keeps its keyboard. To bring AVM back,
+  use AVM's item in the menu bar (VoiceOver-M twice reaches it), or
+  open AVM again. *Show machines on the second display*: with two
+  displays, a machine's window opens on the one without the menu bar,
+  and stays there in the background for someone sighted to watch. To
+  have a machine start whenever AVM opens, turn on Start When AVM Opens
+  in its row while it's shut down. Only one machine can have it. With
+  all of these on, your Mac logs in, AVM opens out of the way, and
+  Windows starts, ready for its keyboard.
 - **Mice and trackpads work now.** On machines installed with AVM 0.1.1
   or later, the Windows pointer follows your finger exactly and clicks
   land where the pointer is, from the very first boot. Machines

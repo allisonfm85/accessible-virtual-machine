@@ -348,6 +348,9 @@ private final class Auditor {
             Screen(name: "Attach USB Device", size: NSSize(width: 600, height: 500), headings: title("Attach USB Device")) {
                 host(USBDevicePickerView(mode: .attach, devices: s.usbDevices))
             },
+            Screen(name: "Background and Startup", size: NSSize(width: 560, height: 700), headings: title("Background and Startup")) {
+                host(BackgroundSettingsView())
+            },
         ]
     }
 
