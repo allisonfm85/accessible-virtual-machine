@@ -1,0 +1,499 @@
+AVM: usb-hid-bridge, a USB HID device whose reports come over a chardev
+
+A Bluetooth braille display, game controller or other HID device can't
+be passed through to a guest the way a USB one is (2026-10-27). AVM's
+USB helper takes it from macOS instead and relays its HID reports over a
+socket; this device presents it to the guest as a full-speed USB HID
+device with the device's own report descriptor (the report-descriptor
+property, in hex), vendor and product IDs and name, so the guest loads
+the driver it would for the real thing: Windows' HID braille support,
+which NVDA and Narrator use, its game controller drivers, and so on.
+
+Frames on the chardev: a type byte, a little-endian 16-bit length, and
+that many bytes. 1: an input report, to the guest. 2: an output report,
+from the guest (interrupt OUT or SET_REPORT output: braille cells, a
+controller's rumble). 3: a feature report, from the guest. GET_REPORT
+(input) answers with the last input report; feature GET_REPORT stalls.
+
+--- a/hw/usb/meson.build
++++ b/hw/usb/meson.build
+@@ -35,6 +35,8 @@
+ # emulated usb devices
+ system_ss.add(when: 'CONFIG_USB_HUB', if_true: files('dev-hub.c'))
+ system_ss.add(when: 'CONFIG_USB_HID', if_true: files('dev-hid.c'))
++# AVM: a HID device whose reports come over a chardev (Bluetooth devices)
++system_ss.add(when: 'CONFIG_USB_HID', if_true: files('dev-hid-bridge.c'))
+ system_ss.add(when: 'CONFIG_USB_TABLET_WACOM', if_true: files('dev-wacom.c'))
+ system_ss.add(when: 'CONFIG_USB_STORAGE_CORE', if_true: files('dev-storage.c'))
+ system_ss.add(when: 'CONFIG_USB_STORAGE_BOT', if_true: files('dev-storage-bot.c'))
+--- /dev/null
++++ b/hw/usb/dev-hid-bridge.c
+@@ -0,0 +1,468 @@
++/*
++ * USB HID bridge: a USB HID device whose reports come from outside QEMU
++ * (AVM, 2026-10-27)
++ *
++ * A Bluetooth braille display, game controller or other HID device can't
++ * be passed through to a guest the way a USB one can. AVM's helper takes
++ * it from macOS instead and relays its HID reports over a chardev socket;
++ * this device presents it to the guest as a full-speed USB HID device with
++ * the device's own report descriptor, so the guest loads the driver it
++ * would for the real thing (Windows' HID braille support, which NVDA and
++ * Narrator use; its game controller drivers; and so on).
++ *
++ * The socket carries frames of a type byte, a little-endian 16-bit length,
++ * and that many bytes:
++ *   1  input report, to the guest (report ID first if the device uses IDs)
++ *   2  output report, from the guest (braille cells, a controller's rumble)
++ *   3  feature report, from the guest (SET_REPORT of type feature)
++ * Input reports queue until the guest reads them; GET_REPORT is answered
++ * with the last input report of that ID, and feature GET_REPORT stalls.
++ *
++ * This work is licensed under the terms of the GNU GPL, version 2 or later.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/module.h"
++#include "qemu/error-report.h"
++#include "qapi/error.h"
++#include "hw/qdev-properties.h"
++#include "hw/qdev-properties-system.h"
++#include "hw/usb.h"
++#include "migration/vmstate.h"
++#include "chardev/char-fe.h"
++#include "desc.h"
++#include "qom/object.h"
++
++#define TYPE_USB_HID_BRIDGE "usb-hid-bridge"
++OBJECT_DECLARE_SIMPLE_TYPE(USBHIDBridgeState, USB_HID_BRIDGE)
++
++#define HB_FRAME_INPUT      1
++#define HB_FRAME_OUTPUT     2
++#define HB_FRAME_FEATURE    3
++
++#define HB_MAX_REPORT       1024
++#define HB_MAX_DESCRIPTOR   4096
++#define HB_QUEUE            64
++#define HB_PACKET           64
++#define HB_EP_IN            1
++#define HB_EP_OUT           2
++
++#define HID_GET_REPORT      0x01
++#define HID_GET_IDLE        0x02
++#define HID_GET_PROTOCOL    0x03
++#define HID_SET_REPORT      0x09
++#define HID_SET_IDLE        0x0a
++#define HID_SET_PROTOCOL    0x0b
++
++typedef struct {
++    uint16_t len;
++    uint8_t data[HB_MAX_REPORT];
++} HBReport;
++
++struct USBHIDBridgeState {
++    USBDevice dev;
++    USBEndpoint *in_ep;
++    CharBackend chr;
++
++    /* Properties */
++    char *report_descriptor_hex;
++    uint16_t vendorid;
++    uint16_t productid;
++    char *product;
++    bool report_ids;            /* the descriptor declares report IDs */
++
++    /* Descriptors, built at realize from the report descriptor */
++    uint8_t *rdesc;
++    size_t rdesc_len;
++    uint8_t hid_desc[9];
++    USBDescOther hid_other;
++    USBDescEndpoint eps[2];
++    USBDescIface iface;
++    USBDescConfig conf;
++    USBDescDevice device_full;
++    USBDesc desc;
++    const char *strings[8];
++
++    /* Input reports waiting for the guest */
++    HBReport queue[HB_QUEUE];
++    int head, count;
++    size_t sent;                /* of the head report, for long reports */
++    HBReport last_input;        /* for GET_REPORT (input) */
++
++    /* Bytes read from the socket, not yet a whole frame */
++    uint8_t rx[3 + HB_MAX_REPORT];
++    size_t rx_len;
++};
++
++/* ---------------------------------------------------------------- */
++
++static int hex_value(char c)
++{
++    if (c >= '0' && c <= '9') {
++        return c - '0';
++    }
++    if (c >= 'a' && c <= 'f') {
++        return c - 'a' + 10;
++    }
++    if (c >= 'A' && c <= 'F') {
++        return c - 'A' + 10;
++    }
++    return -1;
++}
++
++static bool parse_hex(const char *hex, uint8_t **out, size_t *len)
++{
++    size_t n = strlen(hex);
++    if (n == 0 || n % 2 || n / 2 > HB_MAX_DESCRIPTOR) {
++        return false;
++    }
++    uint8_t *bytes = g_malloc(n / 2);
++    for (size_t i = 0; i < n / 2; i++) {
++        int hi = hex_value(hex[2 * i]), lo = hex_value(hex[2 * i + 1]);
++        if (hi < 0 || lo < 0) {
++            g_free(bytes);
++            return false;
++        }
++        bytes[i] = hi << 4 | lo;
++    }
++    *out = bytes;
++    *len = n / 2;
++    return true;
++}
++
++/* True when the report descriptor has a Report ID item (0x85). */
++static bool uses_report_ids(const uint8_t *d, size_t len)
++{
++    size_t i = 0;
++    while (i < len) {
++        uint8_t prefix = d[i];
++        if (prefix == 0xfe) {           /* long item */
++            if (i + 2 >= len) {
++                break;
++            }
++            i += 3 + d[i + 1];
++            continue;
++        }
++        size_t size = prefix & 3;
++        if (size == 3) {
++            size = 4;
++        }
++        if ((prefix & 0xfc) == 0x84) {  /* Report ID */
++            return true;
++        }
++        i += 1 + size;
++    }
++    return false;
++}
++
++/* ---------------------------------------------------------------- */
++/* The socket */
++
++static void send_frame(USBHIDBridgeState *s, uint8_t type, const uint8_t *data, size_t len)
++{
++    if (!qemu_chr_fe_backend_open(&s->chr) || len > HB_MAX_REPORT) {
++        return;
++    }
++    uint8_t header[3] = { type, len & 0xff, (len >> 8) & 0xff };
++    qemu_chr_fe_write_all(&s->chr, header, 3);
++    if (len) {
++        qemu_chr_fe_write_all(&s->chr, data, len);
++    }
++}
++
++static void queue_input(USBHIDBridgeState *s, const uint8_t *data, size_t len)
++{
++    if (len == 0 || len > HB_MAX_REPORT) {
++        return;
++    }
++    if (s->count == HB_QUEUE) {
++        /* The guest isn't reading: the oldest report goes. */
++        s->head = (s->head + 1) % HB_QUEUE;
++        s->count--;
++        s->sent = 0;
++    }
++    HBReport *r = &s->queue[(s->head + s->count) % HB_QUEUE];
++    memcpy(r->data, data, len);
++    r->len = len;
++    s->count++;
++    memcpy(s->last_input.data, data, len);
++    s->last_input.len = len;
++    usb_wakeup(s->in_ep, 0);
++}
++
++static int bridge_can_read(void *opaque)
++{
++    USBHIDBridgeState *s = opaque;
++    return sizeof(s->rx) - s->rx_len;
++}
++
++static void bridge_read(void *opaque, const uint8_t *buf, int size)
++{
++    USBHIDBridgeState *s = opaque;
++    size = MIN(size, (int)(sizeof(s->rx) - s->rx_len));
++    memcpy(s->rx + s->rx_len, buf, size);
++    s->rx_len += size;
++    while (s->rx_len >= 3) {
++        size_t len = s->rx[1] | s->rx[2] << 8;
++        if (len > HB_MAX_REPORT) {
++            warn_report("usb-hid-bridge: a frame of %zu bytes; dropping what was read", len);
++            s->rx_len = 0;
++            return;
++        }
++        if (s->rx_len < 3 + len) {
++            return;
++        }
++        if (s->rx[0] == HB_FRAME_INPUT) {
++            queue_input(s, s->rx + 3, len);
++        }
++        s->rx_len -= 3 + len;
++        memmove(s->rx, s->rx + 3 + len, s->rx_len);
++    }
++}
++
++static void bridge_event(void *opaque, QEMUChrEvent event)
++{
++    USBHIDBridgeState *s = opaque;
++    if (event == CHR_EVENT_CLOSED) {
++        s->rx_len = 0;
++        s->count = 0;
++        s->sent = 0;
++    }
++}
++
++/* ---------------------------------------------------------------- */
++/* USB */
++
++static void bridge_handle_control(USBDevice *dev, USBPacket *p,
++                                  int request, int value, int index,
++                                  int length, uint8_t *data)
++{
++    USBHIDBridgeState *s = USB_HID_BRIDGE(dev);
++    int ret = usb_desc_handle_control(dev, p, request, value, index, length, data);
++    if (ret >= 0) {
++        return;
++    }
++
++    switch (request) {
++    case InterfaceRequest | USB_REQ_GET_DESCRIPTOR:
++        if ((value >> 8) == 0x22) {
++            size_t n = MIN((size_t)length, s->rdesc_len);
++            memcpy(data, s->rdesc, n);
++            p->actual_length = n;
++            return;
++        }
++        if ((value >> 8) == 0x21) {
++            size_t n = MIN((size_t)length, sizeof(s->hid_desc));
++            memcpy(data, s->hid_desc, n);
++            p->actual_length = n;
++            return;
++        }
++        break;
++    case ClassInterfaceRequest | HID_GET_REPORT:
++        /* Input: the last one with this ID. Feature: not known here. */
++        if ((value >> 8) == 1 && s->last_input.len &&
++            (!s->report_ids || s->last_input.data[0] == (value & 0xff))) {
++            size_t n = MIN((size_t)length, s->last_input.len);
++            memcpy(data, s->last_input.data, n);
++            p->actual_length = n;
++            return;
++        }
++        break;
++    case ClassInterfaceOutRequest | HID_SET_REPORT:
++        /* The data already starts with the report ID when there is one. */
++        send_frame(s, (value >> 8) == 3 ? HB_FRAME_FEATURE : HB_FRAME_OUTPUT, data, length);
++        p->actual_length = length;
++        return;
++    case ClassInterfaceRequest | HID_GET_IDLE:
++        if (length >= 1) {
++            data[0] = 0;
++            p->actual_length = 1;
++            return;
++        }
++        break;
++    case ClassInterfaceRequest | HID_GET_PROTOCOL:
++        if (length >= 1) {
++            data[0] = 1;            /* report protocol */
++            p->actual_length = 1;
++            return;
++        }
++        break;
++    case ClassInterfaceOutRequest | HID_SET_IDLE:
++    case ClassInterfaceOutRequest | HID_SET_PROTOCOL:
++        return;
++    }
++    p->status = USB_RET_STALL;
++}
++
++static void bridge_handle_data(USBDevice *dev, USBPacket *p)
++{
++    USBHIDBridgeState *s = USB_HID_BRIDGE(dev);
++
++    if (p->pid == USB_TOKEN_IN && p->ep->nr == HB_EP_IN) {
++        if (s->count == 0) {
++            p->status = USB_RET_NAK;
++            return;
++        }
++        HBReport *r = &s->queue[s->head];
++        size_t n = MIN(usb_packet_size(p), (size_t)r->len - s->sent);
++        usb_packet_copy(p, r->data + s->sent, n);
++        s->sent += n;
++        if (s->sent >= r->len) {
++            s->head = (s->head + 1) % HB_QUEUE;
++            s->count--;
++            s->sent = 0;
++        }
++        return;
++    }
++    if (p->pid == USB_TOKEN_OUT && p->ep->nr == HB_EP_OUT) {
++        uint8_t buf[HB_MAX_REPORT];
++        size_t n = MIN(usb_packet_size(p), sizeof(buf));
++        usb_packet_copy(p, buf, n);
++        send_frame(s, HB_FRAME_OUTPUT, buf, n);
++        return;
++    }
++    p->status = USB_RET_STALL;
++}
++
++static void bridge_handle_reset(USBDevice *dev)
++{
++    USBHIDBridgeState *s = USB_HID_BRIDGE(dev);
++    s->count = 0;
++    s->sent = 0;
++}
++
++static void bridge_realize(USBDevice *dev, Error **errp)
++{
++    USBHIDBridgeState *s = USB_HID_BRIDGE(dev);
++
++    if (!qemu_chr_fe_backend_connected(&s->chr)) {
++        error_setg(errp, "usb-hid-bridge needs a chardev");
++        return;
++    }
++    if (!s->report_descriptor_hex ||
++        !parse_hex(s->report_descriptor_hex, &s->rdesc, &s->rdesc_len)) {
++        error_setg(errp, "usb-hid-bridge needs report-descriptor, in hex, up to %d bytes",
++                   HB_MAX_DESCRIPTOR);
++        return;
++    }
++    s->report_ids = uses_report_ids(s->rdesc, s->rdesc_len);
++
++    uint8_t hid[9] = { 9, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22,
++                       s->rdesc_len & 0xff, (s->rdesc_len >> 8) & 0xff };
++    memcpy(s->hid_desc, hid, sizeof(hid));
++    s->hid_other = (USBDescOther) { .length = 9, .data = s->hid_desc };
++
++    s->eps[0] = (USBDescEndpoint) {
++        .bEndpointAddress = USB_DIR_IN | HB_EP_IN,
++        .bmAttributes     = USB_ENDPOINT_XFER_INT,
++        .wMaxPacketSize   = HB_PACKET,
++        .bInterval        = 1,
++    };
++    s->eps[1] = (USBDescEndpoint) {
++        .bEndpointAddress = USB_DIR_OUT | HB_EP_OUT,
++        .bmAttributes     = USB_ENDPOINT_XFER_INT,
++        .wMaxPacketSize   = HB_PACKET,
++        .bInterval        = 1,
++    };
++    s->iface = (USBDescIface) {
++        .bInterfaceNumber   = 0,
++        .bNumEndpoints      = 2,
++        .bInterfaceClass    = USB_CLASS_HID,
++        .ndesc              = 1,
++        .descs              = &s->hid_other,
++        .eps                = s->eps,
++    };
++    s->conf = (USBDescConfig) {
++        .bNumInterfaces      = 1,
++        .bConfigurationValue = 1,
++        .bmAttributes        = USB_CFG_ATT_ONE,
++        .bMaxPower           = 50,
++        .nif                 = 1,
++        .ifs                 = &s->iface,
++    };
++    s->device_full = (USBDescDevice) {
++        .bcdUSB             = 0x0200,
++        .bMaxPacketSize0    = 64,
++        .bNumConfigurations = 1,
++        .confs              = &s->conf,
++    };
++    s->strings[1] = "AVM";
++    s->strings[2] = s->product ? s->product : "Bluetooth device";
++    s->strings[3] = "1";
++    s->desc = (USBDesc) {
++        .id = {
++            .idVendor      = s->vendorid,
++            .idProduct     = s->productid,
++            .bcdDevice     = 0x0100,
++            .iManufacturer = 1,
++            .iProduct      = 2,
++            .iSerialNumber = 3,
++        },
++        .full = &s->device_full,
++        .str  = s->strings,
++    };
++
++    dev->usb_desc = &s->desc;
++    usb_desc_create_serial(dev);
++    usb_desc_init(dev);
++    s->in_ep = usb_ep_get(dev, USB_TOKEN_IN, HB_EP_IN);
++    qemu_chr_fe_set_handlers(&s->chr, bridge_can_read, bridge_read, bridge_event,
++                             NULL, s, NULL, true);
++}
++
++static void bridge_unrealize(USBDevice *dev)
++{
++    USBHIDBridgeState *s = USB_HID_BRIDGE(dev);
++    qemu_chr_fe_deinit(&s->chr, false);
++    g_free(s->rdesc);
++    s->rdesc = NULL;
++}
++
++static const VMStateDescription vmstate_usb_hid_bridge = {
++    .name = TYPE_USB_HID_BRIDGE,
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .fields = (const VMStateField[]) {
++        VMSTATE_USB_DEVICE(dev, USBHIDBridgeState),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
++static const Property bridge_properties[] = {
++    DEFINE_PROP_CHR("chardev", USBHIDBridgeState, chr),
++    DEFINE_PROP_STRING("report-descriptor", USBHIDBridgeState, report_descriptor_hex),
++    DEFINE_PROP_UINT16("vendorid", USBHIDBridgeState, vendorid, 0x46f4),
++    DEFINE_PROP_UINT16("productid", USBHIDBridgeState, productid, 0x0011),
++    DEFINE_PROP_STRING("product", USBHIDBridgeState, product),
++};
++
++static void bridge_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    USBDeviceClass *k = USB_DEVICE_CLASS(klass);
++
++    dc->vmsd = &vmstate_usb_hid_bridge;
++    dc->desc = "USB HID device whose reports come over a chardev";
++    device_class_set_props(dc, bridge_properties);
++    set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
++    k->product_desc   = "AVM HID bridge";
++    k->realize        = bridge_realize;
++    k->unrealize      = bridge_unrealize;
++    k->handle_reset   = bridge_handle_reset;
++    k->handle_control = bridge_handle_control;
++    k->handle_data    = bridge_handle_data;
++}
++
++static const TypeInfo bridge_info = {
++    .name          = TYPE_USB_HID_BRIDGE,
++    .parent        = TYPE_USB_DEVICE,
++    .instance_size = sizeof(USBHIDBridgeState),
++    .class_init    = bridge_class_init,
++};
++
++static void bridge_register_types(void)
++{
++    type_register_static(&bridge_info);
++}
++
++type_init(bridge_register_types)
