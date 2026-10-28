@@ -246,6 +246,38 @@ final class StreamSocketCheckTests: XCTestCase {
         XCTAssertNil(streamSocketProblem(socketPath, uid: getuid()))
     }
 
+    /// The root AVM falls back to when another account holds
+    /// /tmp/avm-<uid> (2026-10-28): six lower-case hex digits, no other tail.
+    func testTheFallbackRootIsAcceptedAndOnlyThatShape() throws {
+        let uid = getuid()
+        let other = "/tmp/avm-\(uid)-0a1b2c"
+        let otherDir = "\(other)/\(UUID().uuidString)"
+        let otherSocket = "\(otherDir)/hidbridge-6.sock"
+        mkdir(other, 0o700)
+        chmod(other, 0o700)
+        XCTAssertEqual(mkdir(otherDir, 0o700), 0)
+        let otherFD = socket(AF_UNIX, SOCK_STREAM, 0)
+        defer { Darwin.close(otherFD); unlink(otherSocket); rmdir(otherDir); rmdir(other) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        _ = withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            otherSocket.utf8CString.withUnsafeBytes { buffer.copyMemory(from: $0) }
+        }
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(otherFD, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        XCTAssertEqual(bound, 0)
+        XCTAssertNil(streamSocketProblem(otherSocket, uid: uid))
+        for wrong in ["/tmp/avm-\(uid)-0A1B2C/\(UUID().uuidString)/usbredir-5.sock",
+                      "/tmp/avm-\(uid)-0a1b2c7/\(UUID().uuidString)/usbredir-5.sock",
+                      "/tmp/avm-\(uid)x/\(UUID().uuidString)/usbredir-5.sock",
+                      "/tmp/avm-\(uid)-/\(UUID().uuidString)/usbredir-5.sock"] {
+            XCTAssertNotNil(streamSocketProblem(wrong, uid: uid), wrong)
+        }
+    }
+
     /// A Bluetooth device's socket (2026-10-27): hidbridge-<5…8>.sock, in
     /// the same private folder; other names stay refused.
     func testABluetoothDevicesSocketIsAccepted() {

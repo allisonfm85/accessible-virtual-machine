@@ -3449,26 +3449,57 @@ final class VMManager: ObservableObject {
     /// and AVM refuses to start, saying why, unless both levels are real
     /// directories (not symlinks), owned by this user, and closed to
     /// everyone else. The USB helper checks the same things before it
-    /// connects (AVMUSBHelper/main.swift, streamSocketProblem).
+    /// connects (AVMUSBHelper/StreamSocketCheck.swift, streamSocketProblem).
+    ///
+    /// Another account that made /tmp/avm-<uid> first used to block every
+    /// start until a restart (2026-10-28, third audit). Now a root with a
+    /// random tail, /tmp/avm-<uid>-<6 hex>, ours for this run of AVM,
+    /// serves instead; the helper accepts that shape too.
     static func privateSocketDirectory(for vmID: UUID) throws -> URL {
         let uid = getuid()
-        let root = "/tmp/avm-\(uid)"
-        let dir = "\(root)/\(vmID.uuidString)"
-        for path in [root, dir] {
-            if mkdir(path, 0o700) != 0 && errno != EEXIST {
-                throw AVMError.socketDirectoryUnsafe("AVM could not make its private folder \(path): \(String(cString: strerror(errno))).")
-            }
-            var info = stat()
-            guard lstat(path, &info) == 0 else {
-                throw AVMError.socketDirectoryUnsafe("AVM could not check its private folder \(path).")
-            }
-            let isDirectory = (info.st_mode & S_IFMT) == S_IFDIR
-            guard isDirectory, info.st_uid == uid, info.st_mode & 0o077 == 0 else {
-                avmLog("privateSocketDirectory: refusing \(path): directory \(isDirectory), owner \(info.st_uid), mode \(String(info.st_mode & 0o777, radix: 8))")
-                throw AVMError.socketDirectoryUnsafe("AVM's private folder \(path) belongs to someone else or can be opened by other accounts on this Mac, so AVM won't start the virtual machine with it. Next: restart the Mac, which empties that folder, then try again. If it happens again, another account on this Mac may be interfering; report it.")
+        let usual = "/tmp/avm-\(uid)"
+        var candidates = [usual, "\(usual)-\(String(format: "%06x", UInt32.random(in: 0...0xffffff)))"]
+        if let kept = socketRootInUse, kept != usual { candidates.insert(kept, at: 0) }
+        var root: String?
+        var failure: Error?
+        for candidate in candidates {
+            do {
+                try makePrivateFolder(candidate, uid: uid)
+                root = candidate
+                break
+            } catch {
+                failure = error
+                avmLog("privateSocketDirectory: not using \(candidate): \(error.localizedDescription)")
             }
         }
+        guard let root else { throw failure ?? AVMError.socketDirectoryUnsafe("AVM could not make its private folder.") }
+        if root != usual, socketRootInUse != root {
+            avmLog("privateSocketDirectory: \(usual) isn't this user's; the sockets go under \(root) for this run")
+        }
+        socketRootInUse = root
+        let dir = "\(root)/\(vmID.uuidString)"
+        try makePrivateFolder(dir, uid: uid)
         return URL(fileURLWithPath: dir, isDirectory: true)
+    }
+
+    /// The root privateSocketDirectory settled on, kept for the run so
+    /// every machine's sockets share it.
+    nonisolated(unsafe) private static var socketRootInUse: String?
+
+    /// Makes one level of the private folder, or proves it is ours.
+    private static func makePrivateFolder(_ path: String, uid: uid_t) throws {
+        if mkdir(path, 0o700) != 0 && errno != EEXIST {
+            throw AVMError.socketDirectoryUnsafe("AVM could not make its private folder \(path): \(String(cString: strerror(errno))).")
+        }
+        var info = stat()
+        guard lstat(path, &info) == 0 else {
+            throw AVMError.socketDirectoryUnsafe("AVM could not check its private folder \(path).")
+        }
+        let isDirectory = (info.st_mode & S_IFMT) == S_IFDIR
+        guard isDirectory, info.st_uid == uid, info.st_mode & 0o077 == 0 else {
+            avmLog("privateSocketDirectory: refusing \(path): directory \(isDirectory), owner \(info.st_uid), mode \(String(info.st_mode & 0o777, radix: 8))")
+            throw AVMError.socketDirectoryUnsafe("AVM's private folder \(path) belongs to someone else or can be opened by other accounts on this Mac, so AVM won't start the virtual machine with it. Next: restart the Mac, which empties that folder, then try again. If it happens again, another account on this Mac may be interfering; report it.")
+        }
     }
 
     /// A value for a comma-separated QEMU or swtpm option (2026-10-25,
