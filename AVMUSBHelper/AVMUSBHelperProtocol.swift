@@ -204,6 +204,29 @@ nonisolated public protocol AVMUSBHelperProtocol {
     /// Helper build identity, so AVM can tell a stale helper from a
     /// current one after an update. Reply: version string.
     func helperVersion(reply: @escaping (String) -> Void)
+
+    // A keyboard for Windows (2026-10-26, KeyboardHold.swift). macOS lets
+    // only a privileged process take a keyboard over, so the helper does:
+    // it holds the chosen keyboard exclusively, so neither macOS nor
+    // VoiceOver sees its keys, and passes each key to the AVM that asked,
+    // and to no one else, through keyboardKey. Never the built-in keyboard,
+    // never the only keyboard, only for the user at the Mac's screen.
+
+    /// The keyboards connected now: dictionaries with "id", "name",
+    /// "transport" and "builtIn".
+    func listKeyboards(reply: @escaping ([NSDictionary]) -> Void)
+
+    /// Hold the keyboard with this id, now or as soon as it connects,
+    /// until releaseKeyboard or this connection ends. Replies whether the
+    /// request was accepted, and the reason if not.
+    func holdKeyboard(_ keyboardID: String, reply: @escaping (Bool, String?) -> Void)
+
+    /// Give the keyboard back to the Mac.
+    func releaseKeyboard(reply: @escaping () -> Void)
+
+    /// Restart USB Helper (2026-10-27): the helper replies, lets go of
+    /// everything and exits; launchd starts a fresh one at the next call.
+    func restart(reply: @escaping () -> Void)
 }
 
 // MARK: - AVM side (the helper calls this back)
@@ -216,6 +239,14 @@ nonisolated public protocol AVMUSBHelperClientProtocol {
     func stateChanged(_ device: AVMUSBDeviceIdentity,
                       state: AVMUSBDeviceState,
                       detail: String?)
+
+    /// A key on the held keyboard: its HID usage (page 7) and whether it
+    /// went down or up. Never logged by either side.
+    func keyboardKey(usage: Int, pressed: Bool)
+
+    /// The held keyboard connected (held now) or went away, or couldn't be
+    /// held, with the reason.
+    func keyboardState(_ keyboardID: String, held: Bool, detail: String?)
 }
 
 // MARK: - Interfaces with secure-coding class lists
@@ -230,6 +261,11 @@ nonisolated public enum AVMUSBHelperInterfaces {
         let statusClasses = NSSet(array: [NSArray.self, AVMUSBDeviceStatus.self, AVMUSBDeviceIdentity.self]) as! Set<AnyHashable>
         iface.setClasses(statusClasses,
                          for: #selector(AVMUSBHelperProtocol.status(reply:)),
+                         argumentIndex: 0,
+                         ofReply: true)
+        let keyboardClasses = NSSet(array: [NSArray.self, NSDictionary.self, NSString.self, NSNumber.self]) as! Set<AnyHashable>
+        iface.setClasses(keyboardClasses,
+                         for: #selector(AVMUSBHelperProtocol.listKeyboards(reply:)),
                          argumentIndex: 0,
                          ofReply: true)
         return iface
