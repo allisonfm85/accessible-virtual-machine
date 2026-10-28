@@ -381,6 +381,8 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
             runToken = UUID()
             name = config.name
             showWindow(for: machine, title: config.name)
+            // On its own display, when chosen (2026-10-28, MachineDisplays).
+            if let window { MachineDisplays.placeOpening(window, for: config) }
             self.files = files
             if #available(macOS 14.0, *), FileManager.default.fileExists(atPath: files.savedState.path) {
                 resume(machine, config: config, files: files)

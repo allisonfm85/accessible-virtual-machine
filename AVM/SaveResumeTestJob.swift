@@ -113,7 +113,7 @@ enum SaveResumeTestJob {
                 || arguments.contains("--test-disk-info") || arguments.contains("--run-in-guest")
                 || arguments.contains("--test-printers") || arguments.contains("--test-camera") || arguments.contains("--test-3d") || arguments.contains("--test-camera-save")
                 || arguments.contains("--test-screen-readers") || arguments.contains("--test-hid-bridge")
-                || arguments.contains("--test-background") else { return }
+                || arguments.contains("--test-background") || arguments.contains("--test-monitors") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -134,6 +134,13 @@ enum SaveResumeTestJob {
                 }
                 print(String(format: "   took %.0f s, into %@", Date().timeIntervalSince(started), cache.path))
                 print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+            }
+            return
+        }
+        if arguments.contains("--test-monitors") {
+            Task { @MainActor in
+                let passed = monitors()
+                print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
             }
             return
         }
@@ -792,6 +799,35 @@ enum SaveResumeTestJob {
         print("== The setting off")
         mode.runInBackground = false
         check("the choice is saved", UserDefaults.standard.bool(forKey: "AVMRunInBackground") == false)
+        return ok
+    }
+
+    /// --test-monitors (2026-10-28, MachineDisplays.swift): every monitor
+    /// has a lasting id, a window opens on the chosen one filling it, and a
+    /// chosen one that isn't connected leaves the window where it was. No
+    /// machine is started.
+    @MainActor
+    private static func monitors() -> Bool {
+        let displays = MachineDisplays.connected
+        print("   monitors: \(displays.map(\.choiceName).joined(separator: "; "))")
+        check("every monitor has a lasting id", !displays.isEmpty && displays.count == NSScreen.screens.count)
+        check("the ids are the same when asked again", displays.map(\.id) == MachineDisplays.connected.map(\.id))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled], backing: .buffered, defer: true)
+        var config = VMConfiguration(name: "Monitor test")
+        for display in displays {
+            config.displayID = display.id
+            config.displayName = display.name
+            window.setFrame(NSRect(x: 0, y: 0, width: 400, height: 300), display: false)
+            MachineDisplays.placeOpening(window, for: config)
+            check("a window opens on \(display.name), filling it", window.frame == display.screen.visibleFrame)
+        }
+        config.displayID = "00000000-0000-0000-0000-000000000000"
+        config.displayName = "A monitor that isn't here"
+        let before = NSRect(x: 0, y: 0, width: 400, height: 300)
+        window.setFrame(before, display: false)
+        MachineDisplays.placeOpening(window, for: config)
+        check("one that isn't connected leaves the window be", window.frame == before && MachineDisplays.chosenScreen(config) == nil)
+        check("and isn't moved to when the monitors change", !MachineDisplays.displaysChanged(window, for: config))
         return ok
     }
 

@@ -172,6 +172,9 @@ struct MacSettingsView: View {
     @State private var shareClipboard = true
     @State private var shareMicrophone = false
     @State private var isTemplate = false
+    @State private var displayID: String?
+    @State private var displayName: String?
+    @State private var connectedDisplays: [MachineDisplays.Display] = []
     @State private var restorePoints: [MacRestorePoint] = []
     @State private var newPointName = ""
     @State private var restoreMessage: String?
@@ -269,6 +272,30 @@ struct MacSettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            // Display (2026-10-28, MachineDisplays.swift)
+            Text("Monitor")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Picker("Monitor", selection: $displayID) {
+                Text("Wherever AVM puts it").tag(String?.none)
+                ForEach(connectedDisplays) { display in
+                    Text(display.choiceName).tag(Optional(display.id))
+                }
+                if let id = displayID, !connectedDisplays.contains(where: { $0.id == id }) {
+                    Text("\(displayName ?? "Monitor") (not connected now)").tag(Optional(id))
+                }
+            }
+            .choicePopUp("Opens the list of monitors connected to your Mac. The macOS window always opens on the one you choose.")
+            .onChange(of: displayID) { id in
+                if let id, let display = connectedDisplays.first(where: { $0.id == id }) {
+                    displayName = display.name
+                }
+            }
+            Text("The monitor the macOS window always opens on, filling it. If it isn't connected, the window opens on another one. Takes effect at the next Start.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             restorePointsSection
 
             HStack {
@@ -290,6 +317,9 @@ struct MacSettingsView: View {
             shareClipboard = configuration.sharesClipboard
             shareMicrophone = configuration.sharesMicrophone
             isTemplate = configuration.isATemplate
+            displayID = configuration.displayID
+            displayName = configuration.displayName
+            connectedDisplays = MachineDisplays.connected
             reloadPoints()
         }
     }
@@ -433,6 +463,8 @@ struct MacSettingsView: View {
         updated.shareClipboard = shareClipboard ? nil : false
         updated.shareMicrophone = shareMicrophone ? true : nil
         updated.isTemplate = isTemplate ? true : nil
+        updated.displayID = displayID
+        updated.displayName = displayID == nil ? nil : displayName
         vmStore.save(updated)
         Announcer.shared.announce("Settings saved.", tone: .success)
         dismiss()

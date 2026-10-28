@@ -92,20 +92,23 @@ final class BackgroundMode: ObservableObject {
         if NSApp.modalWindow != nil || NSApp.windows.contains(where: { $0.attachedSheet != nil }) { return }
         inBackground = true
         NSApp.setActivationPolicy(.accessory)
-        if useSecondDisplay, let screen = Self.secondDisplay {
-            // Machine windows stay up on the second display; the rest goes.
-            let machineWindows = Set(MachineSessions.shared.windowsForDisplay.map(ObjectIdentifier.init))
-            for window in NSApp.windows where window.isVisible && !machineWindows.contains(ObjectIdentifier(window)) {
+        // A machine window on a display without the menu bar stays up
+        // there, for someone to watch; the rest goes.
+        let menuBarScreen = NSScreen.screens.first
+        let watched = MachineSessions.shared.windowsForDisplay.filter { window in
+            guard let screen = window.screen else { return false }
+            return screen != menuBarScreen
+        }
+        if watched.isEmpty {
+            NSApp.hide(nil)
+        } else {
+            let keep = Set(watched.map(ObjectIdentifier.init))
+            for window in NSApp.windows where window.isVisible && !keep.contains(ObjectIdentifier(window)) {
                 if window.level == .normal { window.orderOut(nil) }
             }
-            for window in MachineSessions.shared.windowsForDisplay {
-                Self.place(window, on: screen)
-                window.orderFrontRegardless()
-            }
-        } else {
-            NSApp.hide(nil)
+            for window in watched { window.orderFrontRegardless() }
         }
-        AVMLog.write("AVM: in the background (second display: \(useSecondDisplay && Self.secondDisplay != nil))")
+        AVMLog.write("AVM: in the background (\(watched.count) machine window(s) left up on another display)")
         if !explained {
             explained = true
             Announcer.shared.announce("AVM is in the background. Your keyboard for Windows still types into it. To bring AVM back, use AVM's item in the menu bar, or open AVM again.", tone: .info)
@@ -140,17 +143,6 @@ final class BackgroundMode: ObservableObject {
     static var secondDisplay: NSScreen? {
         let screens = NSScreen.screens
         return screens.count > 1 ? screens.first(where: { $0 != screens[0] }) : nil
-    }
-
-    /// A machine window opening: onto the second display, when chosen.
-    func placeMachineWindow(_ window: NSWindow) {
-        guard useSecondDisplay, let screen = Self.secondDisplay else { return }
-        Self.place(window, on: screen)
-    }
-
-    private static func place(_ window: NSWindow, on screen: NSScreen) {
-        guard window.screen != screen else { return }
-        window.setFrame(screen.visibleFrame, display: true)
     }
 
     // MARK: Open at login
@@ -293,11 +285,11 @@ struct BackgroundSettingsView: View {
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Toggle("Show machines on the second display", isOn: $background.useSecondDisplay)
-                .accessibilityHint("With two displays, a machine's window opens on the one without the menu bar and stays there in the background")
+            Toggle("Show machines on the second monitor", isOn: $background.useSecondDisplay)
+                .accessibilityHint("With two monitors, a machine's window opens on the one without the menu bar and stays there in the background, unless the machine has its own monitor chosen")
             Text(BackgroundMode.secondDisplay == nil
-                 ? "Only one display is connected now. With a second one, a machine's window opens there, and stays there while AVM is in the background, for someone to watch."
-                 : "A machine's window opens on the second display, and stays there while AVM is in the background, for someone to watch.")
+                 ? "Only one monitor is connected now. With a second one, a machine's window opens there, and stays there while AVM is in the background, for someone to watch. To choose a monitor for one machine, use Monitor in its Settings."
+                 : "A machine's window opens on the second monitor, and stays there while AVM is in the background, for someone to watch. To choose a monitor for one machine, use Monitor in its Settings.")
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
 

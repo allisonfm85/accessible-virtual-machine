@@ -347,6 +347,9 @@ struct SettingsView: View {
                 windowsKeyboardSection
             }
 
+            // Display (2026-10-28, MachineDisplays.swift)
+            displaySection
+
             // Secure Boot (Windows only)
             if configuration.guestOS == .windows {
                 secureBootSection
@@ -527,6 +530,44 @@ struct SettingsView: View {
             }
             restorePointsBusy = false
         }
+    }
+
+    // MARK: - Display (2026-10-28, MachineDisplays.swift)
+
+    @State private var displayID: String?
+    @State private var displayName: String?
+    @State private var connectedDisplays: [MachineDisplays.Display] = []
+
+    private var displaySection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Monitor")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Text("Choose the monitor the \(guest) window always opens on, filling it, every time it starts. If that monitor isn't connected, the window opens on another one and moves back as soon as you connect it. While AVM is in the background, a window on a monitor without the menu bar stays there for someone to watch.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Picker("Monitor", selection: $displayID) {
+                Text("Wherever it was last").tag(String?.none)
+                ForEach(connectedDisplays) { display in
+                    Text(display.choiceName).tag(Optional(display.id))
+                }
+                if let id = displayID, !connectedDisplays.contains(where: { $0.id == id }) {
+                    Text("\(displayName ?? "Monitor") (not connected now)").tag(Optional(id))
+                }
+            }
+            .choicePopUp("Opens the list of monitors connected to your Mac. The \(guest) window always opens on the one you choose.")
+            .onChange(of: displayID) { id in
+                if let id, let display = connectedDisplays.first(where: { $0.id == id }) {
+                    displayName = display.name
+                }
+            }
+            Button("Look Again") { connectedDisplays = MachineDisplays.connected }
+                .accessibilityLabel("Look again for monitors")
+                .accessibilityHint("Lists the monitors connected now")
+        }
+        .padding(.horizontal)
+        .onAppear { connectedDisplays = MachineDisplays.connected }
     }
 
     // MARK: - Keyboard for Windows (2026-10-26)
@@ -891,6 +932,8 @@ struct SettingsView: View {
         windowsKeyboardID = saved.windowsKeyboardID
         windowsKeyboardName = saved.windowsKeyboardName
         windowsKeyboardAppleISO = saved.windowsKeyboardAppleISO == true
+        displayID = saved.displayID
+        displayName = saved.displayName
     }
 
     // MARK: - Save Settings
@@ -1010,6 +1053,8 @@ struct SettingsView: View {
             updated.windowsKeyboardID = windowsKeyboardID
             updated.windowsKeyboardName = windowsKeyboardID == nil ? nil : windowsKeyboardName
             updated.windowsKeyboardAppleISO = windowsKeyboardID != nil && windowsKeyboardAppleISO ? true : nil
+            updated.displayID = displayID
+            updated.displayName = displayID == nil ? nil : displayName
             updated.usbMode = usbMode.rawValue
             // Only if changed here (2026-10-26, code audit): a device
             // remembered from a plug-in prompt while this sheet was open
@@ -1017,9 +1062,14 @@ struct SettingsView: View {
             if rememberedDevices != rememberedDevicesAtOpen {
                 updated.usbRememberedDevices = rememberedDevices.isEmpty ? nil : rememberedDevices
             }
+            let displayBefore = saved.displayID
             vmStore.save(updated)
             // A running VM follows the clipboard setting straight away.
             AVMPasteboard.shared.refreshEnabled()
+            // And its display (2026-10-28).
+            if updated.displayID != displayBefore {
+                MachineSessions.shared.displayChosen(updated.id)
+            }
 
             let message: String
             if let growTo {

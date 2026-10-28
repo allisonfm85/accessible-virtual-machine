@@ -597,13 +597,20 @@ dashboard's Start buttons work too.
   Windows runs, switching away from AVM takes it out of Command-Tab and
   the Dock and hides it. Windows keeps its keyboard. To bring AVM back,
   use AVM's item in the menu bar (VoiceOver-M twice reaches it), or
-  open AVM again. *Show machines on the second display*: with two
-  displays, a machine's window opens on the one without the menu bar,
+  open AVM again. *Show machines on the second monitor*: with two
+  monitors, a machine's window opens on the one without the menu bar,
   and stays there in the background for someone sighted to watch. To
   have a machine start whenever AVM opens, turn on Start When AVM Opens
   in its row while it's shut down. Only one machine can have it. With
   all of these on, your Mac logs in, AVM opens out of the way, and
   Windows starts, ready for its keyboard.
+- **A monitor for a machine.** In a machine's Settings, Monitor, choose
+  the monitor its window always opens on, filling it, every time it
+  starts, the way a keyboard for Windows always belongs to it. AVM
+  remembers that monitor, so it's the same one after a restart. If it
+  isn't connected, AVM says so and opens the window on another monitor,
+  and the window moves back as soon as you connect it. In the
+  background, a window on a monitor without the menu bar stays up.
 - **Mice and trackpads work now.** On machines installed with AVM 0.1.1
   or later, the Windows pointer follows your finger exactly and clicks
   land where the pointer is, from the very first boot. Machines

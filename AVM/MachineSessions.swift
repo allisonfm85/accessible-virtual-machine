@@ -180,6 +180,11 @@ final class MachineSessions: ObservableObject {
         }
     }
 
+    /// A machine's display was chosen in its Settings while it runs.
+    func displayChosen(_ id: UUID) {
+        windows[id]?.displayChosen()
+    }
+
     /// Machine windows that are open, for the second display
     /// (BackgroundMode).
     var windowsForDisplay: [NSWindow] {
@@ -225,6 +230,31 @@ final class MachineWindow: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("AVMMachine-\(session.configuration.id.uuidString)")
         window.delegate = self
+        // Its own display plugged in again: the window moves back to it.
+        screensObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.shownOnce, !self.closing else { return }
+                MachineDisplays.displaysChanged(self.window, for: self.latestConfiguration)
+            }
+        }
+    }
+
+    deinit {
+        if let screensObserver { NotificationCenter.default.removeObserver(screensObserver) }
+    }
+
+    private nonisolated(unsafe) var screensObserver: NSObjectProtocol?
+
+    /// The machine's settings as saved now: a display chosen while it
+    /// runs counts.
+    private var latestConfiguration: VMConfiguration {
+        vmStore.configurations.first { $0.id == session.configuration.id } ?? session.configuration
+    }
+
+    /// Its display was chosen in Settings while it runs: it goes there now.
+    func displayChosen() {
+        guard shownOnce, !closing, let screen = MachineDisplays.screen(for: latestConfiguration) else { return }
+        MachineDisplays.fill(window, on: screen)
     }
 
     /// The machine's screen view, which takes the keyboard.
@@ -252,8 +282,9 @@ final class MachineWindow: NSObject, NSWindowDelegate {
         if window.frameAutosaveName.isEmpty || !window.setFrameUsingName(window.frameAutosaveName) {
             window.center()
         }
-        // On the second display, when chosen (BackgroundMode).
-        BackgroundMode.shared.placeMachineWindow(window)
+        // On its own display, or the second one, when chosen
+        // (MachineDisplays).
+        MachineDisplays.placeOpening(window, for: latestConfiguration)
         let elsewhere = focusLock.isLocked && MachineSessions.shared.currentID != session.configuration.id
         if elsewhere {
             window.orderBack(nil)

@@ -137,6 +137,15 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// (HIDKeyMap.isoSwapped). nil: a PC or ANSI keyboard, as it is.
     var windowsKeyboardAppleISO: Bool?
 
+    // MARK: - Display (2026-10-28)
+
+    /// The display the machine's window always opens on, filling it
+    /// (MachineDisplays.swift), by macOS's lasting id for it; nil: wherever
+    /// it was last. The name is for saying which, even when it isn't
+    /// connected.
+    var displayID: String?
+    var displayName: String?
+
     /// macOS machines: false for a new machine whose first start hasn't
     /// offered macOS's VoiceOver yet, true once it has; nil for machines
     /// made before this existed (MacGuestRunner.offerVoiceOverOnce).
