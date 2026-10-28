@@ -74,6 +74,20 @@ nonisolated final class USBHelperCallbackReceiver: NSObject, AVMUSBHelperClientP
             USBHelperClient.shared.handleStateChanged(device, state: state, detail: detail)
         }
     }
+
+    // The keyboard for Windows (2026-10-26). The main queue, not Tasks:
+    // it keeps key presses in the exact order they were typed.
+    func keyboardKey(usage: Int, pressed: Bool) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { WindowsKeyboard.shared.key(usage: usage, pressed: pressed) }
+        }
+    }
+
+    func keyboardState(_ keyboardID: String, held: Bool, detail: String?) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { WindowsKeyboard.shared.stateChanged(keyboardID, held: held, detail: detail) }
+        }
+    }
 }
 
 // MARK: - Errors
@@ -295,6 +309,23 @@ final class USBHelperClient: NSObject, ObservableObject {
         }
     }
 
+    /// Waits, up to `limit`, for the helper to be approved, checking every
+    /// 2 seconds while `keepWaiting` is true. True once it's enabled.
+    ///
+    /// For a send that asked for the approval (2026-10-27, a tester's
+    /// keyboard): it used to fail and be forgotten, so after "USB helper
+    /// approved, continuing" nothing continued and the keyboard stayed on
+    /// the Mac until it was plugged in again. The send now waits here and
+    /// goes ahead once the approval lands.
+    func waitForApproval(limit: TimeInterval = 300, while keepWaiting: () -> Bool) async -> Bool {
+        let started = Date()
+        while Date().timeIntervalSince(started) < limit, keepWaiting() {
+            if refreshStatus() == .enabled { return true }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        return refreshStatus() == .enabled
+    }
+
     /// Polls status until the approval lands, then says so (1e:
     /// "USB helper approved, continuing" is spoken so the person
     /// standing in System Settings hears the handshake complete).
@@ -327,11 +358,15 @@ final class USBHelperClient: NSObject, ObservableObject {
             Task { @MainActor in
                 self?.log("connection invalidated")
                 self?.connection = nil
+                self?.keyboardHelperLost()
+                self?.devicesHelperLost()
             }
         }
         c.interruptionHandler = { [weak self] in
             Task { @MainActor in
                 self?.log("connection interrupted (helper exited or crashed)")
+                self?.keyboardHelperLost()
+                self?.devicesHelperLost()
             }
         }
         c.resume()
@@ -352,8 +387,17 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// The lifetime rule: no attached or pending devices, no
     /// connection. Called after every one-off call and after every
     /// state event.
+    /// A keyboard for Windows is wanted or held (WindowsKeyboard.swift);
+    /// the connection is what keeps it, so it stays open meanwhile.
+    var keyboardActive = false
+    /// Bumped by every holdKeyboard (2026-10-26, keyboard audit): a release
+    /// still waiting on the helper's answer when a new hold starts (a quick
+    /// SPICE reconnect) must not then mark the keyboard idle and drop the
+    /// connection, which would make the helper let go of the new hold.
+    private var keyboardGeneration = 0
+
     private func disconnectIfIdle() {
-        if attachedDevices.isEmpty && pendingDevices.isEmpty {
+        if attachedDevices.isEmpty && pendingDevices.isEmpty && !keyboardActive {
             disconnect()
         }
     }
@@ -393,6 +437,75 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// A success reply means the claim started, not that it finished:
     /// the outcome arrives as a stateChanged event and is spoken there.
     /// A failure reply is spoken here, once, with its step.
+    // MARK: Keyboard for Windows (2026-10-26)
+
+    /// The keyboards connected now, as the helper sees them.
+    func listKeyboards() async -> Result<[NSDictionary], USBHelperError> {
+        guard ensureRegistered() else { return .failure(.notEnabled(status)) }
+        let c = connect()
+        let result: Result<[NSDictionary], USBHelperError> = await withCheckedContinuation { cont in
+            let proxy = c.remoteObjectProxyWithErrorHandler { error in
+                cont.resume(returning: .failure(USBHelperError.fromXPC(error)))
+            } as? AVMUSBHelperProtocol
+            guard let proxy else { cont.resume(returning: .failure(.xpc("could not build the helper proxy"))); return }
+            proxy.listKeyboards { cont.resume(returning: .success($0)) }
+        }
+        disconnectIfIdle()
+        return result
+    }
+
+    func holdKeyboard(_ keyboardID: String) async -> Result<Void, USBHelperError> {
+        guard ensureRegistered() else { return .failure(.notEnabled(status)) }
+        keyboardActive = true
+        keyboardGeneration += 1
+        let c = connect()
+        let result: Result<Void, USBHelperError> = await withCheckedContinuation { cont in
+            let proxy = c.remoteObjectProxyWithErrorHandler { error in
+                cont.resume(returning: .failure(USBHelperError.fromXPC(error)))
+            } as? AVMUSBHelperProtocol
+            guard let proxy else { cont.resume(returning: .failure(.xpc("could not build the helper proxy"))); return }
+            proxy.holdKeyboard(keyboardID) { ok, reason in
+                cont.resume(returning: ok ? .success(()) : .failure(.helper(step: "holding the keyboard", detail: reason ?? "")))
+            }
+        }
+        if case .failure = result {
+            keyboardActive = false
+            disconnectIfIdle()
+        }
+        return result
+    }
+
+    /// The helper went away while it held the keyboard for Windows: the
+    /// kernel has given the keyboard back to macOS, so Windows must let go
+    /// of any key still down, and AVM asks again (2026-10-26, keyboard
+    /// audit; this used to only log).
+    /// Devices the helper held are the Mac's again once it's gone.
+    private func devicesHelperLost() {
+        guard !attachedDevices.isEmpty || !pendingDevices.isEmpty else { return }
+        attachedDevices.removeAll()
+        pendingDevices.removeAll()
+        USBRedirectController.shared.helperLost()
+    }
+
+    private func keyboardHelperLost() {
+        guard keyboardActive else { return }
+        keyboardActive = false
+        WindowsKeyboard.shared.helperLost()
+    }
+
+    func releaseKeyboard() async {
+        guard keyboardActive, let c = connection else { keyboardActive = false; return }
+        let generation = keyboardGeneration
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let proxy = c.remoteObjectProxyWithErrorHandler { _ in cont.resume() } as? AVMUSBHelperProtocol
+            guard let proxy else { cont.resume(); return }
+            proxy.releaseKeyboard { cont.resume() }
+        }
+        guard generation == keyboardGeneration else { return }
+        keyboardActive = false
+        disconnectIfIdle()
+    }
+
     func attach(_ device: AVMUSBDeviceIdentity,
                 socketPath: String,
                 retrying: Bool = false) async -> Result<Void, USBHelperError> {
