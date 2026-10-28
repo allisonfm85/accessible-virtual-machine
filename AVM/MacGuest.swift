@@ -612,30 +612,36 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
             }
             window.makeFirstResponder(machineView)
             AVMLog.write("AVM: MacGuest — machine's screen is \(window.firstResponder === machineView ? "" : "NOT ")first responder; window is \(window.isKeyWindow ? "" : "NOT ")key; AVM is \(NSApp.isActive ? "" : "NOT ")active.")
+            // Only now that the screen has the keyboard (2026-10-28, code
+            // review): these three used to run whether or not it did, so a
+            // refused activation left the hotkey taken system-wide, the
+            // VoiceOver flag set, and "Entering macOS" said right after
+            // "didn't get the keyboard".
+            // NEVER capturesSystemKeys = true here (2026-10-26, a user stuck
+            // in macOS): Apple's capture takes the keyboard below AVM's key
+            // monitor AND its system-wide hotkey, so Control-Command-Escape
+            // stopped working and only quitting AVM got the keyboard back.
+            // Command-Tab and Command-F5 stay the Mac's. The hotkey stays as
+            // a second way out.
+            self.registerEscapeHotKey()
+            // "Entering macOS", the same words every time, as for Windows;
+            // the keys to know are added the first time only.
+            // Both VoiceOvers at once (2026-10-26, "random VoiceOver dings"):
+            // the Mac's VoiceOver takes its Control-Option chords, but the
+            // machine still sees the Control and Option presses alone, and
+            // macOS's VoiceOver dings at the half-chords. Said every time
+            // the Mac's VoiceOver is on as macOS takes the keyboard.
+            // AVM can't turn it off for good (measured; MacVoiceOver below),
+            // so it asks for Command-F5, and turns it back on itself when
+            // the keyboard leaves macOS.
+            var entering = self.hintGiven ? "Entering \(self.guestName)" : "Entering \(self.guestName). Control-Command-Escape returns to your Mac."
+            if MacVoiceOver.noteEnteringGuest() {
+                entering += (entering.hasSuffix(".") ? " " : ". ") + "Press Command-F5 to turn your Mac's VoiceOver off while you're in \(self.guestName); AVM turns it back on when you return."
+            }
+            Announcer.shared.announce(entering, tone: .enterGuest)
+            self.hintGiven = true
+            AVMLog.write("AVM: MacGuest — keyboard to macOS.")
         }
-        // NEVER capturesSystemKeys = true here (2026-10-26, a user stuck in
-        // macOS): Apple's capture takes the keyboard below AVM's key monitor
-        // AND its system-wide hotkey, so Control-Command-Escape stopped
-        // working and only quitting AVM got the keyboard back. Command-Tab
-        // and Command-F5 stay the Mac's. The hotkey stays as a second way out.
-        registerEscapeHotKey()
-        // "Entering macOS", the same words every time, as for Windows; the
-        // keys to know are added the first time only.
-        // Both VoiceOvers at once (2026-10-26, "random VoiceOver dings"):
-        // the Mac's VoiceOver takes its Control-Option chords, but the
-        // machine still sees the Control and Option presses alone, and
-        // macOS's VoiceOver dings at the half-chords. Said every time the
-        // Mac's VoiceOver is on as macOS takes the keyboard.
-        // AVM can't turn it off for good (measured; MacVoiceOver below), so
-        // it asks for Command-F5, and turns it back on itself when the
-        // keyboard leaves macOS.
-        var entering = hintGiven ? "Entering \(guestName)" : "Entering \(guestName). Control-Command-Escape returns to your Mac."
-        if MacVoiceOver.noteEnteringGuest() {
-            entering += (entering.hasSuffix(".") ? " " : ". ") + "Press Command-F5 to turn your Mac's VoiceOver off while you're in \(guestName); AVM turns it back on when you return."
-        }
-        Announcer.shared.announce(entering, tone: .enterGuest)
-        hintGiven = true
-        AVMLog.write("AVM: MacGuest — keyboard to macOS.")
     }
 
     /// Gives the keyboard back to the Mac; the machine keeps running.

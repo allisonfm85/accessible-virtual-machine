@@ -644,6 +644,9 @@ final class MainWindowCloseGuard: NSObject, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// False when AVM has no main window (macOS restored none at launch).
+    static var hasMainWindow: Bool { shared.mainWindow != nil }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if QuitCoordinator.vmIsActive {
             AVMLog.write("AVM: Close window — a VM is active; asking the quit question.")

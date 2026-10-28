@@ -131,13 +131,18 @@ final class ControlServer {
             return ["ok": true, "machines": [describe(config)], "message": ""]
 
         case "start":
+            // The dashboard's refusals too (2026-10-28, code review): not
+            // while its files are being copied, and never a template.
+            if MachineArchiveController.shared.busyMachineID == config.id, let activity = MachineArchiveController.shared.activity {
+                return fail("AVM is \(activity). Wait until it's done, then try again.")
+            }
+            if config.isATemplate { return fail("\(name) is a template. Duplicate it to make a machine to start.") }
             if isMac {
                 guard mac.runningID == nil else { return fail("A macOS machine is already running.") }
                 mac.start(config)
                 return ["ok": true, "message": "Starting \(name)."]
             }
             if session != nil { return fail("\(name) is already running.") }
-            if config.isATemplate { return fail("\(name) is a template. Duplicate it to make a machine to start.") }
             let windowless = request["noWindow"] as? Bool == true || config.startsWithoutWindow
             MachineSessions.shared.start(config, vmStore: store, focusLock: FocusLockManager.shared, windowless: windowless)
             return ["ok": true, "message": "Starting \(name)\(windowless ? " without a window" : "")."]

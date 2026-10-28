@@ -323,9 +323,9 @@ reopens at the guest's next read after a restore.
 +- (void)startSession
 +{
 +    AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
++    if (!self->state) return;   /* closed before it could start (2026-10-28) */
 +    if (!device) {
-+        error_report("usb-camera: the Mac has no camera");
-+        return;
++        error_report("usb-camera: the Mac has no camera"); return;
 +    }
 +    NSError *err = nil;
 +    AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:device error:&err];
@@ -555,7 +555,7 @@ reopens at the guest's next read after a restore.
 +    qemu_mutex_lock(&s->lock);
 +    bool unread = s->next_ready && now - s->next_ready_ms > IDLE_STOP_MS;
 +    qemu_mutex_unlock(&s->lock);
-+    if (unread && !s->sending && now - s->last_taken_ms > IDLE_STOP_MS) {
++    if (unread && now - s->last_taken_ms > IDLE_STOP_MS) {
 +        camera_close(s, false);
 +        return;
 +    }

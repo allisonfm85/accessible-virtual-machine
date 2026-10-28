@@ -42,11 +42,13 @@ final class BluetoothHold {
         var inputReport: UnsafeMutablePointer<UInt8>
         let inputSize: Int
         let usesReportIDs: Bool
-        init(id: String, device: IOHIDDevice, socket: Int32, owner: NSXPCConnection?, inputSize: Int, usesReportIDs: Bool) {
+        let ownerUID: uid_t
+        init(id: String, device: IOHIDDevice, socket: Int32, owner: NSXPCConnection?, ownerUID: uid_t, inputSize: Int, usesReportIDs: Bool) {
             self.id = id
             self.device = device
             self.socket = socket
             self.owner = owner
+            self.ownerUID = ownerUID
             self.inputSize = inputSize
             self.usesReportIDs = usesReportIDs
             inputReport = .allocate(capacity: inputSize)
@@ -54,6 +56,30 @@ final class BluetoothHold {
         deinit { inputReport.deallocate() }
     }
     private var held: [String: Held] = [:]
+    /// While anything is held: the device is only for the person at the
+    /// screen, as a keyboard for Windows is (2026-10-28, code review: a
+    /// fast user switch left it in a background user's machine).
+    private var watchTimer: DispatchSourceTimer?
+
+    private func watchWhileHeld() {
+        if held.isEmpty {
+            watchTimer?.cancel()
+            watchTimer = nil
+            return
+        }
+        guard watchTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 3, repeating: 3)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            for entry in self.held.values where !Self.isConsoleUser(entry.ownerUID) {
+                os_log("Bluetooth device let go: its user left the screen", log: log, type: .default)
+                self.stop(entry, notify: true, detail: "you left the Mac's screen")
+            }
+        }
+        timer.resume()
+        watchTimer = timer
+    }
 
     // MARK: Finding devices
 
@@ -147,11 +173,11 @@ final class BluetoothHold {
                 reply(false, "That Bluetooth device isn't connected. Turn it on, or wake it, and try again.")
                 return
             }
-            if let reason = Self.mustStayOnMac(device, among: all) {
+            if let reason = Self.mustStayOnMac(device, among: all.filter { !HeldByHelper.contains($0) }) {
                 reply(false, reason)
                 return
             }
-            let socket = Self.connectSocket(streamSocketPath)
+            let socket = Self.connectSocket(streamSocketPath, owner: uid)
             guard socket >= 0 else {
                 reply(false, "The helper couldn't reach the virtual machine's socket.")
                 return
@@ -165,10 +191,12 @@ final class BluetoothHold {
             }
             let size = max(64, min(4096, Self.property(device, kIOHIDMaxInputReportSizeKey) as? Int ?? 64))
             let descriptor = Self.property(device, kIOHIDReportDescriptorKey) as? Data ?? Data()
-            let entry = Held(id: id, device: device, socket: socket, owner: connection,
+            let entry = Held(id: id, device: device, socket: socket, owner: connection, ownerUID: uid,
                              inputSize: size, usesReportIDs: Self.usesReportIDs(descriptor))
             self.held[id] = entry
+            HeldByHelper.add(device)
             self.start(entry)
+            self.watchWhileHeld()
             idle.bluetoothChanged(count: self.held.count)
             os_log("Bluetooth device held for a virtual machine", log: log, type: .default)
             reply(true, nil)
@@ -217,6 +245,9 @@ final class BluetoothHold {
 
         let source = DispatchSource.makeReadSource(fileDescriptor: entry.socket, queue: queue)
         source.setEventHandler { [weak self] in self?.readSocket(entry) }
+        // The descriptor stays open until the source is done with it.
+        let socket = entry.socket
+        source.setCancelHandler { close(socket) }
         source.resume()
         entry.readSource = source
     }
@@ -283,11 +314,16 @@ final class BluetoothHold {
     private func stop(_ entry: Held, notify: Bool, detail: String?) {
         guard held[entry.id] === entry else { return }
         held[entry.id] = nil
-        entry.readSource?.cancel()
+        HeldByHelper.remove(entry.device)
+        if let source = entry.readSource {
+            source.cancel()                  // closes the socket when done
+        } else {
+            close(entry.socket)
+        }
         entry.readSource = nil
-        close(entry.socket)
         IOHIDDeviceCancel(entry.device)     // closed in its cancel handler
         idle.bluetoothChanged(count: held.count)
+        watchWhileHeld()
         os_log("Bluetooth device let go", log: log, type: .default)
         if notify {
             (entry.owner?.remoteObjectProxy as? AVMUSBHelperClientProtocol)?.bluetoothState(entry.id, held: false, detail: detail)
@@ -332,7 +368,11 @@ final class BluetoothHold {
         return false
     }
 
-    private static func connectSocket(_ path: String) -> Int32 {
+    /// Connected as root, so the peer is checked after connecting, as
+    /// usbstream.c does (2026-10-28, code review): the path check can't
+    /// see a symlink swapped in after it. A write to a stuck peer gives up
+    /// after two seconds rather than blocking every Bluetooth device.
+    private static func connectSocket(_ path: String, owner: uid_t) -> Int32 {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return -1 }
         var address = sockaddr_un()
@@ -349,8 +389,17 @@ final class BluetoothHold {
             }
         }
         guard connected == 0 else { close(fd); return -1 }
+        var peerUID: uid_t = 0
+        var peerGID: gid_t = 0
+        guard getpeereid(fd, &peerUID, &peerGID) == 0, peerUID == owner else {
+            os_log("bluetooth hold refused: the socket's other side isn't the user who asked", log: log, type: .error)
+            close(fd)
+            return -1
+        }
         var on: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+        var limit = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
         return fd
     }
 

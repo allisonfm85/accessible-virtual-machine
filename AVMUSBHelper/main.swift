@@ -414,7 +414,10 @@ final class DeviceRegistry {
             os_log("released %{public}@", log: log, type: .default, entry.device.description)
             entry.stream = nil
             entry.state = .released
-            entries[entry.device] = nil
+            // Only its own entry (2026-10-28, code review): one set aside
+            // could otherwise remove a newer attach of the same device.
+            if entries[entry.device] === entry { entries[entry.device] = nil }
+            abandoned.removeAll { $0 === entry }
             idle.devicesChanged(count: entries.count)
             report(entry, detail: entry.endDetail)
             entry.detachTimeout?.cancel()

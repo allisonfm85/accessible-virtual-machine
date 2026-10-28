@@ -45,8 +45,14 @@
 //     do not call into this logger, and must never be made to. A scrubber
 //     could have a bug, miss a format, or be bypassed by a call site added a
 //     year from now; an absent call cannot.
-//     MECHANICAL CHECK (belongs in every handoff):
-//       grep -n "AVMLog\|avmLog" views/VMView.swift   -> expect NO output
+//     MECHANICAL CHECK (belongs in every handoff; reworded 2026-10-28,
+//     code review: the file now has a few lifecycle lines, none in the
+//     key path):
+//       grep -n "AVMLog\|avmLog" views/VMView.swift
+//     -> expect ONLY clipboard, SPICE-agent and the in-window
+//        Control-Command-Escape lines; nothing in handleKey,
+//        handleFlagsChanged or performKeyEquivalent, and no line that
+//        carries a key, a character or a key code.
 //     Keystroke logging still exists for development (the vk= NSLogs), but it
 //     goes to the unified log only, and Stage B gates it off by default.
 //

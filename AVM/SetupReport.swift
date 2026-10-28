@@ -51,7 +51,11 @@ nonisolated enum SetupReport {
         let missing = expected.filter { !lines.contains($0.line) }
         let present = expected.filter { lines.contains($0.line) }
         var message: String
-        if missing.isEmpty {
+        if missing.isEmpty, !signedIn {
+            // Not "everything" before the first sign-in (2026-10-28, code
+            // review): said with the success sound at every Start until then.
+            message = "Windows setup has installed \(list(present.map(\.name))) so far."
+        } else if missing.isEmpty {
             message = "Windows setup installed everything: \(list(present.map(\.name)))."
         } else {
             message = "Windows setup finished, but \(list(missing.map(\.name))) didn't install."
@@ -60,7 +64,7 @@ nonisolated enum SetupReport {
         if expectsNVDA && !signedIn {
             message += " NVDA installs when you first sign in to Windows."
         }
-        return (message, missing.isEmpty)
+        return (message, missing.isEmpty && signedIn)
     }
 
     /// "A, B and C".

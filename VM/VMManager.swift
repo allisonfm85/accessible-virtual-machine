@@ -313,6 +313,8 @@ final class VMManager: ObservableObject {
     /// (the install-complete marker). USB 2c: during setup, start-time
     /// devices wait for the SPICE agent, with no fallback.
     private(set) var installCompleteAtStart = false
+    /// The disk bus this run started on (2026-10-28): what Save needs.
+    private(set) var startedOnVirtioDisk = false
     /// How a move to the virtio disk went this run (2026-10-27): "ready",
     /// "switched", "nvme" or "failed"; nil if none. For the test job.
     @Published var diskSwitchResult: String?
@@ -720,9 +722,13 @@ final class VMManager: ObservableObject {
     private func watchForFirstSignIn(configuration: VMConfiguration, runtimeDir: URL, installStart: Date) async {
         let since = Date()
         var lastProgress = Date()
+        // After the hour's warning the watch goes on quietly, every 5
+        // minutes (2026-10-28, code review): it used to stop, so a sign-in
+        // at minute 70 was never announced.
+        var warnedAtHour = false
         let microsoftAccount = WindowsSetupAnswers.load(fromVMDirectory: runtimeDir)?.localAccount == nil
         while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 60_000_000_000)
+            try? await Task.sleep(nanoseconds: warnedAtHour ? 300_000_000_000 : 60_000_000_000)
             guard state == .running || state == .paused else { return }
             let report = mtools(["mtype", "-i", "IMG", "::AVMSTATUS.TXT"], runtimeDir: runtimeDir)?.output ?? ""
             if report.contains("first-sign-in-done") {
@@ -732,17 +738,17 @@ final class VMManager: ObservableObject {
                 Announcer.shared.announce("Windows is installed and signed in.\(talking)", tone: .success)
                 return
             }
-            if state == .running, Date().timeIntervalSince(lastProgress) >= Self.installProgressInterval {
+            if !warnedAtHour, state == .running, Date().timeIntervalSince(lastProgress) >= Self.installProgressInterval {
                 lastProgress = Date()
                 let minutes = Int(Date().timeIntervalSince(installStart) / 60)
                 Announcer.shared.announce(microsoftAccount
                     ? "Windows is still setting up, \(minutes) minutes so far. With a Microsoft account, it stops at its sign-in pages for you: enter Windows and press Control Command Return for Narrator to hear where it is."
                     : "Windows is still setting up, \(minutes) minutes so far.", tone: .info)
             }
-            if Date().timeIntervalSince(since) > 60 * 60 {
-                avmLog("installWatchdog: no first sign-in 60 minutes after the marker")
+            if !warnedAtHour, Date().timeIntervalSince(since) > 60 * 60 {
+                warnedAtHour = true
+                avmLog("installWatchdog: no first sign-in 60 minutes after the marker; watching on quietly")
                 Announcer.shared.announce("Windows has been setting up for an hour without reaching its first sign-in; one of its steps may be waiting. Next: enter Windows and turn on Narrator with Control Command Return to hear where it is.", tone: .failure)
-                return
             }
         }
     }
@@ -1069,6 +1075,7 @@ final class VMManager: ObservableObject {
         let installComplete = checkInstallCompleteMarker(configuration: configuration, runtimeDir: runtimeDir)
         // USB 2c: start-time devices wait for setup to finish (2026-10-18).
         installCompleteAtStart = installComplete
+        startedOnVirtioDisk = configuration.usesVirtioDisk
         // SAVED STATE (2026-10-27): an installed machine on the virtio disk
         // that was saved carries on from there (QEMUSavedState). No
         // restore point is taken at such a Start: its disk is mid-session.
@@ -1131,6 +1138,7 @@ final class VMManager: ObservableObject {
 
         var tpmArgs: [String] = []
         if let swtpmURL = swtpmBinaryURL {
+            try ensureStillStarting()
             avmLog("startVM: launching swtpm")
             try await launchSwtpm(binaryURL: swtpmURL, socketPath: tpmPath, runtimeDir: runtimeDir)
             tpmArgs = buildTPMArguments(socketPath: tpmPath)
@@ -1174,6 +1182,7 @@ final class VMManager: ObservableObject {
         // the Mac has the keyboard, not in the middle of Windows Setup.
         _ = await LocalNetworkAccess.ensure(guest: configuration.guestOS.displayName)
 
+        try ensureStillStarting()
         avmLog("startVM: launching QEMU child process")
         try launchQEMU(executableURL: qemuURL, arguments: args)
         avmLog("startVM: QEMU launched, connecting to QMP")
@@ -1183,6 +1192,7 @@ final class VMManager: ObservableObject {
 
         try await performQMPHandshake()
         avmLog("startVM: handshake complete, VM is running")
+        try ensureStillStarting()
 
         if let resumePlan {
             await resumeSavedState(resumePlan, configuration: configuration, runtimeDir: runtimeDir)
@@ -1247,6 +1257,17 @@ final class VMManager: ObservableObject {
                 // signature until the marker appears or the VM stops.
                 startInstallWatchdog(configuration: configuration, runtimeDir: runtimeDir)
             }
+        }
+    }
+
+    /// Force Stop or Quit Now during a start (2026-10-28, code review): the
+    /// start used to carry on past them and launch QEMU for a session that
+    /// had ended, or one that outlived AVM. Checked before each launch and
+    /// before "running"; a start cut short ends as a failed one, quietly.
+    private func ensureStillStarting() throws {
+        guard case .starting = state else {
+            avmLog("startVM: the machine was stopped during its start; not going on")
+            throw CancellationError()
         }
     }
 
@@ -2459,7 +2480,7 @@ final class VMManager: ObservableObject {
             // for a blind user — the machine just vanishes. Interrupt with
             // sound + system voice regardless of which app is frontmost.
             Announcer.shared.announce(
-                "The virtual machine stopped unexpectedly.",
+                "\(machineName) stopped unexpectedly.",
                 tone: .failure
             )
         } else {
@@ -2851,7 +2872,9 @@ final class VMManager: ObservableObject {
     private func connectToQMP(socketPath: String) async throws {
         for attempt in 1 ... 50 {
             avmLog("connectToQMP: attempt \(attempt)")
-            if let proc = qemuProcess, !proc.isRunning {
+            // qemuProcess is nil once the exit handler has run (2026-10-28,
+            // code review: the loop used to wait its full 10 s then).
+            if qemuProcess == nil || qemuProcess?.isRunning == false {
                 avmLog("connectToQMP: QEMU process is no longer running")
                 throw AVMError.qemuLaunchFailed
             }
@@ -3591,9 +3614,13 @@ extension VMManager {
     /// True when the running machine can be saved: an installed machine
     /// on the virtio disk, not drawing in 3D (QEMU can't save virgl).
     var canSaveState: Bool {
+        // The bus this run started on (2026-10-28, code review): the virtio
+        // switch's "firstBoot" store flipped activeConfiguration to virtio
+        // while QEMU still ran on NVMe, and Save was offered, gave the USB
+        // devices back, then failed.
         guard state == .running || state == .paused,
               let configuration = activeConfiguration,
-              configuration.usesVirtioDisk, installCompleteAtStart,
+              startedOnVirtioDisk, installCompleteAtStart,
               !(configuration.uses3D && Self.supports3D) else { return false }
         return true
     }
@@ -3724,9 +3751,13 @@ extension VMManager {
         Announcer.shared.announce(plan.isSavedState ? "Resuming \(guest) where you left it." : "Resuming \(guest) at its restore point.", tone: .info)
         let started = Date()
         var node = ""
+        // The marker first (2026-10-28, code review): written after
+        // diskNodeName(), a failed query left the saved state on the disk
+        // with no marker, and the Start after next loaded it over days of
+        // newer work.
+        if plan.isSavedState { fm.createFile(atPath: marker.path, contents: nil) }
         do {
             node = try await diskNodeName()
-            if plan.isSavedState { fm.createFile(atPath: marker.path, contents: nil) }
             try await runQMPJob("snapshot-load", id: "avm-load",
                                 arguments: ["tag": plan.tag, "vmstate": node, "devices": [node]])
             _ = try await sendQMPCommand("cont", arguments: nil)

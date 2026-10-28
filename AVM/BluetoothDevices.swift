@@ -75,7 +75,17 @@ final class BluetoothDevices: ObservableObject {
             say("\(machine.machineName) couldn't add \(device.name). Reason: \(error.localizedDescription)", tone: .failure)
             return false
         }
-        switch await USBHelperClient.shared.holdBluetooth(device.id, socketPath: socket) {
+        var held = await USBHelperClient.shared.holdBluetooth(device.id, socketPath: socket)
+        // The helper is waiting for its approval in Login Items (2026-10-28,
+        // code review): wait, then ask again, so "approved, continuing"
+        // continues this too.
+        if case .failure(.notEnabled(.requiresApproval)) = held {
+            say("\(device.name) goes to \(machine.machineName) once AVM's helper is allowed in Login Items.", tone: .info)
+            if await USBHelperClient.shared.waitForApproval(while: { if case .running = machine.state { return true } else { return false } }) {
+                held = await USBHelperClient.shared.holdBluetooth(device.id, socketPath: socket)
+            }
+        }
+        switch held {
         case .success:
             attached[device.id] = Attached(port: port, machine: machine, name: device.name)
             AVMLog.write("Bluetooth: \(device.name) (\(device.kind)) is in \(machine.machineName) on port \(port)", category: "Bluetooth")
@@ -117,9 +127,16 @@ final class BluetoothDevices: ObservableObject {
     func helperLetGo(_ id: String, detail: String?) {
         USBHelperClient.shared.forgetBluetooth(id)
         guard let entry = attached.removeValue(forKey: id) else { return }
-        USBRedirectController.shared.releaseReservedPort(portKey(id))
-        guard let machine = entry.machine, case .running = machine.state else { return }
-        Task { await machine.detachHIDBridge(port: entry.port) }
+        guard let machine = entry.machine, case .running = machine.state else {
+            USBRedirectController.shared.releaseReservedPort(portKey(id))
+            return
+        }
+        // The port is free once the bridge device is gone (2026-10-28, code
+        // review): freed first, the next send could take it meanwhile.
+        Task {
+            await machine.detachHIDBridge(port: entry.port)
+            USBRedirectController.shared.releaseReservedPort(portKey(id))
+        }
         say("\(entry.name) went back to the Mac\(detail.map { ": \($0)" } ?? ""). Send it again from Bluetooth Devices when it's back.", tone: .info)
     }
 
@@ -139,9 +156,13 @@ final class BluetoothDevices: ObservableObject {
         let lost = attached
         attached = [:]
         for (id, entry) in lost {
-            USBRedirectController.shared.releaseReservedPort(portKey(id))
             if let machine = entry.machine, case .running = machine.state {
-                Task { await machine.detachHIDBridge(port: entry.port) }
+                Task {
+                    await machine.detachHIDBridge(port: entry.port)
+                    USBRedirectController.shared.releaseReservedPort(portKey(id))
+                }
+            } else {
+                USBRedirectController.shared.releaseReservedPort(portKey(id))
             }
         }
         if !lost.isEmpty {

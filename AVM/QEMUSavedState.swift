@@ -67,7 +67,13 @@ nonisolated enum QEMUSavedState {
             if fm.fileExists(atPath: marker.path) {
                 AVMLog.write("AVM: SavedState — a saved state already carried on once is still on the disk; deleting it, not loading it.")
                 _ = try? await RestorePoints.qemuImg(["snapshot", "-d", tag, disk.path])
-                try? fm.removeItem(at: marker)
+                // The marker goes only once the saved state has (2026-10-28,
+                // code review): otherwise the Start after next loads it.
+                if await snapshotTags(disk: disk).contains(tag) {
+                    AVMLog.write("AVM: SavedState — the stale saved state couldn't be deleted; keeping the marker so it's never loaded.")
+                } else {
+                    try? fm.removeItem(at: marker)
+                }
                 try? fm.removeItem(at: hint(in: runtimeDir))
             } else {
                 try? fm.removeItem(at: resume)

@@ -490,9 +490,10 @@ import CocoaSpiceNoUsb
 /// helper are configuration-choice announcements (the standing principle:
 /// every configuration choice must be announced in a readable log), and they
 /// are the field-diagnosis stream for any future display issue. They cannot
-/// be promoted to the FILE log instead, because this file must stay 100%
-/// file-logger-free (Handoff 19 §6 — the mechanical privacy check greps this
-/// file for the file logger's name and must return nothing). The unified log
+/// be promoted to the FILE log instead, because this file's key path must
+/// stay file-logger-free (Handoff 19 §6; the mechanical privacy check in
+/// AVMLog.swift allows only the clipboard, SPICE-agent and escape-chord
+/// lifecycle lines, none carrying a key). The unified log
 /// via %{public}@ is the correct sink: readable from `log show`, no file I/O
 /// from this file, trivial volume (display events only — a handful per
 /// generation). The file-log side of the announcement principle is satisfied
@@ -654,7 +655,7 @@ struct VMView: View {
                         focusLock.unlock()
                     }
                 }
-                .accessibilityHint("Immediately kills the virtual machine. Use only if Stop is unresponsive.")
+                .accessibilityHint("Asks first. Immediately kills the virtual machine. Use only if Stop is unresponsive.")
             }
         }
         .padding(16)

@@ -32,6 +32,36 @@ import IOKit.hid
 import SystemConfiguration
 import os.log
 
+/// The devices this helper holds right now, by IOKit registry entry
+/// (2026-10-28, code review). macOS still lists a seized device, so each
+/// hold counted the other's keyboard as one the Mac could type with: the
+/// keyboard for Windows and a Bluetooth keyboard sent to a machine could
+/// between them leave the Mac with none. Both rules now leave these out.
+enum HeldByHelper {
+    private static let lock = NSLock()
+    private static var entries = Set<UInt64>()
+
+    static func entryID(_ device: IOHIDDevice) -> UInt64? {
+        let service = IOHIDDeviceGetService(device)
+        guard service != IO_OBJECT_NULL else { return nil }
+        var id: UInt64 = 0
+        return IORegistryEntryGetRegistryEntryID(service, &id) == KERN_SUCCESS ? id : nil
+    }
+    static func add(_ device: IOHIDDevice) {
+        guard let id = entryID(device) else { return }
+        lock.lock(); entries.insert(id); lock.unlock()
+    }
+    static func remove(_ device: IOHIDDevice) {
+        guard let id = entryID(device) else { return }
+        lock.lock(); entries.remove(id); lock.unlock()
+    }
+    static func contains(_ device: IOHIDDevice) -> Bool {
+        guard let id = entryID(device) else { return false }
+        lock.lock(); defer { lock.unlock() }
+        return entries.contains(id)
+    }
+}
+
 final class KeyboardHold {
     static let shared = KeyboardHold()
 
@@ -91,6 +121,7 @@ final class KeyboardHold {
     /// a YubiKey passed the old "two keyboards" count).
     private static func otherKeyboards(_ all: [IOHIDDevice], than wanted: String) -> Int {
         let ids = all.filter { device in
+            if HeldByHelper.contains(device) { return false }   // in a machine already
             let vendor = property(device, kIOHIDVendorIDKey) as? Int ?? 0
             let transport = (property(device, kIOHIDTransportKey) as? String ?? "").lowercased()
             return identifier(device) != wanted
@@ -216,6 +247,7 @@ final class KeyboardHold {
             IOHIDDeviceActivate(device)
         }
         held = opened
+        for device in opened { HeldByHelper.add(device) }
         heldID = wanted
         saidWaiting = false
         checksWithoutAnother = 0
@@ -242,7 +274,7 @@ final class KeyboardHold {
         if let uid = heldOwnerUID, !Self.isConsoleUser(uid) {
             os_log("keyboard for Windows given back: its user left the screen", log: log, type: .default)
             releaseHeld(notify: false)
-            client()?.keyboardState(id, held: false, detail: "disconnected")
+            client()?.keyboardState(id, held: false, detail: "away")
             startLooking()
             return
         }
@@ -305,7 +337,10 @@ final class KeyboardHold {
         watchTimer?.cancel()
         watchTimer = nil
         guard !held.isEmpty else { return }
-        for device in held { IOHIDDeviceCancel(device) }   // closed in its cancel handler
+        for device in held {
+            HeldByHelper.remove(device)
+            IOHIDDeviceCancel(device)   // closed in its cancel handler
+        }
         held = []
         if notify, let id = heldID { client()?.keyboardState(id, held: false, detail: nil) }
         heldID = nil

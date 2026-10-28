@@ -107,7 +107,15 @@ final class WindowsISODownloader: ObservableObject {
         stopped = true
         watchTask?.cancel()
         watchTask = nil
-        if phase == .watching || phase == .downloading { phase = .idle }
+        // A watch going on in the background ends with a word (2026-10-28,
+        // code review: closing the wizard ended it silently after AVM had
+        // promised to choose the file).
+        if inBackground, phase == .watching || phase == .downloading {
+            Announcer.shared.announce("AVM stopped watching for the Windows download: the Setup Wizard closed. Open it again to carry on.", tone: .info)
+        }
+        // .verifying too (2026-10-28, code review): stopped during the
+        // check, it stayed there with no way to start again.
+        if phase == .watching || phase == .downloading || phase == .verifying { phase = .idle }
     }
 
     /// "About 3 of 8 gigabytes downloaded so far." For the button and the

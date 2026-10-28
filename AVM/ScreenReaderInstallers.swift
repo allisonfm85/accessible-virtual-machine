@@ -234,7 +234,7 @@ nonisolated enum ScreenReaderInstallers {
     private static func removeOlderCopies(of reader: ScreenReader, keeping file: URL, in cache: URL) {
         let fm = FileManager.default
         for name in (try? fm.contentsOfDirectory(atPath: cache.path)) ?? []
-        where name.hasPrefix("\(reader.rawValue)-") && name != file.lastPathComponent {
+        where name.hasPrefix("\(reader.rawValue)-") && name != file.lastPathComponent && !name.contains(".part") {
             try? fm.removeItem(at: cache.appendingPathComponent(name))
         }
     }
@@ -265,7 +265,9 @@ nonisolated enum ScreenReaderInstallers {
     /// (NSURLSessionDownloadTaskResumeData in the error) for the next try.
     private static func download(_ installer: ScreenReaderInstaller, to file: URL, resumeData: Data?,
                                  say: @escaping @Sendable (String, Bool) async -> Void) async throws {
-        let part = file.appendingPathExtension("part")
+        // Its own name per download (2026-10-28, code review): two machines
+        // starting at once shared one, and one's move took the other's file.
+        let part = file.appendingPathExtension("part-\(UUID().uuidString.prefix(8))")
         let box = TaskBox()
         // Large downloads (JAWS is 1.5 GB) say how far they've got.
         let progress = Task {

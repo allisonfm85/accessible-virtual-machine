@@ -112,7 +112,7 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +    USBDescConfig conf;
 +    USBDescDevice device_full;
 +    USBDesc desc;
-+    const char *strings[8];
++    USBDescStrings strings;      /* 256: the guest picks any index (2026-10-28) */
 +
 +    /* Input reports waiting for the guest */
 +    HBReport queue[HB_QUEUE];

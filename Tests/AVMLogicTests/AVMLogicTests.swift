@@ -549,7 +549,11 @@ final class SetupReportTests: XCTestCase {
     func testBeforeTheFirstSignInNVDAIsntMissing() throws {
         let report = "specialize-done\nvdagent-installed\nwebdavd-installed\nqemu-ga-installed\n"
         let summary = try XCTUnwrap(SetupReport.summary(reportText: report, expectsJAWS: false, expectsNVDA: true))
-        XCTAssertTrue(summary.complete)
+        // Not complete, and not "everything", until the first sign-in
+        // (2026-10-28): nothing is missing, so no success sound either.
+        XCTAssertFalse(summary.complete)
+        XCTAssertTrue(summary.message.hasPrefix("Windows setup has installed"))
+        XCTAssertFalse(summary.message.contains("didn't install"))
         XCTAssertTrue(summary.message.contains("NVDA installs when you first sign in"))
     }
 

@@ -444,7 +444,7 @@ struct SetupView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         storageFolder = url
         // Keep the disk size within what the new drive can hold.
-        diskSizeGB = min(diskSizeGB, maxDiskInGB)
+        diskSizeGB = max(40, min(diskSizeGB, maxDiskInGB))
         Announcer.shared.announce("The virtual machine will be stored \(storageDescription.prefix(1).lowercased() + storageDescription.dropFirst())", tone: .info)
     }
 
@@ -891,6 +891,11 @@ struct SetupView: View {
                         // The user's own folder: only AVM's answer files go.
                         for name in [WindowsSetupAnswers.fileName, UbuntuAccount.fileName] {
                             try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))
+                        }
+                        // And the machine's own folder, once empty (2026-10-28,
+                        // code review): it was left behind on the drive.
+                        if (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.isEmpty == true {
+                            try? FileManager.default.removeItem(at: folder)
                         }
                     } else {
                         try? FileManager.default.removeItem(at: folder)

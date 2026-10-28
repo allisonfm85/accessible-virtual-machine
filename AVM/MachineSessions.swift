@@ -79,7 +79,13 @@ final class MachineSessions: ObservableObject {
         } else if windowless {
             Announcer.shared.announce("Starting \(config.name) without a window. Enter it from AVM's list to see it.", tone: .info)
         }
-        makeCurrent(config.id)
+        // Not while the keyboard is in another machine (2026-10-28, code
+        // review): made current at once, a machine started from the list
+        // while locked in another came to the front and took its window,
+        // not its keyboard. It becomes current when entered.
+        if FocusLockManager.shared?.isLocked != true || currentID == nil {
+            makeCurrent(config.id)
+        }
         watchers[config.id] = session.$vmState
             .combineLatest(session.$restartingAfterInstall)
             .sink { [weak self] state, restarting in
@@ -162,11 +168,14 @@ final class MachineSessions: ObservableObject {
     func end(_ id: UUID) {
         guard sessions[id] != nil else { return }
         if currentID == id, let lock = FocusLockManager.shared, lock.isLocked { lock.unlock() }
+        // Gone from the list before its window closes (2026-10-28, code
+        // review): closing it makes another machine's window key, whose
+        // makeCurrent moves the USB watcher only once this session is gone.
+        sessions[id] = nil
+        begun.remove(id)
         windows[id]?.closeForGood()
         windows[id] = nil
         watchers[id] = nil
-        sessions[id] = nil
-        begun.remove(id)
         AVMLog.write("AVM: MachineSessions — a machine ended; \(sessions.count) still running.")
         AVMPasteboard.shared.refreshEnabled()
         BackgroundMode.shared.machineStopped()
@@ -316,6 +325,11 @@ final class MachineWindow: NSObject, NSWindowDelegate {
     var nsWindow: NSWindow { window }
 
     func windowDidBecomeKey(_ notification: Notification) {
+        // The keyboard was in another machine (2026-10-28, code review): it
+        // comes back to the Mac, so the lock never outlives its window.
+        if let lock = FocusLockManager.shared, lock.isLocked, MachineSessions.shared.currentID != session.configuration.id {
+            lock.unlock()
+        }
         MachineSessions.shared.makeCurrent(session.configuration.id)
     }
 

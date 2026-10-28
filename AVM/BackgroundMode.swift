@@ -134,7 +134,14 @@ final class BackgroundMode: ObservableObject {
         guard wasBackground || announce else { return }
         NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
-        MainWindowCloseGuard.bringMainWindowForward()
+        if MainWindowCloseGuard.hasMainWindow {
+            MainWindowCloseGuard.bringMainWindowForward()
+        } else {
+            // No main window to bring (2026-10-28, code review: launched
+            // with none, Show AVM showed nothing): opening AVM again makes
+            // one, as the Dock does.
+            NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: NSWorkspace.OpenConfiguration()) { _, _ in }
+        }
         if wasBackground { AVMLog.write("AVM: out of the background") }
     }
 

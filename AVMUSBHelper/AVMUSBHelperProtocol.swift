@@ -268,8 +268,9 @@ nonisolated public protocol AVMUSBHelperClientProtocol {
     /// The held keyboard connected (held now) or went away, or couldn't be
     /// held, with the reason. Not held with detail "disconnected": the
     /// keyboard went away, and is taken again when it's back; "waiting":
-    /// the Mac has no other keyboard, and it's taken once it does
-    /// (2026-10-28). Any other detail is final.
+    /// the Mac has no other keyboard, and it's taken once it does;
+    /// "away": its user left the Mac's screen, and it's taken again when
+    /// they're back (2026-10-28). Any other detail is final.
     func keyboardState(_ keyboardID: String, held: Bool, detail: String?)
 }
 

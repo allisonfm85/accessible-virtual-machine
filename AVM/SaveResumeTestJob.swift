@@ -290,7 +290,10 @@ enum SaveResumeTestJob {
                 }
                 close(fd)
                 await manager.detachHIDBridge(port: port)
-                check("the bridge device was removed", true)
+                try? await Task.sleep(for: .seconds(2))
+                let usb = (try? await manager.sendQMPCommand("x-query-usb", arguments: nil)).map { "\($0)" } ?? ""
+                print("   QEMU's USB devices after the detach: \(usb.prefix(600))")
+                check("the bridge device was removed", !usb.isEmpty && !usb.contains("hidbridge-dev-\(port)") && !usb.contains("AVM Bluetooth test"))
                 await shutDown(manager)
                 print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
             }

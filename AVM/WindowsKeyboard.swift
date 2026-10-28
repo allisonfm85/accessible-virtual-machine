@@ -78,7 +78,20 @@ final class WindowsKeyboard {
         announcedHeld = false
         AVMLog.write("AVM: WindowsKeyboard — asking the helper for the keyboard for Windows.")
         Task { @MainActor in
-            if case .failure(let error) = await USBHelperClient.shared.holdKeyboard(keyboardID) {
+            var result = await USBHelperClient.shared.holdKeyboard(keyboardID)
+            // The helper is waiting for its approval in Login Items
+            // (2026-10-28, code review): "USB helper approved, continuing"
+            // used to continue nothing for this keyboard. Wait, then ask
+            // again.
+            if case .failure(.notEnabled(.requiresApproval)) = result {
+                AVMLog.write("AVM: WindowsKeyboard — waiting for the helper's approval.")
+                Announcer.shared.announce("\(keyboardName) goes to Windows once AVM's helper is allowed in Login Items.", tone: .info)
+                if await USBHelperClient.shared.waitForApproval(while: { self.keyboardID == keyboardID }) {
+                    guard self.keyboardID == keyboardID else { return }
+                    result = await USBHelperClient.shared.holdKeyboard(keyboardID)
+                }
+            }
+            if case .failure(let error) = result {
                 AVMLog.write("AVM: WindowsKeyboard — the helper couldn't hold it: \(error)")
                 // Only if no newer start has replaced this one meanwhile.
                 guard self.keyboardID == keyboardID else { return }
@@ -112,11 +125,16 @@ final class WindowsKeyboard {
         }
         retriedAfterHelperLoss = true
         let name = keyboardName
+        // For the same machine (2026-10-28, code review): started again
+        // with no target, keys went to the front machine, and any machine
+        // stopping ended the keyboard.
+        let machine = target
         Announcer.shared.announce("\(keyboardName) types on the Mac for a moment: AVM's helper restarted. Asking for it again.", tone: .info)
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, VMManager.shared != nil, self.keyboardID == nil else { return }
-                self.start(keyboardID: id, name: name)
+                if let machine, case .running = machine.state {} else if machine != nil { return }
+                self.start(keyboardID: id, name: name, target: machine)
             }
         }
     }
@@ -134,6 +152,10 @@ final class WindowsKeyboard {
         guard id == keyboardID else { return }
         if held {
             AVMLog.write("AVM: WindowsKeyboard — held.")
+            // Held again, so a later helper loss gets its retry too
+            // (2026-10-28, code review: the second restart in one session
+            // stranded the keyboard).
+            retriedAfterHelperLoss = false
             if !announcedHeld {
                 announcedHeld = true
                 Announcer.shared.announce("\(keyboardName) now types only in Windows.", tone: .info)
@@ -144,6 +166,10 @@ final class WindowsKeyboard {
             releaseAllKeys()
             AVMLog.write("AVM: WindowsKeyboard — disconnected; the helper will take it again when it's back.")
             Announcer.shared.announce("\(keyboardName) disconnected. It types in Windows again as soon as it reconnects.", tone: .info)
+        } else if detail == "away" {
+            releaseAllKeys()
+            AVMLog.write("AVM: WindowsKeyboard — its user left the screen; the helper takes it again when they're back.")
+            Announcer.shared.announce("\(keyboardName) types on the Mac while another user is at the screen. It types in Windows again when you're back.", tone: .info)
         } else if detail == "waiting" {
             // The Mac has no other keyboard right now (2026-10-28): the
             // helper keeps looking, and takes it once the Mac has one.

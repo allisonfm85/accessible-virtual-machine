@@ -88,17 +88,23 @@ final class SleepCoordinator {
         let once = AllowOnce(port: port, token: token)
         asleep = true
         Task { @MainActor in
-            for manager in running {
-                do {
-                    try await manager.pauseVM()
-                    guard self.asleep else {
-                        AVMLog.write("AVM: Sleep — a pause landed after the Mac woke; resuming it at once.")
-                        try? await manager.resumeVM()
-                        continue
+            // All at once (2026-10-28, code review): one slow pause used to
+            // run out the hold with the next machine still running.
+            await withTaskGroup(of: Void.self) { group in
+                for manager in running {
+                    group.addTask { @MainActor in
+                        do {
+                            try await manager.pauseVM()
+                            guard self.asleep else {
+                                AVMLog.write("AVM: Sleep — a pause landed after the Mac woke; resuming it at once.")
+                                try? await manager.resumeVM()
+                                return
+                            }
+                            self.pausedForSleep.append(manager)
+                        } catch {
+                            AVMLog.write("AVM: Sleep — a pause failed (\(error.localizedDescription)); letting the Mac sleep anyway.")
+                        }
                     }
-                    self.pausedForSleep.append(manager)
-                } catch {
-                    AVMLog.write("AVM: Sleep — a pause failed (\(error.localizedDescription)); letting the Mac sleep anyway.")
                 }
             }
             once.allow()
