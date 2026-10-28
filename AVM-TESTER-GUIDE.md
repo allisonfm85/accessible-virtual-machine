@@ -667,6 +667,26 @@ dashboard's Start buttons work too.
 
 ---
 
+### Remote Desktop from the Windows App
+
+Microsoft's **Windows App** (the Remote Desktop client, free on the App
+Store for Mac, iPad and iPhone) can open a Windows or Linux machine
+running in AVM. In the machine's Settings, under Remote Desktop, turn on
+**Let the Windows App connect**, choose a user name and a password, and
+choose whether only this Mac or your whole network may connect. Save.
+AVM keeps the password in your Mac's keychain, makes the account in the
+machine and turns its Remote Desktop host on (Windows 11 Pro's own;
+Linux gets xrdp), and tells you the address to type: the machine's name
+with .local, such as amena-pc.local, or the Mac's address with a port.
+The name works while the machine is running. In the Windows App, add a
+PC with that name, and sign in with the user name and password you
+chose. Windows 11 Home has no Remote Desktop host, so AVM says so there;
+macOS machines don't do Remote Desktop. If you give the name of an
+account the machine already has, that account's password becomes the
+one you typed. The first time a machine is reachable from your whole
+network, macOS may ask whether to allow incoming connections to
+qemu-system-aarch64; allow it.
+
 ### Sharing a folder
 
 To open a Mac folder in Windows, open the machine's Settings and choose

@@ -1231,6 +1231,13 @@ final class VMManager: ObservableObject {
         // user's report). It used to start when the machine's screen
         // connected (VMView.spiceInputAvailable), so a machine running
         // without a window never got its keyboard.
+        // Remote Desktop (2026-10-28): the machine's name on the network
+        // while it runs, and the account kept up to date once its agent
+        // answers.
+        if configuration.remoteDesktopOn, let port = configuration.remoteDesktopPort {
+            RemoteDesktopAdvertiser.shared.publish(configuration, port: port)
+            Task { [weak self] in await self?.keepRemoteDesktopReady(configuration: configuration) }
+        }
         if let keyboardID = configuration.windowsKeyboardID, !WindowsKeyboard.disabledForTests {
             WindowsKeyboard.shared.appleISO = configuration.windowsKeyboardAppleISO == true
             WindowsKeyboard.shared.start(keyboardID: keyboardID, name: configuration.windowsKeyboardName, target: self)
@@ -2202,7 +2209,14 @@ final class VMManager: ObservableObject {
         // efi-virtio.rom default-NIC failure seen in bare `-nodefaults`-less
         // Terminal runs does not apply here; this exact line has booted VMs
         // in-app across sessions.
-        args += ["-netdev", "user,id=net0", "-device", "virtio-net-pci,netdev=net0"]
+        // Remote Desktop (2026-10-28, RemoteDesktop.swift): a port on the
+        // Mac forwarded to the machine's 3389, for the Windows App.
+        var netdev = "user,id=net0"
+        if configuration.remoteDesktopOn, let port = configuration.remoteDesktopPort {
+            netdev += ",hostfwd=\(RemoteDesktop.forwardingRule(for: configuration, port: port))"
+            avmLog("buildQEMUArguments: Remote Desktop forwarded from the Mac's port \(port)")
+        }
+        args += ["-netdev", netdev, "-device", "virtio-net-pci,netdev=net0"]
 
         // agent-mouse=on (Path A, 2026-08-10; was off): lets the SPICE
         // vdagent drive client-mode (absolute) mouse once an agent is
@@ -3530,6 +3544,7 @@ final class VMManager: ObservableObject {
         // the machine's window.
         // Only if it types into this machine (2026-10-27, several at once).
         BluetoothDevices.shared.machineStopped(self)
+        if let id = activeConfiguration?.id { RemoteDesktopAdvertiser.shared.unpublish(id) }
         if WindowsKeyboard.shared.target === self || WindowsKeyboard.shared.target == nil {
             WindowsKeyboard.shared.stop()
         }
@@ -3954,7 +3969,7 @@ extension VMManager {
     }
 
     /// One guest-agent command; its "return", or throws its error.
-    private func agentCall(_ command: [String: Any], timeout: TimeInterval = 10) async throws -> Any? {
+    func agentCall(_ command: [String: Any], timeout: TimeInterval = 10) async throws -> Any? {
         guard let path = guestAgentSocketPath else { throw AVMError.qmpCommandFailed("no guest agent") }
         let data = try JSONSerialization.data(withJSONObject: command)
         let line = String(decoding: data, as: UTF8.self)
@@ -3967,9 +3982,13 @@ extension VMManager {
     }
 
     /// Runs a program in the guest, waiting at most `limit`; its output.
-    private func agentRun(_ program: String, _ args: [String], limit: Duration = .seconds(300)) async throws -> String {
-        let started = try await agentCall(["execute": "guest-exec",
-                                           "arguments": ["path": program, "arg": args, "capture-output": true]])
+    /// Runs a program in the guest, waiting at most `limit`; its output.
+    /// `input` goes to its standard input (a password for chpasswd, never
+    /// on a command line, 2026-10-28).
+    func agentRun(_ program: String, _ args: [String], limit: Duration = .seconds(300), input: String? = nil) async throws -> String {
+        var arguments: [String: Any] = ["path": program, "arg": args, "capture-output": true]
+        if let input { arguments["input-data"] = Data(input.utf8).base64EncodedString() }
+        let started = try await agentCall(["execute": "guest-exec", "arguments": arguments])
         guard let pid = (started as? [String: Any])?["pid"] as? Int else {
             throw AVMError.qmpCommandFailed("the guest didn't start \(program)")
         }

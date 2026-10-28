@@ -109,6 +109,18 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// through soundSmoothness.
     var soundBuffer: String?
 
+    // MARK: - Remote Desktop (2026-10-28, RemoteDesktop.swift)
+
+    /// The account the Windows App signs in with; nil: Remote Desktop off.
+    /// The password is in the keychain, by the machine's id.
+    var remoteDesktopUser: String?
+    /// "mac": reachable from this Mac only; "network": from the whole
+    /// network. nil: this Mac only.
+    var remoteDesktopReach: String?
+    /// The port on the Mac forwarded to the machine's 3389, kept once
+    /// chosen so the address stays the same.
+    var remoteDesktopPort: Int?
+
     /// true: the machine has a USB camera fed by the Mac's camera
     /// (2026-10-27, AVM's QEMU usb-camera). Off unless chosen. Read it
     /// through sharesCamera.

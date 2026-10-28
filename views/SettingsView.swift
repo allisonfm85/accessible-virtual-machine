@@ -299,6 +299,9 @@ struct SettingsView: View {
             }
             .padding(.horizontal)
 
+            // Remote Desktop (2026-10-28, RemoteDesktop.swift)
+            remoteDesktopSection
+
             // Microphone (2026-10-27)
             VStack(alignment: .leading, spacing: 6) {
                 Text("Microphone")
@@ -783,6 +786,108 @@ struct SettingsView: View {
 
     // MARK: - Shared Folder Section (2026-10-26)
 
+    // MARK: - Remote Desktop (2026-10-28, RemoteDesktop.swift)
+
+    @State private var remoteDesktopOn = false
+    @State private var remoteDesktopUser = ""
+    @State private var remoteDesktopPassword = ""
+    @State private var remoteDesktopShowPassword = false
+    @State private var remoteDesktopReach = "mac"
+
+    private var windowsIsHome: Bool {
+        configuration.guestOS == .windows && (saved.windowsEdition == .home || saved.windowsEdition == .homeSingleLanguage)
+    }
+
+    private var remoteDesktopSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Remote Desktop")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            if windowsIsHome {
+                Text("This Windows is the Home edition, which has no Remote Desktop host built in. Remote Desktop needs Windows 11 Pro.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Toggle("Let the Windows App connect to \(guest)", isOn: $remoteDesktopOn)
+                    .accessibilityHint("Microsoft's Windows App, from the App Store, can then open \(guest) by Remote Desktop with the account below")
+                if remoteDesktopOn {
+                    TextField("User name", text: $remoteDesktopUser)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("User name for Remote Desktop")
+                        .accessibilityHint("The account the Windows App signs in with. AVM makes it in \(guest), or sets this password on it if it's there already.")
+                    if remoteDesktopShowPassword {
+                        TextField("Password", text: $remoteDesktopPassword)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityLabel("Password for Remote Desktop, shown")
+                    } else {
+                        SecureField("Password", text: $remoteDesktopPassword)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityLabel("Password for Remote Desktop")
+                    }
+                    Toggle("Show the password", isOn: $remoteDesktopShowPassword)
+                    Picker("Reachable from", selection: $remoteDesktopReach) {
+                        Text("This Mac only").tag("mac")
+                        Text("My whole network: iPad, phone, other Macs").tag("network")
+                    }
+                    .choicePopUp("Chooses whether only this Mac, or every device on your network, can open \(guest) by Remote Desktop")
+                    Text(remoteDesktopAddressWords)
+                        .font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text("AVM keeps the password in your Mac's keychain, and the account in \(guest) is made or updated each time it starts. If you give the name of an account \(guest) already has, that account's password becomes this one.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    private var remoteDesktopAddressWords: String {
+        var preview = saved
+        preview.remoteDesktopUser = remoteDesktopUser
+        preview.remoteDesktopReach = remoteDesktopReach
+        let port = RemoteDesktop.port(for: preview, among: vmStore.configurations)
+        let addresses = RemoteDesktop.addresses(for: preview, port: port)
+        return "In the Windows App, add a PC named \(addresses.name), or \(addresses.ip), and sign in as \(remoteDesktopUser.isEmpty ? "the user name above" : remoteDesktopUser). The name works while \(guest) is running."
+    }
+
+    /// After Save: the keychain, the forwarding and the account in a
+    /// running machine. Spoken as it goes.
+    private func applyRemoteDesktop(_ updated: VMConfiguration, wasOn: Bool, oldPort: Int?) {
+        let id = updated.id
+        if updated.remoteDesktopOn, let port = updated.remoteDesktopPort {
+            if !remoteDesktopPassword.isEmpty { RemoteDesktop.savePassword(remoteDesktopPassword, for: id) }
+            guard isRunning, let manager = MachineSessions.shared.session(for: id)?.manager else {
+                Announcer.shared.announce("Remote Desktop is set up the next time \(guest) starts.", tone: .info)
+                return
+            }
+            let user = updated.remoteDesktopUser ?? ""
+            let password = remoteDesktopPassword.isEmpty ? (RemoteDesktop.password(for: id) ?? "") : remoteDesktopPassword
+            Task { @MainActor in
+                if let oldPort, oldPort != port { await manager.stopForwardingRemoteDesktop(port: oldPort) }
+                let forwarded = await manager.forwardRemoteDesktopNow(configuration: updated, port: port)
+                RemoteDesktopAdvertiser.shared.publish(updated, port: port)
+                Announcer.shared.announce("Setting up Remote Desktop in \(guest). This takes a minute.", tone: .info)
+                switch await manager.setUpRemoteDesktop(configuration: updated, user: user, password: password) {
+                case .ready(let words):
+                    let addresses = RemoteDesktop.addresses(for: updated, port: port)
+                    Announcer.shared.announce("\(words) In the Windows App, add a PC named \(addresses.name), or \(addresses.ip).\(forwarded ? "" : " The Mac's port couldn't be forwarded yet; restart \(guest) if the Windows App can't reach it.")", tone: .success)
+                case .unsupported(let words), .failed(let words):
+                    Announcer.shared.announce(words, tone: .failure)
+                }
+            }
+        } else if wasOn {
+            RemoteDesktop.forgetPassword(for: id)
+            RemoteDesktopAdvertiser.shared.unpublish(id)
+            if isRunning, let manager = MachineSessions.shared.session(for: id)?.manager, let oldPort {
+                Task { await manager.stopForwardingRemoteDesktop(port: oldPort) }
+            }
+            Announcer.shared.announce("Remote Desktop is off for \(guest). The account stays in it.", tone: .info)
+        }
+    }
+
     private var sharedFolderSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Shared Folder")
@@ -967,6 +1072,10 @@ struct SettingsView: View {
         windowsKeyboardAppleISO = saved.windowsKeyboardAppleISO == true
         displayID = saved.displayID
         displayName = saved.displayName
+        remoteDesktopOn = saved.remoteDesktopOn
+        remoteDesktopUser = saved.remoteDesktopUser ?? ""
+        remoteDesktopReach = saved.remoteDesktopReach ?? "mac"
+        remoteDesktopPassword = saved.remoteDesktopOn ? (RemoteDesktop.password(for: saved.id) ?? "") : ""
     }
 
     // MARK: - Save Settings
@@ -980,6 +1089,19 @@ struct SettingsView: View {
         guard !vmName.trimmingCharacters(in: .whitespaces).isEmpty else {
             validationErrors = ["Virtual machine name cannot be empty."]
             return
+        }
+        if remoteDesktopOn, !windowsIsHome {
+            let user = remoteDesktopUser.trimmingCharacters(in: .whitespaces)
+            if user.isEmpty || user.count > 20 || user.rangeOfCharacter(from: CharacterSet(charactersIn: "\"/\\[]:;|=,+*?<>@'")) != nil {
+                validationErrors = ["Remote Desktop needs a user name of up to 20 characters, without quotes, slashes, colons or brackets."]
+                Announcer.shared.announce(validationErrors[0], tone: .failure)
+                return
+            }
+            if remoteDesktopPassword.isEmpty, RemoteDesktop.password(for: saved.id) == nil {
+                validationErrors = ["Remote Desktop needs a password."]
+                Announcer.shared.announce(validationErrors[0], tone: .failure)
+                return
+            }
         }
         validationErrors = []
         saveMessage = nil
@@ -1089,6 +1211,17 @@ struct SettingsView: View {
             updated.windowsKeyboardAppleISO = windowsKeyboardID != nil && windowsKeyboardAppleISO ? true : nil
             updated.displayID = displayID
             updated.displayName = displayID == nil ? nil : displayName
+            let remoteDesktopWasOn = saved.remoteDesktopOn
+            let remoteDesktopOldPort = saved.remoteDesktopPort
+            if remoteDesktopOn, !windowsIsHome {
+                updated.remoteDesktopUser = remoteDesktopUser.trimmingCharacters(in: .whitespaces)
+                updated.remoteDesktopReach = remoteDesktopReach == "network" ? "network" : nil
+                updated.remoteDesktopPort = RemoteDesktop.port(for: updated, among: vmStore.configurations)
+            } else {
+                updated.remoteDesktopUser = nil
+                updated.remoteDesktopReach = nil
+                updated.remoteDesktopPort = nil
+            }
             updated.usbMode = usbMode.rawValue
             // Only if changed here (2026-10-26, code audit): a device
             // remembered from a plug-in prompt while this sheet was open
@@ -1103,6 +1236,10 @@ struct SettingsView: View {
             // And its display (2026-10-28).
             if updated.displayID != displayBefore {
                 MachineSessions.shared.displayChosen(updated.id)
+            }
+            // Remote Desktop (2026-10-28): the keychain, the port, the account.
+            if remoteDesktopOn || remoteDesktopWasOn {
+                applyRemoteDesktop(updated, wasOn: remoteDesktopWasOn, oldPort: remoteDesktopOldPort)
             }
 
             let message: String

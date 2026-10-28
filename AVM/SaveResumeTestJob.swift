@@ -114,7 +114,7 @@ enum SaveResumeTestJob {
                 || arguments.contains("--test-printers") || arguments.contains("--test-camera") || arguments.contains("--test-3d") || arguments.contains("--test-camera-save")
                 || arguments.contains("--test-screen-readers") || arguments.contains("--test-hid-bridge")
                 || arguments.contains("--test-background") || arguments.contains("--test-monitors")
-                || arguments.contains("--test-agent-shutdown") else { return }
+                || arguments.contains("--test-agent-shutdown") || arguments.contains("--test-remote-desktop") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -193,6 +193,74 @@ enum SaveResumeTestJob {
                 check("the same app carried on getting frames", frameAfter > frameBefore + 10 && after.dropFirst().first == "1")
                 check("the Mac's camera came back on", manager.consoleOutput.contains("usb-camera: the Mac's camera ("))
                 _ = await exec(agent2, program: "/bin/sh", args: ["-c", "pkill gst-launch; rm -rf /tmp/avm-cam"])
+                await shutDown(manager)
+                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+            }
+            if arguments.contains("--test-remote-desktop") {
+                // Remote Desktop (2026-10-28, RemoteDesktop.swift): the account
+                // and host in the guest, the Mac's port forwarded at run time,
+                // the name published, and an RDP client's first packet
+                // answered through the forwarded port.
+                let manager = VMManager()
+                var config = configuration(folder: folderURL, guest: guest)
+                config.name = "RDP test"
+                config.remoteDesktopUser = value("--user") ?? "avmtester"
+                config.remoteDesktopReach = nil
+                config.remoteDesktopPort = Int(value("--port") ?? "") ?? 3399
+                let password = value("--password") ?? "Test-Password-1234"
+                guard await start(manager, config), let agent = manager.guestAgentSocketPath,
+                      await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                try? await Task.sleep(for: .seconds(15))
+                let began = Date()
+                let result = await manager.setUpRemoteDesktop(configuration: config, user: config.remoteDesktopUser!, password: password)
+                var words = ""
+                switch result {
+                case .ready(let w): words = w; check("the account and host were set up (\(Int(Date().timeIntervalSince(began))) s)", true)
+                case .unsupported(let w): words = w; check("the account and host were set up", false)
+                case .failed(let w): words = w; check("the account and host were set up", false)
+                }
+                print("   said: \(words)")
+                let exists = guest == .windows
+                    ? await exec(agent, program: "cmd.exe", args: ["/c", "net user \(config.remoteDesktopUser!) >nul 2>&1 && echo YES || echo NO"])
+                    : await exec(agent, program: "/bin/sh", args: ["-c", "id -u \(config.remoteDesktopUser!) >/dev/null 2>&1 && echo YES || echo NO"])
+                check("the guest has the account", (exists ?? "").contains("YES"))
+                let port = config.remoteDesktopPort!
+                check("the Mac's port \(port) is forwarded while running", await manager.forwardRemoteDesktopNow(configuration: config, port: port))
+                check("the name is published", RemoteDesktopAdvertiser.shared.publish(config, port: port))
+                try? await Task.sleep(for: .seconds(5))
+                // An RDP client's first packet: an X.224 connection request
+                // with the negotiation request; the host answers with its own
+                // X.224 packet, which starts 03 00.
+                func probe() -> [UInt8] {
+                    let fd = socket(AF_INET, SOCK_STREAM, 0)
+                    defer { close(fd) }
+                    var address = sockaddr_in()
+                    address.sin_family = sa_family_t(AF_INET)
+                    address.sin_port = in_port_t(port).bigEndian
+                    address.sin_addr.s_addr = inet_addr("127.0.0.1")
+                    var wait = timeval(tv_sec: 10, tv_usec: 0)
+                    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, socklen_t(MemoryLayout<timeval>.size))
+                    let connected = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+                    guard connected == 0 else { return [] }
+                    let request: [UInt8] = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00]
+                    _ = request.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+                    var reply = [UInt8](repeating: 0, count: 64)
+                    let n = read(fd, &reply, reply.count)
+                    return n > 0 ? Array(reply[0..<n]) : []
+                }
+                var answer: [UInt8] = []
+                for _ in 0..<12 where answer.isEmpty {
+                    answer = probe()
+                    if answer.isEmpty { try? await Task.sleep(for: .seconds(5)) }
+                }
+                print("   the host answered: \(answer.prefix(12).map { String(format: "%02x", $0) }.joined(separator: " "))")
+                check("a Remote Desktop client is answered through the Mac's port", answer.count >= 4 && answer[0] == 0x03 && answer[1] == 0x00)
+                var hints = addrinfo(); hints.ai_family = AF_INET
+                var info: UnsafeMutablePointer<addrinfo>?
+                let resolved = getaddrinfo("\(RemoteDesktop.hostLabel(for: config)).local", nil, &hints, &info) == 0
+                if info != nil { freeaddrinfo(info) }
+                check("\(RemoteDesktop.hostLabel(for: config)).local resolves on this Mac", resolved)
+                RemoteDesktopAdvertiser.shared.unpublish(config.id)
                 await shutDown(manager)
                 print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
             }
