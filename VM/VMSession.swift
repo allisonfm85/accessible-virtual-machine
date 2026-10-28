@@ -22,6 +22,10 @@ final class VMSession: ObservableObject {
 
     let manager: VMManager
     let configuration: VMConfiguration
+    /// false: the machine's window opens without taking the Mac's
+    /// keyboard (2026-10-28): a machine started when AVM opens that has a
+    /// keyboard for Windows of its own.
+    var entersOnFirstShow = true
 
     // MARK: - Private
 
@@ -33,10 +37,16 @@ final class VMSession: ObservableObject {
 
     // MARK: - Init
 
+    /// The session for the VM that is running now, for code outside the
+    /// view tree: quitting AVM shuts it down through here (2026-10-25).
+    /// Weak, like VMManager.shared: ContentView owns the session.
+    /// The machine in front (MachineSessions), several being able to run
+    /// at once since 2026-10-27.
+    static var current: VMSession? { MachineSessions.shared.current }
+
     init(configuration: VMConfiguration) {
         self.configuration = configuration
         self.manager = VMManager()
-        VMManager.shared = self.manager
         bindManager()
     }
 
@@ -109,7 +119,7 @@ final class VMSession: ObservableObject {
             AVMLog.write("VMSession: stopGracefully: VM is paused; resuming before shutdown")
             try await manager.resumeVM()
         }
-        Announcer.shared.announce("Shutting down \(configuration.guestOS.displayName).", tone: .info)
+        Announcer.shared.announce("Shutting down \(configuration.name).", tone: .info)
         AVMLog.write("VMSession: stopGracefully: shutdown requested; waiting for the VM to stop")
         try await manager.stopVM()
 
@@ -131,7 +141,7 @@ final class VMSession: ObservableObject {
                     AVMLog.write("VMSession: stopGracefully: VM was force-stopped during shutdown")
                 } else {
                     AVMLog.write("VMSession: stopGracefully: Windows has shut down after \(Int(Date().timeIntervalSince(started))) seconds")
-                    Announcer.shared.announce("\(configuration.guestOS.displayName) has shut down.", tone: .success)
+                    Announcer.shared.announce("\(configuration.name) has shut down.", tone: .success)
                 }
                 return
             case .error:
@@ -144,7 +154,7 @@ final class VMSession: ObservableObject {
             if !reminded, Date().timeIntervalSince(started) >= reminderAfter {
                 reminded = true
                 AVMLog.write("VMSession: stopGracefully: still shutting down after \(Int(reminderAfter)) seconds; reminded the user, still waiting")
-                Announcer.shared.announce("\(configuration.guestOS.displayName) is still shutting down. You can keep waiting, or use Force Stop.", tone: .info)
+                Announcer.shared.announce("\(configuration.name) is still shutting down. You can keep waiting, or use Force Stop.", tone: .info)
             }
             try? await Task.sleep(for: .milliseconds(500))
         }
@@ -166,6 +176,27 @@ final class VMSession: ObservableObject {
 
     func pause() async throws {
         try await manager.pauseVM()
+    }
+
+    /// Saves the machine as it is and stops it; the next Start carries on
+    /// from there (VMManager.saveStateAndStop, 2026-10-27). Spoken.
+    @discardableResult
+    func saveAndStop() async -> Bool {
+        await manager.saveStateAndStop()
+    }
+
+    /// Whether Save is offered: an installed machine on the virtio disk.
+    var canSave: Bool { manager.canSaveState }
+
+    /// A restore point taken while it runs, with its memory. Spoken.
+    func saveRunningRestorePoint(label: String) async {
+        Announcer.shared.announce("Saving the restore point.", tone: .info)
+        do {
+            _ = try await manager.createRunningRestorePoint(label: label)
+            Announcer.shared.announce("Restore point saved: \(label). It keeps open apps too.", tone: .success)
+        } catch {
+            Announcer.shared.announce("The restore point was not saved. Reason: \(error.localizedDescription)", tone: .failure)
+        }
     }
 
     func resume() async throws {
