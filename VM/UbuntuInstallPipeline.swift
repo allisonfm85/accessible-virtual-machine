@@ -219,7 +219,19 @@ nonisolated struct UbuntuAccount: Codable, Equatable {
     static func load(fromVMDirectory dir: URL) -> UbuntuAccount? {
         let url = dir.appendingPathComponent(fileName)
         guard let data = try? Data(contentsOf: url),
-              let account = try? JSONDecoder().decode(UbuntuAccount.self, from: data) else { return nil }
+              var account = try? JSONDecoder().decode(UbuntuAccount.self, from: data) else { return nil }
+        if problem(withRealName: account.realName) != nil {
+            // A backslash in the full name joined preseed lines, so the
+            // wizard refuses one since 2026-10-28; an account an older build
+            // saved with one is cleaned rather than dropped, which left the
+            // machine unable to install (third audit).
+            let banned = CharacterSet(charactersIn: ":,=\\").union(.controlCharacters)
+            var cleaned = String(String.UnicodeScalarView(account.realName.unicodeScalars.filter { !banned.contains($0) }))
+                .trimmingCharacters(in: .whitespaces)
+            cleaned = String(String.UnicodeScalarView(cleaned.unicodeScalars.prefix(160)))
+            account.realName = cleaned.isEmpty ? account.userName : cleaned
+            ubuntuLog("UbuntuAccount.load: the saved full name failed its check and was cleaned")
+        }
         guard problem(withUserName: account.userName) == nil,
               problem(withRealName: account.realName) == nil else {
             ubuntuLog("UbuntuAccount.load: the saved account fails its own checks; not using it")

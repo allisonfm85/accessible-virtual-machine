@@ -26,6 +26,7 @@
 // is theirs. Not offered for them.
 
 import Foundation
+import Network
 import dnssd
 
 // MARK: - The machine's name on the network
@@ -43,9 +44,16 @@ final class RemoteDesktopAdvertiser {
         var record: DNSRecordRef?
         var service: DNSServiceRef?
         let name: String
-        init(name: String) { self.name = name }
+        let config: VMConfiguration
+        let port: Int
+        let address: String
+        init(name: String, config: VMConfiguration, port: Int, address: String) {
+            self.name = name; self.config = config; self.port = port; self.address = address
+        }
     }
     private var entries: [UUID: Entry] = [:]
+    private var networkWatch: NWPathMonitor?
+    private var refresh: DispatchWorkItem?
 
     /// True when the name was published.
     @discardableResult
@@ -56,7 +64,7 @@ final class RemoteDesktopAdvertiser {
         let addressText = config.remoteDesktopReachesNetwork ? (RemoteDesktop.macAddress() ?? "127.0.0.1") : "127.0.0.1"
         var address = in_addr()
         guard inet_pton(AF_INET, addressText, &address) == 1 else { return false }
-        let entry = Entry(name: host)
+        let entry = Entry(name: host, config: config, port: port, address: addressText)
 
         var connection: DNSServiceRef?
         guard DNSServiceCreateConnection(&connection) == kDNSServiceErr_NoError, let connection else { return false }
@@ -87,6 +95,7 @@ final class RemoteDesktopAdvertiser {
         }
         entries[config.id] = entry
         AVMLog.write("AVM: Remote Desktop — \(host.dropLast()) published for \(config.name), port \(port)")
+        watchNetwork()
         return true
     }
 
@@ -95,6 +104,45 @@ final class RemoteDesktopAdvertiser {
         if let service = entry.service { DNSServiceRefDeallocate(service) }
         if let connection = entry.connection { DNSServiceRefDeallocate(connection) }   // takes its records with it
         AVMLog.write("AVM: Remote Desktop — \(entry.name.dropLast()) withdrawn")
+        if entries.isEmpty {
+            networkWatch?.cancel()
+            networkWatch = nil
+            refresh?.cancel()
+            refresh = nil
+        }
+    }
+
+    // MARK: Another network
+
+    /// The address record names the Mac's address when it was published.
+    /// A Mac carried to another Wi-Fi, or woken on one, kept answering
+    /// with the old one until the machine was restarted (2026-10-28, third
+    /// audit): now a network change republishes every name whose address
+    /// moved, a couple of seconds after things settle.
+    private func watchNetwork() {
+        guard networkWatch == nil else { return }
+        let watch = NWPathMonitor()
+        watch.pathUpdateHandler = { [weak self] _ in
+            Task { @MainActor in self?.republishLater() }
+        }
+        watch.start(queue: .main)
+        networkWatch = watch
+    }
+
+    private func republishLater() {
+        refresh?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.republishMoved() }
+        refresh = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+
+    private func republishMoved() {
+        for entry in entries.values where entry.config.remoteDesktopReachesNetwork {
+            let now = RemoteDesktop.macAddress() ?? "127.0.0.1"
+            guard now != entry.address else { continue }
+            AVMLog.write("AVM: Remote Desktop — the Mac's address changed; republishing \(entry.name.dropLast())")
+            publish(entry.config, port: entry.port)
+        }
     }
 }
 
@@ -191,6 +239,16 @@ extension VMManager {
         elif command -v apt-get >/dev/null; then apt-get update -qq && apt-get install -y -qq xrdp xorgxrdp
         elif command -v dnf >/dev/null; then dnf install -y -q xrdp xorgxrdp
         else echo NOPKG; exit 0; fi
+        # Sound in the remote session takes the distribution's xrdp sound
+        # module (pipewire-module-xrdp: Debian 13 and Ubuntu 24.04 or newer
+        # have it); without it the session is silent (2026-10-28).
+        if command -v apt-get >/dev/null; then
+            dpkg -s pipewire-module-xrdp >/dev/null 2>&1 || { apt-get update -qq; apt-get install -y -qq pipewire-module-xrdp; } >/dev/null 2>&1 || true
+            dpkg -s pipewire-module-xrdp >/dev/null 2>&1 && echo SOUND
+        elif command -v dnf >/dev/null; then
+            rpm -q pipewire-module-xrdp >/dev/null 2>&1 || dnf install -y -q pipewire-module-xrdp >/dev/null 2>&1 || true
+            rpm -q pipewire-module-xrdp >/dev/null 2>&1 && echo SOUND
+        fi
         adduser xrdp ssl-cert 2>/dev/null || true
         systemctl enable --now xrdp
         if command -v firewall-cmd >/dev/null; then firewall-cmd --permanent --add-port=3389/tcp >/dev/null 2>&1 || true; firewall-cmd --reload >/dev/null 2>&1 || true; fi
@@ -203,7 +261,9 @@ extension VMManager {
         guard out.contains("READY") else {
             throw AVMError.qmpCommandFailed(out.trimmingCharacters(in: .whitespacesAndNewlines).description)
         }
-        return .ready("Remote Desktop is on in \(configuration.name), with the account \(user).")
+        let sound = out.contains("SOUND")
+        return .ready("Remote Desktop is on in \(configuration.name), with the account \(user)."
+                      + (sound ? "" : " This Linux has no xrdp sound module, so the remote session has no sound."))
     }
 
     /// Forwards the Mac's port to the running machine now (QEMU's user

@@ -648,7 +648,7 @@ CoreAudio in the backend's frameworks.
      /* destroy mutex */
      err = pthread_mutex_destroy(&core->buf_mutex);
      if (err) {
-@@ -642,9 +439,374 @@
+@@ -642,9 +439,373 @@
      coreaudioVoiceOut *core = (coreaudioVoiceOut *) hw;
  
      core->enabled = enable;
@@ -1006,7 +1006,6 @@ CoreAudio in the backend's frameworks.
 +        pthread_mutex_unlock(&core->buf_mutex);                       \
 +        return ret;                                                   \
 +    }
-+COREAUDIO_IN_WRAPPER_FUNC(read, size_t, (HWVoiceIn *hw, void *buf, size_t size), (hw, buf, size))
 +COREAUDIO_IN_WRAPPER_FUNC(get_buffer_in, void *, (HWVoiceIn *hw, size_t *size), (hw, size))
 +#undef COREAUDIO_IN_WRAPPER_FUNC
 +
@@ -1024,7 +1023,7 @@ CoreAudio in the backend's frameworks.
  static void *coreaudio_audio_init(Audiodev *dev, Error **errp)
  {
      return dev;
-@@ -665,7 +827,17 @@
+@@ -665,7 +826,18 @@
      .get_buffer_out = coreaudio_get_buffer_out,
    /* wrapper for audio_generic_put_buffer_out */
      .put_buffer_out = coreaudio_put_buffer_out,
@@ -1033,8 +1032,9 @@ CoreAudio in the backend's frameworks.
 +
 +    .init_in  = coreaudio_init_in,
 +    .fini_in  = coreaudio_fini_in,
-+  /* wrapper for audio_generic_read */
-+    .read     = coreaudio_read,
++  /* audio_generic_read itself: a wrapper taking buf_mutex deadlocked on
++   * get_buffer_in, which takes it too (with mixing-engine=off, 2026-10-28) */
++    .read     = audio_generic_read,
 +  /* wrapper for audio_generic_get_buffer_in */
 +    .get_buffer_in = coreaudio_get_buffer_in,
 +  /* wrapper for audio_generic_put_buffer_in */

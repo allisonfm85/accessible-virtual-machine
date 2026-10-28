@@ -164,6 +164,21 @@ final class UbuntuAccountTests: XCTestCase {
         XCTAssertNil(UbuntuAccount.load(fromVMDirectory: dir))
     }
 
+    /// An account an older build saved with a backslash in the full name
+    /// (it joined preseed lines) is cleaned on load, not dropped: dropping
+    /// it left the machine unable to install (2026-10-28).
+    func testLoadCleansABackslashInTheFullName() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let saved = #"{"realName":"Jean Dupont\\","userName":"jean","passwordHash":"$6$a$b","signInAutomatically":true}"#
+        try saved.write(to: dir.appendingPathComponent(UbuntuAccount.fileName), atomically: true, encoding: .utf8)
+        XCTAssertEqual(UbuntuAccount.load(fromVMDirectory: dir)?.realName, "Jean Dupont")
+        let onlyBad = #"{"realName":"\\:,=","userName":"jean","passwordHash":"$6$a$b","signInAutomatically":true}"#
+        try onlyBad.write(to: dir.appendingPathComponent(UbuntuAccount.fileName), atomically: true, encoding: .utf8)
+        XCTAssertEqual(UbuntuAccount.load(fromVMDirectory: dir)?.realName, "jean")
+    }
+
     func testSavedAccountIsOwnerOnly() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

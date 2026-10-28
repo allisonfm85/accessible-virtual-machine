@@ -160,12 +160,31 @@ final class USBRedirectController: ObservableObject {
 
     /// The same physical device across mode changes: maker and serial.
     /// A Monarch is 1c71:d100 for file transfer and 1c71:d110 in Braille
-    /// Terminal (2026-10-17). With no serial, maker and product.
+    /// Terminal (2026-10-17). With no serial, or one that isn't this
+    /// unit's (2026-10-28, third audit: some makers put "0000" or
+    /// "1234567890" on every unit, so a webcam and a headset from one of
+    /// them shared a key and followed each other's choices), maker and
+    /// product as well.
     nonisolated static func followKey(_ device: AVMUSBDeviceIdentity) -> String {
-        if let serial = device.serialNumber, serial.isEmpty == false {
+        let serial = device.serialNumber ?? ""
+        if serial.isEmpty == false, isPlaceholderSerial(serial) == false {
             return "\(device.vendorID):serial:\(serial)"
         }
-        return "\(device.vendorID):\(device.productID):noserial"
+        return "\(device.vendorID):\(device.productID):\(serial.isEmpty ? "noserial" : serial)"
+    }
+
+    /// A serial a maker gives every unit rather than this one: too short
+    /// to tell units apart, one character repeated, a counting sequence,
+    /// or a word standing in for a serial. Mistaking a real serial for one
+    /// costs only the follow-through across a mode change; the reverse
+    /// conflates two devices.
+    nonisolated static func isPlaceholderSerial(_ serial: String) -> Bool {
+        let s = serial.trimmingCharacters(in: .whitespaces).lowercased()
+        if s.count < 4 || Set(s).count == 1 { return true }
+        let placeholders: Set<String> = ["0123456789", "1234567890", "123456789", "12345678", "1234567", "123456",
+                                         "12345", "1234", "0123456789abcdef", "abcdef", "default", "serial",
+                                         "none", "null", "n/a", "unknown", "serial number", "xxxxxxxx"]
+        return placeholders.contains(s)
     }
 
     /// True when this device left Windows less than followWindow seconds

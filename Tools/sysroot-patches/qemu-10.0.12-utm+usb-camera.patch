@@ -38,7 +38,7 @@ reopens at the guest's next read after a restore.
  
 --- /dev/null
 +++ b/hw/usb/dev-camera.m
-@@ -0,0 +1,847 @@
+@@ -0,0 +1,866 @@
 +/*
 + * USB Video Class camera fed by the Mac's camera (AVM, 2026-10-27)
 + *
@@ -141,6 +141,7 @@ reopens at the guest's next read after a restore.
 +    QEMUTimer *idle_timer;
 +    QEMUBH *wakeup_bh;
 +    AVMCameraCapture *capture;      /* non-nil while the Mac's camera is open */
++    dispatch_queue_t drain_queue;   /* the last capture's queue, for a close that must wait */
 +
 +    /* Guarded by lock: filled by the capture queue */
 +    QemuMutex lock;
@@ -519,6 +520,11 @@ reopens at the guest's next read after a restore.
 +    capture->width = size->width;
 +    capture->height = size->height;
 +    s->capture = capture;
++    if (s->drain_queue) {
++        dispatch_release(s->drain_queue);
++    }
++    s->drain_queue = capture->queue;
++    dispatch_retain(s->drain_queue);
 +    [capture start];
 +    timer_mod(s->idle_timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 1000);
 +}
@@ -526,6 +532,15 @@ reopens at the guest's next read after a restore.
 +static void camera_close(USBCameraState *s, bool wait)
 +{
 +    if (!s->capture) {
++        /* An earlier close that didn't wait may still be finishing on the
++         * capture queue; a frame queued ahead of its stop block would use
++         * this state after unrealize has freed it (2026-10-28). A close
++         * that waits lets that queue run dry first. */
++        if (wait && s->drain_queue) {
++            dispatch_sync(s->drain_queue, ^{});
++            dispatch_release(s->drain_queue);
++            s->drain_queue = NULL;
++        }
 +        return;
 +    }
 +    AVMCameraCapture *capture = s->capture;
@@ -534,6 +549,10 @@ reopens at the guest's next read after a restore.
 +    if (wait) {
 +        [capture stopWaiting:true];
 +        [capture release];
++        if (s->drain_queue) {
++            dispatch_release(s->drain_queue);
++            s->drain_queue = NULL;
++        }
 +    } else {
 +        /* The capture queue clears its state pointer before any later
 +         * frame could use it; the object goes once that has run. */
