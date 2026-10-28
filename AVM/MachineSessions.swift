@@ -62,7 +62,7 @@ final class MachineSessions: ObservableObject {
     /// setting, or avmctl start --no-window), there's no window until it's
     /// entered.
     @discardableResult
-    func start(_ config: VMConfiguration, vmStore: VMStore?, focusLock: FocusLockManager?, windowless: Bool = false) -> VMSession {
+    func start(_ config: VMConfiguration, vmStore: VMStore?, focusLock: FocusLockManager?, windowless: Bool = false, takesKeyboard: Bool = true) -> VMSession {
         if let vmStore { self.vmStore = vmStore }
         if let focusLock { self.focusLock = focusLock }
         if sessions[config.id] != nil {
@@ -72,6 +72,7 @@ final class MachineSessions: ObservableObject {
         }
         lastError = nil
         let session = VMSession(configuration: config)
+        session.entersOnFirstShow = takesKeyboard
         sessions[config.id] = session
         if let vmStore, let focusLock, !windowless {
             windows[config.id] = MachineWindow(session: session, vmStore: vmStore, focusLock: focusLock)
@@ -289,6 +290,12 @@ final class MachineWindow: NSObject, NSWindowDelegate {
         if elsewhere {
             window.orderBack(nil)
             Announcer.shared.announce("\(session.configuration.name) is running. Enter it from AVM's list when you're ready.", tone: .info)
+        } else if !session.entersOnFirstShow {
+            // Started when AVM opened, with a keyboard of its own
+            // (2026-10-28): its window opens, and the Mac's keyboard stays
+            // on the Mac.
+            window.orderFront(nil)
+            Announcer.shared.announce("\(session.configuration.name) is running. Your keyboard stays on the Mac; its own keyboard types into it. Enter \(session.configuration.name) from AVM's list to use this keyboard there too.", tone: .info)
         } else {
             show()
         }

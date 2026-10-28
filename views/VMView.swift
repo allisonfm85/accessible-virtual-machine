@@ -580,8 +580,15 @@ struct VMView: View {
             // PUBLIC: this line is a lifecycle landmark used to tell "the view
             // never appeared" apart from "the view appeared and something else
             // failed" — a distinction that cost an evening on 2026-07-31.
-            avmPublicLog("VMView onAppear — auto-locking focus.")
-            focusLock.lock()
+            // Not for a machine started at login with a keyboard of its
+            // own (2026-10-28, MachineSessions.start enter: false): the
+            // Mac's keyboard stays on the Mac, with VoiceOver.
+            if session.entersOnFirstShow {
+                avmPublicLog("VMView onAppear — auto-locking focus.")
+                focusLock.lock()
+            } else {
+                avmPublicLog("VMView onAppear — not taking the keyboard: the machine has its own.")
+            }
         }
         .onDisappear {
             // Safety: if the VM view goes away while still locked (e.g. the VM
@@ -2192,23 +2199,10 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         // press — see warnIfRelativeCursorMode.
         avmPublicLog("SPICE input channel available — absolute (client-mode) cursor requested for pointer input (issue #4).")
 
-        // The keyboard for Windows (2026-10-26, WindowsKeyboard.swift): its
-        // keys go to this input channel whichever app is in front.
         // The keyboard for Windows (WindowsKeyboard.swift) sends through
-        // QMP, so it doesn't depend on this connection; it's started here,
-        // on the main thread (this callback is on the SPICE thread), the
-        // first time the machine's keyboard channel opens.
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                let id = self.machineID ?? VMSession.current?.configuration.id
-                if let saved = id.flatMap({ id in VMStore.shared?.configurations.first { $0.id == id } }),
-                   let keyboardID = saved.windowsKeyboardID {
-                    WindowsKeyboard.shared.appleISO = saved.windowsKeyboardAppleISO == true
-                    WindowsKeyboard.shared.start(keyboardID: keyboardID, name: saved.windowsKeyboardName,
-                                                 target: self.manager)
-                }
-            }
-        }
+        // QMP and starts when the machine runs (VMManager.startVM), not
+        // here: started from this screen connection, a machine running
+        // without a window never got it (2026-10-28, a user's report).
     }
 
     func spiceInputUnavailable(_ connection: CSConnection, input: CSInput) {

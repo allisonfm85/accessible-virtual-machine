@@ -15,7 +15,11 @@
 //   - Only for the user at the Mac's screen (the console user), so one
 //     user's AVM can't take another user's keyboard.
 //   - Never the built-in keyboard, and never the only keyboard: the Mac
-//     must always keep one.
+//     must always keep one. While the Mac has no other (at login, its own
+//     Bluetooth keyboard connects a few seconds later), the helper waits
+//     and takes the keyboard once it does; while held, the other going
+//     away for more than a few seconds gives the keyboard back until the
+//     Mac has another again (2026-10-28).
 //   - Let go when AVM asks, when its connection ends (quit or crash), or
 //     when the keyboard disconnects; while wanted and not connected, the
 //     helper looks for it every few seconds, so a Bluetooth keyboard that
@@ -45,6 +49,13 @@ final class KeyboardHold {
     /// While held: checks every few seconds that the Mac still has another
     /// keyboard and that the person who asked is still at the screen.
     private var watchTimer: DispatchSourceTimer?
+    /// Checks in a row that found the Mac without another keyboard
+    /// (2026-10-28): the keyboard is given back after two, 6 seconds, so a
+    /// Bluetooth keyboard's moment away doesn't cost it.
+    private var checksWithoutAnother = 0
+    /// AVM has been told, once, that the helper is waiting for the Mac to
+    /// have another keyboard.
+    private var saidWaiting = false
 
     var isActive: Bool { queue.sync { wantedID != nil } }
 
@@ -124,6 +135,7 @@ final class KeyboardHold {
             self.wantedID = keyboardID
             self.owner = connection
             self.heldOwnerUID = connection.effectiveUserIdentifier
+            self.saidWaiting = false
             idle.keyboardChanged(held: true)
             reply(true, nil)
             os_log("keyboard for Windows requested", log: log, type: .default)
@@ -159,8 +171,17 @@ final class KeyboardHold {
             refuse(wanted, "AVM never takes the Mac's built-in keyboard.")
             return
         }
+        // The only keyboard: not a refusal (2026-10-28, a user's report). At
+        // login the Mac's own Bluetooth keyboard connects seconds after AVM
+        // asks, so the helper waits and takes this one once the Mac has
+        // another; AVM is told once, as "waiting".
         if Self.otherKeyboards(all, than: wanted) < 1 {
-            refuse(wanted, "That is the only keyboard connected, and the Mac must keep one. Connect another keyboard for the Mac, then start again.")
+            if !saidWaiting {
+                saidWaiting = true
+                os_log("keyboard for Windows: waiting for the Mac to have another keyboard", log: log, type: .default)
+                client()?.keyboardState(wanted, held: false, detail: "waiting")
+            }
+            startLooking()
             return
         }
         var opened: [IOHIDDevice] = []
@@ -196,6 +217,8 @@ final class KeyboardHold {
         }
         held = opened
         heldID = wanted
+        saidWaiting = false
+        checksWithoutAnother = 0
         stopLooking()
         startWatching()
         os_log("keyboard for Windows held (%d interfaces)", log: log, type: .default, opened.count)
@@ -223,10 +246,21 @@ final class KeyboardHold {
             startLooking()
             return
         }
+        // The Mac's other keyboard gone for two checks in a row: this one
+        // goes back to the Mac, which must keep one, and the helper keeps
+        // looking, taking it again once the Mac has another (2026-10-28; it
+        // used to be final, and a Bluetooth keyboard's moment away ended
+        // the keyboard for Windows until the machine restarted).
         if Self.otherKeyboards(Self.keyboards(), than: id) < 1 {
+            checksWithoutAnother += 1
+            guard checksWithoutAnother >= 2 else { return }
             os_log("keyboard for Windows given back: the Mac had no other keyboard", log: log, type: .default)
             releaseHeld(notify: false)
-            refuse(id, "The Mac's other keyboard went away, so this one types on the Mac again; the Mac must keep one.")
+            saidWaiting = true
+            client()?.keyboardState(id, held: false, detail: "waiting")
+            startLooking()
+        } else {
+            checksWithoutAnother = 0
         }
     }
 

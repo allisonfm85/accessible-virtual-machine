@@ -271,7 +271,7 @@ struct ContentView: View {
         }
         // The machine chosen to start when AVM opens (2026-10-28), once.
         .onAppear {
-            BackgroundMode.shared.autoStartIfChosen(in: vmStore.configurations) { startVM(config: $0) }
+            BackgroundMode.shared.autoStartIfChosen(in: vmStore.configurations) { startVM(config: $0, takesKeyboard: $1) }
         }
         // Speak Status (Cmd-Shift-I, 2026-10-25). Always .info: asking is
         // not an outcome, so no verdict sound, even when the answer is an
@@ -358,8 +358,10 @@ struct ContentView: View {
     }
 
     /// Same start path as the dashboard's per-VM Start button (see
-    /// DashboardContent.startVM).
-    private func startVM(config: VMConfiguration) {
+    /// DashboardContent.startVM). `takesKeyboard` false: the machine's
+    /// window opens without taking the Mac's keyboard (a machine started
+    /// when AVM opens that has a keyboard for Windows, 2026-10-28).
+    private func startVM(config: VMConfiguration, takesKeyboard: Bool = true) {
         // Not while its files are being copied (2026-10-26).
         if MachineArchiveController.shared.refusesWhileBusy(config) { return }
         errorMessage = nil
@@ -369,7 +371,7 @@ struct ContentView: View {
             MacGuestRunner.shared.start(config)
             return
         }
-        MachineSessions.shared.start(config, vmStore: vmStore, focusLock: focusLock, windowless: config.startsWithoutWindow)
+        MachineSessions.shared.start(config, vmStore: vmStore, focusLock: focusLock, windowless: config.startsWithoutWindow, takesKeyboard: takesKeyboard)
     }
 }
 

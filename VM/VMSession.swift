@@ -22,6 +22,10 @@ final class VMSession: ObservableObject {
 
     let manager: VMManager
     let configuration: VMConfiguration
+    /// false: the machine's window opens without taking the Mac's
+    /// keyboard (2026-10-28): a machine started when AVM opens that has a
+    /// keyboard for Windows of its own.
+    var entersOnFirstShow = true
 
     // MARK: - Private
 

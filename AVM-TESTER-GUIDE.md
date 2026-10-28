@@ -583,8 +583,14 @@ dashboard's Start buttons work too.
   Windows, you can choose a second keyboard, USB or Bluetooth, that types
   only into Windows while it runs, whichever app is in front. Your Mac's
   own keyboard stays with the Mac and VoiceOver, so there's nothing to
-  switch. AVM never takes the Mac's built-in keyboard or its only one,
-  and gives the keyboard back if your Mac's other keyboard goes away.
+  switch. AVM never takes the Mac's built-in keyboard or its only one.
+  If your Mac's own keyboard isn't connected yet when Windows starts (a
+  Bluetooth keyboard at login, say), AVM says so and waits, then takes
+  the keyboard for Windows as soon as the Mac has another. If the Mac's
+  other keyboard goes away for more than a few seconds, the keyboard for
+  Windows types on the Mac until it's back. A machine with a keyboard for
+  Windows that starts when AVM opens leaves your Mac's keyboard on the
+  Mac; Enter it from the list if you want this keyboard in it too.
   Pause works, and on an Apple keyboard, Fn with Backspace, the arrows or
   Return gives Delete, Page Up and Down, Home, End and keypad Enter, as on
   a Mac. For an Apple keyboard with a § key, turn on "It's an Apple

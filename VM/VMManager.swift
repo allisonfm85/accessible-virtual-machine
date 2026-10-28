@@ -1192,6 +1192,16 @@ final class VMManager: ObservableObject {
         appendConsole("AVM: VM is running.\n")
         beginQMPEventMonitoring()
 
+        // The keyboard for Windows (WindowsKeyboard.swift) starts here, now
+        // that QMP, which carries its keys, is connected (2026-10-28, a
+        // user's report). It used to start when the machine's screen
+        // connected (VMView.spiceInputAvailable), so a machine running
+        // without a window never got its keyboard.
+        if let keyboardID = configuration.windowsKeyboardID, !WindowsKeyboard.disabledForTests {
+            WindowsKeyboard.shared.appleISO = configuration.windowsKeyboardAppleISO == true
+            WindowsKeyboard.shared.start(keyboardID: keyboardID, name: configuration.windowsKeyboardName, target: self)
+        }
+
         startDiskWatch(configuration: configuration, runtimeDir: runtimeDir, installed: installComplete)
         if installComplete, configuration.sharesPrinters {
             Task { [weak self] in await self?.addMacPrinters(configuration: configuration) }

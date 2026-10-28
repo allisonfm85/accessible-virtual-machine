@@ -29,6 +29,9 @@ import Foundation
 @MainActor
 final class WindowsKeyboard {
     static let shared = WindowsKeyboard()
+    /// Test jobs run machines with a made-up keyboard id: the helper isn't
+    /// asked (2026-10-28).
+    static var disabledForTests = false
 
     /// Sends a scancode to the running guest, through QMP.
     var send: ((Int32, Bool) -> Void)? = { code, down in
@@ -141,6 +144,12 @@ final class WindowsKeyboard {
             releaseAllKeys()
             AVMLog.write("AVM: WindowsKeyboard — disconnected; the helper will take it again when it's back.")
             Announcer.shared.announce("\(keyboardName) disconnected. It types in Windows again as soon as it reconnects.", tone: .info)
+        } else if detail == "waiting" {
+            // The Mac has no other keyboard right now (2026-10-28): the
+            // helper keeps looking, and takes it once the Mac has one.
+            releaseAllKeys()
+            AVMLog.write("AVM: WindowsKeyboard — waiting: the Mac has no other keyboard yet.")
+            Announcer.shared.announce("\(keyboardName) types on the Mac for now: the Mac needs a keyboard of its own first. As soon as your Mac has another keyboard connected, \(keyboardName) types only in Windows.", tone: .info)
         } else {
             releaseAllKeys()
             keyboardID = nil

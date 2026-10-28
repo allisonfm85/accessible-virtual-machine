@@ -776,7 +776,8 @@ enum SaveResumeTestJob {
         for _ in 0..<40 where machines.session(for: config.id) != nil { try? await Task.sleep(for: .milliseconds(250)) }
 
         print("== A machine with a keyboard for Windows")
-        // An id no keyboard has: the helper finds nothing to take.
+        // A made-up keyboard: the helper isn't asked for it.
+        WindowsKeyboard.disabledForTests = true
         config.windowsKeyboardID = "avm-background-test"
         plain = machines.start(config, vmStore: nil, focusLock: nil)
         for _ in 0..<600 where plain.vmState != .running { try? await Task.sleep(for: .milliseconds(500)) }
