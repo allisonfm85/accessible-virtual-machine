@@ -340,7 +340,7 @@ private final class Auditor {
                 host(MacSettingsView(configuration: s.mac, isRunning: false))
             },
             Screen(name: "Download Windows 11 for ARM", size: NSSize(width: 600, height: 500), headings: title("Download Windows 11 for ARM")) {
-                host(ISODownloadView { _ in })
+                host(ISODownloadView(assistant: WindowsISODownloader()) { _ in })
             },
             Screen(name: "Reclaim Disk Space", size: NSSize(width: 600, height: 600), headings: title("Reclaim Disk Space")) {
                 host(ReclaimView())

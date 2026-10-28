@@ -106,6 +106,9 @@ struct SetupView: View {
     /// Machines" folder inside it, and one folder per VM inside that.
     @State private var storageFolder: URL? = nil
     @State private var showingISODownload = false
+    /// The Windows download, watched for as long as the wizard is open,
+    /// with or without its window (2026-10-27).
+    @StateObject private var isoDownloader = WindowsISODownloader()
 
     // MARK: - Ubuntu (2026-10-19)
     //
@@ -359,11 +362,19 @@ struct SetupView: View {
             }
         }
         .sheet(isPresented: $showingISODownload) {
-            ISODownloadView { url in
+            ISODownloadView(assistant: isoDownloader) { url in
                 installerURL = url
                 identifyInstaller(url)
             }
         }
+        .onAppear {
+            // A download that finishes in the background picks itself.
+            isoDownloader.onReady = { url in
+                installerURL = url
+                identifyInstaller(url)
+            }
+        }
+        .onDisappear { isoDownloader.stop() }
         .fileImporter(
             isPresented: $showingFilePicker,
             allowedContentTypes: allowedInstallerTypes,

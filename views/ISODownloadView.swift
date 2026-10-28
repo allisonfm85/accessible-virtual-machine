@@ -13,11 +13,13 @@ import AppKit
 
 struct ISODownloadView: View {
 
+    /// The setup wizard's, so watching goes on after this window closes
+    /// (2026-10-27): it used to belong to this window and stop with it.
+    @ObservedObject var assistant: WindowsISODownloader
     /// Called with the downloaded ISO when the user chooses to use it.
     let onFinished: (URL) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var assistant = WindowsISODownloader()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -44,7 +46,15 @@ struct ISODownloadView: View {
         }
         .padding(28)
         .frame(minWidth: 460)
-        .onDisappear { assistant.stop() }
+        .onAppear { assistant.inBackground = false }
+        // Closed any other way while it's still going: it goes on in the
+        // background rather than stopping unannounced.
+        .onDisappear {
+            switch assistant.phase {
+            case .watching, .downloading, .verifying: assistant.inBackground = true
+            default: break
+            }
+        }
     }
 
     @ViewBuilder
@@ -83,9 +93,23 @@ struct ISODownloadView: View {
                 .accessibilityHint("Opens the page in your browser and starts watching for the download. Command Return.")
         case .watching, .downloading, .verifying:
             Button("Open the Page Again") { NSWorkspace.shared.open(WindowsISODownloader.pageURL) }
-            Button("Stop Watching") { dismiss() }
-                .keyboardShortcut(.escape, modifiers: [])
-                .accessibilityHint("Closes this window. The browser keeps downloading; choose the file with Choose Installer Image when it's done.")
+            // Stop Watching used to be the only way out, and it sounded
+            // like it cancelled the download (2026-10-27, tester
+            // feedback). Closing now keeps watching; stopping says what
+            // it did.
+            Button("Stop Watching") {
+                assistant.stop()
+                Announcer.shared.announce("AVM stopped watching the download. Your browser keeps downloading; when it's done, choose the file with Choose Installer Image.", tone: .info)
+                dismiss()
+            }
+            .accessibilityHint("AVM stops telling you about the download. The browser keeps downloading.")
+            Button("Keep Watching in Background") {
+                assistant.inBackground = true
+                Announcer.shared.announce("AVM keeps watching the download and tells you every gigabyte. When it's done, AVM checks it and chooses it as the installer.", tone: .info)
+                dismiss()
+            }
+            .keyboardShortcut(.escape, modifiers: [])
+            .accessibilityHint("Closes this window. AVM goes on telling you how the download is going, and chooses the file when it's ready. Escape.")
         case .finished(let url):
             Button("Close") { dismiss() }
                 .keyboardShortcut(.escape, modifiers: [])

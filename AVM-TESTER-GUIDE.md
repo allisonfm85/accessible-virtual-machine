@@ -287,6 +287,11 @@ The window reads top to bottom:
   Downloads folder: it says how the download is going every gigabyte,
   checks the file when it's done, and **Use This Installer** picks it for
   you. **Speak Progress**, Command-P, says how far it has got at any time.
+  You don't have to keep the window open: **Keep Watching in Background**
+  (Escape) closes it, and AVM goes on telling you every gigabyte, then
+  checks the file and chooses it as the installer by itself. **Stop
+  Watching** stops AVM telling you; your browser keeps downloading, and
+  you choose the file with **Choose Installer Image** when it's done.
 - **Windows Edition** appears once you've chosen a Windows ISO: Pro, Home,
   or Home Single Language, in a pop-up button. VoiceOver says "Windows
   edition, Windows 11 Pro, pop-up button": press VoiceOver-Space to open

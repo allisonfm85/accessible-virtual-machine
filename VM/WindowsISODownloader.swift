@@ -40,6 +40,14 @@ final class WindowsISODownloader: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var folder: URL
     @Published private(set) var bytesSoFar: Int64 = 0
+    /// The download window was closed with Keep Watching in Background
+    /// (2026-10-27, tester feedback: Stop Watching sounded like it
+    /// cancelled the download, and nothing more was said). AVM goes on
+    /// speaking the progress, and picks the file itself when it's ready.
+    @Published var inBackground = false
+    /// Picks a ready ISO as the installer, for a download that finished
+    /// in the background. Set by the setup wizard, which owns this.
+    var onReady: ((URL) -> Void)?
 
     static let pageURL = URL(string: "https://www.microsoft.com/en-us/software-download/windows11arm64")!
 
@@ -286,7 +294,12 @@ final class WindowsISODownloader: ObservableObject {
             // audit): a file matching nothing Microsoft publishes may be
             // a corrupt download, and sounded exactly like a verified one.
             let verified = verdict.hasPrefix("It matches")
-            Announcer.shared.announce("\(iso.lastPathComponent) is ready. \(verdict) Choose Use This Installer.", tone: verified ? .success : .info)
+            if inBackground, let onReady {
+                onReady(iso)
+                Announcer.shared.announce("\(iso.lastPathComponent) is ready. \(verdict) AVM chose it as the installer; choose Create Virtual Machine when you're ready.", tone: verified ? .success : .info)
+            } else {
+                Announcer.shared.announce("\(iso.lastPathComponent) is ready. \(verdict) Choose Use This Installer.", tone: verified ? .success : .info)
+            }
         } catch {
             guard !stopped else { return }
             let message = (error as? AssistantError)?.message ?? "AVM couldn't read the downloaded file: \(error.localizedDescription)"
