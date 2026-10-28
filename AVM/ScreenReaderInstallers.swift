@@ -196,9 +196,10 @@ nonisolated enum ScreenReaderInstallers {
             // timed out" ended the only try, and Windows was installed with
             // Narrator alone). A stalled or dropped download is tried again.
             var lastError: Error?
+            var resumeData: Data?
             for attempt in 1...downloadAttempts {
                 do {
-                    try await download(installer, to: file, say: say)
+                    try await download(installer, to: file, resumeData: resumeData, say: say)
                     guard try matches(file, installer.checksum) else {
                         try? FileManager.default.removeItem(at: file)
                         throw ScreenReaderInstallerError.checksum(reader.displayName)
@@ -210,7 +211,11 @@ nonisolated enum ScreenReaderInstallers {
                     break
                 } catch {
                     lastError = error
-                    AVMLog.write("AVM: ScreenReaders — \(reader.displayName) try \(attempt) of \(downloadAttempts) failed: \(error.localizedDescription)")
+                    // A stopped download carries where it got to: the next
+                    // try carries on from there (JAWS is 1.5 GB).
+                    resumeData = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data
+                    let ns = error as NSError
+                    AVMLog.write("AVM: ScreenReaders — \(reader.displayName) try \(attempt) of \(downloadAttempts) failed from \(installer.url.host ?? "?"): \(error.localizedDescription) [\(ns.domain) \(ns.code)]\(resumeData != nil ? "; the next try carries on where it stopped" : "")")
                     try? FileManager.default.removeItem(at: file.appendingPathExtension("part"))
                     if attempt < downloadAttempts {
                         await say("\(reader.displayName)'s download stopped. Trying again.", false)
@@ -248,41 +253,65 @@ nonisolated enum ScreenReaderInstallers {
         return URLSession(configuration: configuration)
     }()
 
-    private static func download(_ installer: ScreenReaderInstaller, to file: URL,
+    /// One try at an installer, written to disk by a download task.
+    ///
+    /// It used to read the download one byte at a time through
+    /// URLSession.bytes (2026-10-27, MEASURED: about 100 KB/s with a whole
+    /// CPU core busy, where the network gave 30 MB/s), so the reader, not the
+    /// network, set the pace: a 69 MB NVDA took many minutes, the connection
+    /// sat backed up until a server dropped it ("The request timed out"),
+    /// and JAWS's 1.5 GB could hardly finish. A download task writes at the
+    /// network's speed, and a stopped one hands back resume data
+    /// (NSURLSessionDownloadTaskResumeData in the error) for the next try.
+    private static func download(_ installer: ScreenReaderInstaller, to file: URL, resumeData: Data?,
                                  say: @escaping @Sendable (String, Bool) async -> Void) async throws {
-        let (bytes, response) = try await downloads.bytes(from: installer.url)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw ScreenReaderInstallerError.download("the server answered \((response as? HTTPURLResponse)?.statusCode ?? 0)")
-        }
-        let total = response.expectedContentLength
         let part = file.appendingPathExtension("part")
-        FileManager.default.createFile(atPath: part.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: part)
-        defer { try? handle.close() }
-        var buffer = Data()
-        buffer.reserveCapacity(1 << 20)
-        var written: Int64 = 0
-        var lastTenth = 0
-        for try await byte in bytes {
-            buffer.append(byte)
-            if buffer.count >= 1 << 20 {
-                try handle.write(contentsOf: buffer)
-                written += Int64(buffer.count)
-                buffer.removeAll(keepingCapacity: true)
-                // Large downloads (JAWS is 1.5 GB) say how far they've got.
-                if total > 100_000_000 {
-                    let tenth = Int(Double(written) / Double(total) * 10)
-                    if tenth > lastTenth, tenth < 10 {
-                        lastTenth = tenth
-                        await say("\(installer.reader.displayName) download \(tenth * 10) percent.", false)
-                    }
+        let box = TaskBox()
+        // Large downloads (JAWS is 1.5 GB) say how far they've got.
+        let progress = Task {
+            var lastTenth = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                guard let task = box.task else { continue }
+                let total = task.countOfBytesExpectedToReceive
+                guard total > 100_000_000 else { continue }
+                let tenth = Int(Double(task.countOfBytesReceived) / Double(total) * 10)
+                if tenth > lastTenth, tenth < 10 {
+                    lastTenth = tenth
+                    await say("\(installer.reader.displayName) download \(tenth * 10) percent.", false)
                 }
             }
         }
-        try handle.write(contentsOf: buffer)
-        try handle.close()
+        defer { progress.cancel() }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let done: @Sendable (URL?, URLResponse?, Error?) -> Void = { location, response, error in
+                if let error { continuation.resume(throwing: error); return }
+                guard let location, let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                    let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    continuation.resume(throwing: ScreenReaderInstallerError.download("\(installer.url.host ?? "the server") answered \(code)"))
+                    return
+                }
+                // The temporary file goes when this returns: moved now.
+                do {
+                    try? FileManager.default.removeItem(at: part)
+                    try FileManager.default.moveItem(at: location, to: part)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+            let task = resumeData.map { downloads.downloadTask(withResumeData: $0, completionHandler: done) }
+                ?? downloads.downloadTask(with: installer.url, completionHandler: done)
+            box.task = task
+            task.resume()
+        }
         try? FileManager.default.removeItem(at: file)
         try FileManager.default.moveItem(at: part, to: file)
+    }
+
+    /// The running download task, for the progress poll.
+    private final class TaskBox: @unchecked Sendable {
+        var task: URLSessionDownloadTask?
     }
 
     static func matches(_ file: URL, _ checksum: Checksum) throws -> Bool {

@@ -19,6 +19,11 @@
 //   AVM.app/Contents/MacOS/AVM --test-camera --vm <folder> --guest <os>
 //   AVM.app/Contents/MacOS/AVM --test-3d --vm <folder> --guest <linux os>
 //   AVM.app/Contents/MacOS/AVM --test-camera-save --vm <folder> --guest <linux os>
+//   AVM.app/Contents/MacOS/AVM --test-screen-readers [--jaws] [--into <folder>]
+//
+// --test-screen-readers: downloads NVDA (and JAWS, with --jaws) the way a
+// Windows install does, into an empty folder, and prints what was said,
+// how long each took and whether it passed its checksum. No machine.
 //
 // --test-camera-save: a Linux machine saved while an app in it reads the
 // camera (GStreamer, numbering each frame), then resumed: the same app
@@ -98,10 +103,30 @@ enum SaveResumeTestJob {
                 || arguments.contains("--test-duplicate") || arguments.contains("--test-send-file")
                 || arguments.contains("--test-linux-share") || arguments.contains("--test-ctl")
                 || arguments.contains("--test-disk-info") || arguments.contains("--run-in-guest")
-                || arguments.contains("--test-printers") || arguments.contains("--test-camera") || arguments.contains("--test-3d") || arguments.contains("--test-camera-save") else { return }
+                || arguments.contains("--test-printers") || arguments.contains("--test-camera") || arguments.contains("--test-3d") || arguments.contains("--test-camera-save")
+                || arguments.contains("--test-screen-readers") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
+        }
+        if arguments.contains("--test-screen-readers") {
+            AVMLog.useTestLogFolder()
+            let readers: [ScreenReader] = arguments.contains("--jaws") ? [.nvda, .jaws] : [.nvda]
+            let cache = value("--into").map { URL(fileURLWithPath: $0, isDirectory: true) }
+                ?? FileManager.default.temporaryDirectory.appendingPathComponent("avm-screen-readers-\(UUID().uuidString)")
+            Task {
+                let started = Date()
+                let got = await ScreenReaderInstallers.fetchAll(readers, into: cache) { message, problem in
+                    print(String(format: "   %5.1f s  %@%@", Date().timeIntervalSince(started), problem ? "PROBLEM: " : "", message))
+                }
+                for reader in readers {
+                    let size = got[reader].flatMap { try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize } ?? 0
+                    check("\(reader.displayName) downloaded and checked (\(size / 1_000_000) MB)", got[reader] != nil)
+                }
+                print(String(format: "   took %.0f s, into %@", Date().timeIntervalSince(started), cache.path))
+                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+            }
+            return
         }
         guard let folder = value("--vm") else {
             print("Usage: AVM \(flag) --vm <folder> [--guest windows|debian|ubuntu|fedora]")
