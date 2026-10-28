@@ -3309,6 +3309,72 @@ final class VMManager: ObservableObject {
         avmLog("detachUSBRedirect: port \(port) cleared")
     }
 
+    // MARK: - Bluetooth devices (2026-10-27; AVM/BluetoothDevices.swift)
+
+    static func hidBridgeSocketName(port: Int) -> String {
+        "hidbridge-\(port).sock"
+    }
+
+    func hidBridgeSocketPath(port: Int) -> String? {
+        vmSocketDir?.appendingPathComponent(VMManager.hidBridgeSocketName(port: port)).path
+    }
+
+    /// Adds a socket chardev QEMU listens on and a usb-hid-bridge device
+    /// (AVM's QEMU patch) on root port `port`, presenting a Bluetooth HID
+    /// device with its own report descriptor; the helper then dials the
+    /// socket and relays the device's reports.
+    func attachHIDBridge(port: Int, socketPath: String, descriptor: Data, vendor: Int, product: Int, name: String) async throws {
+        let chardevID = "hidbridge-\(port)"
+        let deviceID = "hidbridge-dev-\(port)"
+        try? FileManager.default.removeItem(atPath: socketPath)
+        _ = try? await sendQMPCommand("chardev-remove", arguments: ["id": chardevID])
+        try await sendQMPCommand("chardev-add", arguments: [
+            "id": chardevID,
+            "backend": [
+                "type": "socket",
+                "data": [
+                    "addr": ["type": "unix", "data": ["path": socketPath]],
+                    "server": true,
+                    "wait": false
+                ]
+            ]
+        ])
+        do {
+            try await sendQMPCommand("device_add", arguments: [
+                "driver": "usb-hid-bridge",
+                "chardev": chardevID,
+                "id": deviceID,
+                "bus": "usb.0",
+                "port": "\(port)",
+                "report-descriptor": descriptor.map { String(format: "%02x", $0) }.joined(),
+                "vendorid": vendor & 0xffff,
+                "productid": product & 0xffff,
+                "product": name
+            ])
+        } catch {
+            avmLog("attachHIDBridge: device_add failed (\(error)); removing chardev")
+            _ = try? await sendQMPCommand("chardev-remove", arguments: ["id": chardevID])
+            throw error
+        }
+        avmLog("attachHIDBridge: usb-hid-bridge on port \(port) for \(name)")
+    }
+
+    /// Removes the device, then its chardev (which, unlike usb-redir's, it
+    /// doesn't remove itself; it can stay busy for a moment after the
+    /// device goes), and the socket file.
+    func detachHIDBridge(port: Int) async {
+        let chardevID = "hidbridge-\(port)"
+        _ = try? await sendQMPCommand("device_del", arguments: ["id": "hidbridge-dev-\(port)"])
+        for _ in 0..<10 {
+            if (try? await sendQMPCommand("chardev-remove", arguments: ["id": chardevID])) != nil { break }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        if let path = hidBridgeSocketPath(port: port) {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+        avmLog("detachHIDBridge: port \(port) cleared")
+    }
+
     // MARK: - Snapshots via QMP
 
     func listSnapshots() async throws -> [[String: Any]] {
@@ -3341,6 +3407,7 @@ final class VMManager: ObservableObject {
         // stops (WindowsKeyboard.swift), and only then: it doesn't follow
         // the machine's window.
         // Only if it types into this machine (2026-10-27, several at once).
+        BluetoothDevices.shared.machineStopped(self)
         if WindowsKeyboard.shared.target === self || WindowsKeyboard.shared.target == nil {
             WindowsKeyboard.shared.stop()
         }
@@ -3597,6 +3664,8 @@ extension VMManager {
         for device in USBRedirectController.shared.devices(for: self) {
             await USBRedirectController.shared.detach(device)
         }
+        // So does a Bluetooth device (2026-10-27).
+        await BluetoothDevices.shared.detachAll(from: self)
         Announcer.shared.announce("Saving \(guest).", tone: .info)
         avmLog("saveStateAndStop: saving \(configuration.name)")
         let started = Date()

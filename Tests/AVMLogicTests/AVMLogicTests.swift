@@ -231,6 +231,28 @@ final class StreamSocketCheckTests: XCTestCase {
         XCTAssertNil(streamSocketProblem(socketPath, uid: getuid()))
     }
 
+    /// A Bluetooth device's socket (2026-10-27): hidbridge-<5…8>.sock, in
+    /// the same private folder; other names stay refused.
+    func testABluetoothDevicesSocketIsAccepted() {
+        let bridge = "\(dir)/hidbridge-6.sock"
+        let other = socket(AF_UNIX, SOCK_STREAM, 0)
+        defer { Darwin.close(other); unlink(bridge) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        _ = withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            bridge.utf8CString.withUnsafeBytes { buffer.copyMemory(from: $0) }
+        }
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(other, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        XCTAssertEqual(bound, 0)
+        XCTAssertNil(streamSocketProblem(bridge, uid: getuid()))
+        XCTAssertNotNil(streamSocketProblem("\(dir)/hidbridge-9.sock", uid: getuid()))
+        XCTAssertNotNil(streamSocketProblem("\(dir)/bridge-6.sock", uid: getuid()))
+    }
+
     func testAnotherUserIsRefused() {
         XCTAssertNotNil(streamSocketProblem(socketPath, uid: getuid() + 1))
     }

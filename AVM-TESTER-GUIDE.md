@@ -601,7 +601,22 @@ dashboard's Start buttons work too.
 - **Other USB devices can go straight to Windows.** When you plug one in
   while Windows is running, AVM sends it or asks first, depending on your
   USB Devices setting. Braille displays and USB microphones work this way.
-  The README's USB devices section explains the choices.
+  The README's USB devices section explains the choices. A device that
+  stayed on the Mac can be sent without unplugging it: **Attach USB
+  Device…** (Command-Shift-U) on the dashboard or in the Virtual Machine
+  menu. If one still won't go across, **Restart USB Helper** returns every
+  device to the Mac and starts AVM's helper again.
+- **Bluetooth devices can go to Windows too, with no USB port.** Choose
+  **Bluetooth Devices…** (Command-Shift-B) on the dashboard or in the
+  Virtual Machine menu, then **Send to Windows** beside a braille display,
+  game controller or other device. Windows sees it as a USB device of the
+  same kind: a Bluetooth braille display shows up as a standard HID
+  braille display, which NVDA and Narrator find by themselves. Your Mac
+  doesn't use the device while it's there; **Return to Mac** gives it
+  back, and so do saving or stopping Windows. Wake a sleeping device by
+  pressing a key on it first. A braille display that uses Bluetooth serial
+  rather than HID won't show up. A keyboard is better chosen as Keyboard
+  for Windows, in Settings.
 - **The first time a device goes to Windows, AVM sets up its USB helper.**
   macOS may ask you to allow it, or it may not. If it asks, the request
   reads fine with VoiceOver. If you aren't an administrator on your Mac,

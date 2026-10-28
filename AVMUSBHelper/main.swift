@@ -103,6 +103,8 @@ final class IdleWatch {
     /// A keyboard for Windows wanted or held (KeyboardHold.swift): the
     /// helper stays while it is.
     private(set) var keyboardHeld = false
+    /// Bluetooth devices held for a virtual machine (BluetoothHold.swift).
+    private(set) var bluetoothHeld = 0
     /// Synchronous (2026-10-25, code audit): counted before the connection
     /// resumes, so its first attach can never meet an idle exit already on
     /// its way. Called from the listener's queue, never from this one.
@@ -134,6 +136,12 @@ final class IdleWatch {
             }
         }
     }
+    func bluetoothChanged(count: Int) {
+        queue.async {
+            self.bluetoothHeld = count
+            if count > 0 { self.cancelTimer() } else { self.armIfIdle() }
+        }
+    }
     func keyboardChanged(held: Bool) {
         queue.async {
             self.keyboardHeld = held
@@ -141,7 +149,7 @@ final class IdleWatch {
         }
     }
     func armIfIdle() {
-        guard connectionCount == 0, claimedDeviceCount == 0, !keyboardHeld else { return }
+        guard connectionCount == 0, claimedDeviceCount == 0, !keyboardHeld, bluetoothHeld == 0 else { return }
         cancelTimer()
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + idleGracePeriod)
@@ -151,7 +159,7 @@ final class IdleWatch {
             // where every attach runs, so none can be using it as it goes
             // (2026-10-25, code audit: libusb_exit under a running open in
             // a root process).
-            guard self.connectionCount == 0, self.claimedDeviceCount == 0, !self.keyboardHeld else { return }
+            guard self.connectionCount == 0, self.claimedDeviceCount == 0, !self.keyboardHeld, self.bluetoothHeld == 0 else { return }
             registry.queue.sync {
                 guard registry.isEmpty else { return }
                 os_log("idle for %{public}.0f s with no connections and no devices; exiting", log: log, type: .default, idleGracePeriod)
@@ -508,6 +516,19 @@ final class HelperService: NSObject, AVMUSBHelperProtocol {
         reply()
     }
 
+    func listBluetoothDevices(reply: @escaping ([NSDictionary]) -> Void) {
+        reply(BluetoothHold.shared.list())
+    }
+
+    func holdBluetoothDevice(_ id: String, streamSocketPath: String, reply: @escaping (Bool, String?) -> Void) {
+        BluetoothHold.shared.hold(id, streamSocketPath: streamSocketPath, owner: connection, reply: reply)
+    }
+
+    func releaseBluetoothDevice(_ id: String, reply: @escaping () -> Void) {
+        BluetoothHold.shared.release(id, owner: connection)
+        reply()
+    }
+
     /// Restart USB Helper (2026-10-27). AVM returns its devices to the Mac
     /// first; whatever is still held is let go when the process ends.
     /// libusb is stopped on the registry's queue, as for the idle exit.
@@ -548,6 +569,7 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
             os_log("connection invalidated (pid %{public}d)", log: log, type: .default, newConnection.processIdentifier)
             registry.releaseAll(ownedBy: newConnection)
             KeyboardHold.shared.release(owner: newConnection)
+            BluetoothHold.shared.releaseAll(owner: newConnection)
             idle.connectionClosed()
         }
         newConnection.interruptionHandler = {

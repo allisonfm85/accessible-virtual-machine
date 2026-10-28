@@ -88,6 +88,21 @@ nonisolated final class USBHelperCallbackReceiver: NSObject, AVMUSBHelperClientP
             MainActor.assumeIsolated { WindowsKeyboard.shared.stateChanged(keyboardID, held: held, detail: detail) }
         }
     }
+
+    func bluetoothState(_ id: String, held: Bool, detail: String?) {
+        Task { @MainActor in BluetoothDevices.shared.helperLetGo(id, detail: detail) }
+    }
+}
+
+/// A Bluetooth HID device the helper can see (BluetoothHold.swift).
+struct BluetoothDeviceInfo: Identifiable, Hashable, Sendable {
+    let id: String
+    let name: String
+    /// braille, controller, keyboard, pointer, remote or other.
+    let kind: String
+    let vendor: Int
+    let product: Int
+    let descriptor: Data
 }
 
 // MARK: - Errors
@@ -326,6 +341,68 @@ final class USBHelperClient: NSObject, ObservableObject {
         return refreshStatus() == .enabled
     }
 
+    // MARK: Bluetooth devices (2026-10-27)
+
+    func listBluetoothDevices() async -> Result<[BluetoothDeviceInfo], USBHelperError> {
+        guard ensureRegistered() else { return .failure(.notEnabled(status)) }
+        let c = connect()
+        let result: Result<[BluetoothDeviceInfo], USBHelperError> = await withCheckedContinuation { cont in
+            let proxy = c.remoteObjectProxyWithErrorHandler { error in
+                cont.resume(returning: .failure(USBHelperError.fromXPC(error)))
+            } as? AVMUSBHelperProtocol
+            guard let proxy else { cont.resume(returning: .failure(.xpc("could not build the helper proxy"))); return }
+            proxy.listBluetoothDevices { list in
+                cont.resume(returning: .success(list.compactMap { entry in
+                    guard let id = entry["id"] as? String, let descriptor = entry["descriptor"] as? Data else { return nil }
+                    return BluetoothDeviceInfo(id: id, name: entry["name"] as? String ?? "Bluetooth device",
+                                               kind: entry["kind"] as? String ?? "other",
+                                               vendor: (entry["vendor"] as? NSNumber)?.intValue ?? 0,
+                                               product: (entry["product"] as? NSNumber)?.intValue ?? 0,
+                                               descriptor: descriptor)
+                }))
+            }
+        }
+        disconnectIfIdle()
+        return result
+    }
+
+    func holdBluetooth(_ id: String, socketPath: String) async -> Result<Void, USBHelperError> {
+        guard ensureRegistered() else { return .failure(.notEnabled(status)) }
+        bluetoothHeld.insert(id)
+        let c = connect()
+        let result: Result<Void, USBHelperError> = await withCheckedContinuation { cont in
+            let proxy = c.remoteObjectProxyWithErrorHandler { error in
+                cont.resume(returning: .failure(USBHelperError.fromXPC(error)))
+            } as? AVMUSBHelperProtocol
+            guard let proxy else { cont.resume(returning: .failure(.xpc("could not build the helper proxy"))); return }
+            proxy.holdBluetoothDevice(id, streamSocketPath: socketPath) { ok, reason in
+                cont.resume(returning: ok ? .success(()) : .failure(.helper(step: "taking the Bluetooth device", detail: reason ?? "")))
+            }
+        }
+        if case .failure = result {
+            bluetoothHeld.remove(id)
+            disconnectIfIdle()
+        }
+        return result
+    }
+
+    func releaseBluetooth(_ id: String) async {
+        guard bluetoothHeld.contains(id), let c = connection else { bluetoothHeld.remove(id); return }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let proxy = c.remoteObjectProxyWithErrorHandler { _ in cont.resume() } as? AVMUSBHelperProtocol
+            guard let proxy else { cont.resume(); return }
+            proxy.releaseBluetoothDevice(id) { cont.resume() }
+        }
+        bluetoothHeld.remove(id)
+        disconnectIfIdle()
+    }
+
+    /// The helper let a device go by itself (it disconnected, or QEMU closed).
+    func forgetBluetooth(_ id: String) {
+        bluetoothHeld.remove(id)
+        disconnectIfIdle()
+    }
+
     /// Restart USB Helper (2026-10-27): asks the helper to exit, then
     /// calls it again, which makes launchd start a fresh one, and returns
     /// that one's version. The caller returns devices to the Mac first.
@@ -388,6 +465,8 @@ final class USBHelperClient: NSObject, ObservableObject {
                 self?.connection = nil
                 self?.keyboardHelperLost()
                 self?.devicesHelperLost()
+                self?.bluetoothHeld.removeAll()
+                BluetoothDevices.shared.helperLost()
             }
         }
         c.interruptionHandler = { [weak self] in
@@ -395,6 +474,8 @@ final class USBHelperClient: NSObject, ObservableObject {
                 self?.log("connection interrupted (helper exited or crashed)")
                 self?.keyboardHelperLost()
                 self?.devicesHelperLost()
+                self?.bluetoothHeld.removeAll()
+                BluetoothDevices.shared.helperLost()
             }
         }
         c.resume()
@@ -424,8 +505,12 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// connection, which would make the helper let go of the new hold.
     private var keyboardGeneration = 0
 
+    /// Bluetooth devices held for a machine (BluetoothDevices.swift): the
+    /// helper lets them go when this connection ends, so it stays open.
+    private var bluetoothHeld: Set<String> = []
+
     private func disconnectIfIdle() {
-        if attachedDevices.isEmpty && pendingDevices.isEmpty && !keyboardActive {
+        if attachedDevices.isEmpty && pendingDevices.isEmpty && !keyboardActive && bluetoothHeld.isEmpty {
             disconnect()
         }
     }

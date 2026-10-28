@@ -349,8 +349,9 @@ final class USBRedirectController: ObservableObject {
         restartingHelper = true
         defer { restartingHelper = false }
         let held = redirectedDevices
-        announce(held.isEmpty ? "Restarting AVM's USB helper." : "Returning USB devices to the Mac and restarting AVM's USB helper.", tone: .info)
+        announce(held.isEmpty && BluetoothDevices.shared.attached.isEmpty ? "Restarting AVM's USB helper." : "Returning devices to the Mac and restarting AVM's USB helper.", tone: .info)
         for device in held { await detach(device) }
+        await BluetoothDevices.shared.detachAll()
         switch await USBHelperClient.shared.restartHelper() {
         case .success:
             announce("AVM's USB helper restarted. Plug the device in again, or choose Attach USB Device.", tone: .success)
@@ -422,7 +423,22 @@ final class USBRedirectController: ObservableObject {
 
     private func freePort(on manager: VMManager) -> Int? {
         let used = Set(portByDevice.filter { machineByDevice[$0.key]?.manager === manager }.values)
+            .union(reserved.values.filter { $0.machine.manager === manager }.map(\.port))
         return USBRedirectController.ports.first { !used.contains($0) }
+    }
+
+    /// Ports held by something other than a USB device: a Bluetooth device
+    /// (BluetoothDevices.swift, 2026-10-27), which shares ports 5 to 8.
+    private var reserved: [String: (port: Int, machine: WeakManager)] = [:]
+
+    func reservePort(_ key: String, on manager: VMManager) -> Int? {
+        guard let port = freePort(on: manager) else { return nil }
+        reserved[key] = (port, WeakManager(manager: manager))
+        return port
+    }
+
+    func releaseReservedPort(_ key: String) {
+        reserved[key] = nil
     }
 
     /// AVM's helper stopped (2026-10-26, code audit): the kernel has given

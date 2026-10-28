@@ -22,7 +22,8 @@
 #          own patch for the same package: the GStreamer osxaudio
 #          deadlock fix, a QEMU build fix so UTM's Metal display code
 #          is compiled only when OpenGL is, QEMU's coreaudio playback and
-#          microphone, and usb-camera (the Mac's camera as a USB webcam).
+#          microphone, usb-camera (the Mac's camera as a USB webcam), and
+#          usb-hid-bridge (Bluetooth HID devices, relayed by AVM's helper).
 #          Each patch's header says what it does and where it comes from.
 #          Patches for git clones, which UTM's build doesn't patch, are in
 #          Tools/sysroot-patches/clones, applied just before their build:
@@ -573,6 +574,8 @@ done < <(find "$OUT/bin" "$OUT/lib" "$OUT/Frameworks" -type f \( -perm -u+x -o -
 [ "$brew_refs" = "0" ] || problem "$brew_refs binaries link Homebrew libraries"
 "$OUT/bin/qemu-system-aarch64" -device help 2>/dev/null | grep -q '"usb-camera"' \
     || problem "QEMU has no usb-camera device (Tools/sysroot-patches/qemu-10.0.12-utm+usb-camera.patch)"
+"$OUT/bin/qemu-system-aarch64" -device help 2>/dev/null | grep -q '"usb-hid-bridge"' \
+    || problem "QEMU has no usb-hid-bridge device (Tools/sysroot-patches/qemu-10.0.12-utm+usb-hid-bridge.patch)"
 "$OUT/bin/qemu-system-aarch64" -device help 2>/dev/null | grep -q '"virtio-gpu-gl-pci"' \
     || problem "QEMU has no virtio-gpu-gl-pci: it was built without OpenGL or virglrenderer"
 for lib in libEGL.dylib libGLESv2.dylib libepoxy.0.dylib libvirglrenderer.1.dylib; do

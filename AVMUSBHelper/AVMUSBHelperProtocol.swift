@@ -227,6 +227,23 @@ nonisolated public protocol AVMUSBHelperProtocol {
     /// Restart USB Helper (2026-10-27): the helper replies, lets go of
     /// everything and exits; launchd starts a fresh one at the next call.
     func restart(reply: @escaping () -> Void)
+
+    // Bluetooth devices for a virtual machine (2026-10-27, BluetoothHold.swift):
+    // the helper takes a Bluetooth HID device from macOS and relays its
+    // reports to QEMU's usb-hid-bridge over the socket AVM names.
+
+    /// The Bluetooth HID devices connected now: dictionaries with "id",
+    /// "name", "kind" (braille, controller, keyboard, pointer, remote,
+    /// other), "vendor", "product", "descriptor" (the report descriptor)
+    /// and "held".
+    func listBluetoothDevices(reply: @escaping ([NSDictionary]) -> Void)
+
+    /// Take the device with this id and relay it to the usb-hid-bridge
+    /// socket. Replies whether it was taken, and why not.
+    func holdBluetoothDevice(_ id: String, streamSocketPath: String, reply: @escaping (Bool, String?) -> Void)
+
+    /// Give the device back to the Mac.
+    func releaseBluetoothDevice(_ id: String, reply: @escaping () -> Void)
 }
 
 // MARK: - AVM side (the helper calls this back)
@@ -239,6 +256,10 @@ nonisolated public protocol AVMUSBHelperClientProtocol {
     func stateChanged(_ device: AVMUSBDeviceIdentity,
                       state: AVMUSBDeviceState,
                       detail: String?)
+
+    /// A Bluetooth device the helper held was let go without AVM asking:
+    /// it disconnected, or the virtual machine closed its side.
+    func bluetoothState(_ id: String, held: Bool, detail: String?)
 
     /// A key on the held keyboard: its HID usage (page 7) and whether it
     /// went down or up. Never logged by either side.

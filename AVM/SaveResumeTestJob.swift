@@ -20,6 +20,12 @@
 //   AVM.app/Contents/MacOS/AVM --test-3d --vm <folder> --guest <linux os>
 //   AVM.app/Contents/MacOS/AVM --test-camera-save --vm <folder> --guest <linux os>
 //   AVM.app/Contents/MacOS/AVM --test-screen-readers [--jaws] [--into <folder>]
+//   AVM.app/Contents/MacOS/AVM --test-hid-bridge --vm <folder> --guest <os>
+//
+// --test-hid-bridge: the Bluetooth path without a Bluetooth device. Adds a
+// usb-hid-bridge (AVM's QEMU patch) with a made-up HID device, plays the
+// helper's part on its socket, and checks the machine sees the device, an
+// input report reaches it, and an output report written there comes back.
 //
 // --test-screen-readers: downloads NVDA (and JAWS, with --jaws) the way a
 // Windows install does, into an empty folder, and prints what was said,
@@ -104,7 +110,7 @@ enum SaveResumeTestJob {
                 || arguments.contains("--test-linux-share") || arguments.contains("--test-ctl")
                 || arguments.contains("--test-disk-info") || arguments.contains("--run-in-guest")
                 || arguments.contains("--test-printers") || arguments.contains("--test-camera") || arguments.contains("--test-3d") || arguments.contains("--test-camera-save")
-                || arguments.contains("--test-screen-readers") else { return }
+                || arguments.contains("--test-screen-readers") || arguments.contains("--test-hid-bridge") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -176,6 +182,101 @@ enum SaveResumeTestJob {
                 check("the same app carried on getting frames", frameAfter > frameBefore + 10 && after.dropFirst().first == "1")
                 check("the Mac's camera came back on", manager.consoleOutput.contains("usb-camera: the Mac's camera ("))
                 _ = await exec(agent2, program: "/bin/sh", args: ["-c", "pkill gst-launch; rm -rf /tmp/avm-cam"])
+                await shutDown(manager)
+                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+            }
+            if arguments.contains("--test-hid-bridge") {
+                let manager = VMManager()
+                guard await start(manager, configuration(folder: folderURL, guest: guest)),
+                      let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                try? await Task.sleep(for: .seconds(20))
+                // Vendor page; report 1: 8 bytes in, report 2: 8 bytes out.
+                let descriptor = Data([0x06, 0x00, 0xff, 0x09, 0x01, 0xa1, 0x01,
+                                       0x85, 0x01, 0x09, 0x02, 0x15, 0x00, 0x26, 0xff, 0x00, 0x75, 0x08, 0x95, 0x08, 0x81, 0x02,
+                                       0x85, 0x02, 0x09, 0x03, 0x75, 0x08, 0x95, 0x08, 0x91, 0x02,
+                                       0xc0])
+                // --braille: a HID braille display instead (usage page 0x41): a
+                // 40-cell row out (report 1), the eight dot keys in (report 2).
+                let braille = arguments.contains("--braille")
+                let brailleDescriptor = Data([0x05, 0x41, 0x09, 0x01, 0xa1, 0x01,
+                                              0x85, 0x01, 0x09, 0x02, 0xa1, 0x02,
+                                              0x09, 0x03, 0x15, 0x00, 0x26, 0xff, 0x00, 0x75, 0x08, 0x95, 0x28, 0x91, 0x02,
+                                              0xc0,
+                                              0x85, 0x02, 0x1a, 0x01, 0x02, 0x2a, 0x08, 0x02,
+                                              0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02,
+                                              0xc0])
+                let port = 5
+                guard let socketPath = manager.hidBridgeSocketPath(port: port) else { print("FAILED"); exit(1) }
+                do {
+                    try await manager.attachHIDBridge(port: port, socketPath: socketPath, descriptor: braille ? brailleDescriptor : descriptor,
+                                                      vendor: 0x46f4, product: 0x0012, name: "AVM Bluetooth test")
+                    check("QEMU added the bridge device", true)
+                } catch {
+                    check("QEMU added the bridge device (\(error.localizedDescription))", false)
+                    await shutDown(manager); print("FAILED"); exit(1)
+                }
+                let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+                var address = sockaddr_un()
+                address.sun_family = sa_family_t(AF_UNIX)
+                withUnsafeMutableBytes(of: &address.sun_path) { raw in
+                    let bytes = Array(socketPath.utf8); raw.copyBytes(from: bytes); raw[bytes.count] = 0
+                }
+                let connected = withUnsafePointer(to: &address) {
+                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+                }
+                check("the helper's side connected to the socket", connected == 0)
+                // An input report, sent once the guest has set the device up
+                // and is reading (a USB reset during setup clears any queued,
+                // as on a real device).
+                let input: [UInt8] = [0x01, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8]
+                func sendInput() {
+                    _ = ([UInt8(1), UInt8(input.count), 0] + input).withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+                }
+                try? await Task.sleep(for: .seconds(3))
+                if guest != .windows {
+                    _ = await exec(agent, program: "/bin/sh", args: ["-c", #"""
+                        export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+                        d=$(for h in /sys/class/hidraw/hidraw*; do grep -q 'Bluetooth test' $h/device/uevent 2>/dev/null && echo /dev/$(basename $h); done | head -1)
+                        [ -n "$d" ] && (timeout 15 dd if=$d bs=64 count=1 2>/dev/null | od -An -tx1 | tr -s ' ' > /tmp/avm-hb.txt) >/dev/null 2>&1 &
+                        sleep 1
+                        """#])
+                }
+                sendInput()
+                try? await Task.sleep(for: .seconds(2))
+                let out: String?
+                if guest == .windows {
+                    out = await exec(agent, program: "powershell.exe", args: ["-NoProfile", "-Command",
+                        "Get-PnpDevice -PresentOnly | Where-Object InstanceId -like '*VID_46F4&PID_0012*' | ForEach-Object { 'device: ' + $_.FriendlyName + ' | ' + $_.Class + ' | ' + $_.Status + ' | ' + (($_ | Get-PnpDeviceProperty DEVPKEY_Device_HardwareIds -ErrorAction SilentlyContinue).Data -join ',') }"])
+                } else {
+                    out = await exec(agent, program: "/bin/sh", args: ["-c", #"""
+                        export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+                        d=$(for h in /sys/class/hidraw/hidraw*; do grep -q 'Bluetooth test' $h/device/uevent 2>/dev/null && echo /dev/$(basename $h); done | head -1)
+                        echo "device: $d"
+                        [ -n "$d" ] || exit 0
+                        echo "read: $(cat /tmp/avm-hb.txt 2>/dev/null)"; rm -f /tmp/avm-hb.txt
+                        printf '\002\021\042\063\104\125\146\167\210' > $d && echo "wrote: 02 11 22 33 44 55 66 77 88"
+                        """#])
+                }
+                let text = out ?? ""
+                print(text.split(whereSeparator: \.isNewline).map { "   machine: " + $0 }.joined(separator: "\n"))
+                if guest == .windows {
+                    check("Windows has the device, working", text.contains("device:") && text.contains("OK"))
+                } else {
+                    check("Linux has the device", text.contains("/dev/hidraw"))
+                    check("the input report reached it", text.contains("01 a1 a2 a3 a4 a5 a6 a7 a8"))
+                    // The output report, back on the helper's side.
+                    var received: [UInt8] = []
+                    var timeout = timeval(tv_sec: 5, tv_usec: 0)
+                    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+                    var chunk = [UInt8](repeating: 0, count: 256)
+                    let n = read(fd, &chunk, chunk.count)
+                    if n > 0 { received = Array(chunk[0..<n]) }
+                    print("   helper's side got: \(received.map { String(format: "%02x", $0) }.joined(separator: " "))")
+                    check("the output report came back", received == [2, 9, 0, 0x02, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88])
+                }
+                close(fd)
+                await manager.detachHIDBridge(port: port)
+                check("the bridge device was removed", true)
                 await shutDown(manager)
                 print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
             }

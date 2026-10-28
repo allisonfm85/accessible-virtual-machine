@@ -405,6 +405,11 @@ struct AVMApp: App {
                     NotificationCenter.default.post(name: .avmDetachUSBFromMenu, object: nil)
                 }
                 .disabled(usbRedirect.portByDevice.isEmpty)
+                Button("Bluetooth Devices…") {
+                    NotificationCenter.default.post(name: .avmBluetoothDevices, object: nil)
+                }
+                .keyboardShortcut("b", modifiers: [.command, .shift])
+                .disabled(!activity.isRunning)
                 Button("Restart USB Helper") {
                     Task { await USBRedirectController.shared.restartHelper() }
                 }

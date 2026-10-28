@@ -28,6 +28,8 @@ extension Notification.Name {
     /// Attach enumerates fresh at invocation; detach reads the
     /// controller's live map. Empty answers are spoken, not shown.
     static let avmAttachUSBFromMenu = Notification.Name("avmAttachUSBFromMenu")
+    /// Bluetooth Devices… (2026-10-27, BluetoothDevices.swift).
+    static let avmBluetoothDevices = Notification.Name("avmBluetoothDevices")
     static let avmDetachUSBFromMenu = Notification.Name("avmDetachUSBFromMenu")
 
     /// Posted by the Virtual Machine menu's "Speak Status" item
@@ -45,6 +47,12 @@ extension Notification.Name {
 
 /// One open of the USB picker sheet: which mode, which devices. Identity
 /// is per request so the sheet reloads if a new request arrives.
+/// The machine the Bluetooth Devices window is for.
+struct BluetoothWindowRequest: Identifiable {
+    let id = UUID()
+    let machine: VMManager
+}
+
 struct USBPickerRequest: Identifiable {
     let id = UUID()
     let mode: USBDevicePickerView.Mode
@@ -79,6 +87,7 @@ struct ContentView: View {
     @State private var settingsTarget: VMConfiguration? = nil
     @State private var showingReclaim = false
     @State private var usbPicker: USBPickerRequest? = nil
+    @State private var bluetoothWindow: BluetoothWindowRequest? = nil
     @State private var errorMessage: String? = nil
 
     // MARK: - Body
@@ -239,6 +248,16 @@ struct ContentView: View {
         }
         .sheet(item: $usbPicker) { request in
             USBDevicePickerView(mode: request.mode, devices: request.devices)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .avmBluetoothDevices)) { _ in
+            guard let manager = VMManager.shared, case .running = manager.state else {
+                Announcer.shared.announce("The virtual machine is not running. Start it, then send a Bluetooth device.", tone: .failure)
+                return
+            }
+            bluetoothWindow = BluetoothWindowRequest(machine: manager)
+        }
+        .sheet(item: $bluetoothWindow) { request in
+            BluetoothDevicesView(machine: request.machine)
         }
         // Speak Status (Cmd-Shift-I, 2026-10-25). Always .info: asking is
         // not an outcome, so no verdict sound, even when the answer is an
@@ -821,6 +840,12 @@ private struct QEMUMachineRow: View {
             }
             .accessibilityLabel("Attach a USB device to \(name)")
             .accessibilityHint("Lists the USB devices plugged into your Mac and sends the one you choose. Command Shift U.")
+            Button("Bluetooth Devices…") {
+                MachineSessions.shared.makeCurrent(session.configuration.id)
+                NotificationCenter.default.post(name: .avmBluetoothDevices, object: nil)
+            }
+            .accessibilityLabel("Bluetooth devices for \(name)")
+            .accessibilityHint("Sends a Bluetooth braille display, game controller or other device to \(name). Command Shift B.")
             Button("Pause") {
                 Task {
                     do { try await session.pause() }
