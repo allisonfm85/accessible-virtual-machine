@@ -309,6 +309,23 @@ final class USBHelperClient: NSObject, ObservableObject {
         }
     }
 
+    /// Waits, up to `limit`, for the helper to be approved, checking every
+    /// 2 seconds while `keepWaiting` is true. True once it's enabled.
+    ///
+    /// For a send that asked for the approval (2026-10-27, a tester's
+    /// keyboard): it used to fail and be forgotten, so after "USB helper
+    /// approved, continuing" nothing continued and the keyboard stayed on
+    /// the Mac until it was plugged in again. The send now waits here and
+    /// goes ahead once the approval lands.
+    func waitForApproval(limit: TimeInterval = 300, while keepWaiting: () -> Bool) async -> Bool {
+        let started = Date()
+        while Date().timeIntervalSince(started) < limit, keepWaiting() {
+            if refreshStatus() == .enabled { return true }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        return refreshStatus() == .enabled
+    }
+
     /// Polls status until the approval lands, then says so (1e:
     /// "USB helper approved, continuing" is spoken so the person
     /// standing in System Settings hears the handshake complete).

@@ -318,6 +318,21 @@ final class USBRedirectController: ObservableObject {
             if quiet == false {
                 handedBackAt[USBPlugPrompt.deviceKey(device)] = Date()
             }
+            // Asked for the helper's approval (USBHelperClient.waitForApproval):
+            // sent once it's approved, if still plugged in. The send gate
+            // waits in its own way.
+            if quiet == false, case .notEnabled(.requiresApproval) = error {
+                log("waiting for the USB helper's approval to send \(device.description)")
+                Task { @MainActor [weak manager] in
+                    guard await USBHelperClient.shared.waitForApproval(while: { USBHotPlugWatcher.shared.isPresent(device) != false }) else {
+                        self.log("no approval for \(device.description); not sent")
+                        return
+                    }
+                    guard let manager, case .running = manager.state, USBHotPlugWatcher.shared.isPresent(device) != false else { return }
+                    self.log("helper approved; sending \(device.description) now")
+                    await self.attach(device, to: manager)
+                }
+            }
             return false
         }
     }

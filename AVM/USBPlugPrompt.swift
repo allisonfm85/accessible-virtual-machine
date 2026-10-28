@@ -465,6 +465,32 @@ final class USBPlugPrompt {
             }
             let accepted = await USBRedirectController.shared.attach(device, to: machine, quiet: true)
             log("send gate: attempt \(gate.attempts) of \(Self.maxAttempts) for \(device): \(accepted ? "helper accepted" : "refused")")
+            // This send asked for the helper's approval (2026-10-27, a
+            // tester's keyboard): wait for it instead of using up the tries
+            // 3 seconds later, while the user is still in System Settings,
+            // and showing the approval dialog again. Then send it.
+            if !accepted, USBHelperClient.shared.refreshStatus() == .requiresApproval {
+                log("send gate: \(device) waits for the USB helper's approval")
+                let approved = await USBHelperClient.shared.waitForApproval(while: {
+                    gates[key] != nil && USBHotPlugWatcher.shared.isPresent(device) != false
+                })
+                guard gates[key] != nil else { return }
+                if USBHotPlugWatcher.shared.isPresent(device) == false {
+                    finishGate(key, .gone)
+                    return
+                }
+                guard approved else {
+                    finishGate(key, .notApproved)
+                    return
+                }
+                log("send gate: helper approved; sending \(device) now")
+                if var waiting = gates[key] {
+                    waiting.attempts -= 1   // the refused try doesn't count
+                    waiting.lastActivity = Date()
+                    gates[key] = waiting
+                }
+                continue
+            }
             await settle(key)
             guard let settled = gates[key] else { return }
             if USBRedirectController.shared.isInWindows(settled.question.identity) {
@@ -498,7 +524,7 @@ final class USBPlugPrompt {
         }
     }
 
-    private enum GateOutcome { case inWindows, gone, failed, stopped }
+    private enum GateOutcome { case inWindows, gone, failed, stopped, notApproved }
 
     /// Closes the gate and speaks its one outcome.
     private func finishGate(_ key: String, _ outcome: GateOutcome) {
@@ -520,6 +546,9 @@ final class USBPlugPrompt {
             say("AVM couldn't send \(name) to \(VMManager.currentGuestName). Reason: \(reason). Next: try Attach USB Device.", tone: .failure)
         case .stopped:
             log("send gate closed: \(device); the VM stopped")
+        case .notApproved:
+            log("send gate closed: \(device) not sent; the USB helper wasn't approved within 5 minutes")
+            say("\(name) stayed on the Mac: AVM's USB helper hasn't been allowed. Next: in System Settings, General, Login Items and Extensions, allow AVM, then plug \(name) in again.", tone: .failure)
         }
     }
 
