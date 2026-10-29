@@ -5,8 +5,9 @@
 #   - the logic tests (Package.swift: password hashing, the log
 #     sanitizer, saved configurations, Ubuntu account checks, the root USB
 #     helper's socket check);
-#   - a syntax and lint pass over the build scripts;
-#   - well-formedness of the update feed and Info.plist.
+#   - a syntax and lint pass over the build scripts, Tools/avmctl included;
+#   - well-formedness of the update feed, the answer file, Info.plist, the
+#     helper's launchd plist and both entitlements files.
 # The app itself needs the UTM sysroot (Tools/build-sysroot.sh, about an
 # hour), so it is built on a Mac, not here.
 #
@@ -49,18 +50,24 @@ jobs:
       - name: Shell syntax
         run: |
           # Every file's error fails the step (2026-10-29, sixth audit):
-          # only the last file's status counted.
-          for f in Tools/*.sh; do
+          # only the last file's status counted. Tools/avmctl is a shell
+          # script without the suffix (2026-10-29, seventh audit).
+          for f in Tools/*.sh Tools/avmctl; do
             bash -n "$f" || exit 1
             echo "ok: $f"
           done
       - name: ShellCheck (errors only)
-        run: shellcheck -S error Tools/*.sh
-      - name: Update feed, answer file and Info.plist are well formed
+        run: shellcheck -S error Tools/*.sh Tools/avmctl
+      - name: Update feed, answer file and property lists are well formed
         run: |
           sudo apt-get install -y libxml2-utils >/dev/null
           xmllint --noout appcast.xml Resources/autounattend.xml
-          python3 -c "import plistlib; plistlib.load(open('AVM/Info.plist', 'rb')); print('ok: AVM/Info.plist')"
+          # The helper's launchd plist and both entitlements files too
+          # (2026-10-29, seventh audit). Linux has no plutil; plistlib is
+          # the same check.
+          for f in AVM/Info.plist Resources/com.alllisonmeloy.AVM.usbhelper.plist AVM/AVM.entitlements AVM/AVM-Release.entitlements; do
+            python3 -c "import plistlib, sys; plistlib.load(open(sys.argv[1], 'rb')); print('ok:', sys.argv[1])" "$f" || exit 1
+          done
       - name: Sysroot patches are named for a UTM patch
         run: |
           for p in Tools/sysroot-patches/*.patch; do

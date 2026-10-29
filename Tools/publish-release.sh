@@ -75,8 +75,12 @@ git -C "$REPO_ROOT" diff --quiet -- appcast.xml || fail "appcast.xml has changes
 # A tag already on GitHub names this build's commit (2026-10-29, sixth
 # audit): a tag kept from a deleted release made the new release name an
 # older commit than the one its files were built from.
-REMOTE_TAG="$(git -C "$REPO_ROOT" ls-remote -q --tags origin "refs/tags/v$VERSION^{}" | cut -f1)"
-[ -n "$REMOTE_TAG" ] || REMOTE_TAG="$(git -C "$REPO_ROOT" ls-remote -q --tags origin "refs/tags/v$VERSION" | cut -f1)"
+# A failure to reach GitHub is said (2026-10-29, seventh audit): under set -e
+# it ended the script with git's own words.
+REMOTE_TAG="$(git -C "$REPO_ROOT" ls-remote -q --tags origin "refs/tags/v$VERSION^{}" | cut -f1)" || fail "Couldn't read GitHub's tags." "Check the connection, then run this again."
+if [ -z "$REMOTE_TAG" ]; then
+    REMOTE_TAG="$(git -C "$REPO_ROOT" ls-remote -q --tags origin "refs/tags/v$VERSION" | cut -f1)" || fail "Couldn't read GitHub's tags." "Check the connection, then run this again."
+fi
 if [ -n "$REMOTE_TAG" ] && [ "$REMOTE_TAG" != "$BUILT" ]; then
     fail "GitHub's tag v$VERSION names commit ${REMOTE_TAG:0:7}, not ${BUILT:0:7}, which this build was made from." "Delete the old tag (git push origin :refs/tags/v$VERSION) if it's from an abandoned release, or raise the version."
 fi

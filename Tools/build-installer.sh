@@ -22,9 +22,13 @@
 #      runtime and a secure timestamp, inside out, and the app is sealed
 #      last. Entitlements and identifiers already present are kept.
 #   4. Verifies the signatures, and that every binary carries one Team ID.
-#   5. Makes and signs the DMG.
-#   6. Notarizes the DMG with notarytool, staples it, and staples the app.
-#   7. Zips the stapled app for Sparkle.
+#   5. Notarizes the app itself, as a zip, and staples it (2026-10-29,
+#      seventh audit: the DMG used to be made first, so the app inside it
+#      had no ticket, and a Mac that couldn't reach Apple at first launch
+#      refused it).
+#   6. Makes and signs the DMG, from the stapled app.
+#   7. Notarizes the DMG with notarytool and staples it.
+#   8. Zips the stapled app for Sparkle.
 #
 # Output goes to build/installer/. Messages are plain text, one line per
 # step, no colors, so they read cleanly in a screen reader. When the run
@@ -67,6 +71,11 @@ Options:
                           first Developer ID Application identity found.
   --team TEAMID           Team ID. Default: read from the identity's name.
   --notary-profile NAME   notarytool keychain profile (or $AVM_NOTARY_PROFILE).
+                          Make one once with
+                            xcrun notarytool store-credentials NAME \
+                                --apple-id you@example.com --team-id YOURTEAMID
+                          which asks for an app-specific password from
+                          appleid.apple.com.
   --skip-notarize         Sign only. The DMG then opens only on this Mac.
   --no-update-signing     Don't sign the Sparkle zip or write the update feed
                           entry (a test build that won't be published).
@@ -152,13 +161,21 @@ for need in bin/qemu-system-aarch64 bin/qemu-img bin/swtpm bin/xorriso bin/wimli
     [ -e "$SYSROOT/$need" ] || fail "The sysroot at $SYSROOT has no $need." \
         "Check that it is a complete sysroot; Tools/build-sysroot.sh builds one."
 done
+# The licence texts the app ships (2026-10-29, seventh audit): the build
+# phase only warns when they are missing, which is right for a Debug build
+# and wrong for a release.
+[ -f "$SYSROOT/share/licenses/INDEX.txt" ] || fail "The sysroot at $SYSROOT has no share/licenses, the licence texts the app ships." \
+    "Run Tools/build-sysroot.sh --licenses-only (a minute); it collects them from the source tarballs."
 info "Sysroot: $SYSROOT"
 
 # Built from this checkout's patches (2026-10-29, sixth audit): a pull that
 # changed Tools/sysroot-patches, or QEMU rebuilt by hand before its patch was
 # committed, shipped a QEMU the release's commit doesn't describe.
 UTM_COMMIT="$(sed -nE 's/^UTM_COMMIT="([0-9a-f]+)".*/\1/p' "$REPO_ROOT/Tools/build-sysroot.sh")"
-EXPECTED_PATCHES="$( (cd "$REPO_ROOT" && { echo "utm $UTM_COMMIT"; shasum -a 256 Tools/sysroot-patches/*.patch Tools/sysroot-patches/clones/*.patch; }) )"
+# Under LC_ALL=C, as Tools/build-sysroot.sh records it (2026-10-29, seventh
+# audit: the glob's order followed the shell's locale, and a good sysroot
+# was refused from Terminal).
+EXPECTED_PATCHES="$( (cd "$REPO_ROOT" && export LC_ALL=C && { echo "utm $UTM_COMMIT"; shasum -a 256 Tools/sysroot-patches/*.patch Tools/sysroot-patches/clones/*.patch; }) )"
 if [ ! -f "$SYSROOT/.avm-sysroot-patches" ] || [ "$(cat "$SYSROOT/.avm-sysroot-patches")" != "$EXPECTED_PATCHES" ]; then
     fail "The sysroot wasn't built from this checkout's QEMU and GStreamer patches." \
          "Run Tools/build-sysroot.sh (most of an hour). If QEMU was rebuilt by hand from exactly these patches, run Tools/build-sysroot.sh --mark-built instead."
@@ -391,7 +408,45 @@ done < <(find "$APP" -type f)
     "Check that --sysroot names the same folder the build phase used, then build again."
 info "Every library reference is inside the app or macOS."
 
-# MARK: - 5. DMG
+# MARK: - Notarizing
+
+# Submits one file, waits for Apple's answer, and stops with Apple's list
+# of problems when it is refused. $1 is the file, $2 what to call it, $3
+# the log's name in $BUILD_DIR.
+notarize() {
+    local file="$1" what="$2" log="$BUILD_DIR/$3" sub_id
+    xcrun notarytool submit "$file" --keychain-profile "$NOTARY_PROFILE" --wait >"$log" 2>&1 || true
+    sed 's/^/   /' "$log" | grep -E "id:|status:" || true
+    if ! grep -q "status: Accepted" "$log"; then
+        sub_id="$(sed -nE 's/^ *id: ([0-9a-f-]+)$/\1/p' "$log" | sed -n 1p)"
+        if [ -n "$sub_id" ]; then
+            xcrun notarytool log "$sub_id" --keychain-profile "$NOTARY_PROFILE" "$BUILD_DIR/notary-issues.json" >/dev/null 2>&1 || true
+            fail "Apple did not accept the $what." "Apple's list of problems is in $BUILD_DIR/notary-issues.json"
+        fi
+        fail "The notarization request for the $what did not complete." "See $log"
+    fi
+}
+
+# MARK: - 5. Notarize the app
+
+# The app first, on its own (2026-10-29, seventh audit): the DMG used to
+# be made before the app was stapled, so a copy dragged out of it carried
+# no ticket, and a Mac that couldn't reach Apple at first launch refused
+# it. Now the app is notarized as a zip and stapled, and the DMG and the
+# Sparkle zip are both made from the stapled app.
+if [ "$SKIP_NOTARIZE" = "0" ]; then
+    step "Notarizing the app (Apple usually answers in a few minutes)"
+    NOTARIZE_ZIP="$BUILD_DIR/AVM-$VERSION-notarize.zip"
+    rm -f "$NOTARIZE_ZIP"
+    ditto -c -k --sequesterRsrc --keepParent "$APP" "$NOTARIZE_ZIP"
+    notarize "$NOTARIZE_ZIP" "app" "notarize-app.log"
+    rm -f "$NOTARIZE_ZIP"
+    xcrun stapler staple "$APP" >/dev/null || fail "Stapling the app failed."
+    xcrun stapler validate "$APP" >/dev/null 2>&1 || fail "The app has no ticket after stapling." "Run: xcrun stapler validate $APP"
+    info "The app is notarized and stapled."
+fi
+
+# MARK: - 6. DMG
 
 step "Making the disk image"
 
@@ -410,23 +465,12 @@ rm -rf "$STAGE"
 codesign --force --timestamp --sign "$IDENTITY" "$DMG" >/dev/null 2>&1 || fail "codesign refused the disk image."
 info "Made AVM-$VERSION.dmg"
 
-# MARK: - 6. Notarize
+# MARK: - 7. Notarize the DMG
 
 if [ "$SKIP_NOTARIZE" = "0" ]; then
-    step "Notarizing (Apple usually answers in a few minutes)"
-    SUBMIT_LOG="$BUILD_DIR/notarize.log"
-    xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait >"$SUBMIT_LOG" 2>&1 || true
-    sed 's/^/   /' "$SUBMIT_LOG" | grep -E "id:|status:" || true
-    if ! grep -q "status: Accepted" "$SUBMIT_LOG"; then
-        SUB_ID="$(sed -nE 's/^ *id: ([0-9a-f-]+)$/\1/p' "$SUBMIT_LOG" | sed -n 1p)"
-        if [ -n "$SUB_ID" ]; then
-            xcrun notarytool log "$SUB_ID" --keychain-profile "$NOTARY_PROFILE" "$BUILD_DIR/notary-issues.json" >/dev/null 2>&1 || true
-            fail "Apple did not accept the disk image." "Apple's list of problems is in $BUILD_DIR/notary-issues.json"
-        fi
-        fail "The notarization request did not complete." "See $SUBMIT_LOG"
-    fi
+    step "Notarizing the disk image"
+    notarize "$DMG" "disk image" "notarize.log"
     xcrun stapler staple "$DMG" >/dev/null || fail "Stapling the disk image failed."
-    xcrun stapler staple "$APP" >/dev/null || fail "Stapling the app failed."
     spctl --assess --type open --context context:primary-signature -v "$DMG" 2>&1 | sed 's/^/   /' || \
         info "Gatekeeper's check of the stapled image didn't pass on this Mac; the notarization itself succeeded."
     info "Notarized and stapled."
@@ -435,7 +479,7 @@ else
     info "This DMG opens on this Mac. On other Macs, Gatekeeper blocks it until it is notarized."
 fi
 
-# MARK: - 7. Sparkle zip
+# MARK: - 8. Sparkle zip
 
 step "Making the Sparkle update zip"
 ZIP="$OUT_DIR/AVM-$VERSION.zip"
@@ -455,7 +499,7 @@ if [ "$SIGN_FOR_UPDATES" = "0" ]; then
 elif [ -z "$SIGN_UPDATE" ]; then
     fail "Sparkle's sign_update tool was not found in the build." "Check that the archive step resolved the Sparkle package."
 else
-info "Signing the update zip with the update key ($SPARKLE_ACCOUNT). If macOS asks, choose Always Allow."
+info "Signing the update zip with the update key ($SPARKLE_ACCOUNT). macOS may ask twice, for sign_update and then generate_keys; choose Always Allow both times."
 SIGNATURE="$("$SIGN_UPDATE" --account "$SPARKLE_ACCOUNT" "$ZIP")" || \
     fail "sign_update could not sign the zip." "Allow keychain access. If this Mac has no update key, import the existing one with generate_keys -f <exported key file> --account $SPARKLE_ACCOUNT. Never make a new one: installed copies trust only the key in SUPublicEDKey."
 # The key that signed is the one installed copies trust (2026-10-29, sixth
@@ -463,11 +507,25 @@ SIGNATURE="$("$SIGN_UPDATE" --account "$SPARKLE_ACCOUNT" "$ZIP")" || \
 # every installed AVM refused, with nothing here to say so.
 GENERATE_KEYS="$(dirname "$SIGN_UPDATE")/generate_keys"
 TRUSTED_KEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist" 2>/dev/null | tr -d '[:space:]' || true)"
-SIGNING_KEY="$("$GENERATE_KEYS" -p --account "$SPARKLE_ACCOUNT" 2>/dev/null | tr -d '[:space:]' || true)"
-if [ -z "$TRUSTED_KEY" ] || [ "$SIGNING_KEY" != "$TRUSTED_KEY" ]; then
+[ -n "$TRUSTED_KEY" ] || fail "The app's Info.plist has no SUPublicEDKey." "Check AVM/Info.plist."
+# generate_keys' own failure is shown (2026-10-29, seventh audit): a keychain
+# dialog dismissed, or none possible over ssh, read as "a different key".
+SIGNING_KEY="$("$GENERATE_KEYS" -p --account "$SPARKLE_ACCOUNT" | tr -d '[:space:]')" \
+    || fail "Could not read the update key from the keychain." "Allow access when macOS asks, then build again. The keychain can't ask while the screen is locked or over ssh."
+if [ "$SIGNING_KEY" != "$TRUSTED_KEY" ]; then
     fail "The update key in this Mac's keychain isn't the one installed copies of AVM trust." "Import the existing key with generate_keys -f <exported key file> --account $SPARKLE_ACCOUNT, then build again. Never make a new one."
 fi
-info "The update key matches SUPublicEDKey."
+# And the key the last release was built with (seventh audit): the failure
+# this guards against comes with a new key pasted into Info.plist, which the
+# check above would have accepted. Installed copies trust the old one.
+LAST_TAG="$(git -C "$REPO_ROOT" describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+if [ -n "$LAST_TAG" ]; then
+    LAST_KEY="$(git -C "$REPO_ROOT" show "$LAST_TAG:AVM/Info.plist" 2>/dev/null | plutil -extract SUPublicEDKey raw -o - - 2>/dev/null | tr -d '[:space:]' || true)"
+    if [ -n "$LAST_KEY" ] && [ "$LAST_KEY" != "$TRUSTED_KEY" ]; then
+        fail "SUPublicEDKey changed since release $LAST_TAG; installed copies would refuse every update signed with it." "Put the key from $LAST_TAG back into AVM/Info.plist and import its private half with generate_keys -f."
+    fi
+fi
+info "The update key matches SUPublicEDKey, as released."
 ITEM="$OUT_DIR/appcast-item.xml"
 cat > "$ITEM" <<ITEMXML
         <item>

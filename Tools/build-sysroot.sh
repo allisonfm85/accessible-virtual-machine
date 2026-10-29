@@ -6,6 +6,9 @@
 # GStreamer and the install tools from (the AVM_SYSROOT build setting).
 #
 #   Tools/build-sysroot.sh            build into the default AVM_SYSROOT
+#   Tools/build-sysroot.sh --licenses-only
+#                                     collect the licence texts into an
+#                                     existing sysroot and stop (a minute)
 #   Tools/build-sysroot.sh --help     every option
 #
 # WHAT IT BUILDS
@@ -32,7 +35,10 @@
 #   2. The install-pipeline tools UTM doesn't build: xorriso 1.5.8.pl02
 #      (the README's minimum), wimlib-imagex and mtools. They link only
 #      macOS's own libraries, as the build phase expects.
-#   3. A check of the result against what AVM actually uses: every
+#   3. The licence text of every package (2026-10-29, seventh audit), from
+#      the source tarballs and clones, into share/licenses; the build
+#      phase stages it as Resources/Licenses. See collect_licenses below.
+#   4. A check of the result against what AVM actually uses: every
 #      framework and library the Xcode project links, every file the build
 #      phase stages, the deadlock fix, and no Homebrew paths anywhere.
 #
@@ -83,6 +89,7 @@ JOBS="$(sysctl -n hw.ncpu)"
 SPEAK=1
 SKIP_UTM=0
 MARK_BUILT=0
+LICENSES_ONLY=0
 
 usage() {
     cat <<'EOF'
@@ -98,6 +105,9 @@ Options:
   --mark-built    Record that the sysroot at --out was built from this
                   checkout's patches, after QEMU was rebuilt by hand from
                   exactly them, and stop. Tools/build-installer.sh checks it.
+  --licenses-only Collect the licence texts of every source tarball and
+                  clone into the existing sysroot's share/licenses, and
+                  stop. About a minute; the normal build does it too.
   --no-speech     Don't speak the result at the end.
   -h, --help      This help.
 EOF
@@ -109,6 +119,7 @@ while [ $# -gt 0 ]; do
         --jobs)       JOBS="$2"; shift 2 ;;
         --tools-only) SKIP_UTM=1; shift ;;
         --mark-built) MARK_BUILT=1; shift ;;
+        --licenses-only) LICENSES_ONLY=1; shift ;;
         --no-speech)  SPEAK=0; shift ;;
         -h|--help)    usage; exit 0 ;;
         *) echo "Unknown option: $1"; usage; exit 64 ;;
@@ -188,14 +199,205 @@ fi
 # Which patches the sysroot was built from (2026-10-29, sixth audit):
 # Tools/build-installer.sh compares this with the checkout, so a release
 # never ships a QEMU older than its patches, or built from edits no commit has.
+# In one collation (2026-10-29, seventh audit): bash sorts the globs by the
+# shell's locale, so a sysroot marked from a shell with no LANG was refused
+# from Terminal, and the other way round. The export has to be its own
+# statement; a prefix assignment doesn't change the glob's order.
 patch_fingerprint() {
-    ( cd "$REPO_ROOT" && { echo "utm $UTM_COMMIT"; shasum -a 256 Tools/sysroot-patches/*.patch Tools/sysroot-patches/clones/*.patch; } )
+    ( cd "$REPO_ROOT" && export LC_ALL=C && { echo "utm $UTM_COMMIT"; shasum -a 256 Tools/sysroot-patches/*.patch Tools/sysroot-patches/clones/*.patch; } )
 }
+# Taken now, before the hour's build (seventh audit): taken after it, a
+# patch edited meanwhile was recorded as built.
+FINGERPRINT="$(patch_fingerprint)"
+# Every clone patch is one the rewrite below applies (seventh audit): a new
+# name was fingerprinted as built without being applied.
+for p in "$REPO_ROOT"/Tools/sysroot-patches/clones/*.patch; do
+    case "$(basename "$p")" in
+        WebKit+*.patch|libepoxy+*.patch) ;;
+        *) fail "Tools/sysroot-patches/clones/$(basename "$p") isn't applied by this script." "Clone patches are named <clone>+<what>.patch, for WebKit or libepoxy; add the clone to the rewrite of UTM's GPU block first." ;;
+    esac
+done
 if [ "$MARK_BUILT" = "1" ]; then
     [ -f "$MARKER" ] || fail "There is no sysroot made by this script at $OUT." "Pass --out with the sysroot to mark."
     patch_fingerprint > "$OUT/.avm-sysroot-patches"
     info "Recorded this checkout's patches as the ones $OUT was built from."
     trap - EXIT
+    exit 0
+fi
+
+# MARK: - Licence texts
+
+# The licence text of every package in the sysroot (2026-10-29, seventh
+# audit): the app ships GPL, LGPL, BSD and OpenSSL binaries, so it has to
+# ship their licences. The build phase stages share/licenses as
+# Resources/Licenses, and Resources/THIRD-PARTY-NOTICES.txt says what each
+# package is in AVM. Only the licence members are extracted from each
+# tarball, into a scratch folder, after its checksum is checked again;
+# nothing in a tarball is run. A tarball with no licence file stops the
+# build, so a new package's licence is found, not skipped. Also collected:
+# the licences of the git clones (ANGLE, libepoxy, virglrenderer,
+# libucontext), of the subprojects compiled into GLib and QEMU (PCRE2,
+# libfdt, Berkeley SoftFloat), and UTM's own QEMU patch, which with AVM's
+# patches is the difference between the tarball and the QEMU that ships.
+collect_licenses() {
+    local build="$PARENT/build-macOS-arm64" tools="$PARENT/build-avm-tools" utm="$PARENT/UTM"
+    local dest="$OUT/share/licenses" pins="$REPO_ROOT/Tools/sysroot-sources.sha256"
+    local scratch tarball file pin qemu_name="" pcre2 count=0
+
+    step "Collecting licence texts"
+    [ -d "$build" ] || fail "There are no source tarballs at $build." "Run without --licenses-only first, so UTM's build downloads them."
+    scratch="$(mktemp -d "${TMPDIR:-/tmp}/avm-licenses.XXXXXX")"
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    {
+        echo "Licence texts of the packages this sysroot was built from, collected by"
+        echo "Tools/build-sysroot.sh on $(date +%Y-%m-%d) from the pinned source tarballs"
+        echo "(Tools/sysroot-sources.sha256 and the URLs in that script), the git clones"
+        echo "UTM's build makes, and the subprojects compiled into GLib and QEMU. One"
+        echo "folder per package; the files are the package's own, unchanged. The app's"
+        echo "THIRD-PARTY-NOTICES.txt says what each one is in AVM and how to get the source."
+        echo
+        printf '%-22s %-20s %s\n' "Package" "Version" "Files"
+    } > "$dest/INDEX.txt"
+
+    # One line per package in INDEX.txt.
+    record() {
+        printf '%-22s %-20s %s\n' "$1" "$2" "$3" >> "$dest/INDEX.txt"
+        count=$((count + 1))
+    }
+
+    # The licence files at a tarball's top level (COPYING*, LICENSE*,
+    # COPYRIGHT*, NOTICE*), plus any members the caller names, into
+    # share/licenses/<package>. A top-level symlink (GLib's COPYING points
+    # into its LICENSES folder) is copied as the file it points to.
+    from_tarball() {
+        local tarball="$1" sha="$2"; shift 2
+        local file name package version top listing wanted="" copies="" member target
+        file="$(basename "$tarball")"
+        [ -f "$tarball" ] || fail "$file is not at $(dirname "$tarball")." \
+            "Run Tools/build-sysroot.sh without --licenses-only first, so it is downloaded (--tools-only is enough for xorriso, wimlib, mtools and libtasn1)."
+        [ "$(shasum -a 256 "$tarball" | cut -d' ' -f1)" = "$sha" ] || \
+            fail "$file does not match its pinned checksum, so nothing was read from it." "Delete it and run Tools/build-sysroot.sh again."
+        name="${file%.tar.*}"
+        package="$(echo "$name" | sed -E 's/-v?[0-9].*$//')"
+        version="${name#"$package"-}"
+        listing="$(tar -tvf "$tarball")" || fail "Could not list $file."
+        top="$(echo "$listing" | awk '{ print $9 }' | sed -n -E 's#^([^/]+)/.*#\1#p' | sed -n 1p)"
+        [ -n "$top" ] || fail "$file has no top-level folder."
+        # One "member<TAB>link target" line per licence file; the target is
+        # empty for a regular file. tar -tv prints the name ninth, then
+        # "-> target" for a symlink.
+        while IFS=$'\t' read -r member target; do
+            [ -n "$member" ] || continue
+            if [ -n "$target" ]; then
+                case "$target" in /*|*..*) fail "$file: $member links outside the tarball ($target)." ;; esac
+                target="$top/$target"
+                wanted="$wanted $target"
+                copies="$copies $target>$(basename "$member")"
+            else
+                wanted="$wanted $member"
+                copies="$copies $member>$(basename "$member")"
+            fi
+        done <<< "$(echo "$listing" | awk -v top="$top/" '
+            $1 !~ /^d/ && index($9, top) == 1 {
+                rest = substr($9, length(top) + 1)
+                if (index(rest, "/") == 0 && toupper(rest) ~ /^(COPYING|LICEN[CS]E|COPYRIGHT|NOTICE)/)
+                    print $9 "\t" ($1 ~ /^l/ ? $11 : "")
+            }')"
+        # Members the caller names keep their path under the package folder.
+        for member in "$@"; do
+            wanted="$wanted $top/$member"
+            copies="$copies $top/$member>$member"
+        done
+        [ -n "$wanted" ] || fail "$file has no licence file at its top level (COPYING, LICENSE, COPYRIGHT or NOTICE)." \
+            "Find where this package keeps its licence and name it in collect_licenses."
+        mkdir -p "$scratch/$name"
+        # shellcheck disable=SC2086
+        tar -xf "$tarball" -C "$scratch/$name" $wanted || fail "Could not extract the licence files from $file."
+        mkdir -p "$dest/$package"
+        local files="" pair src out
+        for pair in $copies; do
+            src="$scratch/$name/${pair%%>*}"; out="${pair#*>}"
+            [ -f "$src" ] && [ ! -L "$src" ] || fail "$file: ${pair%%>*} is not a regular file."
+            mkdir -p "$(dirname "$dest/$package/$out")"
+            cp "$src" "$dest/$package/$out"
+            files="$files${files:+, }$out"
+        done
+        record "$package" "$version" "$files"
+    }
+
+    # Licence files from a git clone or an unpacked subproject tree.
+    from_tree() {
+        local package="$1" version="$2" dir="$3"; shift 3
+        local f files=""
+        [ -d "$dir" ] || fail "$package's source is not at $dir." "Run without --licenses-only first, so UTM's build fetches it."
+        mkdir -p "$dest/$package"
+        for f in "$@"; do
+            [ -f "$dir/$f" ] || fail "$package has no $f in $dir." "Find where it keeps its licence now and name it in collect_licenses."
+            cp "$dir/$f" "$dest/$package/$(basename "$f")"
+            files="$files${files:+, }$(basename "$f")"
+        done
+        record "$package" "$version" "$files"
+    }
+    clone_version() { git -C "$1" rev-parse --short=12 HEAD 2>/dev/null || echo "git"; }
+
+    # UTM's tarballs, each against Tools/sysroot-sources.sha256. pkg-config
+    # is a build tool: nothing from it ships. gettext's runtime libraries
+    # (libintl, libasprintf) keep their own LGPL text below the GPL at the
+    # top; the ROMs the build phase stages are iPXE's and SeaBIOS's.
+    for tarball in "$build"/*.tar.*; do
+        file="$(basename "$tarball")"
+        case "$file" in pkg-config-*) continue ;; esac
+        pin="$( (grep "  $file\$" "$pins" || true) | cut -d' ' -f1)"
+        [ -n "$pin" ] || fail "$file has no pinned checksum in Tools/sysroot-sources.sha256." "Add it; UTM's build would have refused the file too."
+        case "$file" in
+            gettext-*) from_tarball "$tarball" "$pin" gettext-runtime/intl/COPYING.LIB gettext-runtime/libasprintf/COPYING.LIB ;;
+            qemu-*)    from_tarball "$tarball" "$pin" pc-bios/README roms/ipxe/COPYING roms/ipxe/COPYING.GPLv2 roms/ipxe/COPYING.UBDL roms/seabios/COPYING roms/seabios/COPYING.LESSER
+                       qemu_name="${file%.tar.*}" ;;
+            *)         from_tarball "$tarball" "$pin" ;;
+        esac
+    done
+    [ -n "$qemu_name" ] || fail "There is no QEMU tarball in $build."
+
+    # The tarballs this script downloads itself, against the pins at the top.
+    from_tarball "$tools/$(basename "$XORRISO_URL")" "$XORRISO_SHA256"
+    from_tarball "$tools/$(basename "$WIMLIB_URL")" "$WIMLIB_SHA256"
+    from_tarball "$tools/$(basename "$MTOOLS_URL")" "$MTOOLS_SHA256"
+    from_tarball "$tools/$(basename "$LIBTASN1_URL")" "$LIBTASN1_SHA256"
+
+    # The git clones, and the subprojects compiled into GLib (PCRE2) and
+    # QEMU (libfdt from dtc, Berkeley SoftFloat).
+    from_tree ANGLE "$(clone_version "$build/WebKit.git")" "$build/WebKit.git/Source/ThirdParty/ANGLE" LICENSE
+    from_tree libepoxy "$(clone_version "$build/libepoxy.git")" "$build/libepoxy.git" COPYING
+    from_tree virglrenderer "$(clone_version "$build/virglrenderer.git")" "$build/virglrenderer.git" COPYING
+    from_tree libucontext "$(clone_version "$build/libucontext.git")" "$build/libucontext.git" LICENSE
+    pcre2="$( (find "$build"/glib-*/subprojects -maxdepth 1 -type d -name 'pcre2-*' 2>/dev/null || true) | sed -n 1p)"
+    [ -n "$pcre2" ] || fail "GLib's PCRE2 subproject was not found under $build." "Run without --licenses-only first, so GLib's build unpacks it."
+    from_tree pcre2 "${pcre2##*/pcre2-}" "$pcre2" LICENCE
+    from_tree dtc "QEMU's" "$build/$qemu_name/subprojects/dtc" BSD-2-Clause GPL README.license
+    from_tree berkeley-softfloat-3 "QEMU's" "$build/$qemu_name/subprojects/berkeley-softfloat-3" COPYING.txt
+
+    # UTM's QEMU patch, from the pinned commit, beside QEMU's licences.
+    [ -d "$utm/.git" ] || fail "UTM's checkout is not at $utm." "Run without --licenses-only first, so it is fetched."
+    git -C "$utm" show "$UTM_COMMIT:patches/$qemu_name.patch" > "$dest/qemu/$qemu_name.patch" || \
+        fail "UTM commit ${UTM_COMMIT:0:7} has no patches/$qemu_name.patch."
+    {
+        echo
+        echo "qemu/$qemu_name.patch is UTM's patch to QEMU, from UTM commit $UTM_COMMIT."
+        echo "AVM's own patches follow it; they are Tools/sysroot-patches in AVM's repository."
+    } >> "$dest/INDEX.txt"
+
+    rm -rf "$scratch"
+    info "Licence texts for $count packages in $dest (INDEX.txt lists them)"
+}
+
+if [ "$LICENSES_ONLY" = "1" ]; then
+    [ -f "$MARKER" ] || fail "There is no sysroot made by this script at $OUT." "Pass --out with the sysroot to add the licence texts to."
+    collect_licenses
+    trap - EXIT
+    echo
+    echo "== Done. Licence texts:"
+    echo "   $OUT/share/licenses"
     exit 0
 fi
 
@@ -312,10 +514,10 @@ s = s[:start] + """    # GPU support: OpenGL only (AVM)
     # ANGLE and libepoxy open ANGLE's libraries beside themselves
     # (Tools/sysroot-patches/clones).
     git -C "$BUILD_DIR/WebKit.git" checkout -q -- Source/ThirdParty/ANGLE/src
-    patch -d "$BUILD_DIR/WebKit.git" -p1 < "$AVM_CLONE_PATCHES/WebKit+angle-dylibs.patch"
+    for p in "$AVM_CLONE_PATCHES"/WebKit+*.patch; do patch -d "$BUILD_DIR/WebKit.git" -p1 < "$p"; done
     build_angle
     git -C "$BUILD_DIR/libepoxy.git" checkout -q -- .
-    patch -d "$BUILD_DIR/libepoxy.git" -p1 < "$AVM_CLONE_PATCHES/libepoxy+angle-dylibs.patch"
+    for p in "$AVM_CLONE_PATCHES"/libepoxy+*.patch; do patch -d "$BUILD_DIR/libepoxy.git" -p1 < "$p"; done
     meson_build $EPOXY_REPO -Dtests=false -Dglx=no -Degl=yes
     meson_darwin_build $VIRGLRENDERER_REPO -Dtests=false -Dcheck-gl-errors=false -Dvenus=false -Dneptune=false
 """ + s[end:]
@@ -386,10 +588,19 @@ PY
         fail "UTM's dependency build stopped (exit $utm_rc)." "Read $UTM_LOG; the error is usually near the end."
     fi
     touch "$MARKER"
-    patch_fingerprint > "$OUT/.avm-sysroot-patches"
+    printf '%s\n' "$FINGERPRINT" > "$OUT/.avm-sysroot-patches"
 else
     step "Skipping the UTM build (--tools-only)"
     [ -x "$OUT/host/bin/pkg-config" ] || fail "There is no earlier UTM build in $OUT to add the tools to." "Run without --tools-only first."
+    # The re-check the usage text promises (seventh audit): a sysroot built
+    # from other patches, or one from before the fingerprint, was called
+    # ready and then refused by Tools/build-installer.sh.
+    if [ ! -f "$OUT/.avm-sysroot-patches" ]; then
+        fail "$OUT has no record of the patches it was built from." "Run Tools/build-sysroot.sh (most of an hour), or Tools/build-sysroot.sh --mark-built if its QEMU was rebuilt by hand from exactly this checkout's patches."
+    elif [ "$(cat "$OUT/.avm-sysroot-patches")" != "$FINGERPRINT" ]; then
+        fail "$OUT was built from other QEMU or GStreamer patches than this checkout's." "Run Tools/build-sysroot.sh (most of an hour), or Tools/build-sysroot.sh --mark-built if its QEMU was rebuilt by hand from exactly these patches."
+    fi
+    info "Built from this checkout's patches"
 fi
 
 # MARK: - 4. Install tools
@@ -522,6 +733,10 @@ if [ -f "$OUT/lib/swtpm/libswtpm_libtpms.0.dylib" ]; then
 fi
 info "Built swtpm $("$OUT/bin/swtpm" --version 2>/dev/null | sed -n 1p | sed -E 's/.*version ([^ ,]+).*/\1/')"
 
+# MARK: - 4c. Licence texts
+
+collect_licenses
+
 # MARK: - 5. Check against AVM
 
 step "Checking the sysroot against what AVM uses"
@@ -533,7 +748,8 @@ problem() { echo "   MISSING OR WRONG: $1"; problems=$((problems + 1)); }
 for f in bin/qemu-system-aarch64 bin/qemu-img bin/swtpm lib/libswtpm_libtpms.0.dylib bin/xorriso bin/wimlib-imagex bin/mtools \
          bin/mformat bin/mcopy bin/mdir lib/libwim.15.dylib \
          share/qemu/edk2-aarch64-code.fd share/qemu/edk2-arm-vars.fd share/qemu/vgabios-ramfb.bin share/qemu/efi-virtio.rom \
-         include/libusb-1.0/libusb.h lib/libusb-1.0.0.dylib lib/libusbredirhost.1.dylib lib/libusbredirparser.1.dylib; do
+         include/libusb-1.0/libusb.h lib/libusb-1.0.0.dylib lib/libusbredirhost.1.dylib lib/libusbredirparser.1.dylib \
+         share/licenses/INDEX.txt; do
     [ -e "$OUT/$f" ] || problem "$f"
 done
 
