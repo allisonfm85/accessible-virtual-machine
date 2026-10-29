@@ -59,6 +59,16 @@ BUILT="$(cat "$OUT_DIR/built-commit.txt" 2>/dev/null || true)"
 if grep -q "<sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>" "$REPO_ROOT/appcast.xml"; then
     fail "appcast.xml already lists version $VERSION." "Raise MARKETING_VERSION and CURRENT_PROJECT_VERSION, then build again."
 fi
+# Sparkle compares build numbers (2026-10-28, fourth audit): one not above
+# every build already in the feed offers the update to no one.
+NEW_BUILD="$(sed -nE 's|.*<sparkle:version>([0-9]+)</sparkle:version>.*|\1|p' "$ITEM" | head -1)"
+TOP_BUILD="$(sed -nE 's|.*<sparkle:version>([0-9]+)</sparkle:version>.*|\1|p' "$REPO_ROOT/appcast.xml" | sort -n | tail -1)"
+[ -n "$NEW_BUILD" ] || fail "The update feed entry has no build number." "Run Tools/build-installer.sh again."
+if [ -n "$TOP_BUILD" ] && [ "$NEW_BUILD" -le "$TOP_BUILD" ]; then
+    fail "Build $NEW_BUILD isn't above build $TOP_BUILD, already in appcast.xml, so no installed copy would be offered it." "Raise CURRENT_PROJECT_VERSION, then build again."
+fi
+# Nothing else staged rides along in the feed's commit (fourth audit).
+git -C "$REPO_ROOT" diff --cached --quiet || fail "Something is already staged in git." "Commit or unstage it first (git status)."
 # A release that already exists, with this version not yet in the feed, is
 # carried on with rather than refused (2026-10-26, code audit): a run that
 # stopped after making the release (a failed push, or the --draft flow)
@@ -108,8 +118,11 @@ at = text.find("\n", i) + 1 if i != -1 else text.find(anchor) + len(anchor)
 open(feed, "w").write(text[:at] + item + text[at:])
 PY
 xmllint --noout "$REPO_ROOT/appcast.xml" || fail "appcast.xml is no longer valid XML; nothing was pushed." "Check the file, then commit and push it yourself."
-git -C "$REPO_ROOT" add appcast.xml
-git -C "$REPO_ROOT" commit -q -m "Appcast: add v$VERSION entry"
-git -C "$REPO_ROOT" push -q
+# After the release is public, a failure says so (2026-10-28, fourth audit):
+# set -e ended the script with only git's own error.
+git -C "$REPO_ROOT" commit -q -m "Appcast: add v$VERSION entry" -- appcast.xml \
+    || fail "The release v$VERSION is public, but the feed entry couldn't be committed." "Commit appcast.xml yourself and push it, so installed copies are offered $VERSION."
+git -C "$REPO_ROOT" push -q \
+    || fail "The release v$VERSION is public, but the feed couldn't be pushed." "Run git push yourself (pull first if main moved), so installed copies are offered $VERSION."
 echo "Update feed updated and pushed. Installed copies of AVM will be offered $VERSION."
 command -v say >/dev/null && say "AVM $VERSION is published." || true

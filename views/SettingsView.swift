@@ -501,7 +501,9 @@ struct SettingsView: View {
             }
         }
         .padding(.horizontal)
-        .task { await loadRestorePoints() }
+        // Again when the machine starts or stops (2026-10-28, fourth audit):
+        // loaded once while it ran, the list stayed "No restore points yet."
+        .task(id: isRunning) { await loadRestorePoints() }
     }
 
     private func restorePointDate(_ date: Date) -> String {
@@ -629,7 +631,7 @@ struct SettingsView: View {
                     .accessibilityHint("Swaps the § key and the ` key back, as macOS does for these keyboards. Leave off for other keyboards.")
             }
             HStack {
-                Button("Look Again") { Task { await loadKeyboards() } }
+                Button("Look Again") { Task { await loadKeyboards(registering: true) } }
                     .accessibilityHint("Lists the keyboards connected now. Wake a Bluetooth keyboard by pressing a key first.")
                 if let keyboardsMessage {
                     Text(keyboardsMessage)
@@ -639,11 +641,11 @@ struct SettingsView: View {
             }
         }
         .padding(.horizontal)
-        .task { await loadKeyboards() }
+        .task { await loadKeyboards(registering: false) }
     }
 
-    private func loadKeyboards() async {
-        switch await USBHelperClient.shared.listKeyboards() {
+    private func loadKeyboards(registering: Bool) async {
+        switch await USBHelperClient.shared.listKeyboards(registering: registering) {
         case .success(let list):
             connectedKeyboards = list.compactMap { entry in
                 guard (entry["builtIn"] as? NSNumber)?.boolValue != true,
@@ -653,6 +655,9 @@ struct SettingsView: View {
             keyboardsMessage = connectedKeyboards.isEmpty
                 ? "No second keyboard is connected. Connect one, or wake it by pressing a key, then choose Look Again."
                 : nil
+        case .failure(.notEnabled) where !registering:
+            connectedKeyboards = []
+            keyboardsMessage = "Keyboards are listed by AVM's helper, which isn't set up yet. Choose Look Again to set it up; macOS may ask you to allow it in Login Items."
         case .failure:
             connectedKeyboards = []
             keyboardsMessage = "AVM's helper didn't answer, so keyboards can't be listed. Allow it in System Settings, General, Login Items, then choose Look Again."
@@ -689,16 +694,33 @@ struct SettingsView: View {
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Erase and Reinstall")
         var passwordField: NSSecureTextField? = nil
+        var confirmField: NSSecureTextField? = nil
         if WindowsReinstall.needsPassword(saved) {
-            let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+            // Asked twice, as the wizard asks (2026-10-28, fourth audit): a
+            // typo went into the one automatic sign-in, and the next sign-in
+            // locked the user out of the only administrator account.
+            let account = WindowsReinstall.localUserName(saved) ?? ""
+            let field = NSSecureTextField(frame: NSRect(x: 0, y: 30, width: 260, height: 24))
             field.placeholderString = "Password"
-            field.setAccessibilityLabel("Password for the Windows account \(WindowsReinstall.localUserName(saved) ?? "")")
-            alert.accessoryView = field
-            alert.informativeText += " Type the Windows account's password again below; leave it empty for no password."
+            field.setAccessibilityLabel("Password for the Windows account \(account)")
+            let again = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+            again.placeholderString = "Password again"
+            again.setAccessibilityLabel("The password again, to check it")
+            let fields = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 54))
+            fields.addSubview(field)
+            fields.addSubview(again)
+            field.nextKeyView = again
+            alert.accessoryView = fields
+            alert.informativeText += " Type the Windows account's password below, twice; leave both empty for no password."
             passwordField = field
+            confirmField = again
             alert.window.initialFirstResponder = field
         }
         guard alert.runModal() == .alertSecondButtonReturn else { return }
+        if let passwordField, let confirmField, passwordField.stringValue != confirmField.stringValue {
+            Announcer.shared.announce("The two passwords aren't the same, so Windows wasn't reinstalled. Choose Reinstall Windows again.", tone: .failure)
+            return
+        }
         reinstalling = true
         let configuration = saved
         let password = passwordField?.stringValue
@@ -840,7 +862,7 @@ struct SettingsView: View {
                 }
                 Text(configuration.guestOS == .windows
                      ? "AVM keeps the password in your Mac's keychain and makes the account in \(guest). If you give the name of an account \(guest) already has, its password becomes this one, once; a password you change later inside \(guest) is left alone unless you type a new one here."
-                     : "AVM keeps the password in your Mac's keychain and makes the account in \(guest), with xrdp. The remote session has no sound, and it should use a different account from the one signed in at \(guest)'s own screen.")
+                     : "AVM keeps the password in your Mac's keychain and makes the account in \(guest), with xrdp. The session has sound where the distribution has xrdp's sound module (Debian 13, Ubuntu 24.04 and newer). Use a different account from the one signed in at \(guest)'s own screen.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1098,6 +1120,16 @@ struct SettingsView: View {
     private func saveSettings() {
         guard !vmName.trimmingCharacters(in: .whitespaces).isEmpty else {
             validationErrors = ["Virtual machine name cannot be empty."]
+            // Said, as every other refusal here is (2026-10-28, fourth audit).
+            Announcer.shared.announce("The virtual machine's name can't be empty. Type a name, then save again.", tone: .failure)
+            return
+        }
+        // Names stay different (2026-10-28, fourth audit): two machines of
+        // the same name read the same everywhere, Delete included.
+        let trimmedName = vmName.trimmingCharacters(in: .whitespaces)
+        if vmStore.configurations.contains(where: { $0.id != configuration.id && $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame }) {
+            validationErrors = ["Another virtual machine is already called \(trimmedName)."]
+            Announcer.shared.announce("Another virtual machine is already called \(trimmedName). Choose a different name, then save again.", tone: .failure)
             return
         }
         if remoteDesktopOn, !windowsIsHome {
@@ -1134,7 +1166,12 @@ struct SettingsView: View {
             || secureBoot != saved.usesSecureBoot || shareMicrophone != saved.sharesMicrophone
             || shareCamera != saved.sharesCamera || gpu3D != (saved.gpu3D == true)
         var discardSaved: VMConfiguration?
-        if !isRunning, changesMachine, QEMUSavedState.looksSaved(saved) {
+        // A restore point with open apps waiting to be carried on counts
+        // too (2026-10-28, fourth audit): its next Start loaded that memory
+        // into the changed machine, failed, and lost the unsaved work.
+        let resumeNote = (try? saved.directoryURL())?.appendingPathComponent(QEMUSavedState.resumeFile)
+        let pointWaits = resumeNote.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        if !isRunning, changesMachine, QEMUSavedState.looksSaved(saved) || pointWaits {
             let alert = NSAlert()
             alert.messageText = "\(saved.name) is saved with its apps open. Change its settings anyway?"
             alert.informativeText = "These changes mean it can't carry on where it was: its next Start is a normal start, as after a power cut, and anything unsaved in its apps is lost. To keep it, choose Cancel, start it, and shut it down first."
@@ -1174,7 +1211,10 @@ struct SettingsView: View {
 
         Task { @MainActor in
             // Before the disk is touched, so the two never run at once.
-            if let discardSaved { await QEMUSavedState.discard(configuration: discardSaved) }
+            if let discardSaved {
+                await QEMUSavedState.discard(configuration: discardSaved)
+                if let resumeNote { try? FileManager.default.removeItem(at: resumeNote) }
+            }
             if let growTo {
                 do {
                     let diskPath = try vmStore.vmDirectoryURL(for: configuration)
@@ -1205,7 +1245,7 @@ struct SettingsView: View {
             if secureBootChanged && secureBootFailure == nil {
                 updated.secureBoot = secureBoot
             }
-            updated.name = vmName
+            updated.name = vmName.trimmingCharacters(in: .whitespaces)
             updated.cpuCount = cpuCount
             updated.ramSizeGB = ramSizeGB
             if let growTo {
@@ -1255,7 +1295,14 @@ struct SettingsView: View {
                 MachineSessions.shared.displayChosen(updated.id)
             }
             // Remote Desktop (2026-10-28): the keychain, the port, the account.
-            if remoteDesktopOn || remoteDesktopWasOn {
+            // Only when something of it changed (fourth audit): every save of
+            // any setting re-ran the setup in the machine and said so again.
+            let remoteDesktopChanged = updated.remoteDesktopOn != remoteDesktopWasOn
+                || updated.remoteDesktopUser != saved.remoteDesktopUser
+                || updated.remoteDesktopReach != saved.remoteDesktopReach
+                || updated.remoteDesktopPort != remoteDesktopOldPort
+                || (remoteDesktopOn && remoteDesktopPassword != (RemoteDesktop.password(for: updated.id) ?? ""))
+            if (remoteDesktopOn || remoteDesktopWasOn) && remoteDesktopChanged {
                 applyRemoteDesktop(updated, wasOn: remoteDesktopWasOn, oldPort: remoteDesktopOldPort)
             }
 

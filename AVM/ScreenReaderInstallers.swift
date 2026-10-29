@@ -254,7 +254,11 @@ nonisolated enum ScreenReaderInstallers {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 120
         configuration.timeoutIntervalForResource = 3600
-        configuration.waitsForConnectivity = true
+        // Not waiting for a connection (2026-10-28, fourth audit): offline,
+        // each try waited out the hour in silence, three times, before the
+        // Windows build even began. Offline now fails at once, and Windows
+        // installs with Narrator.
+        configuration.waitsForConnectivity = false
         return URLSession(configuration: configuration)
     }()
 

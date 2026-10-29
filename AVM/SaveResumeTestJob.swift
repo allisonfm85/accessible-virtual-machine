@@ -1352,6 +1352,6 @@ enum SaveResumeTestJob {
 /// The disk's snapshot names, for the test only.
 enum QEMUSavedStateProbe {
     static func tags(_ configuration: VMConfiguration) async -> [String] {
-        await QEMUSavedState.snapshotTags(disk: URL(fileURLWithPath: configuration.diskImagePath))
+        await QEMUSavedState.snapshotTags(disk: URL(fileURLWithPath: configuration.diskImagePath)) ?? []
     }
 }

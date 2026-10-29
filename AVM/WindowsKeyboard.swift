@@ -78,10 +78,19 @@ final class WindowsKeyboard {
     /// during the approval wait left two waits for one keyboard.
     private var startGeneration = 0
 
-    func start(keyboardID: String, name: String?, target: VMManager? = nil) {
-        guard self.keyboardID == nil else { return }
+    func start(keyboardID: String, name: String?, target: VMManager? = nil, appleISO: Bool = false) {
+        // Already in another machine (2026-10-28, fourth audit): ignored
+        // without a word, so the user thought it typed in this one.
+        guard self.keyboardID == nil else {
+            if let target, self.target !== target {
+                Announcer.shared.announce("\(keyboardName) is in \(self.target?.machineName ?? "another machine") already, so it types there, not in \(target.machineName).", tone: .info)
+            }
+            return
+        }
         self.keyboardID = keyboardID
         self.target = target
+        self.appleISO = appleISO
+        _ = lockObservers   // watching for the screen lock from now on
         keyboardName = name ?? "The keyboard for Windows"
         announcedHeld = false
         startGeneration += 1
@@ -149,8 +158,30 @@ final class WindowsKeyboard {
         }
     }
 
+    /// The Mac's screen is locked (2026-10-28, fourth audit): the keyboard
+    /// for Windows went on typing into the guest, often signed in, for
+    /// anyone at the locked Mac. Keys are dropped until it's unlocked, and
+    /// any held when it locked are let go.
+    private var screenLocked = false
+    private lazy var lockObservers: [NSObjectProtocol] = {
+        let center = DistributedNotificationCenter.default()
+        return [
+            center.addObserver(forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.screenLocked = true
+                    if self.keyboardID != nil { self.releaseAllKeys() }
+                }
+            },
+            center.addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.screenLocked = false }
+            },
+        ]
+    }()
+
     func key(usage: Int, pressed down: Bool) {
-        guard keyboardID != nil, let send else { return }
+        _ = lockObservers
+        guard keyboardID != nil, let send, !screenLocked else { return }
         switch translator.translate(usage: usage, pressed: down) {
         case .key(let scancode, let isDown): send(scancode, isDown)
         case .pause(let isDown): sendPause?(isDown)
@@ -199,6 +230,17 @@ final class WindowsKeyboard {
         let codes = translator.releaseAll()
         guard let send else { return }
         for code in codes { send(code, false) }
+    }
+
+    /// Lets go of every key held on this keyboard in `machine`, and waits
+    /// until QEMU has them, before the machine pauses or is saved
+    /// (2026-10-28, fourth audit): a key let go while it was paused was
+    /// refused by QEMU, and Windows kept it down and repeated it after the
+    /// resume, Backspace deleting and Shift capitalising.
+    func releaseHeldKeys(before machine: VMManager) async {
+        guard target === machine else { return }
+        releaseAllKeys()
+        await lastSend?.value
     }
 
     private static func reason(_ error: USBHelperError) -> String {

@@ -205,6 +205,15 @@ info "Version $VERSION, build $BUILD_NUMBER"
 
 step "Archiving AVM $VERSION (this takes several minutes)"
 
+# Built from a commit, and that commit recorded now (2026-10-28, fourth
+# audit): the archive compiles the working tree, so uncommitted or untracked
+# files went into a release no commit has, and HEAD was read only after
+# notarizing, so a commit made meanwhile was recorded instead.
+if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal 2>/dev/null)" ]; then
+    fail "The working tree has changes that aren't committed." "Commit or stash them (git status lists them), then build again."
+fi
+BUILT_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+
 ARCHIVE="$BUILD_DIR/AVM.xcarchive"
 ARCHIVE_LOG="$BUILD_DIR/archive.log"
 mkdir -p "$BUILD_DIR"
@@ -452,7 +461,7 @@ ITEMXML
 info "Update feed entry: $ITEM"
 # Which commit this is (2026-10-26, code audit): publish-release.sh
 # refuses to tag a different one with these files.
-git -C "$REPO_ROOT" rev-parse HEAD > "$OUT_DIR/built-commit.txt" 2>/dev/null || true
+echo "$BUILT_COMMIT" > "$OUT_DIR/built-commit.txt"
 fi
 
 # MARK: - Done

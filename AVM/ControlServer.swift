@@ -165,7 +165,12 @@ final class ControlServer {
                 return ["ok": true, "message": "Asked \(name) to shut down."]
             }
             guard let session, session.vmState == .running || session.vmState == .paused else { return fail("\(name) isn't running.") }
-            Task { try? await session.stopGracefully() }
+            // A failure is said (2026-10-28, fourth audit): "Asked X to shut
+            // down" was the last word, though X kept running.
+            Task {
+                do { try await session.stopGracefully() }
+                catch { Announcer.shared.announce("\(name) didn't shut down. Reason: \(error.localizedDescription)", tone: .failure) }
+            }
             return ["ok": true, "message": "Asked \(name) to shut down."]
 
         case "save":
@@ -296,7 +301,10 @@ enum ControlClient {
             // Not running: open it in the background, and wait for it.
             let open = Process()
             open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            open.arguments = ["-g", "-b", bundleID]
+            // With an argument, so AVM doesn't start its "start when AVM
+            // opens" machine for an avmctl request (2026-10-28, fourth audit):
+            // `avmctl list` started it, and it took the keyboard.
+            open.arguments = ["-g", "-b", bundleID, "--args", "--from-avmctl"]
             try? open.run()
             open.waitUntilExit()
             for _ in 0..<60 where s == nil {

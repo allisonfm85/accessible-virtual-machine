@@ -132,7 +132,7 @@
         <RunSynchronousCommand wcm:action="add">
           <Order>1</Order>
           <Description>AVM: write install-complete marker to UNATTEND volume</Description>
-          <Path>cmd /c for %d in (C D E F G H I J K L) do @if exist %d:\autounattend.xml echo installed&gt;%d:\AVMDONE.TAG</Path>
+          <Path>cmd /c for %d in (C D E F G H I J K L) do @if exist %d:\autounattend.xml (echo installed&gt;%d:\AVMDONE.TAG&amp; echo specialize-started&gt;%d:\AVMSTATUS.TXT)</Path>
         </RunSynchronousCommand>
         <!-- AVM GUEST-AGENT STAGING (mouse parity at OOBE) — DO NOT REORDER.
              Installs the vioserial driver and the SPICE vdagent DURING the
@@ -234,6 +234,18 @@
           <Order>13</Order>
           <Description>AVM: report: guest agent</Description>
           <Path>cmd /c sc query QEMU-GA &gt;nul &amp;&amp; for %d in (C D E F G H I J K L) do @if exist %d:\AVMDONE.TAG echo qemu-ga-installed&gt;&gt;%d:\AVMSTATUS.TXT</Path>
+        </RunSynchronousCommand>
+        <!-- AVM ANSWER FILE GONE (2026-10-28, fourth audit). Its disk wipe
+             stayed armed while it sat on the UNATTEND drive: through the
+             whole install run every restart offers the DVD for five seconds,
+             and a key pressed then (Control-Command-Return for Narrator, say)
+             started Setup again over the new Windows. Setup reads its own
+             copy in Panther from here on, so the drive's copy goes, and the
+             password in it with it. Last, after the DVD steps and the report. -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>14</Order>
+          <Description>AVM: remove the answer file from the UNATTEND volume</Description>
+          <Path>cmd /c for %d in (C D E F G H I J K L) do @if exist %d:\AVMDONE.TAG del /f /q %d:\autounattend.xml</Path>
         </RunSynchronousCommand>
       </RunSynchronous>
     </component>

@@ -298,6 +298,11 @@ enum MachineArchive {
         var config = original
         config.id = id
         config.storageFolderPath = nil
+        // This Mac's limits, as the wizard's (2026-10-28, fourth audit): a
+        // machine made on a 16 GB Mac kept 8 GB, all of an 8 GB Mac's.
+        let info = ProcessInfo.processInfo
+        config.ramSizeGB = min(config.ramSizeGB, max(4, Int(info.physicalMemory >> 30) / 2))
+        config.cpuCount = min(config.cpuCount, max(2, info.processorCount / 2))
         config.diskImagePath = folder.appendingPathComponent(diskFileName(for: original)).path
         config.name = uniqueName(original.name, existing: existingNames)
         // Nothing of the other Mac's (2026-10-28, security review): a

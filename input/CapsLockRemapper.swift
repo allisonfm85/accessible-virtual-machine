@@ -176,6 +176,8 @@ final class CapsLockRemapper {
     ///
     /// Log lines here are file-log (Stage C tier 1): apply runs only at lock
     /// time, never at quit, so the async file logger is a safe sink.
+    private var toldAboutUserMapping = false
+
     func applyForLock() {
         guard isEnabled else {
             AVMLog.write("AVM: CapsLockRemapper — disabled by setting; not applying.")
@@ -188,6 +190,20 @@ final class CapsLockRemapper {
             Announcer.shared.announce(
                 "Caps Lock setup failed. Screen reader commands may not work.",
                 tone: .failure)
+            return
+        }
+
+        // The user's own Caps Lock mapping stays (2026-10-28, fourth
+        // audit): one mapped to Escape, common on Touch Bar Macs with no
+        // Escape key, was silently replaced, so Windows had no Escape and
+        // Control-Command-Escape no longer got the user out. Said once a
+        // run: in Windows, Caps Lock then isn't the screen reader key.
+        if let theirs = existing.first(where: { $0.src == Self.capsLockUsage && $0.dst != Self.f19Usage }) {
+            AVMLog.write("AVM: CapsLockRemapper — Caps Lock is already mapped (to \(String(theirs.dst, radix: 16))); leaving the user's mapping alone.")
+            if !toldAboutUserMapping {
+                toldAboutUserMapping = true
+                Announcer.shared.announce("Your Mac already maps Caps Lock to another key, so AVM leaves it as it is. In the virtual machine, Caps Lock does what your mapping says, not the screen reader's commands; use Insert, or the screen reader's other key, instead.", tone: .info)
+            }
             return
         }
 

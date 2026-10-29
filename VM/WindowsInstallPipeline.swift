@@ -926,9 +926,12 @@ nonisolated final class WindowsInstallPipeline {
                 // is nothing to warn about — stop, say why, name what IS there.
                 return .hardStop(reason: "This ISO does not contain \(resolved.name), the edition AVM currently installs. It contains: \(available). AVM can't install these editions yet. A standard Windows 11 ARM64 ISO from Microsoft's Windows 11 download page will work.")
             } else {
-                // UNSURE: the user chose this name; the disc may name the
-                // edition slightly differently. Warn and let them decide.
-                return .warn(reason: "The edition you chose (\(resolved.name)) wasn't found on this ISO. Available editions are: \(available). You can proceed, but the install may not match your choice.")
+                // A chosen edition missing stops too (2026-10-28, fourth
+                // audit): the warning went to a handler nothing set, so the
+                // build went ahead and Setup hung exactly as in issue #6.
+                // The wizard's names are Microsoft's image names, so a
+                // missing one is missing, not spelled differently.
+                return .hardStop(reason: "This ISO doesn't contain \(resolved.name), the edition chosen for this virtual machine. It contains: \(available). Next: make a new virtual machine and choose one of those editions, or use a standard Windows 11 ARM64 ISO from Microsoft's Windows 11 download page.")
             }
         }
 
@@ -1332,7 +1335,7 @@ nonisolated final class WindowsInstallPipeline {
         // list. The validation gate hard-stops this case, so firing here means
         // a code path skipped the gate. See the doc comment for why user-chosen
         // and unreadable-wim runs are exempt. ---
-        if resolved.wasDefaulted, let names = discEditionNames, !names.contains(resolved.name) {
+        if let names = discEditionNames, !names.isEmpty, !names.contains(resolved.name) {
             throw PipelineError.stageFailed(
                 stage: .buildAnswerImage,
                 reason: "The edition \(resolved.name) is not on this ISO, and the earlier check that should have caught this didn't run. This is a build problem, not something you did."

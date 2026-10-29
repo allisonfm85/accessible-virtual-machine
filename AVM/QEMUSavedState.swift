@@ -46,10 +46,13 @@ nonisolated enum QEMUSavedState {
         return FileManager.default.fileExists(atPath: hint(in: dir).path)
     }
 
-    /// The disk's snapshot names, read while QEMU isn't running.
-    static func snapshotTags(disk: URL) async -> [String] {
+    /// The disk's snapshot names, read while QEMU isn't running; nil when
+    /// they couldn't be read (2026-10-28, fourth audit: a failed qemu-img
+    /// read as "no snapshots", and the hint and marker were dropped while
+    /// the saved state stayed on the disk, to be loaded over newer work).
+    static func snapshotTags(disk: URL) async -> [String]? {
         guard let output = try? await RestorePoints.qemuImg(["info", "--output=json", "-U", disk.path]),
-              let json = try? JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any] else { return [] }
+              let json = try? JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any] else { return nil }
         return (json["snapshots"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }
     }
 
@@ -60,8 +63,11 @@ nonisolated enum QEMUSavedState {
     static func plan(configuration: VMConfiguration, runtimeDir: URL) async -> Plan? {
         let fm = FileManager.default
         let disk = URL(fileURLWithPath: configuration.diskImagePath)
-        let tags = await snapshotTags(disk: disk)
         let marker = runtimeDir.appendingPathComponent(loadedMarker)
+        guard let tags = await snapshotTags(disk: disk) else {
+            AVMLog.write("AVM: SavedState — the disk's snapshots couldn't be read; nothing is loaded or deleted at this Start.")
+            return nil
+        }
         let resume = runtimeDir.appendingPathComponent(resumeFile)
         if tags.contains(tag) {
             if fm.fileExists(atPath: marker.path) {
@@ -69,7 +75,7 @@ nonisolated enum QEMUSavedState {
                 _ = try? await RestorePoints.qemuImg(["snapshot", "-d", tag, disk.path])
                 // The marker goes only once the saved state has (2026-10-28,
                 // code review): otherwise the Start after next loads it.
-                if await snapshotTags(disk: disk).contains(tag) {
+                if await snapshotTags(disk: disk)?.contains(tag) != false {
                     AVMLog.write("AVM: SavedState — the stale saved state couldn't be deleted; keeping the marker so it's never loaded.")
                 } else {
                     try? fm.removeItem(at: marker)
@@ -96,10 +102,16 @@ nonisolated enum QEMUSavedState {
     static func discard(configuration: VMConfiguration) async {
         guard let dir = try? configuration.directoryURL() else { return }
         let disk = URL(fileURLWithPath: configuration.diskImagePath)
-        if await snapshotTags(disk: disk).contains(tag) {
+        if await snapshotTags(disk: disk)?.contains(tag) != false {
             _ = try? await RestorePoints.qemuImg(["snapshot", "-d", tag, disk.path])
-            AVMLog.write("AVM: SavedState — discarded.")
         }
+        // The hint and marker go only once the saved state has
+        // (2026-10-28, fourth audit).
+        guard await snapshotTags(disk: disk)?.contains(tag) == false else {
+            AVMLog.write("AVM: SavedState — couldn't confirm the saved state was deleted; keeping its hint and marker.")
+            return
+        }
+        AVMLog.write("AVM: SavedState — discarded.")
         try? FileManager.default.removeItem(at: hint(in: dir))
         try? FileManager.default.removeItem(at: dir.appendingPathComponent(loadedMarker))
     }

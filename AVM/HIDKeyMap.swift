@@ -79,15 +79,18 @@ nonisolated enum HIDKeyMap {
             (0x7F, extended | 0x20), (0x80, extended | 0x30), (0x81, extended | 0x2E), // Mute, Volume Up, Volume Down
             (0x85, 0x7E),                                                          // keypad , (Brazilian)
             (0x87, 0x73), (0x88, 0x70), (0x89, 0x7D), (0x8A, 0x79), (0x8B, 0x7B),  // Japanese Ro Kana Yen Henkan Muhenkan
-            (0x90, 0xF2), (0x91, 0xF1),                                            // Korean Hangul, Hanja
+            (0x90, 0x72), (0x91, 0x71),                                            // Korean Hangul, Hanja (QEMU's numbers)
             (0xE0, 0x1D), (0xE1, 0x2A), (0xE2, 0x38), (0xE3, extended | 0x5B),     // left Ctrl Shift Alt Windows
             (0xE4, extended | 0x1D), (0xE5, 0x36), (0xE6, extended | 0x38), (0xE7, extended | 0x5C), // right ones
         ]
         for (usage, code) in pairs { t[usage] = code }
         // F1-F10.
         for i in 0..<10 { t[0x3A + i] = 0x3B + i }
-        // F13-F24.
-        let f13 = [0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x76]
+        // F13-F24, as QEMU numbers them (2026-10-28, fourth audit): QMP's
+        // "number" keys are QEMU's own numbering, not Microsoft's set 1, so
+        // F14 pasted and most of the others were dropped
+        // (build/ui/input-keymap-qnum-to-qcode.c.inc).
+        let f13 = [0x5D, 0x5E, 0x5F, 0x55, 0x83, 0xF7, 0x84, 0x5A, 0x74, 0xF9, 0x6D, 0x6F]
         for (i, code) in f13.enumerated() { t[0x68 + i] = code }
         return t
     }()

@@ -306,9 +306,16 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// Standard alert. VoiceOver reads it; the default button goes
     /// straight to the right pane. The approval watch starts either
     /// way, so approving later still gets the spoken confirmation.
+    private var approvalDialogShowing = false
     private func presentApprovalDialog() {
         log("registration requires approval in Login Items; presenting dialog")
         startApprovalWatch()
+        // One at a time (2026-10-28, fourth audit): requests arriving
+        // together (a keyboard for Windows and a plug-in at a start) stacked
+        // two or three identical alerts, each read and dismissed in turn.
+        guard !approvalDialogShowing else { return }
+        approvalDialogShowing = true
+        defer { approvalDialogShowing = false }
         let alert = NSAlert()
         alert.messageText = "AVM needs permission to run its USB helper"
         alert.informativeText = "macOS requires your approval before AVM can pass USB devices to a virtual machine. In System Settings, under General, then Login Items and Extensions, allow AVM to run in the background. AVM will announce when the helper is approved."
@@ -427,10 +434,18 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// running for its idle grace period, and the new AVM would talk to
     /// it. Once per run, before a device is taken: a helper answering with
     /// another version is asked to exit, so launchd starts this build's.
-    private var helperChecked = false
+    /// One check per run, which every caller waits for (2026-10-28, fourth
+    /// audit): set before its await, the flag let a second request go to
+    /// the stale helper, which the first then restarted under it.
+    private var helperCheck: Task<Void, Never>?
     func ensureCurrentHelper() async {
-        guard !helperChecked else { return }
-        helperChecked = true
+        if let helperCheck { return await helperCheck.value }
+        let check = Task { await self.checkHelperVersion() }
+        helperCheck = check
+        await check.value
+    }
+
+    private func checkHelperVersion() async {
         // The helper answers "service-name version" (2026-10-28, second
         // review: compared whole, it never matched, and every run restarted
         // the helper at its first device). The connection stays up: the
@@ -597,8 +612,17 @@ final class USBHelperClient: NSObject, ObservableObject {
     // MARK: Keyboard for Windows (2026-10-26)
 
     /// The keyboards connected now, as the helper sees them.
-    func listKeyboards() async -> Result<[NSDictionary], USBHelperError> {
-        guard ensureRegistered() else { return .failure(.notEnabled(status)) }
+    /// `registering`: set up the helper if it isn't, as using a device does.
+    /// Settings lists keyboards when it opens without registering
+    /// (2026-10-28, fourth audit): opening a Windows machine's Settings
+    /// registered the root helper and showed its approval alert, every
+    /// visit, for users who never asked for USB.
+    func listKeyboards(registering: Bool = true) async -> Result<[NSDictionary], USBHelperError> {
+        if registering {
+            guard ensureRegistered() else { return .failure(.notEnabled(status)) }
+        } else if refreshStatus() != .enabled {
+            return .failure(.notEnabled(status))
+        }
         let c = connect()
         let result: Result<[NSDictionary], USBHelperError> = await withCheckedContinuation { cont in
             let proxy = c.remoteObjectProxyWithErrorHandler { error in
@@ -810,7 +834,11 @@ final class USBHelperClient: NSObject, ObservableObject {
             if isQuiet(device) {
                 log("attached: not spoken; the send gate is handling \(device.description)")
             } else {
-                announce("\(name) is now in \(VMManager.currentGuestName).", tone: .success)
+                // The machine it went to (2026-10-28, fourth audit): an
+                // attach that waited for approval landed after the user had
+                // moved to another machine, and the front one was named.
+                let machine = USBRedirectController.shared.machine(for: device)?.machineName ?? VMManager.currentGuestName
+                announce("\(name) is now in \(machine).", tone: .success)
             }
         case .released:
             // One unplug reports yanked, then released, 0.03 s apart

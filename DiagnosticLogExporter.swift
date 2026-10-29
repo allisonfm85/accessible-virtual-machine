@@ -175,10 +175,9 @@ enum DiagnosticLogExporter {
 
         // Firmware serial logs: one per VM runtime dir that has a non-empty
         // one. Same Application Support root AVMLog anchors to.
-        if let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            let vmsDir = appSupport
-                .appendingPathComponent(AVMPaths.supportFolderName, isDirectory: true)
-                .appendingPathComponent("vms", isDirectory: true)
+        // The real container, "VMs", through AVMPaths (2026-10-28, fourth
+        // audit): "vms" found nothing on a case-sensitive disk.
+        if let vmsDir = try? VMConfiguration.defaultVMsContainer() {
             if let entries = try? fm.contentsOfDirectory(at: vmsDir, includingPropertiesForKeys: [.isDirectoryKey]) {
                 // Sorted so bundle contents are deterministic run to run.
                 for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {

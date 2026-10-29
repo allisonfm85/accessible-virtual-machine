@@ -175,7 +175,12 @@ final class MacInstaller: NSObject, URLSessionDownloadDelegate {
 
     /// Installs macOS into `config`'s folder: from `ipsw` if given, else
     /// the newest macOS this Mac supports, from Apple.
+    /// How many macOS installs are under way, for the quit question.
+    @MainActor static var running = 0
+
     func install(_ config: VMConfiguration, ipsw: URL?) async throws {
+        await MainActor.run { Self.running += 1 }
+        defer { Task { @MainActor in Self.running -= 1 } }
         let folder = try config.directoryURL()
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let files = MacGuestFiles(folder: folder)
@@ -370,6 +375,13 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
             guard files.isInstalled else {
                 throw MacGuestError("macOS isn't installed in \(config.name). Next: delete it and make it again with New macOS Virtual Machine.")
             }
+            // Saved with a shared folder that isn't there now (2026-10-28,
+            // fourth audit): built without it, the machine couldn't restore,
+            // and its saved session was deleted. It waits for the folder.
+            if FileManager.default.fileExists(atPath: files.savedState.path),
+               let path = config.sharedFolderPath, !path.isEmpty, config.sharedFolderURL == nil {
+                throw MacGuestError("\(config.name) is saved with its apps open, and its shared folder isn't there now: \(path). Next: connect the drive it's on, then Start again. Starting without it would lose what was open.")
+            }
             clipboard = config.sharesClipboard ? (try? MacClipboard(vmFolder: files.folder)) : nil
             let vz = try MacGuestConfiguration.make(config, files: files, clipboardFolder: clipboard?.sharedDirectory)
             clipboard?.start()
@@ -444,10 +456,14 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
     @available(macOS 14.0, *)
     private func resume(_ machine: VZVirtualMachine, config: VMConfiguration, files: MacGuestFiles) {
         Announcer.shared.announce("Resuming \(config.name) where you left it.", tone: .info)
+        let run = runToken
         machine.restoreMachineStateFrom(url: files.savedState) { [weak self] error in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    guard let self else { return }
+                    // This run's machine still (2026-10-28, fourth audit): a
+                    // run that was ended meanwhile neither deletes the saved
+                    // state nor starts the machine AVM let go of.
+                    guard let self, self.runToken == run, self.machine === machine else { return }
                     if let error {
                         AVMLog.write("AVM: MacGuest — saved state not usable: \(error.localizedDescription); starting as usual.")
                         try? FileManager.default.removeItem(at: files.savedState)
@@ -538,9 +554,12 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
         // false only for machines made since this existed (MacSetupView):
         // older ones have been through Setup Assistant already.
         guard config.macVoiceOverOffered == false else { return }
-        var updated = VMStore.shared?.configurations.first { $0.id == config.id } ?? config
-        updated.macVoiceOverOffered = true
-        VMStore.shared?.save(updated)
+        // Only a machine in the list is written (2026-10-28, fourth audit):
+        // with "?? config", one that isn't was added to it.
+        if var updated = VMStore.shared?.configurations.first(where: { $0.id == config.id }) {
+            updated.macVoiceOverOffered = true
+            VMStore.shared?.save(updated)
+        }
         Announcer.shared.announce("When macOS's Setup Assistant is up, in about 3 minutes, AVM will ask you to press Command-F5 to turn on its VoiceOver.", tone: .info)
         let id = config.id
         // This run's, not a later one's (2026-10-26, code audit): a machine
@@ -562,7 +581,14 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
 
     /// Asks macOS in the machine to shut down, as its power button would.
     func shutDown() {
-        guard let machine, machine.canRequestStop else { forceStop(); return }
+        guard let machine else { return }
+        // Not a force stop while it's starting or resuming (2026-10-28,
+        // fourth audit): macOS can't take a stop request then, and pulling
+        // the plug deleted its saved session.
+        guard machine.canRequestStop else {
+            Announcer.shared.announce("\(name) is still starting, so it can't shut down yet. Try again in a moment, or use Force Stop.", tone: .info)
+            return
+        }
         do {
             try machine.requestStop()
             Announcer.shared.announce("Asked \(name) to shut down.", tone: .info)
@@ -573,7 +599,13 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
 
     func forceStop() {
         guard let machine else { return }
-        machine.stop { [weak self] _ in
+        machine.stop { [weak self] error in
+            // Only if it did stop (2026-10-28, fourth audit).
+            if let error {
+                AVMLog.write("AVM: MacGuest — stop refused: \(error.localizedDescription)")
+                Announcer.shared.announce("\(self?.name ?? "macOS") couldn't be turned off yet. Reason: \(error.localizedDescription)", tone: .failure)
+                return
+            }
             self?.ended(spoken: "\(self?.name ?? "macOS") was turned off.", tone: .info)
         }
     }

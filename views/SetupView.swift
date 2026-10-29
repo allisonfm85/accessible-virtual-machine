@@ -82,7 +82,10 @@ struct SetupView: View {
 
     @State private var vmName: String = ""
     @State private var cpuCount: Int = 4
-    @State private var ramSizeGB: Int = 8
+    // Within the Mac's limit from the start (2026-10-28, fourth audit): on
+    // an 8 GB Mac the stepper's range was 4...4 while it showed 8, and the
+    // machine got all of the Mac's memory.
+    @State private var ramSizeGB: Int = min(8, max(4, Int(ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024)) / 2))
     @State private var diskSizeGB: Int = 64
     @State private var installerURL: URL? = nil
     @State private var showingFilePicker = false
@@ -712,6 +715,8 @@ struct SetupView: View {
             switch identity {
             case .notUbuntu:
                 installerKind = .windows
+                // Said, as a Linux installer is (2026-10-28, fourth audit).
+                Announcer.shared.announce("\(url.lastPathComponent) selected, a Windows installer. Choose the Windows edition, screen readers and setup answers below.", tone: .info)
             case .unreadable(let reason):
                 installerKind = .unreadable(reason)
                 reportFailure(reason)
@@ -758,6 +763,14 @@ struct SetupView: View {
             reportGuidance("Please enter a name for the virtual machine.")
             return
         }
+        // Names stay different (2026-10-28, fourth audit): two machines of
+        // one name read the same everywhere, Start and Delete included.
+        let trimmedName = vmName.trimmingCharacters(in: .whitespaces)
+        if vmStore.configurations.contains(where: { $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame }) {
+            reportGuidance("A virtual machine called \(trimmedName) already exists. Choose a different name.")
+            return
+        }
+        ramSizeGB = min(ramSizeGB, maxMemoryInGB)
 
         // The disk must fit, with 20 GB to spare for the Mac (2026-10-26,
         // code audit): disks are made sparse, so a too-big one was made
@@ -854,7 +867,7 @@ struct SetupView: View {
 
         var config = VMConfiguration(
             id: vmID,
-            name: vmName,
+            name: vmName.trimmingCharacters(in: .whitespaces),
             cpuCount: cpuCount,
             ramSizeGB: ramSizeGB,
             diskSizeGB: diskSizeGB,

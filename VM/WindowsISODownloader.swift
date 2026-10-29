@@ -83,6 +83,15 @@ final class WindowsISODownloader: ObservableObject {
     /// Opens Microsoft's page and starts watching the folder.
     func start() {
         stopped = false
+        // Each folder readable first (2026-10-28, fourth audit): one macOS
+        // wouldn't let AVM read listed as empty, so a download of an hour
+        // went by with no progress and no word.
+        let unreadable = watchedFolders.filter { (try? FileManager.default.contentsOfDirectory(atPath: $0.path)) == nil }
+        if !unreadable.isEmpty {
+            let names = unreadable.map(\.lastPathComponent).joined(separator: " and ")
+            AVMLog.write("ISOAssistant: can't read \(unreadable.map(\.path).joined(separator: ", "))")
+            Announcer.shared.announce("AVM can't look in your \(names) folder, so it can't follow the download there. Next: in System Settings, Privacy and Security, Files and Folders, allow AVM to see \(names), or choose the ISO yourself once it has downloaded.", tone: .failure)
+        }
         snapshotExisting()
         lastSpokenGB = 0
         bytesSoFar = 0

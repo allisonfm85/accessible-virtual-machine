@@ -108,10 +108,11 @@ enum AVMPaths {
     }()
 
     /// A stand-in for Application Support/<supportFolderName> (2026-10-26),
-    /// set only by the accessibility audit (AccessibilityAudit.swift)
-    /// before anything reads or writes, so its sample machines, their
-    /// files and its log lines all go to a temporary folder and the
-    /// user's real machine list is never opened. nil in every normal run.
+    /// set before anything reads or writes by the accessibility audit
+    /// (AccessibilityAudit.swift) and by every test job (SaveResumeTestJob,
+    /// 2026-10-28), so their sample machines, files and control socket go
+    /// to a temporary folder and the user's real machine list is never
+    /// opened. nil in every normal run.
     nonisolated(unsafe) static var supportDirectoryOverride: URL?
 
     /// Application Support/<supportFolderName>, or the audit's stand-in.
@@ -225,8 +226,18 @@ nonisolated final class AVMLog: @unchecked Sendable {
     nonisolated(unsafe) private static var privateWords: [String] = []
     nonisolated static func setPrivateWords(_ words: [String]) {
         privateLock.lock(); defer { privateLock.unlock() }
-        privateWords = Array(Set(words.filter { $0.count >= 3 })).sorted { $0.count > $1.count }
+        privateWords = Array(Set(words.filter { $0.count >= 3 && !genericAccountNames.contains($0.lowercased()) }))
+            .sorted { $0.count > $1.count }
     }
+    /// Account names that say nothing about a person, and are words the
+    /// log uses (2026-10-28, fourth audit): a Remote Desktop account called
+    /// "test" or "admin" turned every "test" and "admin" in the log into
+    /// "the Remote Desktop account".
+    nonisolated private static let genericAccountNames: Set<String> = [
+        "admin", "administrator", "user", "users", "guest", "test", "tester", "testing", "demo",
+        "owner", "root", "support", "remote", "rdp", "windows", "linux", "ubuntu", "debian",
+        "fedora", "home", "office", "work", "family", "student", "teacher", "default", "account",
+        "desktop", "machine", "computer", "local", "public", "temp", "mac", "macos", "pc"]
     nonisolated private static let ipv4Regex = try? NSRegularExpression(pattern: "\\b(?:[0-9]{1,3}\\.){3}[0-9]{1,3}\\b")
 
     nonisolated static func sanitize(_ s: String) -> String {

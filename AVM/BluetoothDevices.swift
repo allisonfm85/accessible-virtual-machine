@@ -79,7 +79,9 @@ final class BluetoothDevices: ObservableObject {
         // The helper is waiting for its approval in Login Items (2026-10-28,
         // code review): wait, then ask again, so "approved, continuing"
         // continues this too.
+        var approvalAsked = false
         if case .failure(.notEnabled(.requiresApproval)) = held {
+            approvalAsked = true
             say("\(device.name) goes to \(machine.machineName) once AVM's helper is allowed in Login Items.", tone: .info)
             let approved = await USBHelperClient.shared.waitForApproval(while: { if case .running = machine.state { return true } else { return false } })
             // Only for a machine still running (2026-10-28): one that
@@ -98,7 +100,12 @@ final class BluetoothDevices: ObservableObject {
             await machine.detachHIDBridge(port: port)
             USBRedirectController.shared.releaseReservedPort(portKey(device.id))
             AVMLog.write("Bluetooth: the helper didn't take \(device.name): \(error)", category: "Bluetooth")
-            if case .notEnabled = error { return false }    // the approval is being asked for
+            // Said here too when the approval wait ended without a send
+            // (2026-10-28, fourth audit): the promise above was the last word.
+            if case .notEnabled = error {
+                if approvalAsked { say("\(device.name) stayed on the Mac: AVM's helper wasn't allowed in time, or \(machine.machineName) stopped. Send it again from Bluetooth Devices.", tone: .info) }
+                return false
+            }
             say("\(device.name) stayed on the Mac. Reason: \(Self.reason(error))", tone: .failure)
             return false
         }
@@ -107,12 +114,17 @@ final class BluetoothDevices: ObservableObject {
     func detach(_ id: String, quietly: Bool = false) async {
         guard let entry = attached.removeValue(forKey: id) else { return }
         await USBHelperClient.shared.releaseBluetooth(id)
-        if let machine = entry.machine, case .running = machine.state {
+        if let machine = entry.machine, Self.takesQMP(machine) {
             await machine.detachHIDBridge(port: entry.port)
         }
         USBRedirectController.shared.releaseReservedPort(portKey(id))
         AVMLog.write("Bluetooth: \(entry.name) returned to the Mac", category: "Bluetooth")
         if !quietly { say("\(entry.name) is back on the Mac.", tone: .info) }
+    }
+
+    /// True when a Bluetooth device is in `machine`.
+    func hasDevices(in machine: VMManager) -> Bool {
+        attached.values.contains { $0.machine === machine }
     }
 
     /// Every device, or every one in `machine`: before a save, or a helper
@@ -130,8 +142,9 @@ final class BluetoothDevices: ObservableObject {
     func helperLetGo(_ id: String, detail: String?) {
         USBHelperClient.shared.forgetBluetooth(id)
         guard let entry = attached.removeValue(forKey: id) else { return }
-        guard let machine = entry.machine, case .running = machine.state else {
+        guard let machine = entry.machine, Self.takesQMP(machine) else {
             USBRedirectController.shared.releaseReservedPort(portKey(id))
+            say("\(entry.name) went back to the Mac\(detail.map { ": \($0)" } ?? "").", tone: .info)
             return
         }
         // The port is free once the bridge device is gone (2026-10-28, code
@@ -141,6 +154,14 @@ final class BluetoothDevices: ObservableObject {
             USBRedirectController.shared.releaseReservedPort(portKey(id), port: entry.port)
         }
         say("\(entry.name) went back to the Mac\(detail.map { ": \($0)" } ?? ""). Send it again from Bluetooth Devices when it's back.", tone: .info)
+    }
+
+    /// A machine whose bridge devices can be removed over QMP: running, or
+    /// paused (2026-10-28, fourth audit: skipping a paused machine left
+    /// the device in QEMU while its port was freed, and every later send to
+    /// that port failed). QEMU removes a USB device with the vCPUs stopped.
+    private static func takesQMP(_ machine: VMManager) -> Bool {
+        machine.state == .running || machine.state == .paused
     }
 
     /// The machine stopped: QEMU is gone, and the helper lets go when its
@@ -159,7 +180,7 @@ final class BluetoothDevices: ObservableObject {
         let lost = attached
         attached = [:]
         for (id, entry) in lost {
-            if let machine = entry.machine, case .running = machine.state {
+            if let machine = entry.machine, Self.takesQMP(machine) {
                 Task {
                     await machine.detachHIDBridge(port: entry.port)
                     USBRedirectController.shared.releaseReservedPort(portKey(id), port: entry.port)
@@ -230,8 +251,11 @@ struct BluetoothDevicesView: View {
     private func row(_ device: BluetoothDeviceInfo) -> some View {
         let inMachine = bluetooth.attached[device.id] != nil
         let kind = BluetoothDevices.kindName(device.kind)
+        // The machine it's in, which may not be this window's (2026-10-28,
+        // fourth audit: a device in A read "In B" from B's window).
+        let holder = bluetooth.attached[device.id]?.machine?.machineName ?? machine.machineName
         return HStack {
-            Text("\(device.name), \(kind). \(inMachine ? "In \(machine.machineName)" : "On the Mac").")
+            Text("\(device.name), \(kind). \(inMachine ? "In \(holder)" : "On the Mac").")
             Spacer()
             if inMachine {
                 Button("Return to Mac") { run(device.id) { await bluetooth.detach(device.id) } }

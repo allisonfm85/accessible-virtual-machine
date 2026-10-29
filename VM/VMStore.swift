@@ -244,10 +244,11 @@ final class VMStore: ObservableObject {
     private(set) var loadFailed = false
 
     private func loadAll() -> [VMConfiguration] {
+        let data: Data
         do {
             let url = try storeURL
             guard fileManager.fileExists(atPath: url.path) else { return [] }
-            let data = try Data(contentsOf: url)
+            data = try Data(contentsOf: url)
             return try JSONDecoder().decode([VMConfiguration].self, from: data)
         } catch {
             AVMLog.write("AVM: VMStore — FAILED to load configurations: \(error.localizedDescription)")
@@ -257,21 +258,63 @@ final class VMStore: ObservableObject {
                 let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
                 let aside = url.deletingLastPathComponent().appendingPathComponent("configurations-unreadable-\(stamp).json")
                 if (try? fileManager.copyItem(at: url, to: aside)) != nil {
+                    asideKept = true
                     kept = "a copy is kept as \(aside.lastPathComponent), in AVM's folder in Application Support"
                     AVMLog.write("AVM: VMStore — the unreadable list is kept as \(aside.lastPathComponent).")
                 }
             }
-            let message = "AVM couldn't read your list of virtual machines, so it shows none; \(kept). Your machines' files are untouched. Next: report the problem from the Help menu, before making new machines."
+            // One machine at a time (2026-10-28, fourth audit): one entry
+            // AVM couldn't read used to hide every machine. The others load;
+            // only the unreadable ones wait in the copy.
+            let readable = Self.readableEntries(in: (try? storeURL).flatMap { try? Data(contentsOf: $0) })
+            let message: String
+            if let readable, !readable.machines.isEmpty {
+                message = "AVM couldn't read \(readable.unreadable == 1 ? "one machine" : "\(readable.unreadable) machines") in your list, so \(readable.unreadable == 1 ? "it isn't" : "they aren't") shown; \(kept). Your machines' files are untouched. Next: report the problem from the Help menu."
+            } else {
+                message = "AVM couldn't read your list of virtual machines, so it shows none; \(kept). Your machines' files are untouched. Next: report the problem from the Help menu, before making new machines."
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                 MainActor.assumeIsolated { Announcer.shared.announce(message, tone: .failure) }
             }
-            return []
+            return readable?.machines ?? []
         }
     }
+
+    /// The entries of a list that won't decode whole, decoded one by one.
+    /// nil when the file isn't a list at all.
+    nonisolated static func readableEntries(in data: Data?) -> (machines: [VMConfiguration], unreadable: Int)? {
+        guard let data, let entries = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else { return nil }
+        var machines: [VMConfiguration] = []
+        for entry in entries {
+            if let one = try? JSONSerialization.data(withJSONObject: entry),
+               let machine = try? JSONDecoder().decode(VMConfiguration.self, from: one) {
+                machines.append(machine)
+            }
+        }
+        return (machines, entries.count - machines.count)
+    }
+
+    /// True once an unreadable list has been copied aside (2026-10-28,
+    /// fourth audit): until it is, nothing is written over the original.
+    private var asideKept = false
+    private var refusalSaid = false
 
     // MARK: - Save All
 
     private func saveAll() {
+        // A list AVM couldn't read, and couldn't copy aside, is never
+        // written over (2026-10-28, fourth audit): the next new machine or
+        // setting used to replace it, and the machines in it were gone.
+        if loadFailed, !asideKept {
+            AVMLog.write("AVM: VMStore — not saving: the unreadable list couldn't be copied aside")
+            if !refusalSaid {
+                refusalSaid = true
+                Task { @MainActor in
+                    Announcer.shared.announce("AVM won't save changes to your list of virtual machines, because it couldn't read the list or keep a copy of it, and saving would replace it. Next: report the problem from the Help menu.", tone: .failure)
+                }
+            }
+            return
+        }
         do {
             let url = try storeURL
             let data = try JSONEncoder().encode(configurations)
@@ -298,19 +341,6 @@ final class VMStore: ObservableObject {
             configurations.append(configuration)
         }
         saveAll()
-    }
-
-    /// A change to a machine that is already in the list. One that isn't
-    /// (a test job's, started from its folder alone) is not added as a
-    /// side effect: VMManager's own bookkeeping did that through save(),
-    /// and 41 "Save test" entries had piled up in the user's list by the
-    /// time it was noticed (2026-10-28).
-    func update(_ configuration: VMConfiguration) {
-        guard configurations.contains(where: { $0.id == configuration.id }) else {
-            AVMLog.write("AVM: VMStore — \(configuration.name) isn't in the list; its change wasn't written")
-            return
-        }
-        save(configuration)
     }
 
     // MARK: - Secure Boot switch (2026-10-25)

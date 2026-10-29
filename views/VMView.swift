@@ -1175,7 +1175,12 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
                     // audio-teardown deadlock case), a synchronous call
                     // deadlocks the main thread. Queue the flush on the SPICE
                     // context.
-                    self?.flushGuestKeysOnSpiceContext(reason: "unlock observed", maskWindowsKey: true)
+                    // Only the machine that had the keyboard (2026-10-28,
+                    // fourth audit): every machine got the Control tap, which
+                    // stopped its screen reader mid-sentence and let go of
+                    // keys held on its own keyboard for Windows.
+                    guard let self, self.focusLock.isCaptureView(self.mtkView) else { return }
+                    self.flushGuestKeysOnSpiceContext(reason: "unlock observed", maskWindowsKey: true)
                 } else {
                     // The Mac's Caps Lock and modifiers as they are now
                     // (2026-10-26, keyboard audit): with a stale
@@ -2262,7 +2267,24 @@ extension SPICECoordinator {
         }
     }
 
+    /// True when the keyboard typing now is an ISO one (European).
+    static var isISOKeyboard: Bool {
+        KBGetLayoutType(Int16(LMGetKbdType())) == PhysicalKeyboardLayoutType(kKeyboardISO)
+    }
+
     static func scancode(forVirtualKey vk: Int) -> Int? {
+        // ISO keyboards (2026-10-28, fourth audit): macOS reports the key
+        // left of 1 as kVK_ISO_Section and the key by left Shift as
+        // kVK_ANSI_Grave, the other way round from where they sit, so on a
+        // German, Nordic or French layout "<" typed a dead "^" and "^" a "<".
+        // The PC's key left of 1 is 0x29, the one by left Shift 0x56.
+        if vk == kVK_ISO_Section || vk == kVK_ANSI_Grave, isISOKeyboard {
+            return vk == kVK_ISO_Section ? 0x29 : 0x56
+        }
+        // The PC Menu key, which screen-reader users open context menus
+        // with, and the JIS keypad comma (fourth audit: both did nothing).
+        if vk == 0x6E { return 0x100 | 0x5D }       // kVK_ContextualMenu
+        if vk == kVK_JIS_KeypadComma { return 0x7E }
         switch vk {
         // Letters
         case kVK_ANSI_A: return 0x1E

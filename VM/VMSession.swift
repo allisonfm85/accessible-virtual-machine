@@ -140,6 +140,7 @@ final class VMSession: ObservableObject {
         let started = Date()
         var reminded = false
         var askedAgent = false
+        var warnedAboutAgent = false
         while true {
             switch manager.state {
             case .stopped:
@@ -156,6 +157,13 @@ final class VMSession: ObservableObject {
                 return
             default:
                 break
+            }
+            // A warning first (2026-10-28, fourth audit): the agent's shut down
+            // closes apps without saving, and Windows may be waiting on a
+            // "save changes?" question nobody heard.
+            if !warnedAboutAgent, Date().timeIntervalSince(started) >= agentAfter - 15 {
+                warnedAboutAgent = true
+                Announcer.shared.announce("\(configuration.name) is still shutting down. It may be asking whether to save your work; enter it to answer. In 15 seconds AVM makes it shut down, closing its apps without saving.", tone: .info)
             }
             if !askedAgent, Date().timeIntervalSince(started) >= agentAfter {
                 askedAgent = true

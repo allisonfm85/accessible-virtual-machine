@@ -98,7 +98,20 @@ final class USBRedirectController: ObservableObject {
         // Only a device that actually reached Windows can follow back.
         // A device also holds a port while its attach is still being
         // tried (thumb drive, 2026-10-18).
-        if USBHelperClient.shared.reachedWindows(held) {
+        // And only into the machine it left, while that machine runs and
+        // is the one watched (2026-10-28, fourth audit): a machine that
+        // stopped releases its devices, macOS drops and re-adds each one,
+        // and with another machine running and watched, they followed
+        // "the user's choice" into that other machine.
+        let machine = machineByDevice[held]?.manager
+        let followsBack: Bool = {
+            guard let machine, case .running = machine.state,
+                  let id = machine.machineID else { return false }
+            return USBHotPlugWatcher.shared.vmID == id
+        }()
+        if !followsBack {
+            log("vanished \(held.description): its machine isn't running or isn't the watched one, so it won't follow back")
+        } else if USBHelperClient.shared.reachedWindows(held) {
             let followKey = Self.followKey(held)
             leftWindowsAt[followKey] = Date()
             leftWindowsCopy[followKey] = held
@@ -181,6 +194,8 @@ final class USBRedirectController: ObservableObject {
     nonisolated static func isPlaceholderSerial(_ serial: String) -> Bool {
         let s = serial.trimmingCharacters(in: .whitespaces).lowercased()
         if s.count < 4 || Set(s).count == 1 { return true }
+        // Zeros then a small number: "0001", "00000001" (CP210x's default).
+        if s.allSatisfy(\.isNumber), let value = Int(s.suffix(18)), value < 10 { return true }
         let placeholders: Set<String> = ["0123456789", "1234567890", "123456789", "12345678", "1234567", "123456",
                                          "12345", "1234", "0123456789abcdef", "abcdef", "default", "serial",
                                          "none", "null", "n/a", "unknown", "serial number", "xxxxxxxx"]
@@ -237,7 +252,13 @@ final class USBRedirectController: ObservableObject {
     /// a retry, since a bouncing device leaves old addresses behind.
     func releaseStale(_ device: AVMUSBDeviceIdentity) async {
         let key = Self.followKey(device)
-        let stale = portByDevice.keys.filter { Self.followKey($0) == key && $0 != device }
+        // Only addresses the Mac no longer sees (2026-10-28, fourth audit):
+        // a second identical device, or one from a maker that gives every
+        // unit the same serial, shares the key, and sending one pulled the
+        // other out of its machine without a word.
+        let stale = portByDevice.keys.filter {
+            Self.followKey($0) == key && $0 != device && !USBHotPlugWatcher.shared.isPresentAtThisAddress($0)
+        }
         for held in stale {
             USBHelperClient.shared.forget(held)
             await releasePort(for: held, reason: "an old address of a device the send gate is resending")
@@ -427,6 +448,11 @@ final class USBRedirectController: ObservableObject {
         }
         portByDevice[device] = nil
         let machine = machineByDevice.removeValue(forKey: device)?.manager
+        // Still in use until QEMU has let it go (2026-10-28, fourth audit):
+        // freed here first, an attach in the two seconds the helper takes
+        // was given this port, and QEMU refused the chardev still there.
+        if let machine { portsBeingFreed[ObjectIdentifier(machine), default: []].insert(port) }
+        defer { if let machine { portsBeingFreed[ObjectIdentifier(machine)]?.remove(port) } }
         let key = USBPlugPrompt.deviceKey(device)
         handingBack.insert(key)
 
@@ -447,9 +473,12 @@ final class USBRedirectController: ObservableObject {
 
     // MARK: Port bookkeeping
 
+    private var portsBeingFreed: [ObjectIdentifier: Set<Int>] = [:]
+
     private func freePort(on manager: VMManager) -> Int? {
         let used = Set(portByDevice.filter { machineByDevice[$0.key]?.manager === manager }.values)
             .union(reserved.values.filter { $0.machine.manager === manager }.map(\.port))
+            .union(portsBeingFreed[ObjectIdentifier(manager)] ?? [])
         return USBRedirectController.ports.first { !used.contains($0) }
     }
 
@@ -506,7 +535,12 @@ final class USBRedirectController: ObservableObject {
     /// ports with it: never the current machine's port of the same number
     /// (2026-10-27, code audit), which belongs to another device.
     private func removeQEMUPort(_ port: Int, for device: AVMUSBDeviceIdentity, on machine: VMManager?) async {
-        guard let manager = machine, case .running = manager.state else {
+        // Paused too (2026-10-28, fourth audit): skipping QMP for a paused
+        // machine left its usb-redir device and chardev in QEMU while the
+        // port was freed here, so every later attach to that port failed,
+        // and a Save made then couldn't be resumed. QEMU removes a USB
+        // device and its chardev with the vCPUs stopped.
+        guard let manager = machine, manager.state == .running || manager.state == .paused else {
             log("VM not running; port \(port) forgotten without QMP")
             return
         }

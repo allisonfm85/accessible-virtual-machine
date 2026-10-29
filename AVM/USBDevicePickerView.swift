@@ -58,6 +58,9 @@ struct USBDevicePickerView: View {
 
     let mode: Mode
     let devices: [AVMUSBDeviceIdentity]
+    /// The machine an attach goes to (2026-10-28, fourth audit), named in
+    /// the title; nil for a detach.
+    var machine: VMManager? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var selected: AVMUSBDeviceIdentity?
@@ -72,7 +75,7 @@ struct USBDevicePickerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
 
-            Text(mode.title)
+            Text(mode == .attach && machine != nil ? "\(mode.title) to \(machine!.machineName)" : mode.title)
                 .font(.title2)
                 .accessibilityAddTraits(.isHeader)
                 .accessibilityHeading(.h1)
@@ -108,7 +111,13 @@ struct USBDevicePickerView: View {
                     dismiss()
                     Task { @MainActor in
                         switch mode {
-                        case .attach: await USBRedirectController.shared.attach(device)
+                        case .attach:
+                            // Still running, or nothing goes anywhere.
+                            if let machine, !(machine.state == .running || machine.state == .paused) {
+                                Announcer.shared.announce("\(machine.machineName) isn't running any more, so \(device.displayName) stays on the Mac.", tone: .info)
+                            } else {
+                                await USBRedirectController.shared.attach(device, to: machine)
+                            }
                         case .detach: await USBRedirectController.shared.detach(device)
                         }
                     }

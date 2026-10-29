@@ -120,13 +120,21 @@ final class MachineSessions: ObservableObject {
         // for; it moves to this one only when that machine has stopped, so
         // switching windows never drops a pending question (2026-10-27,
         // code audit: restarting the watcher drops them).
-        let watched = USBHotPlugWatcher.shared.vmID
-        if session.vmState == .running, watched == nil || watched.flatMap({ sessions[$0] }) == nil {
-            USBHotPlugWatcher.shared.start(vmID: id)
-        }
+        watchUSB(for: id)
         AVMPasteboard.shared.refreshEnabled()
         if let view = windows[id]?.captureView {
             FocusLockManager.shared?.registerCaptureView(view)
+        }
+    }
+
+    /// The USB watcher moves to this running machine when the machine it
+    /// watched has gone. That machine has been running, so the devices on
+    /// the Mac are only recorded (USBHotPlugWatcher.start, alreadyRunning).
+    private func watchUSB(for id: UUID) {
+        guard let session = sessions[id], session.vmState == .running else { return }
+        let watched = USBHotPlugWatcher.shared.vmID
+        if watched == nil || watched.flatMap({ sessions[$0] }) == nil {
+            USBHotPlugWatcher.shared.start(vmID: id, alreadyRunning: true)
         }
     }
 
@@ -134,6 +142,11 @@ final class MachineSessions: ObservableObject {
     /// machine running without a window gets one now.
     func enter(_ id: UUID) {
         guard let session = sessions[id], session.vmState == .running || session.vmState == .paused else { return }
+        // Said when it's paused (2026-10-28, fourth audit): entering a paused
+        // machine said "Entering" over a screen that took no keys.
+        if session.vmState == .paused {
+            Announcer.shared.announce("\(session.configuration.name) is paused. Keys typed in it wait until you resume it.", tone: .info)
+        }
         // Current first (2026-10-28, second review): a window made now for a
         // machine running without one otherwise saw the keyboard in another
         // machine and said "Enter it from AVM's list" while being entered.
@@ -185,6 +198,14 @@ final class MachineSessions: ObservableObject {
         case .running:
             begun.insert(id)
             windows[id]?.showFirstTime()
+            // A QEMU started again inside this session (the restart after
+            // an Ubuntu install) gets a new screen (2026-10-28, fourth
+            // audit): the old one's SPICE connection died with the old
+            // QEMU, and every key, click and paste went nowhere.
+            if windows[id]?.reconnectIfQEMUChanged() == true, id == currentID,
+               let view = windows[id]?.captureView {
+                FocusLockManager.shared?.registerCaptureView(view)
+            }
         case .stopped, .error:
             guard begun.contains(id), !restarting else { return }
             if case .error(let message) = state { lastError = message }
@@ -219,6 +240,11 @@ final class MachineSessions: ObservableObject {
                 VMManager.shared = nil
                 VMActivity.shared.follow(.stopped)
             }
+        } else if let current = currentID {
+            // The watched machine stopped behind the one in front
+            // (2026-10-28, fourth audit): nothing moved the USB watcher, so
+            // plug-ins went unnoticed until the user switched windows.
+            watchUSB(for: current)
         }
     }
 
@@ -319,10 +345,7 @@ final class MachineWindow: NSObject, NSWindowDelegate {
     func showFirstTime(entering: Bool = false) {
         guard !shownOnce else { return }
         shownOnce = true
-        let root = VMView(session: session)
-            .environmentObject(vmStore)
-            .environmentObject(focusLock)
-        window.contentViewController = NSHostingController(rootView: root)
+        buildScreen()
         if window.frameAutosaveName.isEmpty || !window.setFrameUsingName(window.frameAutosaveName) {
             window.center()
         }
@@ -344,6 +367,26 @@ final class MachineWindow: NSObject, NSWindowDelegate {
         } else {
             show()
         }
+    }
+
+    /// The machine's screen, connected to the QEMU running now.
+    private var screenForPID = 0
+    private func buildScreen() {
+        let root = VMView(session: session)
+            .environmentObject(vmStore)
+            .environmentObject(focusLock)
+        window.contentViewController = NSHostingController(rootView: root)
+        screenForPID = session.manager.qemuPID
+    }
+
+    /// Rebuilds the screen when QEMU was started again under it. True when
+    /// it did.
+    func reconnectIfQEMUChanged() -> Bool {
+        let pid = session.manager.qemuPID
+        guard shownOnce, !closing, pid != 0, pid != screenForPID else { return false }
+        AVMLog.write("AVM: MachineSessions — \(session.configuration.name)'s QEMU started again; reconnecting its screen")
+        buildScreen()
+        return true
     }
 
     func show() {
@@ -393,7 +436,11 @@ final class MachineWindow: NSObject, NSWindowDelegate {
             window.orderOut(nil)
             MainWindowCloseGuard.bringMainWindowForward()
         case .alertSecondButtonReturn:
-            Task { try? await session.stopGracefully() }
+            // A failure is said (2026-10-28, fourth audit).
+            Task {
+                do { try await session.stopGracefully() }
+                catch { Announcer.shared.announce("\(session.configuration.name) didn't shut down. Reason: \(error.localizedDescription)", tone: .failure) }
+            }
         case .alertThirdButtonReturn where saveable:
             Task { await session.saveAndStop() }
         default:

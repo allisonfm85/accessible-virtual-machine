@@ -62,6 +62,11 @@ final class RemoteDesktopAdvertiser {
         let label = RemoteDesktop.hostLabel(for: config)
         let host = "\(label).local."
         let addressText = config.remoteDesktopReachesNetwork ? (RemoteDesktop.macAddress() ?? "127.0.0.1") : "127.0.0.1"
+        // This Mac only: published on this Mac only (2026-10-28, fourth
+        // audit). On every interface, the machine's name and an RDP service
+        // were announced to the whole network, though no one there could
+        // connect. kDNSServiceInterfaceIndexLocalOnly is (uint32_t)-1.
+        let interface: UInt32 = config.remoteDesktopReachesNetwork ? 0 : UInt32.max
         var address = in_addr()
         guard inet_pton(AF_INET, addressText, &address) == 1 else { return false }
         let entry = Entry(name: host, config: config, port: port, address: addressText)
@@ -72,7 +77,7 @@ final class RemoteDesktopAdvertiser {
         DNSServiceSetDispatchQueue(connection, .main)
         var record: DNSRecordRef?
         let registered = withUnsafeBytes(of: &address) { raw in
-            DNSServiceRegisterRecord(connection, &record, kDNSServiceFlagsUnique, 0, host,
+            DNSServiceRegisterRecord(connection, &record, kDNSServiceFlagsUnique, interface, host,
                                      UInt16(kDNSServiceType_A), UInt16(kDNSServiceClass_IN),
                                      UInt16(raw.count), raw.baseAddress, 120, { _, _, _, error, _ in
                 if error != kDNSServiceErr_NoError {
@@ -87,7 +92,7 @@ final class RemoteDesktopAdvertiser {
         entry.record = record
 
         var service: DNSServiceRef?
-        let published = DNSServiceRegister(&service, 0, 0, config.name, "_rdp._tcp", nil, host,
+        let published = DNSServiceRegister(&service, 0, interface, config.name, "_rdp._tcp", nil, host,
                                            UInt16(port).bigEndian, 0, nil, nil, nil)
         if published == kDNSServiceErr_NoError, let service {
             DNSServiceSetDispatchQueue(service, .main)

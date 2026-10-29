@@ -18,7 +18,8 @@ struct MacSetupView: View {
 
     @State private var name = "macOS"
     @State private var cpuCount = 4
-    @State private var ramSizeGB = 8
+    // Within the Mac's limit from the start (2026-10-28, fourth audit).
+    @State private var ramSizeGB = min(8, max(4, Int(ProcessInfo.processInfo.physicalMemory >> 30) / 2))
     @State private var diskSizeGB = 80
     @State private var ipsw: URL?
     @State private var useIPSW = false
@@ -129,6 +130,26 @@ struct MacSetupView: View {
             Announcer.shared.announce("Please choose a macOS installer file ending in .ipsw, or choose to download macOS from Apple.", tone: .info)
             return
         }
+        // Names stay different (2026-10-28, fourth audit): a second machine
+        // left as "macOS" read the same as the first everywhere.
+        if vmStore.configurations.contains(where: { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            Announcer.shared.announce("A virtual machine called \(trimmed) already exists. Choose a different name.", tone: .info)
+            return
+        }
+        // Room for the download and the disk, with 20 GB to spare, as the
+        // Setup Wizard checks (2026-10-28, fourth audit): the 26 GB download
+        // and then the disk filled the Mac part-way through.
+        let cached = ((try? FileManager.default.contentsOfDirectory(atPath: MacInstaller.cacheFolder.path)) ?? [])
+            .contains { $0.lowercased().hasSuffix(".ipsw") }
+        let downloadGB = useIPSW || cached ? 0 : 26
+        let support = (try? AVMPaths.supportDirectory()) ?? URL(fileURLWithPath: NSHomeDirectory())
+        let freeGB = ((try? support.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+            .volumeAvailableCapacityForImportantUsage).map { Int($0 / 1_000_000_000) }
+        if let freeGB, freeGB < diskSizeGB + downloadGB + 20 {
+            Announcer.shared.announce("There isn't room on this Mac: \(downloadGB > 0 ? "the macOS download needs about \(downloadGB) gigabytes and " : "")the disk can grow to \(diskSizeGB), with 20 to spare, and \(freeGB) gigabytes are free. Free some space, or choose a smaller disk.", tone: .failure)
+            return
+        }
+        ramSizeGB = min(ramSizeGB, maxMemoryGB)
         let id = UUID()
         var config = VMConfiguration(id: id, name: trimmed, cpuCount: cpuCount, ramSizeGB: ramSizeGB,
                                      diskSizeGB: diskSizeGB, guestOSName: GuestOS.macOS.rawValue)
@@ -208,6 +229,9 @@ struct MacSettingsView: View {
     private let maxMemoryGB = max(4, Int(ProcessInfo.processInfo.physicalMemory >> 30) / 2)
 
     var body: some View {
+        // Scrolls (2026-10-28, fourth audit): about 950 points tall, its
+        // Save button was off the bottom of a laptop's screen.
+        ScrollView {
         VStack(alignment: .leading, spacing: 14) {
             Text("Settings for \(configuration.name)")
                 .font(.title2)
@@ -307,7 +331,8 @@ struct MacSettingsView: View {
             }
         }
         .padding(28)
-        .frame(minWidth: 460)
+        }
+        .frame(minWidth: 460, minHeight: 420)
         .onAppear {
             name = configuration.name
             cpuCount = configuration.cpuCount

@@ -143,6 +143,8 @@ class FocusLockManager: ObservableObject {
     /// display / key-capture view). Weak: the view's lifecycle belongs to
     /// SwiftUI; if it goes away the enforcement simply has nothing to defend.
     private weak var captureView: NSView?
+    /// True when `view` is the screen that has (or last had) the keyboard.
+    func isCaptureView(_ view: NSView?) -> Bool { view != nil && captureView === view }
     /// KVO observation of the capture view's window's firstResponder.
     /// Non-nil exactly while enforcement is active (locked with a registered
     /// view in a window).
@@ -184,10 +186,33 @@ class FocusLockManager: ObservableObject {
                 self.unlock()
             }
         }
+        // The screen locking, the Mac sleeping, or another user taking the
+        // Mac also ends the lock (2026-10-28, fourth audit): AVM stays the
+        // active app through them, so Caps Lock stayed F19 at the login
+        // window and for the other user.
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.willSleepNotification] {
+            systemObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                MainActor.assumeIsolated {
+                    guard let self, self.isLocked else { return }
+                    AVMLog.write("AVM: FocusLock — \(note.name.rawValue) while locked; unlocking.")
+                    self.unlock(bringListForward: false)
+                }
+            })
+        }
+        systemObservers.append(DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isLocked else { return }
+                AVMLog.write("AVM: FocusLock — the screen locked while locked; unlocking.")
+                self.unlock(bringListForward: false)
+            }
+        })
         _ = activeObserver
     }
 
     private var resignObserver: NSObjectProtocol?
+    private var systemObservers: [NSObjectProtocol] = []
 
     /// Back in AVM after copying something in another app: offer the
     /// Mac's clipboard to the guest (AVMPasteboard, 2026-10-25).
@@ -212,9 +237,14 @@ class FocusLockManager: ObservableObject {
             AVMLog.write("AVM: FocusLock — another machine's screen appeared while locked; keeping the keyboard where it is.")
             return
         }
+        // The same view again (its window became key) keeps the "keyboard
+        // lost" note (2026-10-28, fourth audit): restarting the watch reset
+        // it, so "keyboard back in Windows" was never said after a window
+        // took the keyboard and gave it back.
+        let sameView = captureView === view
         captureView = view
         AVMLog.write("AVM: FocusLock — capture view registered (window=\(view.window != nil ? "present" : "nil")).")
-        if isLocked {
+        if isLocked, !sameView {
             startEnforcement()
         }
     }

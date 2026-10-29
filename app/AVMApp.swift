@@ -112,7 +112,7 @@ struct AVMApp: App {
                 .disabled(!updater.canCheckForUpdates)
                 // Background and Startup… (2026-10-28, BackgroundMode.swift).
                 Button("Background and Startup…") {
-                    NotificationCenter.default.post(name: .avmBackgroundSettings, object: nil)
+                    DashboardCommand.post(.avmBackgroundSettings, object: nil)
                 }
             }
 
@@ -319,7 +319,7 @@ struct AVMApp: App {
             CommandMenu("Virtual Machine") {
                 Button("Start Virtual Machine") {
                     AVMLog.write("AVM: Start Virtual Machine menu — posting start request to ContentView.")
-                    NotificationCenter.default.post(name: .avmStartVMFromMenu, object: nil)
+                    DashboardCommand.post(.avmStartVMFromMenu, object: nil)
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
                 .disabled(!activity.canStart)
@@ -329,7 +329,7 @@ struct AVMApp: App {
                         ForEach(vmStore.configurations) { config in
                             Button(config.name) {
                                 AVMLog.write("AVM: Start submenu — posting start request for '\(config.name)' to ContentView.")
-                                NotificationCenter.default.post(name: .avmStartVMFromMenu, object: config.id)
+                                DashboardCommand.post(.avmStartVMFromMenu, object: config.id)
                             }
                         }
                     }
@@ -380,7 +380,7 @@ struct AVMApp: App {
 
                 Button("Speak Status") {
                     AVMLog.write("AVM: Speak Status menu — posting request to ContentView.")
-                    NotificationCenter.default.post(name: .avmSpeakStatusFromMenu, object: nil)
+                    DashboardCommand.post(.avmSpeakStatusFromMenu, object: nil)
                 }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
 
@@ -406,7 +406,7 @@ struct AVMApp: App {
 
                 Button("Attach USB Device…") {
                     AVMLog.write("AVM: Attach USB Device menu — posting request to ContentView.", category: "USBHelper")
-                    NotificationCenter.default.post(name: .avmAttachUSBFromMenu, object: nil)
+                    DashboardCommand.post(.avmAttachUSBFromMenu, object: nil)
                 }
                 // A shortcut (2026-10-27): sending a device that stayed on
                 // the Mac, without unplugging it, is the common case.
@@ -414,11 +414,11 @@ struct AVMApp: App {
                 .disabled(!activity.isRunning)
                 Button("Detach USB Device…") {
                     AVMLog.write("AVM: Detach USB Device menu — posting request to ContentView.", category: "USBHelper")
-                    NotificationCenter.default.post(name: .avmDetachUSBFromMenu, object: nil)
+                    DashboardCommand.post(.avmDetachUSBFromMenu, object: nil)
                 }
                 .disabled(usbRedirect.portByDevice.isEmpty)
                 Button("Bluetooth Devices…") {
-                    NotificationCenter.default.post(name: .avmBluetoothDevices, object: nil)
+                    DashboardCommand.post(.avmBluetoothDevices, object: nil)
                 }
                 .keyboardShortcut("b", modifiers: [.command, .shift])
                 .disabled(!activity.isRunning)
@@ -465,7 +465,7 @@ struct AVMApp: App {
                         ForEach(vmStore.configurations) { config in
                             Button("\(config.name)…") {
                                 AVMLog.write("AVM: Export submenu — posting export request for '\(config.name)' to ContentView.")
-                                NotificationCenter.default.post(name: .avmExportVMFromMenu, object: config.id)
+                                DashboardCommand.post(.avmExportVMFromMenu, object: config.id)
                             }
                         }
                     }
@@ -473,21 +473,21 @@ struct AVMApp: App {
                     Button("Export Virtual Machine…") {
                         guard let config = vmStore.configurations.first else { return }
                         AVMLog.write("AVM: Export Virtual Machine menu — posting export request for '\(config.name)' to ContentView.")
-                        NotificationCenter.default.post(name: .avmExportVMFromMenu, object: config.id)
+                        DashboardCommand.post(.avmExportVMFromMenu, object: config.id)
                     }
                     .disabled(vmStore.configurations.isEmpty)
                 }
 
                 Button("Import Virtual Machine…") {
                     AVMLog.write("AVM: Import Virtual Machine menu — posting import request to ContentView.")
-                    NotificationCenter.default.post(name: .avmImportVMFromMenu, object: nil)
+                    DashboardCommand.post(.avmImportVMFromMenu, object: nil)
                 }
 
                 Divider()
 
                 Button("Reclaim Disk Space…") {
                     AVMLog.write("AVM: Reclaim Disk Space menu — posting reclaim request to ContentView.")
-                    NotificationCenter.default.post(name: .avmReclaimFromMenu, object: nil)
+                    DashboardCommand.post(.avmReclaimFromMenu, object: nil)
                 }
             }
 
@@ -619,6 +619,13 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
             FocusLockManager.shared?.cleanup()
             Announcer.shared.waitUntilQuiet(seconds: 8)
         }
+        // An update is being installed: this AVM's helper exits now, after
+        // the machines have given their devices back, so the new AVM starts
+        // its own (AVMUpdater.swift, updaterWillRelaunchApplication).
+        if UpdateAnnouncer.relaunchingForUpdate {
+            NSLog("AVM: Updates — quitting for the update; asking the USB helper to exit.")
+            USBHelperClient.askHelperToExitNow(wait: 3)
+        }
     }
 }
 
@@ -631,6 +638,40 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
 /// asks the quit question instead (QuitCoordinator), and the window stays
 /// open unless AVM really quits. Installed as the window's delegate,
 /// forwarding everything else to the delegate SwiftUI set.
+/// The Virtual Machine menu's commands are carried out by the dashboard,
+/// which listens for them (2026-10-28, fourth audit): with no dashboard
+/// window, after Command-W or a launch at login that restored none,
+/// Speak Status, Start, Attach USB Device and the rest did nothing, and
+/// said nothing. A command now opens the dashboard first and reaches it
+/// once it has appeared (ContentView calls deliverPending).
+@MainActor
+enum DashboardCommand {
+    private static var pending: [(name: Notification.Name, object: Any?)] = []
+
+    static func post(_ name: Notification.Name, object: Any? = nil) {
+        if MainWindowCloseGuard.hasMainWindow {
+            NotificationCenter.default.post(name: name, object: object)
+            return
+        }
+        AVMLog.write("AVM: a menu command with no dashboard; opening it first")
+        pending.append((name, object))
+        BackgroundMode.shared.comeForward()
+    }
+
+    /// The dashboard has appeared: the commands asked for while it was gone.
+    static func deliverPending() {
+        guard !pending.isEmpty else { return }
+        let waiting = pending
+        pending = []
+        // A turn later, once the dashboard's listeners are in place.
+        DispatchQueue.main.async {
+            for command in waiting {
+                NotificationCenter.default.post(name: command.name, object: command.object)
+            }
+        }
+    }
+}
+
 final class MainWindowCloseGuard: NSObject, NSWindowDelegate {
     static let shared = MainWindowCloseGuard()
     private weak var original: NSWindowDelegate?
@@ -734,7 +775,42 @@ enum QuitCoordinator {
     /// question can say that closing ends the VM too.
     static var closingWindow = false
 
+    /// A quit question, in front and heard (2026-10-28, fourth audit): with
+    /// AVM in the background, or the Mac shutting down from another app,
+    /// the alert belonged to an app that wasn't active, so it wasn't
+    /// focused and VoiceOver didn't read it, and the Mac waited on it.
+    private static func ask(_ alert: NSAlert) -> NSApplication.ModalResponse {
+        let wasInFront = NSApp.isActive
+        BackgroundMode.shared.comeForward()
+        NSApp.activate(ignoringOtherApps: true)
+        if !wasInFront { Announcer.shared.announce(alert.messageText, tone: .info) }
+        return alert.runModal()
+    }
+
+    /// True when this quit is the Mac shutting down, restarting or logging
+    /// out, not the user quitting AVM.
+    private static var macIsShuttingDown: Bool {
+        guard let reason = NSAppleEventManager.shared().currentAppleEvent?
+                .attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason))?.enumCodeValue else { return false }
+        return [kAEShutDown, kAERestart, kAELogOut, kAEReallyLogOut, kAEShowRestartDialog, kAEShowShutdownDialog]
+            .map { OSType($0) }.contains(reason)
+    }
+
     static func shouldTerminate() -> NSApplication.TerminateReply {
+        // A macOS machine being made (2026-10-28, fourth audit): quitting
+        // threw the download and the half-made machine away without asking.
+        if MacInstaller.running > 0 {
+            let alert = NSAlert()
+            alert.messageText = "A macOS virtual machine is being made. Quit anyway?"
+            alert.informativeText = "Quitting stops it, and the macOS machine isn't made. Making it again starts over."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Quit and Stop")
+            guard ask(alert) == .alertSecondButtonReturn else {
+                AVMLog.write("AVM: Quit — cancelled while a macOS machine was being made.")
+                return .terminateCancel
+            }
+        }
         // An export or import in progress (2026-10-26): quitting stops it.
         // Its half-made copy is a hidden folder that the next export to the
         // same place, or the next import, clears away. Cancel is the default.
@@ -745,7 +821,7 @@ enum QuitCoordinator {
             alert.alertStyle = .warning
             alert.addButton(withTitle: "Cancel")
             alert.addButton(withTitle: "Quit and Stop")
-            guard alert.runModal() == .alertSecondButtonReturn else {
+            guard ask(alert) == .alertSecondButtonReturn else {
                 AVMLog.write("AVM: Quit — cancelled while \(activity).")
                 return .terminateCancel
             }
@@ -774,7 +850,7 @@ enum QuitCoordinator {
             // about next: Quit Now goes on to that question, and Save and
             // Quit saves macOS, then quits again, which asks it.
             let otherActive = vmIsActive || !USBRedirectController.shared.portByDevice.isEmpty
-            switch alert.runModal() {
+            switch ask(alert) {
             case .alertSecondButtonReturn:
                 if !otherActive { return .terminateNow }
                 MacGuestRunner.shared.forceStop()
@@ -807,8 +883,12 @@ enum QuitCoordinator {
             let guest = names.count == 1 ? names[0] : ListFormatter.localizedString(byJoining: names)
             let several = names.count > 1
             // While one starts, nothing can shut it down yet (stopGracefully
-            // refuses before .running), so only Cancel and Quit Now.
-            let starting = active.contains { $0.vmState == .starting }
+            // refuses before .running). Only when all are starting is Quit
+            // Now the only choice (2026-10-28, fourth audit): one starting
+            // took Shut Down and Save away from the others too, and Quit Now
+            // pulled the plug on machines running for hours.
+            let starting = active.allSatisfy { $0.vmState == .starting }
+            let startingNames = active.filter { $0.vmState == .starting }.map(\.configuration.name).sorted()
             let alert = NSAlert()
             if quitWhenShutDown {
                 alert.messageText = "AVM is waiting for \(guest) to shut down. Quit now?"
@@ -822,6 +902,7 @@ enum QuitCoordinator {
             alert.informativeText = starting
                 ? closeNote + "Quit Now stops \(them) while starting. If one is building install media, that work is lost and starts again next time."
                 : closeNote + "Quit Now turns \(them) off at once, like pulling the plug, and unsaved work in \(them) is lost. Shut Down and Quit shuts \(them) down first, and AVM quits when \(several ? "all have" : "it has") finished. That can take a few minutes during an update."
+                    + (startingNames.isEmpty ? "" : " \(ListFormatter.localizedString(byJoining: startingNames)) \(startingNames.count > 1 ? "are" : "is") still starting, and stops at once either way.")
             alert.alertStyle = .warning
             alert.addButton(withTitle: "Cancel")
             if !starting {
@@ -837,7 +918,7 @@ enum QuitCoordinator {
                     ? " Save and Quit keeps each machine that can be saved as it is, open apps and all, and shuts the others down; their next Start carries on from there."
                     : " Save \(guest) and Quit keeps \(guest) as it is, open apps and all, and its next Start carries on from there in seconds."
             }
-            let choice = alert.runModal()
+            let choice = ask(alert)
             let shutDown = !starting && choice == .alertSecondButtonReturn
             let quitNow = starting ? choice == .alertSecondButtonReturn : choice == .alertThirdButtonReturn
             let saveAndQuit = saveable && choice.rawValue == NSApplication.ModalResponse.alertThirdButtonReturn.rawValue + 1
@@ -862,6 +943,12 @@ enum QuitCoordinator {
             }
             if shutDown {
                 AVMLog.write("AVM: Quit — Shut Down and Quit chosen.")
+                // Said (2026-10-28, fourth audit): answering this cancels the
+                // Mac's own shut down, restart or log out, and the Mac stayed
+                // on with nothing said.
+                if macIsShuttingDown {
+                    Announcer.shared.announce("The Mac's shut down is stopped while \(guest) shuts down. When AVM has quit, choose Shut Down or Restart again.", tone: .info)
+                }
                 beginShutDownThenQuit(guest: guest)
                 return .terminateCancel
             } else if quitNow {
@@ -914,6 +1001,10 @@ enum QuitCoordinator {
                                 }
                             } else if session.vmState == .running || session.vmState == .paused {
                                 try await session.stopGracefully()
+                            } else if session.vmState == .starting {
+                                // Nothing can shut down a machine still
+                                // starting; it stops at once (2026-10-28).
+                                session.forceStop()
                             }
                             return nil
                         } catch {

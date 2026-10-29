@@ -59,6 +59,9 @@ struct USBPickerRequest: Identifiable {
     let id = UUID()
     let mode: USBDevicePickerView.Mode
     let devices: [AVMUSBDeviceIdentity]
+    /// The machine it was opened for (2026-10-28, fourth audit): the device
+    /// used to go to whichever machine was in front when Attach was pressed.
+    weak var machine: VMManager?
 }
 
 struct ContentView: View {
@@ -158,6 +161,9 @@ struct ContentView: View {
                 errorMessage = configs.isEmpty
                     ? "No virtual machine is set up yet. Use the Setup Wizard first."
                     : "More than one virtual machine is configured. Choose the one you want from Start in the Virtual Machine menu, or use the Start button next to it."
+                // Said as well (2026-10-28, fourth audit): with VoiceOver off,
+                // or focus elsewhere, the beep was all there was.
+                if let message = errorMessage { Announcer.shared.announce(message, tone: .info) }
                 return
             }
             AVMLog.write("AVM: Start-from-menu — starting '\(config.name)'.")
@@ -232,7 +238,7 @@ struct ContentView: View {
                 return
             }
             AVMLog.write("AVM: Attach-USB-from-menu — \(devices.count) device(s); opening picker.", category: "USBHelper")
-            usbPicker = USBPickerRequest(mode: .attach, devices: devices)
+            usbPicker = USBPickerRequest(mode: .attach, devices: devices, machine: VMManager.shared)
         }
         .onReceive(NotificationCenter.default.publisher(for: .avmDetachUSBFromMenu)) { _ in
             let devices = USBRedirectController.shared.redirectedDevices
@@ -251,7 +257,7 @@ struct ContentView: View {
             }
         }
         .sheet(item: $usbPicker) { request in
-            USBDevicePickerView(mode: request.mode, devices: request.devices)
+            USBDevicePickerView(mode: request.mode, devices: request.devices, machine: request.machine)
         }
         .onReceive(NotificationCenter.default.publisher(for: .avmBluetoothDevices)) { _ in
             guard let manager = VMManager.shared, case .running = manager.state else {
@@ -273,6 +279,8 @@ struct ContentView: View {
         // The machine chosen to start when AVM opens (2026-10-28), once.
         .onAppear {
             MainWindowCloseGuard.openMainWindow = { openWindow(id: "main") }
+            // Menu commands chosen while there was no dashboard (2026-10-28).
+            DashboardCommand.deliverPending()
             BackgroundMode.shared.autoStartIfChosen(in: vmStore.configurations) { startVM(config: $0, takesKeyboard: $1) }
         }
         // Speak Status (Cmd-Shift-I, 2026-10-25). Always .info: asking is
@@ -366,6 +374,13 @@ struct ContentView: View {
     private func startVM(config: VMConfiguration, takesKeyboard: Bool = true) {
         // Not while its files are being copied (2026-10-26).
         if MachineArchiveController.shared.refusesWhileBusy(config) { return }
+        // Never a template (2026-10-28, fourth audit): the Start menu and
+        // Command-Shift-S started one, and every machine made from it later
+        // inherited what it did.
+        if config.isATemplate {
+            Announcer.shared.announce("\(config.name) is a template, so it isn't started. Use New Machine from Template to make a machine from it.", tone: .info)
+            return
+        }
         errorMessage = nil
         // macOS runs on Apple's Virtualization framework, in its own window
         // (MacGuest.swift), not in a QEMU session.
@@ -456,7 +471,7 @@ private struct DashboardContent: View {
                                     .accessibilityLabel("\(config.cpuCount) cores, \(config.ramSizeGB) gigabytes RAM, \(config.diskSizeGB) gigabytes disk\(storageNote(config).map { ", \($0)" } ?? "")")
                             }
 
-                            HStack(spacing: 8) {
+                            FlowLayout(spacing: 8, lineSpacing: 6) {
                             // macOS machines run beside QEMU, in their own
                             // window (2026-10-26): their row says how they
                             // are and runs them.
@@ -500,7 +515,6 @@ private struct DashboardContent: View {
                                 .accessibilityHint("Moves this virtual machine and all of its files to the Trash. Asks for confirmation first.")
                             }
                             }
-                            .fixedSize(horizontal: true, vertical: false)
                         }
                         .padding(.vertical, 6)
                     }
@@ -594,7 +608,10 @@ private struct DashboardContent: View {
     }
 
     private var statusMessage: String {
-        let running = machines.sessions.count
+        // A macOS machine counts too (2026-10-28, fourth audit), and only
+        // machines that are running, not starting or stopping.
+        let running = machines.sessions.values.filter { $0.vmState == .running || $0.vmState == .paused }.count
+            + (MacGuestRunner.shared.runningID == nil ? 0 : 1)
         switch running {
         case 0: return "No virtual machine running"
         case 1: return "One virtual machine running"
@@ -827,6 +844,10 @@ private struct DashboardContent: View {
     private func startVM(config: VMConfiguration) {
         // Not while its files are being copied (2026-10-26).
         if MachineArchiveController.shared.refusesWhileBusy(config) { return }
+        if config.isATemplate {
+            Announcer.shared.announce("\(config.name) is a template, so it isn't started. Use New Machine from Template to make a machine from it.", tone: .info)
+            return
+        }
         errorMessage = nil
         // macOS runs on Apple's Virtualization framework, in its own window
         // (MacGuest.swift), not in a QEMU session.
@@ -893,8 +914,15 @@ private struct QEMUMachineRow: View {
             .accessibilityHint("Sends a Bluetooth braille display, game controller or other device to \(name). Command Shift B.")
             Button("Pause") {
                 Task {
-                    do { try await session.pause() }
-                    catch { errorMessage = error.localizedDescription }
+                    // Said either way (2026-10-28, fourth audit): the button
+                    // went away and nothing was said.
+                    do {
+                        try await session.pause()
+                        Announcer.shared.announce("\(name) is paused.", tone: .info)
+                    } catch {
+                        errorMessage = error.localizedDescription
+                        Announcer.shared.announce("\(name) couldn't be paused. Reason: \(error.localizedDescription)", tone: .failure)
+                    }
                 }
             }
             .accessibilityLabel("Pause \(name)")
@@ -902,8 +930,13 @@ private struct QEMUMachineRow: View {
         if session.vmState == .paused {
             Button("Resume") {
                 Task {
-                    do { try await session.resume() }
-                    catch { errorMessage = error.localizedDescription }
+                    do {
+                        try await session.resume()
+                        Announcer.shared.announce("\(name) is running again.", tone: .success)
+                    } catch {
+                        errorMessage = error.localizedDescription
+                        Announcer.shared.announce("\(name) couldn't be resumed. Reason: \(error.localizedDescription)", tone: .failure)
+                    }
                 }
             }
             .accessibilityLabel("Resume \(name)")
@@ -923,10 +956,13 @@ private struct QEMUMachineRow: View {
         // Force Stop while shutting down too (2026-10-25, code audit): a
         // guest that ignores the power button would otherwise leave nothing
         // to press. Asks first, Cancel the default.
-        if session.vmState == .running || session.vmState == .paused || session.vmState == .stopping {
+        // And while starting (2026-10-28, fourth audit): a slow first start,
+        // building the install media, had no button and no menu item.
+        if session.vmState == .running || session.vmState == .paused || session.vmState == .stopping || session.vmState == .starting {
             Button("Force Stop") {
                 if confirmForceStop(guest: name) {
                     session.forceStop()
+                    Announcer.shared.announce("\(name) was turned off.", tone: .info)
                 }
             }
             .accessibilityLabel("Force stop \(name)")
@@ -1014,4 +1050,45 @@ func confirmForceStop(guest: String) -> Bool {
 extension Notification.Name {
     /// Opens New macOS Virtual Machine (2026-10-26, MacSetupView.swift).
     static let avmShowMacSetup = Notification.Name("avmShowMacSetup")
+}
+
+/// Lays its views out left to right, wrapping onto more lines as needed
+/// (2026-10-28, fourth audit): a running machine's row, nine buttons in one
+/// line of fixed width, ran off the window, and Shut Down and Force Stop
+/// couldn't be clicked. VoiceOver reads them in the same order.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+    var lineSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, lineHeight: CGFloat = 0, widest: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width {
+                y += lineHeight + lineSpacing
+                x = 0
+                lineHeight = 0
+            }
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+            widest = max(widest, x - spacing)
+        }
+        return CGSize(width: min(widest, width), height: y + lineHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, lineHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                y += lineHeight + lineSpacing
+                x = bounds.minX
+                lineHeight = 0
+            }
+            view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
+    }
 }

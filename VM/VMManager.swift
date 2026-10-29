@@ -359,6 +359,14 @@ final class VMManager: ObservableObject {
         AVMLog.write("VMManager: state is now \(state)", category: "USBHotPlug")
         switch state {
         case .running:
+            // The machine the watcher follows sends what it held while it was
+            // paused, whichever machine is in front (2026-10-28, fourth
+            // audit: only the front one did, so "AVM will send X when A
+            // resumes" wasn't kept for a machine behind another).
+            if let id = activeConfiguration?.id, USBHotPlugWatcher.shared.vmID == id {
+                USBPlugPrompt.shared.vmRunning()
+                break
+            }
             // Plug-ins are offered to the current machine (2026-10-27,
             // several at once); MachineSessions.makeCurrent moves the
             // watcher when another machine comes to the front.
@@ -506,6 +514,13 @@ final class VMManager: ObservableObject {
     // MARK: Private — configuration reference
 
     private var activeConfiguration: VMConfiguration?
+
+    /// The save under way (2026-10-28, fourth audit): a second Save (Save
+    /// and Quit during a Save, two avmctl saves) failed on the job id in
+    /// use, and its clean-up dismissed the first save's job and deleted
+    /// its snapshot, so both failed. A second call now waits for the first
+    /// and returns its result; Save isn't offered meanwhile (canSaveState).
+    @Published private(set) var savingTask: Task<Bool, Never>?
 
     // MARK: - Binary Discovery
 
@@ -730,10 +745,14 @@ final class VMManager: ObservableObject {
             // A reinstall took the volume with it (2026-10-28): what AVM saw
             // on it before is forgotten, so an interrupted reinstall starts
             // again from the DVD.
-            if configuration.installMarkerSeen == true, var saved = VMStore.shared?.configurations.first(where: { $0.id == configuration.id }) {
+            if var saved = VMStore.shared?.configurations.first(where: { $0.id == configuration.id }), saved.installMarkerSeen == true {
                 saved.installMarkerSeen = nil
                 VMStore.shared?.save(saved)
             }
+            // This run's copy too (2026-10-28, fourth audit): the install
+            // watch re-checks every 20 s with it, and "seen before" there
+            // called the reinstall finished once the new disk passed 4 GiB.
+            if activeConfiguration?.id == configuration.id { activeConfiguration?.installMarkerSeen = nil }
             return false
         }
 
@@ -758,10 +777,12 @@ final class VMManager: ObservableObject {
         let found = listing.output.uppercased().contains("AVMDONE")
         avmLog("checkInstallCompleteMarker: marker \(found ? "PRESENT" : "absent") on \(imgPath)")
         if found, configuration.installMarkerSeen != true {
-            // Remembered (2026-10-28): see below.
-            var updated = VMStore.shared?.configurations.first { $0.id == configuration.id } ?? configuration
-            updated.installMarkerSeen = true
-            VMStore.shared?.update(updated)
+            // Remembered (2026-10-28): see below. Only for a machine in the
+            // list (fourth audit: a test job's isn't).
+            if var updated = VMStore.shared?.configurations.first(where: { $0.id == configuration.id }) {
+                updated.installMarkerSeen = true
+                VMStore.shared?.save(updated)
+            }
             if activeConfiguration?.id == configuration.id { activeConfiguration?.installMarkerSeen = true }
         }
         // No marker on a volume that reads fine, on a machine whose marker
@@ -771,7 +792,11 @@ final class VMManager: ObservableObject {
         // file over it. Installed, said loudly. Only once seen: during an
         // interrupted install the disk also holds gigabytes, and that one
         // must start again from the DVD (2026-10-28, second review).
-        if !found, configuration.installMarkerSeen == true, diskLooksInstalled(runtimeDir: runtimeDir) {
+        // The stored value, not the copy this run started with, which the
+        // watch passes back every 20 s (2026-10-28, fourth audit).
+        let seenBefore = VMStore.shared?.configurations.first(where: { $0.id == configuration.id })?.installMarkerSeen
+            ?? configuration.installMarkerSeen
+        if !found, seenBefore == true, diskLooksInstalled(runtimeDir: runtimeDir) {
             avmLog("checkInstallCompleteMarker: NO marker, but it was seen before and the disk has data — treating as installed; the install media is NOT attached")
             appendConsole("AVM: the install marker is missing from the UNATTEND volume, but \(configuration.guestOS.displayName) was installed before and the disk holds data, so it's treated as installed.\n")
             return true
@@ -906,6 +931,16 @@ final class VMManager: ObservableObject {
             return
         }
 
+        // The installer itself first (2026-10-28, fourth audit): one moved,
+        // deleted or on a drive that isn't connected was reported as "not a
+        // valid disc image", and only after the screen readers downloaded.
+        guard fm.fileExists(atPath: iso) else {
+            let file = (iso as NSString).lastPathComponent
+            let message = "\(configuration.name) can't install: its installer, \(file), isn't where it was. Next: if it's on a drive, connect the drive; otherwise make a new virtual machine and choose the installer again."
+            Announcer.shared.announce(message, tone: .failure)
+            throw AVMError.qmpCommandFailed(message)
+        }
+
         if configuration.guestOS.isLinux {
             try await ensureUbuntuInstallMedia(configuration: configuration, sourceISO: iso, runtimeDir: runtimeDir)
             return
@@ -920,6 +955,9 @@ final class VMManager: ObservableObject {
             // Delivered ON the main actor by the pipeline's emit().
             self?.installProgress = progress.spoken
             self?.appendConsole("AVM: \(progress.visible)\n")
+            // Said (2026-10-28, fourth audit): only Speak Status read it, and
+            // a build of several minutes was silent from Start to "ready".
+            Announcer.shared.announce(progress.spoken, tone: .info)
         }
 
         // Screen readers first (2026-10-26), so Windows talks from its first
@@ -973,7 +1011,7 @@ final class VMManager: ObservableObject {
             Announcer.shared.announce("\(configuration.name) can't install Windows: AVM no longer has the password for your Windows account. Next: make a new virtual machine with the same installer.", tone: .failure)
             throw PipelineError.stageFailed(
                 stage: .buildAnswerImage,
-                reason: "AVM no longer has the password for the Windows account \(account.userName), which it forgets once the install media is built. Next: make a new virtual machine with the same installer."
+                reason: "AVM no longer has the password for the Windows account, which it forgets once the install media is built. Next: make a new virtual machine with the same installer."
             )
         }
         input.answers = answers
@@ -1037,6 +1075,7 @@ final class VMManager: ObservableObject {
         pipeline.onProgress = { [weak self] spoken, visible in
             self?.installProgress = spoken
             self?.appendConsole("AVM: \(visible)\n")
+            Announcer.shared.announce(spoken, tone: .info)
         }
         do {
             try await pipeline.run(UbuntuInstallPipeline.Input(
@@ -1080,6 +1119,9 @@ final class VMManager: ObservableObject {
         if let handler = installWarningHandler {
             return await handler(reason)
         }
+        // Said, not only written to a console nobody reads (2026-10-28,
+        // fourth audit): no view sets a handler.
+        Announcer.shared.announce(reason, tone: .info)
         appendConsole("AVM: WARNING — \(reason) Proceeding.\n")
         avmLog("handleInstallWarning: no UI handler set; proceeding past: \(reason)")
         return true
@@ -1341,8 +1383,11 @@ final class VMManager: ObservableObject {
             Task { [weak self] in await self?.keepRemoteDesktopReady(configuration: configuration) }
         }
         if let keyboardID = configuration.windowsKeyboardID, !WindowsKeyboard.disabledForTests {
-            WindowsKeyboard.shared.appleISO = configuration.windowsKeyboardAppleISO == true
-            WindowsKeyboard.shared.start(keyboardID: keyboardID, name: configuration.windowsKeyboardName, target: self)
+            // Its ISO setting only once it's this machine's (2026-10-28,
+            // fourth audit): set first, a second machine's replaced the
+            // first's while the keyboard stayed in the first.
+            WindowsKeyboard.shared.start(keyboardID: keyboardID, name: configuration.windowsKeyboardName, target: self,
+                                         appleISO: configuration.windowsKeyboardAppleISO == true)
         }
 
         startDiskWatch(configuration: configuration, runtimeDir: runtimeDir, installed: installComplete)
@@ -1497,6 +1542,7 @@ final class VMManager: ObservableObject {
 
     func pauseVM() async throws {
         guard case .running = state else { return }
+        await WindowsKeyboard.shared.releaseHeldKeys(before: self)
         do {
             try await sendQMPCommand("stop", arguments: nil)
         } catch {
@@ -2645,6 +2691,12 @@ final class VMManager: ObservableObject {
             state = .stopped
             avmLog("handleQEMUProcessExit: clean exit — state -> stopped")
             appendConsole("AVM: QEMU exited normally.\n")
+            // A shut down from inside the machine is said (2026-10-28,
+            // fourth audit): Start, then Shut Down in Windows, closed the
+            // window with no word, while a macOS machine says it.
+            if wasRunning, !userStopped, case .notAnInstallEnd = ubuntuEnd, let name = activeConfiguration?.name {
+                Announcer.shared.announce("\(name) has shut down.", tone: .info)
+            }
             handleUbuntuInstallEnd(ubuntuEnd)
         } else if wasRunning {
             let msg = "QEMU exited with code \(exitCode). Details are in AVM's diagnostic log."
@@ -2839,6 +2891,14 @@ final class VMManager: ObservableObject {
     /// Setup's remaining steps (and rides along at this start).
     @discardableResult
     private func removeFinishedWindowsMedia(runtimeDir: URL) -> Bool {
+        // Nothing changes while a saved state waits (2026-10-28, fourth
+        // audit): it was saved with the DVD attached and can't load without
+        // it, and its Windows has the UNATTEND drive's FAT cached, so AVM
+        // doesn't edit that drive under it either.
+        if FileManager.default.fileExists(atPath: QEMUSavedState.hint(in: runtimeDir).path) {
+            avmLog("removeFinishedWindowsMedia: a saved state is waiting; keeping install-avm.iso and the UNATTEND drive as they are")
+            return false
+        }
         removeAnswerFile(runtimeDir: runtimeDir)
         let iso = runtimeDir.appendingPathComponent("install-avm.iso")
         guard let size = (try? FileManager.default.attributesOfItem(atPath: iso.path))?[.size] as? NSNumber else { return true }
@@ -2847,7 +2907,10 @@ final class VMManager: ObservableObject {
         // copied from the DVD after; stopped in between, the next Start
         // deleted the DVD and the steps silently skipped. A machine with no
         // report at all was installed by an AVM from before the report, and
-        // is finished (second review).
+        // is finished (second review); the marker's own command now writes
+        // "specialize-started" too, so a report this template began is
+        // never empty (fourth audit: stopped between the marker and the
+        // first report line, the empty report read as finished).
         let report = (mtools(["mtype", "-i", "IMG", "::AVMSTATUS.TXT"], runtimeDir: runtimeDir)?.output ?? "")
             + (mtools(["mtype", "-i", "IMG", "::AVMSTAT.OLD"], runtimeDir: runtimeDir)?.output ?? "")
         let reportLines = report.split(whereSeparator: \.isNewline).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -2920,7 +2983,10 @@ final class VMManager: ObservableObject {
         // with no specialize lines, which never parsed, so NVDA's result was
         // never said and no restore point was ever made.
         let signedIn = read.output.contains("first-sign-in-done")
-        if signedIn {
+        // Not under a saved state (2026-10-28, fourth audit): its Windows
+        // has this drive's FAT cached; the next plain Start retires it.
+        let savedStateWaits = FileManager.default.fileExists(atPath: QEMUSavedState.hint(in: runtimeDir).path)
+        if signedIn, !savedStateWaits {
             _ = mtools(["mdel", "-i", "IMG", "::AVMSTAT.OLD"], runtimeDir: runtimeDir)
             _ = mtools(["mren", "-i", "IMG", "::AVMSTATUS.TXT", "::AVMSTAT.OLD"], runtimeDir: runtimeDir)
         }
@@ -3063,6 +3129,8 @@ final class VMManager: ObservableObject {
     /// Windows when no VM has started, as before Ubuntu support.
     /// This machine's name, for announcements (2026-10-27).
     var machineName: String { activeConfiguration?.name ?? GuestOS.windows.displayName }
+    /// The running machine's id, for code outside that follows it.
+    var machineID: UUID? { activeConfiguration?.id }
 
     static var currentGuestName: String {
         shared?.activeConfiguration?.name ?? GuestOS.windows.displayName
@@ -3711,7 +3779,18 @@ final class VMManager: ObservableObject {
         BluetoothDevices.shared.machineStopped(self)
         if let id = activeConfiguration?.id { RemoteDesktopAdvertiser.shared.unpublish(id) }
         if WindowsKeyboard.shared.target === self || WindowsKeyboard.shared.target == nil {
+            let keyboardID = WindowsKeyboard.shared.keyboardID
             WindowsKeyboard.shared.stop()
+            // To another running machine set up for the same keyboard
+            // (2026-10-28, fourth audit): it went back to the Mac, so keys
+            // meant for that machine landed in whatever Mac app was in front.
+            if let keyboardID,
+               let next = MachineSessions.shared.sessions.values.first(where: {
+                   $0.manager !== self && $0.vmState == .running && $0.configuration.windowsKeyboardID == keyboardID }) {
+                WindowsKeyboard.shared.start(keyboardID: keyboardID, name: next.configuration.windowsKeyboardName,
+                                             target: next.manager, appleISO: next.configuration.windowsKeyboardAppleISO == true)
+                Announcer.shared.announce("\(next.configuration.windowsKeyboardName ?? "The keyboard for Windows") types in \(next.configuration.name) now.", tone: .info)
+            }
         }
         qmpConnected = false
         qmpReadSource?.cancel()
@@ -3882,7 +3961,7 @@ extension VMManager {
         // switch's "firstBoot" store flipped activeConfiguration to virtio
         // while QEMU still ran on NVMe, and Save was offered, gave the USB
         // devices back, then failed.
-        guard state == .running || state == .paused,
+        guard state == .running || state == .paused, savingTask == nil,
               let configuration = activeConfiguration,
               startedOnVirtioDisk, configuration.usesVirtioDisk, installCompleteAtStart,
               !(configuration.uses3D && Self.supports3D) else { return false }
@@ -3949,6 +4028,19 @@ extension VMManager {
         guard canSaveState, let configuration = activeConfiguration, let runtimeDir = vmRuntimeDir else {
             throw AVMError.qmpCommandFailed("this machine can't take a restore point while it runs")
         }
+        // Devices passed through go back to the Mac first, as for Save
+        // (2026-10-28, fourth audit): they were added after the start, so
+        // their sections in the point had no device to load into in a
+        // fresh QEMU, and the point could never carry on.
+        let usbDevices = USBRedirectController.shared.devices(for: self)
+        if !usbDevices.isEmpty || BluetoothDevices.shared.hasDevices(in: self) {
+            Announcer.shared.announce("Devices sent to \(configuration.name) go back to the Mac for the restore point. Send them again afterwards.", tone: .info)
+            for device in usbDevices {
+                await USBRedirectController.shared.detach(device)
+            }
+            await BluetoothDevices.shared.detachAll(from: self)
+        }
+        await WindowsKeyboard.shared.releaseHeldKeys(before: self)
         let tag = RestorePoints.newTag()
         try RestorePoints.writeFolder(vmDirectory: runtimeDir, tag: tag, label: label, secureBoot: configuration.usesSecureBoot, diskBus: configuration.diskBus ?? "nvme")
         do {
@@ -3967,8 +4059,18 @@ extension VMManager {
     /// from there. Returns true if it was saved. Spoken either way.
     @discardableResult
     func saveStateAndStop() async -> Bool {
-        guard canSaveState, let configuration = activeConfiguration, let runtimeDir = vmRuntimeDir else { return false }
-        let guest = configuration.guestOS.displayName
+        if let saving = savingTask { return await saving.value }
+        guard canSaveState else { return false }
+        let task = Task { await self.performSaveStateAndStop() }
+        savingTask = task
+        let saved = await task.value
+        savingTask = nil
+        return saved
+    }
+
+    private func performSaveStateAndStop() async -> Bool {
+        guard let configuration = activeConfiguration, let runtimeDir = vmRuntimeDir else { return false }
+        let guest = configuration.name
         // A USB device passed through was added after the start; a fresh
         // QEMU wouldn't have it to load into, so it goes back to the Mac.
         for device in USBRedirectController.shared.devices(for: self) {
@@ -3976,6 +4078,7 @@ extension VMManager {
         }
         // So does a Bluetooth device (2026-10-27).
         await BluetoothDevices.shared.detachAll(from: self)
+        await WindowsKeyboard.shared.releaseHeldKeys(before: self)
         Announcer.shared.announce("Saving \(guest).", tone: .info)
         avmLog("saveStateAndStop: saving \(configuration.name)")
         let started = Date()
@@ -4020,7 +4123,9 @@ extension VMManager {
     /// Spoken. On a failed load the machine starts from its disk instead,
     /// as after a power cut, and that is said.
     func resumeSavedState(_ plan: QEMUSavedState.Plan, configuration: VMConfiguration, runtimeDir: URL) async {
-        let guest = configuration.guestOS.displayName
+        // The machine's name, not its system's (2026-10-28, fourth audit):
+        // with two Windows machines, "Windows couldn't be saved" named neither.
+        let guest = configuration.name
         let fm = FileManager.default
         let marker = runtimeDir.appendingPathComponent(QEMUSavedState.loadedMarker)
         Announcer.shared.announce(plan.isSavedState ? "Resuming \(guest) where you left it." : "Resuming \(guest) at its restore point.", tone: .info)
@@ -4039,6 +4144,21 @@ extension VMManager {
             avmLog("resumeSavedState: carried on in \(String(format: "%.1f", Date().timeIntervalSince(started))) s")
             Announcer.shared.announce("\(guest) is running again.", tone: .success)
         } catch {
+            // Cut short before the guest ran (2026-10-28, fourth audit):
+            // Quit Now or a Force Stop while the state was loading. Nothing
+            // ran, so the saved state and its note are still good: they stay
+            // for the next Start, and nothing is said about starting fresh,
+            // which this machine isn't. A QEMU that died (.error) keeps the
+            // marker, so a saved state that crashes QEMU can't do it at
+            // every Start; its crash was said already.
+            if state != .starting {
+                avmLog("resumeSavedState: cut short (\(state)) before \(configuration.name) ran: \(error.localizedDescription)")
+                if plan.isSavedState, state == .stopped || state == .stopping {
+                    try? fm.removeItem(at: marker)
+                    avmLog("resumeSavedState: the saved state is kept for the next Start")
+                }
+                return
+            }
             avmLog("resumeSavedState: load failed: \(error.localizedDescription); starting from the disk")
             _ = try? await sendQMPCommand("system_reset", arguments: nil)
             _ = try? await sendQMPCommand("cont", arguments: nil)
@@ -4114,10 +4234,11 @@ extension VMManager {
     }
 
     private func storeDiskSwitch(_ configuration: VMConfiguration, bus: String?, step: String?) {
-        var updated = VMStore.shared?.configurations.first { $0.id == configuration.id } ?? configuration
-        updated.diskBus = bus
-        updated.diskBusSwitch = step
-        VMStore.shared?.update(updated)
+        if var updated = VMStore.shared?.configurations.first(where: { $0.id == configuration.id }) {
+            updated.diskBus = bus
+            updated.diskBusSwitch = step
+            VMStore.shared?.save(updated)
+        }
         if activeConfiguration?.id == configuration.id {
             activeConfiguration?.diskBus = bus
             activeConfiguration?.diskBusSwitch = step
@@ -4157,6 +4278,19 @@ extension VMManager {
     /// Runs a program in the guest, waiting at most `limit`; its output.
     /// `input` goes to its standard input (a password for chpasswd, never
     /// on a command line, 2026-10-28).
+    /// A Mac file name as a Windows one: the characters Windows forbids
+    /// become "-", no trailing dots or spaces, no device names (CON, NUL…).
+    nonisolated static func windowsFileName(_ name: String) -> String {
+        let forbidden = CharacterSet(charactersIn: "\\/:*?\"<>|").union(.controlCharacters)
+        var out = String(String.UnicodeScalarView(name.unicodeScalars.map { forbidden.contains($0) ? "-" : $0 }))
+        while let last = out.last, last == "." || last == " " { out.removeLast() }
+        if out.isEmpty { out = "file" }
+        let stem = (out as NSString).deletingPathExtension.uppercased()
+        let devices = Set(["CON", "PRN", "AUX", "NUL"] + (1...9).flatMap { ["COM\($0)", "LPT\($0)"] })
+        if devices.contains(stem) { out = "_" + out }
+        return out
+    }
+
     func agentRun(_ program: String, _ args: [String], limit: Duration = .seconds(300), input: String? = nil) async throws -> String {
         var arguments: [String: Any] = ["path": program, "arg": args, "capture-output": true]
         if let input { arguments["input-data"] = Data(input.utf8).base64EncodedString() }
@@ -4303,9 +4437,14 @@ extension VMManager {
                 _ = try await agentRun("/bin/sh", ["-c", "[ -d \"$1\" ] || { mkdir -p \"$1\" && chown \"$2:$2\" \"$1\"; }", "sh", folder, home[0].description])
             }
             let separator = windows ? "\\" : "/"
+            // A name Windows can hold (2026-10-28, fourth audit): a Mac name
+            // with ":" (Finder shows it as "/") was written as a hidden
+            // stream of an empty file, and one with "\\" could climb out of
+            // Downloads, written as SYSTEM.
+            let guestName = windows ? Self.windowsFileName(name) : name
             // Never over a file already there: "name 2.ext" and so on.
-            var target = folder + separator + name
-            let stem = (name as NSString).deletingPathExtension, ext = (name as NSString).pathExtension
+            var target = folder + separator + guestName
+            let stem = (guestName as NSString).deletingPathExtension, ext = (guestName as NSString).pathExtension
             var n = 2
             while try await guestFileExists(target, windows: windows) {
                 target = folder + separator + stem + " \(n)" + (ext.isEmpty ? "" : ".\(ext)")
@@ -4437,8 +4576,14 @@ extension VMManager {
                 let out: String
                 if configuration.guestOS == .windows {
                     let url = printer.uri.replacingOccurrences(of: "ipp://", with: "http://")
+                    // The name and address on standard input, never inside
+                    // the script (2026-10-28, fourth audit): PowerShell
+                    // takes ’ ‘ ‚ ‛ as quotes too, so a Bonjour name like
+                    // "Amena’s MacBook Pro" broke out of the string AVM runs
+                    // as SYSTEM. One per line; a line break can't be in either.
                     let script = """
-                    $n = '\(shown.replacingOccurrences(of: "'", with: "''"))'; $u = '\(url.replacingOccurrences(of: "'", with: "''"))'
+                    $in = New-Object IO.StreamReader([Console]::OpenStandardInput(), (New-Object Text.UTF8Encoding $false))
+                    $n = $in.ReadLine(); $u = $in.ReadLine()
                     $p = Get-Printer -Name $n -ErrorAction SilentlyContinue
                     # The address AVM gave it is kept in its comment: Windows
                     # names the port itself (WSD-...), so that can't say.
@@ -4448,7 +4593,9 @@ extension VMManager {
                       Set-Printer -Name $n -Comment $u; 'added'
                     }
                     """
-                    out = try await agentRun("powershell.exe", ["-NoProfile", "-Command", script], limit: .seconds(180))
+                    let oneLine: (String) -> String = { $0.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ") }
+                    out = try await agentRun("powershell.exe", ["-NoProfile", "-Command", script], limit: .seconds(180),
+                                             input: "\(oneLine(shown))\r\n\(oneLine(url))\r\n")
                 } else {
                     let queue = "AVM-" + printer.queue.filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
                     let script = """

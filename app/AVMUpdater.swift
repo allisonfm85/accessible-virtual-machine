@@ -90,12 +90,18 @@ final class UpdateAnnouncer: NSObject, SPUUpdaterDelegate {
     /// The helper exits before the new AVM starts (2026-10-28, code
     /// review): it used to keep running for its idle grace period, and
     /// the new AVM talked to it.
+    ///
+    /// Only once AVM is really quitting (2026-10-28, fourth audit): Sparkle
+    /// calls this before it asks AVM to quit, and stopping the helper here
+    /// took every USB, Bluetooth and Windows-keyboard device out of the
+    /// running machines before the question "Windows is still running.
+    /// Quit AVM?" was even asked; Cancel left them without their devices.
+    /// applicationWillTerminate asks the helper to exit, after the
+    /// machines have been shut down or saved.
+    nonisolated(unsafe) static var relaunchingForUpdate = false
     nonisolated func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
-        // On the main thread (Sparkle's), so no main-actor work here
-        // (2026-10-28, second review: a MainActor task was waited for from
-        // the main thread, and could never run).
-        NSLog("AVM: Updates — relaunching; asking the USB helper to exit first.")
-        USBHelperClient.askHelperToExitNow(wait: 3)
+        NSLog("AVM: Updates — relaunching; the USB helper exits when AVM quits.")
+        Self.relaunchingForUpdate = true
     }
 
     nonisolated func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
