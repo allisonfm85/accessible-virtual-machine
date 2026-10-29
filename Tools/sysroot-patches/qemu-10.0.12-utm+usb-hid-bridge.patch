@@ -28,7 +28,7 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
  system_ss.add(when: 'CONFIG_USB_STORAGE_BOT', if_true: files('dev-storage-bot.c'))
 --- /dev/null
 +++ b/hw/usb/dev-hid-bridge.c
-@@ -0,0 +1,534 @@
+@@ -0,0 +1,550 @@
 +/*
 + * USB HID bridge: a USB HID device whose reports come from outside QEMU
 + * (AVM, 2026-10-27)
@@ -483,7 +483,23 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +        .confs              = &s->conf,
 +    };
 +    s->strings[1] = "AVM";
-+    s->strings[2] = s->product ? s->product : "Bluetooth device";
++    /* The name as a USB string descriptor can carry it (fifth audit):
++     * ASCII, one "?" per other character, at most 126 characters. */
++    if (s->product) {
++        char *w = s->product;
++        const unsigned char *r = (const unsigned char *)s->product;
++        for (; *r; r++) {
++            if (*r >= 0x80 && *r < 0xc0) {
++                continue;   /* a continuation byte of the character before */
++            }
++            *w++ = (*r < 0x20 || *r >= 0x80) ? '?' : (char)*r;
++        }
++        *w = 0;
++        if (strlen(s->product) > 126) {
++            s->product[126] = 0;
++        }
++    }
++    s->strings[2] = s->product && s->product[0] ? s->product : "Bluetooth device";
 +    s->strings[3] = "1";
 +    s->desc = (USBDesc) {
 +        .id = {
