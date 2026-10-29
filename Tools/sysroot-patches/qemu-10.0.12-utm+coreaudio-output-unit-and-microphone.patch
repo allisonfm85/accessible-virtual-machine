@@ -80,7 +80,7 @@ CoreAudio in the backend's frameworks.
 +    bool refitWarned;
 +    int64_t refitAtMs;
  } coreaudioVoiceOut;
- 
+-
 -static const AudioObjectPropertyAddress voice_addr = {
 -    kAudioHardwarePropertyDefaultOutputDevice,
 -    kAudioObjectPropertyScopeGlobal,
@@ -125,7 +125,7 @@ CoreAudio in the backend's frameworks.
 -        kAudioDevicePropertyScopeOutput,
 -        kAudioObjectPropertyElementMain
 -    };
--
+ 
 -    return AudioObjectGetPropertyData(id,
 -                                      &addr,
 -                                      0,
@@ -198,7 +198,7 @@ CoreAudio in the backend's frameworks.
      va_end (ap);
  
      coreaudio_logstatus (status);
-@@ -283,13 +203,10 @@
+@@ -283,283 +203,190 @@
          coreaudio_buf_unlock(core, "coreaudio_" #name);             \
          return ret;                                             \
      }
@@ -207,12 +207,12 @@ CoreAudio in the backend's frameworks.
                         (hw, size))
  COREAUDIO_WRAPPER_FUNC(put_buffer_out, size_t,
                         (HWVoiceOut *hw, void *buf, size_t size),
--                       (hw, buf, size))
--COREAUDIO_WRAPPER_FUNC(write, size_t, (HWVoiceOut *hw, void *buf, size_t size),
                         (hw, buf, size))
+-COREAUDIO_WRAPPER_FUNC(write, size_t, (HWVoiceOut *hw, void *buf, size_t size),
+-                       (hw, buf, size))
  #undef COREAUDIO_WRAPPER_FUNC
  
-@@ -297,269 +214,179 @@
+ /*
   * callback to feed audiooutput buffer. called without BQL.
   * allowed to lock "buf_mutex", but disallowed to have any other locks.
   */
@@ -642,13 +642,13 @@ CoreAudio in the backend's frameworks.
 +    if (!component) {
 +        dolog("Could not initialize playback - no default output unit\n");
 +        goto fail;
-     }
++    }
 +    status = AudioComponentInstanceNew(component, &core->unit);
 +    if (status != noErr) {
 +        coreaudio_playback_logerr(status, "Could not open the default output\n");
 +        core->unit = NULL;
 +        goto fail;
-+    }
+     }
  
 -    if (init_out_device(core)) {
 -        status = AudioObjectRemovePropertyListener(kAudioObjectSystemObject,
@@ -761,7 +761,7 @@ CoreAudio in the backend's frameworks.
      /* destroy mutex */
      err = pthread_mutex_destroy(&core->buf_mutex);
      if (err) {
-@@ -642,9 +540,373 @@
+@@ -642,9 +540,381 @@
      coreaudioVoiceOut *core = (coreaudioVoiceOut *) hw;
  
      core->enabled = enable;
@@ -959,7 +959,15 @@ CoreAudio in the backend's frameworks.
 +            goto fail;
 +        }
 +    }
++    /*
++     * In the microphone's own frames (AVM, 2026-10-29): asked for in the
++     * voice's, a 16 kHz headset's callback converted to the whole ring at
++     * 48 kHz, and the rest of each one was dropped.
++     */
 +    frames = core->frameSizeSetting;
++    if (rate > 0 && hw->info.freq > 0) {
++        frames = MAX(1, (UInt32)(core->frameSizeSetting * rate / hw->info.freq));
++    }
 +    AudioUnitSetProperty(core->unit, kAudioDevicePropertyBufferFrameSize, kAudioUnitScope_Global, 0, &frames, sizeof(frames));
 +    if (AudioUnitSetProperty(core->unit, kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global, 0, &callback, sizeof(callback)) != noErr) {
 +        dolog("Could not open the microphone - no input callback\n");
@@ -1136,7 +1144,7 @@ CoreAudio in the backend's frameworks.
  static void *coreaudio_audio_init(Audiodev *dev, Error **errp)
  {
      return dev;
-@@ -657,15 +919,27 @@
+@@ -657,15 +927,27 @@
  static struct audio_pcm_ops coreaudio_pcm_ops = {
      .init_out = coreaudio_init_out,
      .fini_out = coreaudio_fini_out,
@@ -1168,7 +1176,7 @@ CoreAudio in the backend's frameworks.
  };
  
  static struct audio_driver coreaudio_audio_driver = {
-@@ -675,9 +949,9 @@
+@@ -675,9 +957,9 @@
      .fini           = coreaudio_audio_fini,
      .pcm_ops        = &coreaudio_pcm_ops,
      .max_voices_out = 1,
