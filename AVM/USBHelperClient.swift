@@ -74,6 +74,35 @@ nonisolated final class USBHelperCallbackReceiver: NSObject, AVMUSBHelperClientP
             USBHelperClient.shared.handleStateChanged(device, state: state, detail: detail)
         }
     }
+
+    // The keyboard for Windows (2026-10-26). The main queue, not Tasks:
+    // it keeps key presses in the exact order they were typed.
+    func keyboardKey(usage: Int, pressed: Bool) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { WindowsKeyboard.shared.key(usage: usage, pressed: pressed) }
+        }
+    }
+
+    func keyboardState(_ keyboardID: String, held: Bool, detail: String?) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { WindowsKeyboard.shared.stateChanged(keyboardID, held: held, detail: detail) }
+        }
+    }
+
+    func bluetoothState(_ id: String, held: Bool, detail: String?) {
+        Task { @MainActor in BluetoothDevices.shared.helperLetGo(id, detail: detail) }
+    }
+}
+
+/// A Bluetooth HID device the helper can see (BluetoothHold.swift).
+struct BluetoothDeviceInfo: Identifiable, Hashable, Sendable {
+    let id: String
+    let name: String
+    /// braille, controller, keyboard, pointer, remote or other.
+    let kind: String
+    let vendor: Int
+    let product: Int
+    let descriptor: Data
 }
 
 // MARK: - Errors
@@ -277,9 +306,16 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// Standard alert. VoiceOver reads it; the default button goes
     /// straight to the right pane. The approval watch starts either
     /// way, so approving later still gets the spoken confirmation.
+    private var approvalDialogShowing = false
     private func presentApprovalDialog() {
         log("registration requires approval in Login Items; presenting dialog")
         startApprovalWatch()
+        // One at a time (2026-10-28, fourth audit): requests arriving
+        // together (a keyboard for Windows and a plug-in at a start) stacked
+        // two or three identical alerts, each read and dismissed in turn.
+        guard !approvalDialogShowing else { return }
+        approvalDialogShowing = true
+        defer { approvalDialogShowing = false }
         let alert = NSAlert()
         alert.messageText = "AVM needs permission to run its USB helper"
         alert.informativeText = "macOS requires your approval before AVM can pass USB devices to a virtual machine. In System Settings, under General, then Login Items and Extensions, allow AVM to run in the background. AVM will announce when the helper is approved."
@@ -293,6 +329,161 @@ final class USBHelperClient: NSObject, ObservableObject {
         } else {
             log("approval dialog: Not Now")
         }
+    }
+
+    /// Waits, up to `limit`, for the helper to be approved, checking every
+    /// 2 seconds while `keepWaiting` is true. True once it's enabled.
+    ///
+    /// For a send that asked for the approval (2026-10-27, a tester's
+    /// keyboard): it used to fail and be forgotten, so after "USB helper
+    /// approved, continuing" nothing continued and the keyboard stayed on
+    /// the Mac until it was plugged in again. The send now waits here and
+    /// goes ahead once the approval lands.
+    func waitForApproval(limit: TimeInterval = 300, while keepWaiting: () -> Bool) async -> Bool {
+        let started = Date()
+        while Date().timeIntervalSince(started) < limit, keepWaiting() {
+            if refreshStatus() == .enabled { return true }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        return refreshStatus() == .enabled
+    }
+
+    // MARK: Bluetooth devices (2026-10-27)
+
+    func listBluetoothDevices() async -> Result<[BluetoothDeviceInfo], USBHelperError> {
+        guard ensureRegistered() else { return .failure(.notEnabled(status)) }
+        await ensureCurrentHelper()
+        let c = connect()
+        let result: Result<[BluetoothDeviceInfo], USBHelperError> = await withCheckedContinuation { cont in
+            let proxy = c.remoteObjectProxyWithErrorHandler { error in
+                cont.resume(returning: .failure(USBHelperError.fromXPC(error)))
+            } as? AVMUSBHelperProtocol
+            guard let proxy else { cont.resume(returning: .failure(.xpc("could not build the helper proxy"))); return }
+            proxy.listBluetoothDevices { list in
+                cont.resume(returning: .success(list.compactMap { entry in
+                    guard let id = entry["id"] as? String, let descriptor = entry["descriptor"] as? Data else { return nil }
+                    return BluetoothDeviceInfo(id: id, name: entry["name"] as? String ?? "Bluetooth device",
+                                               kind: entry["kind"] as? String ?? "other",
+                                               vendor: (entry["vendor"] as? NSNumber)?.intValue ?? 0,
+                                               product: (entry["product"] as? NSNumber)?.intValue ?? 0,
+                                               descriptor: descriptor)
+                }))
+            }
+        }
+        disconnectIfIdle()
+        return result
+    }
+
+    func holdBluetooth(_ id: String, socketPath: String, peerPID: Int) async -> Result<Void, USBHelperError> {
+        guard ensureRegistered() else { return .failure(.notEnabled(status)) }
+        await ensureCurrentHelper()
+        bluetoothHeld.insert(id)
+        let c = connect()
+        let result: Result<Void, USBHelperError> = await withCheckedContinuation { cont in
+            let proxy = c.remoteObjectProxyWithErrorHandler { error in
+                cont.resume(returning: .failure(USBHelperError.fromXPC(error)))
+            } as? AVMUSBHelperProtocol
+            guard let proxy else { cont.resume(returning: .failure(.xpc("could not build the helper proxy"))); return }
+            proxy.holdBluetoothDevice(id, streamSocketPath: socketPath, peerPID: peerPID) { ok, reason in
+                cont.resume(returning: ok ? .success(()) : .failure(.helper(step: "taking the Bluetooth device", detail: reason ?? "")))
+            }
+        }
+        if case .failure = result {
+            bluetoothHeld.remove(id)
+            disconnectIfIdle()
+        }
+        return result
+    }
+
+    func releaseBluetooth(_ id: String) async {
+        guard bluetoothHeld.contains(id), let c = connection else { bluetoothHeld.remove(id); return }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let proxy = c.remoteObjectProxyWithErrorHandler { _ in cont.resume() } as? AVMUSBHelperProtocol
+            guard let proxy else { cont.resume(); return }
+            proxy.releaseBluetoothDevice(id) { cont.resume() }
+        }
+        bluetoothHeld.remove(id)
+        disconnectIfIdle()
+    }
+
+    /// The helper let a device go by itself (it disconnected, or QEMU closed).
+    func forgetBluetooth(_ id: String) {
+        bluetoothHeld.remove(id)
+        disconnectIfIdle()
+    }
+
+    /// Before Sparkle relaunches AVM (2026-10-28): asks the helper to exit
+    /// and waits for its answer, at most `wait`. Sparkle calls its delegate
+    /// on the main thread, so this uses a connection of its own and never
+    /// the main actor (a MainActor task can't run while the main thread
+    /// waits).
+    nonisolated static func askHelperToExitNow(wait: TimeInterval = 3) {
+        let connection = NSXPCConnection(machServiceName: AVMUSBHelperNames.machServiceName, options: .privileged)
+        connection.remoteObjectInterface = AVMUSBHelperInterfaces.helper()
+        connection.resume()
+        let done = DispatchSemaphore(value: 0)
+        let proxy = connection.remoteObjectProxyWithErrorHandler { _ in done.signal() } as? AVMUSBHelperProtocol
+        if let proxy {
+            proxy.restart { done.signal() }
+            _ = done.wait(timeout: .now() + wait)
+        }
+        connection.invalidate()
+    }
+
+    /// A helper from before an update (2026-10-28, code review): it keeps
+    /// running for its idle grace period, and the new AVM would talk to
+    /// it. Once per run, before a device is taken: a helper answering with
+    /// another version is asked to exit, so launchd starts this build's.
+    /// One check per run, which every caller waits for (2026-10-28, fourth
+    /// audit): set before its await, the flag let a second request go to
+    /// the stale helper, which the first then restarted under it.
+    private var helperCheck: Task<Void, Never>?
+    func ensureCurrentHelper() async {
+        if let helperCheck { return await helperCheck.value }
+        let check = Task { await self.checkHelperVersion() }
+        helperCheck = check
+        await check.value
+    }
+
+    private func checkHelperVersion() async {
+        // The helper answers "service-name version" (2026-10-28, second
+        // review: compared whole, it never matched, and every run restarted
+        // the helper at its first device). The connection stays up: the
+        // hold that follows uses it, and a disconnect here fired the
+        // "helper lost" handlers into that hold.
+        guard case .success(let answer) = await fetchHelperVersion(keepConnection: true) else { return }
+        let version = answer.split(separator: " ").last.map(String.init) ?? answer
+        guard version != AVMUSBHelperNames.helperBuildVersion else { return }
+        log("the running helper is \(version), this AVM expects \(AVMUSBHelperNames.helperBuildVersion); restarting it")
+        _ = await restartHelper()
+    }
+
+    /// Restart USB Helper (2026-10-27): asks the helper to exit, then
+    /// calls it again, which makes launchd start a fresh one, and returns
+    /// that one's version. The caller returns devices to the Mac first.
+    func restartHelper() async -> Result<String, USBHelperError> {
+        guard ensureRegistered() else { return .failure(.notEnabled(status)) }
+        log("restart: asking the helper to exit")
+        let c = connect()
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let proxy = c.remoteObjectProxyWithErrorHandler { _ in cont.resume() } as? AVMUSBHelperProtocol
+            guard let proxy else { cont.resume(); return }
+            proxy.restart { cont.resume() }
+        }
+        try? await Task.sleep(for: .seconds(2))
+        let fresh = connect()
+        let version: String? = await withCheckedContinuation { cont in
+            let proxy = fresh.remoteObjectProxyWithErrorHandler { _ in cont.resume(returning: nil) } as? AVMUSBHelperProtocol
+            guard let proxy else { cont.resume(returning: nil); return }
+            proxy.helperVersion { cont.resume(returning: $0) }
+        }
+        disconnectIfIdle()
+        guard let version else {
+            log("restart: the helper didn't answer afterwards")
+            return .failure(.xpc("the helper didn't start again"))
+        }
+        log("restart: a fresh helper answered (\(version))")
+        return .success(version)
     }
 
     /// Polls status until the approval lands, then says so (1e:
@@ -323,15 +514,27 @@ final class USBHelperClient: NSObject, ObservableObject {
         c.remoteObjectInterface = AVMUSBHelperInterfaces.helper()
         c.exportedInterface = AVMUSBHelperInterfaces.client()
         c.exportedObject = receiver
-        c.invalidationHandler = { [weak self] in
+        c.invalidationHandler = { [weak self, weak c] in
             Task { @MainActor in
-                self?.log("connection invalidated")
-                self?.connection = nil
+                // Only for the connection it belongs to (2026-10-28, second
+                // review): an old one's late handler tore down a new hold.
+                guard let self, let c, self.connection === c else { return }
+                self.log("connection invalidated")
+                self.connection = nil
+                self.keyboardHelperLost()
+                self.devicesHelperLost()
+                self.bluetoothHeld.removeAll()
+                BluetoothDevices.shared.helperLost()
             }
         }
-        c.interruptionHandler = { [weak self] in
+        c.interruptionHandler = { [weak self, weak c] in
             Task { @MainActor in
-                self?.log("connection interrupted (helper exited or crashed)")
+                guard let self, let c, self.connection === c else { return }
+                self.log("connection interrupted (helper exited or crashed)")
+                self.keyboardHelperLost()
+                self.devicesHelperLost()
+                self.bluetoothHeld.removeAll()
+                BluetoothDevices.shared.helperLost()
             }
         }
         c.resume()
@@ -352,8 +555,21 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// The lifetime rule: no attached or pending devices, no
     /// connection. Called after every one-off call and after every
     /// state event.
+    /// A keyboard for Windows is wanted or held (WindowsKeyboard.swift);
+    /// the connection is what keeps it, so it stays open meanwhile.
+    var keyboardActive = false
+    /// Bumped by every holdKeyboard (2026-10-26, keyboard audit): a release
+    /// still waiting on the helper's answer when a new hold starts (a quick
+    /// SPICE reconnect) must not then mark the keyboard idle and drop the
+    /// connection, which would make the helper let go of the new hold.
+    private var keyboardGeneration = 0
+
+    /// Bluetooth devices held for a machine (BluetoothDevices.swift): the
+    /// helper lets them go when this connection ends, so it stays open.
+    private var bluetoothHeld: Set<String> = []
+
     private func disconnectIfIdle() {
-        if attachedDevices.isEmpty && pendingDevices.isEmpty {
+        if attachedDevices.isEmpty && pendingDevices.isEmpty && !keyboardActive && bluetoothHeld.isEmpty {
             disconnect()
         }
     }
@@ -362,7 +578,7 @@ final class USBHelperClient: NSObject, ObservableObject {
 
     /// Ask the helper who it is. The first end-to-end proof: register,
     /// launchd start, code-signing gate, reply.
-    func fetchHelperVersion(retrying: Bool = false) async -> Result<String, USBHelperError> {
+    func fetchHelperVersion(retrying: Bool = false, keepConnection: Bool = false) async -> Result<String, USBHelperError> {
         guard ensureRegistered() else {
             return .failure(.notEnabled(status))
         }
@@ -379,7 +595,7 @@ final class USBHelperClient: NSObject, ObservableObject {
                 cont.resume(returning: .success(version))
             }
         }
-        disconnectIfIdle()
+        if !keepConnection { disconnectIfIdle() }
         if case .failure(.helperUnavailable) = result, retrying == false, recoverLostRegistration() {
             return await fetchHelperVersion(retrying: true)
         }
@@ -393,12 +609,93 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// A success reply means the claim started, not that it finished:
     /// the outcome arrives as a stateChanged event and is spoken there.
     /// A failure reply is spoken here, once, with its step.
+    // MARK: Keyboard for Windows (2026-10-26)
+
+    /// The keyboards connected now, as the helper sees them.
+    /// `registering`: set up the helper if it isn't, as using a device does.
+    /// Settings lists keyboards when it opens without registering
+    /// (2026-10-28, fourth audit): opening a Windows machine's Settings
+    /// registered the root helper and showed its approval alert, every
+    /// visit, for users who never asked for USB.
+    func listKeyboards(registering: Bool = true) async -> Result<[NSDictionary], USBHelperError> {
+        if registering {
+            guard ensureRegistered() else { return .failure(.notEnabled(status)) }
+        } else if refreshStatus() != .enabled {
+            return .failure(.notEnabled(status))
+        }
+        let c = connect()
+        let result: Result<[NSDictionary], USBHelperError> = await withCheckedContinuation { cont in
+            let proxy = c.remoteObjectProxyWithErrorHandler { error in
+                cont.resume(returning: .failure(USBHelperError.fromXPC(error)))
+            } as? AVMUSBHelperProtocol
+            guard let proxy else { cont.resume(returning: .failure(.xpc("could not build the helper proxy"))); return }
+            proxy.listKeyboards { cont.resume(returning: .success($0)) }
+        }
+        disconnectIfIdle()
+        return result
+    }
+
+    func holdKeyboard(_ keyboardID: String) async -> Result<Void, USBHelperError> {
+        guard ensureRegistered() else { return .failure(.notEnabled(status)) }
+        await ensureCurrentHelper()
+        keyboardActive = true
+        keyboardGeneration += 1
+        let c = connect()
+        let result: Result<Void, USBHelperError> = await withCheckedContinuation { cont in
+            let proxy = c.remoteObjectProxyWithErrorHandler { error in
+                cont.resume(returning: .failure(USBHelperError.fromXPC(error)))
+            } as? AVMUSBHelperProtocol
+            guard let proxy else { cont.resume(returning: .failure(.xpc("could not build the helper proxy"))); return }
+            proxy.holdKeyboard(keyboardID) { ok, reason in
+                cont.resume(returning: ok ? .success(()) : .failure(.helper(step: "holding the keyboard", detail: reason ?? "")))
+            }
+        }
+        if case .failure = result {
+            keyboardActive = false
+            disconnectIfIdle()
+        }
+        return result
+    }
+
+    /// The helper went away while it held the keyboard for Windows: the
+    /// kernel has given the keyboard back to macOS, so Windows must let go
+    /// of any key still down, and AVM asks again (2026-10-26, keyboard
+    /// audit; this used to only log).
+    /// Devices the helper held are the Mac's again once it's gone.
+    private func devicesHelperLost() {
+        guard !attachedDevices.isEmpty || !pendingDevices.isEmpty else { return }
+        attachedDevices.removeAll()
+        pendingDevices.removeAll()
+        USBRedirectController.shared.helperLost()
+    }
+
+    private func keyboardHelperLost() {
+        guard keyboardActive else { return }
+        keyboardActive = false
+        WindowsKeyboard.shared.helperLost()
+    }
+
+    func releaseKeyboard() async {
+        guard keyboardActive, let c = connection else { keyboardActive = false; return }
+        let generation = keyboardGeneration
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let proxy = c.remoteObjectProxyWithErrorHandler { _ in cont.resume() } as? AVMUSBHelperProtocol
+            guard let proxy else { cont.resume(); return }
+            proxy.releaseKeyboard { cont.resume() }
+        }
+        guard generation == keyboardGeneration else { return }
+        keyboardActive = false
+        disconnectIfIdle()
+    }
+
     func attach(_ device: AVMUSBDeviceIdentity,
                 socketPath: String,
+                peerPID: Int,
                 retrying: Bool = false) async -> Result<Void, USBHelperError> {
         guard ensureRegistered() else {
             return .failure(.notEnabled(status))
         }
+        await ensureCurrentHelper()
         announcedAttachFailures.remove(device)
         reached.remove(device)
         pendingDevices.insert(device)
@@ -422,7 +719,7 @@ final class USBHelperClient: NSObject, ObservableObject {
                 cont.resume(returning: .failure(.xpc("could not build the helper proxy")))
                 return
             }
-            proxy.attach(device, streamSocketPath: socketPath) { ok, step, detail in
+            proxy.attach(device, streamSocketPath: socketPath, peerPID: peerPID) { ok, step, detail in
                 if ok {
                     cont.resume(returning: .success(()))
                 } else {
@@ -441,7 +738,7 @@ final class USBHelperClient: NSObject, ObservableObject {
             log("attach: helper refused \(device.description): \(error)")
             disconnectIfIdle()
             if case .helperUnavailable = error, retrying == false, recoverLostRegistration() {
-                return await attach(device, socketPath: socketPath, retrying: true)
+                return await attach(device, socketPath: socketPath, peerPID: peerPID, retrying: true)
             }
             if isQuiet(device) {
                 log("attach: failure not spoken; the send gate is handling \(device.description)")
@@ -537,7 +834,11 @@ final class USBHelperClient: NSObject, ObservableObject {
             if isQuiet(device) {
                 log("attached: not spoken; the send gate is handling \(device.description)")
             } else {
-                announce("\(name) is now in \(VMManager.currentGuestName).", tone: .success)
+                // The machine it went to (2026-10-28, fourth audit): an
+                // attach that waited for approval landed after the user had
+                // moved to another machine, and the front one was named.
+                let machine = USBRedirectController.shared.machine(for: device)?.machineName ?? VMManager.currentGuestName
+                announce("\(name) is now in \(machine).", tone: .success)
             }
         case .released:
             // One unplug reports yanked, then released, 0.03 s apart
