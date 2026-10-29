@@ -117,6 +117,7 @@ struct MacSetupView: View {
         panel.message = "Choose a macOS installer file (.ipsw)."
         if panel.runModal() == .OK, let url = panel.url {
             ipsw = url
+            Announcer.shared.announce("\(url.lastPathComponent) chosen.", tone: .info)
         }
     }
 
@@ -153,7 +154,14 @@ struct MacSetupView: View {
         let id = UUID()
         var config = VMConfiguration(id: id, name: trimmed, cpuCount: cpuCount, ramSizeGB: ramSizeGB,
                                      diskSizeGB: diskSizeGB, guestOSName: GuestOS.macOS.rawValue)
-        guard let folder = try? config.directoryURL() else { return }
+        let folder: URL
+        do {
+            folder = try config.directoryURL()
+        } catch {
+            // Said (2026-10-29, seventh audit): Create did nothing, silently.
+            Announcer.shared.announce("AVM can't make a folder for \(trimmed). Reason: \(error.localizedDescription)", tone: .failure)
+            return
+        }
         config.diskImagePath = MacGuestFiles(folder: folder).disk.path
         config.macVoiceOverOffered = false
         working = true
@@ -459,7 +467,10 @@ struct MacSettingsView: View {
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         panel.prompt = "Share"
-        if panel.runModal() == .OK, let url = panel.url { sharedFolderPath = url.path }
+        if panel.runModal() == .OK, let url = panel.url {
+            sharedFolderPath = url.path
+            say("Sharing \(url.lastPathComponent). Takes effect when you save.", .info)
+        }
     }
 
     private func save() {
@@ -500,6 +511,12 @@ struct MacSettingsView: View {
             alert.addButton(withTitle: "Cancel")
             alert.addButton(withTitle: "Change Settings")
             guard alert.runModal() == .alertSecondButtonReturn else { return }
+            // Started under the question (2026-10-29, seventh audit): its
+            // saved file was deleted under the resume.
+            if MacGuestRunner.shared.runningID == configuration.id {
+                say("\(configuration.name) started while you were asked, so nothing was saved. Shut it down first.", .failure)
+                return
+            }
             try? FileManager.default.removeItem(at: files.savedState)
         }
         var updated = vmStore.configurations.first { $0.id == configuration.id } ?? configuration

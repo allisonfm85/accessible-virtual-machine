@@ -18,7 +18,9 @@ project lives at https://github.com/allisonfm85/accessible-virtual-machine
 
 - **An Apple Silicon Mac.** AVM runs Windows 11 for ARM64 using Apple's
   hardware virtualization. Intel Macs cannot run it.
-- **macOS 13 Ventura or later.**
+- **macOS 13 Ventura or later.** macOS virtual machines (section 17) want
+  macOS 14 Sonoma or later, for Save and Quit and for a Setup Assistant
+  with no keyboard dialog in the way.
 - **At least 80 GB of free disk space.** A Windows 11 installation grows to
   roughly 40 GB, the virtual disk needs room to grow beyond that, and the
   install process needs working room of its own. The virtual disk file
@@ -149,6 +151,24 @@ permission. Say yes and this is the last version you'll ever install by
 hand: when a new version is ready, AVM offers it, downloads it, and
 relaunches itself. You can also check any time with Check for Updates in
 the AVM menu. Everything is a normal dialog and reads with VoiceOver.
+
+**Letting AVM speak through VoiceOver.** AVM's announcements ("Entering
+Windows", how an install is going, a failure and what to do next) are
+spoken by VoiceOver when it's on, in your own voice and at your own
+rate. While AVM is in front, that needs nothing from you. While you're
+in another app, AVM asks VoiceOver to speak them, and that takes two
+one-time steps:
+
+1. Open VoiceOver Utility (VoiceOver-F8). Under General, turn on
+   **Allow VoiceOver to be controlled with AppleScript**.
+2. The first time AVM asks VoiceOver to speak, macOS asks whether AVM
+   may control VoiceOver. Choose OK. If you missed it, it's in System
+   Settings, Privacy & Security, Automation, under AVM.
+
+Until both are done, AVM says those lines in the Mac's system voice
+instead, and tells you once how to turn the setting on. With VoiceOver
+off, the system voice speaks every announcement, so you hear AVM
+either way.
 
 ---
 
@@ -321,6 +341,11 @@ The window reads top to bottom:
     Windows then skips its sign-in screens and signs in by itself the
     first time, so NVDA installs and starts with nothing for you to do.
     You can add a Microsoft account later in Windows' Settings.
+  - **Answered without asking:** the answer file accepts Microsoft's
+    licence terms for the edition you chose, as a PC maker's install
+    does, and turns off Setup's hardware checks (TPM, Secure Boot,
+    memory, processor and storage), so a virtual machine isn't refused
+    on them.
 - **Cancel** and **Create Virtual Machine**. Escape cancels, and
   Command-Return creates. While the machine is being created the button
   reads "Creating virtual machine, please wait". It takes a moment,
@@ -347,16 +372,18 @@ much kinder than one caught forty minutes into an install.
 Then AVM builds custom installation media on your disk and starts the
 virtual machine. The build is fast, just seconds on a fast Mac.
 
-**First announcement, spoken in the system voice:**
+**First announcement:**
 
 > Install media ready. Windows Setup is starting, and it runs by itself:
 > about 20 to 40 minutes, with a few restarts. Windows doesn't speak while
 > it installs, so long silences are normal. AVM will tell you how it's
 > going every 10 minutes.
 
-These announcements use the Mac's system voice instead of VoiceOver, on
-purpose. You will hear them whether VoiceOver is on or off, and whether or
-not AVM is the frontmost app.
+AVM's announcements come through VoiceOver when it's on, in your own
+VoiceOver voice, whether or not AVM is the frontmost app (section 3 has
+the one-time setting that needs). With VoiceOver off, the Mac's system
+voice says them instead. Either way you hear them. Section 12 lists
+them all.
 
 **A few minutes later, the milestone announcement:**
 
@@ -406,9 +433,10 @@ they fight over the same keystrokes, and neither one works right.
 2. Press **Command-Shift-S** to start the virtual machine, or use the
    machine's Start button.
 3. As soon as the Windows view appears, your keyboard is in Windows. You
-   don't have to do anything else. You will hear the system voice say
-   **"Entering Windows"**, after two rising notes. You'll hear it even
-   with VoiceOver off — that's how you know the handover happened.
+   don't have to do anything else. You will hear two rising notes and
+   then **"Entering Windows"**, in the Mac's system voice, since
+   VoiceOver is off at this point. That's how you know the handover
+   happened.
 
 From here, every keystroke goes to Windows.
 
@@ -476,11 +504,11 @@ same shortcut turns Narrator back off.
 
 ### Windows setup and your account
 
-Windows setup will ask you to sign in with a Microsoft account. In this
-build of Windows, that is the supported path. The earlier tricks for
-creating an offline local account were removed by Microsoft in this
-release, and this guide will not send you down a road that no longer
-works. Sign in with a Microsoft account, or create one during setup.
+Which account Windows signs in with is settled in the Setup Wizard,
+under Windows Setup Answers (section 6): a Microsoft account, which you
+sign in to during setup with Narrator, or a local account from the name
+and password you typed there, which skips Microsoft's sign-in screens
+altogether. There are no tricks to play in Windows Setup itself.
 
 ### JAWS and NVDA
 
@@ -523,9 +551,18 @@ of this is AVM.
   running machine after the escape hatch.
 - **Command-Shift-I** is Speak Status. AVM says which machine is
   running, paused, or stopped, whether your keyboard is on the Mac or in
-  Windows, and which USB devices are attached. It speaks in the system
-  voice, so it works with VoiceOver off.
-- **Command-Shift-D** sends Control-Alt-Delete to Windows.
+  Windows, and which USB devices are attached. It speaks through
+  VoiceOver when VoiceOver is on and in the system voice when it's off,
+  so it works either way.
+- **Command-Shift-D** is Send Ctrl-Alt-Delete. It sends
+  Control-Alt-Delete to Windows.
+- **Command-Shift-F** is Send File to Windows… (the menu names the
+  machine's system). Pick a file on your Mac, and it lands in the
+  machine's Downloads folder, through the agent AVM installs with
+  Windows.
+- **Command-Shift-L** is Virtual Machines List, in the Window menu. It
+  brings the dashboard back, or opens it, while a machine's window is in
+  front.
 - **Command-Shift-R** resets the virtual machine (see section 13).
 - **Control-Command-Escape** is the escape hatch. It brings the keyboard
   back to the Mac.
@@ -534,9 +571,10 @@ of this is AVM.
 
 Commands that can't do anything right now are dimmed in the Virtual
 Machine menu, and VoiceOver reads them as "dimmed": Enter Windows when
-nothing is running, Send Control-Alt-Delete and Reset when Windows isn't
-running, Detach USB Device when nothing is attached. Pressing a dimmed
-command's keys only beeps. Speak Status is never dimmed, so it can always
+nothing is running, Send Ctrl-Alt-Delete, Send File and Reset when
+Windows isn't running, Detach USB Device when nothing is attached.
+Pressing a dimmed command's keys only beeps. Speak Status is never
+dimmed, so it can always
 tell you why. While Windows is installing, Speak Status also says how
 long Setup has been running and how much it has written to the disk so
 far.
@@ -710,7 +748,13 @@ minute to catch up.
 
 ## 12. Sounds and announcements
 
-AVM speaks in the Mac's system voice and plays these sounds:
+AVM's announcements are spoken by VoiceOver when it's on, in your own
+voice and at your own rate: while AVM is in front, as an accessibility
+announcement, after whatever VoiceOver is saying; while you're in
+another app, by asking VoiceOver to speak them (section 3 has the
+one-time setting that needs). With VoiceOver off, or until that setting
+is on, the Mac's system voice speaks them. Either way, AVM plays these
+sounds:
 
 - **Glass** means something succeeded.
 - **Basso** means something failed.
@@ -721,11 +765,13 @@ AVM speaks in the Mac's system voice and plays these sounds:
   AVM's own, so you can tell where the keyboard is even while a screen
   reader is talking over the words.
 
-The sound always plays immediately. Speech may wait its turn. If two
-announcements land within a second of each other, the second one queues
-instead of cutting off the first. Failures are the exception. A failure
-interrupts whatever is being spoken and discards anything still waiting,
-because a stale success announcement after a failure would mislead you.
+The sound always plays immediately. Speech waits its turn: nothing AVM
+says interrupts anything else, failures included, and nothing is
+dropped. If two announcements land within a second of each other, the
+second one queues behind the first. A failure's Basso sound still plays
+the instant it happens, so you know something went wrong before its
+words arrive, and the lines come in the order things happened, so a
+success you hear before a failure is history, not a claim.
 
 Announcements you may hear, and what they mean:
 
@@ -999,8 +1045,10 @@ files can be deleted afterward.
   one you meant. With more than one machine, use the Start submenu in
   the Virtual Machine menu, which names each machine, or the dashboard's
   Start buttons.
-- **Out-of-box setup is stock Windows.** AVM does not script your account
-  creation. You go through Microsoft's own setup with Narrator.
+- **Microsoft's sign-in screens are Microsoft's.** With a Microsoft
+  account, Windows Setup stops at them and you go through them with
+  Narrator. A local account chosen in the Setup Wizard (section 6)
+  skips them.
 - **The ISO download is still yours to start.** AVM opens Microsoft's
   page and does everything around it, but Microsoft's page itself is
   where you choose the download.
@@ -1181,6 +1229,11 @@ Keyboard**, **Turn On VoiceOver in macOS**, and **Shut Down**.
   keyboard; you hear the rising notes and "Entering macOS".
 - **Control-Command-Escape** gives it back to the Mac.
 - Command-Tab and Command-F5 stay your Mac's.
+- On macOS 14 Sonoma or later, the machine gets a Mac keyboard, which
+  macOS knows. On macOS 13 it gets a generic USB keyboard, and macOS may
+  open Keyboard Setup Assistant ("your keyboard can't be identified")
+  over Setup Assistant, a window that takes Return and Escape and that
+  VoiceOver in the machine doesn't reach.
 
 **Your Mac's VoiceOver and macOS's.** With both on, they fight over your
 keys. When you enter macOS with your Mac's VoiceOver on, AVM asks you to
@@ -1205,7 +1258,8 @@ Setup Assistant is up. macOS keeps VoiceOver on afterwards.
 - **Save and Quit / Save and Close.** Quitting AVM, or closing the
   machine's window, offers to save the machine as it is, open apps and
   all. Its next Start carries on from there in seconds instead of a
-  three-minute start.
+  three-minute start. Saving needs macOS 14 Sonoma or later on your
+  Mac; on macOS 13 a macOS machine can only be shut down.
 - **Restore points.** In a macOS machine's Settings, with it shut down:
   **Take Restore Point**, then **Restore** or **Delete** beside each one.
   They are instant and use space only for what changes afterwards. Every

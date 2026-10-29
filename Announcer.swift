@@ -184,7 +184,15 @@ final class Announcer {
     /// Hands the line to VoiceOver. False when VoiceOver isn't on, or the
     /// line has to go to the system voice.
     private func speakWithVoiceOver(_ message: String) -> Bool {
-        guard NSWorkspace.shared.isVoiceOverEnabled else { return false }
+        guard NSWorkspace.shared.isVoiceOverEnabled else {
+            // VoiceOver just turned off with a scripted line still waiting
+            // (2026-10-29, seventh audit): this one goes behind it, in order.
+            if queuedScripts.withLock({ $0 }) > 0 {
+                scriptQueue.async { self.systemVoiceInstead(message) }
+                return true
+            }
+            return false
+        }
         let start = max(Date(), voiceOverBusyUntil)
         voiceOverBusyUntil = start.addingTimeInterval(0.5 + Double(message.count) / 14)
         if NSApp.isActive {
@@ -199,9 +207,16 @@ final class Announcer {
             // audit): VoiceOver speaks a scripted line at once, so it cut off
             // a newer line said with AVM in front, and the older line was
             // heard after it.
-            let wait = scriptBusyUntil.timeIntervalSinceNow
+            // And after the system voice (seventh audit): with scripting
+            // refused, a background line's system voice was talked over.
+            let wait = max(scriptBusyUntil, systemVoiceBusyUntil).timeIntervalSinceNow
             if wait > 0 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + min(wait, 20)) { post() }
+                DispatchQueue.main.asyncAfter(deadline: .now() + min(wait, 20)) {
+                    // AVM left the front meanwhile (seventh audit): VoiceOver
+                    // reads these only from the focused app, so the line was
+                    // never heard.
+                    if NSApp.isActive { post() } else { self.systemVoiceInstead(message) }
+                }
             } else {
                 post()
             }
@@ -210,10 +225,12 @@ final class Announcer {
         // Once refused, lines still go through the queue (sixth audit), so a
         // line said now isn't heard before one still waiting there.
         if voiceOverScriptRefused {
+            systemVoiceBusyUntil = max(Date(), systemVoiceBusyUntil).addingTimeInterval(0.5 + Double(message.count) / 14)
             scriptQueue.async { self.systemVoiceInstead(message) }
             return true
         }
         scriptBusyUntil = voiceOverBusyUntil
+        queuedScripts.withLock { $0 += 1 }
         // The line as an argument, never inside the script, after "--" (a
         // line starting with "-" read as an option to osascript). Each line
         // waits for the estimated end of the one before (2026-10-28, fifth
@@ -224,6 +241,7 @@ final class Announcer {
         // again, and a VoiceOver that didn't answer held every line for the
         // two minutes AppleScript waits.
         scriptQueue.async {
+            defer { self.queuedScripts.withLock { $0 -= 1 } }
             let wait = start.timeIntervalSinceNow
             if wait > 0 { Thread.sleep(forTimeInterval: min(wait, 20)) }
             if self.refusedLatch.withLock({ $0 }) {
@@ -271,6 +289,11 @@ final class Announcer {
 
     /// When the last scripted line is expected to have been said.
     private var scriptBusyUntil = Date.distantPast
+    /// When the system voice, standing in for a refused script, is expected
+    /// to have finished (seventh audit).
+    private var systemVoiceBusyUntil = Date.distantPast
+    /// Scripted lines queued and not yet handed over (seventh audit).
+    private nonisolated let queuedScripts = OSAllocatedUnfairLock(initialState: 0)
     /// The refusal, readable from the script queue (sixth audit).
     private nonisolated let refusedLatch = OSAllocatedUnfairLock(initialState: false)
 

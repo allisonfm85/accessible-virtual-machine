@@ -301,10 +301,10 @@ final class WindowsISODownloader: ObservableObject {
                             "ISOAssistant: SHA-256 matches the published \(language) value")
                 }
                 if hashes.isEmpty {
-                    return ("AVM couldn't read Microsoft's checksum list, so it checked that the file is a whole ISO.",
+                    return ("AVM couldn't read Microsoft's checksum list, so it only checked that the file reads as an ISO. If the download was cut short, the machine's first start says so.",
                             "ISOAssistant: no published hashes; ISO signature checked; SHA-256 \(digest)")
                 }
-                return ("It is a whole ISO, but it doesn't match a checksum on Microsoft's page. That can happen just after Microsoft updates the download, or it may be a different file. When the machine first starts, AVM checks that it is a Windows 11 for ARM installer.",
+                return ("It reads as an ISO, but it doesn't match a checksum on Microsoft's page. That can happen just after Microsoft updates the download, or it may be a different file. When the machine first starts, AVM checks that it is a Windows 11 for ARM installer.",
                         "ISOAssistant: SHA-256 \(digest) matches no published value")
             }.value
             AVMLog.write(logLine)

@@ -189,6 +189,9 @@ final class ControlServer {
             return ["ok": true, "message": "Asked \(name) to shut down."]
 
         case "save":
+            // Never a template (seventh audit): saved with open apps, nothing
+            // could start or copy it.
+            if config.isATemplate { return fail("\(name) is a template, so it isn't saved with open apps. Shut it down instead.") }
             if isMac {
                 guard mac.runningID == config.id, mac.canSave else { return fail("\(name) can't be saved now.") }
                 let saved = await withCheckedContinuation { (done: CheckedContinuation<Bool, Never>) in

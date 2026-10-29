@@ -275,6 +275,13 @@ nonisolated final class AVMLog: @unchecked Sendable {
         if user.count >= 4 {
             out = out.replacingOccurrences(of: user, with: "~", options: .caseInsensitive)
         }
+        // The first name on its own too (2026-10-29, seventh audit): device
+        // names carry it ("Amena's AirPods"), and the spoken lines are logged.
+        if let first = fullName.split(separator: " ").first.map(String.init), first.count >= 4,
+           first.caseInsensitiveCompare(user) != .orderedSame {
+            out = out.replacingOccurrences(of: "\\b\(NSRegularExpression.escapedPattern(for: first))\\b", with: "~",
+                                           options: [.regularExpression, .caseInsensitive])
+        }
 
         return out
     }

@@ -158,6 +158,9 @@ final class MachineSessions: ObservableObject {
             lock.unlock(bringListForward: false)
         }
         makeCurrent(id)
+        // Before the window shows (2026-10-29, seventh audit): a lock from
+        // the new screen's own appearance could land before the forget below.
+        if windows[id]?.captureView == nil { FocusLockManager.shared?.forgetCaptureView() }
         if windows[id] == nil, let vmStore = vmStore ?? VMStore.shared, let focusLock = focusLock ?? FocusLockManager.shared {
             let window = MachineWindow(session: session, vmStore: vmStore, focusLock: focusLock)
             windows[id] = window

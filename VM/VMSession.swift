@@ -100,6 +100,10 @@ final class VMSession: ObservableObject {
         manager.$savingTask
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        // And a restore point (2026-10-29, seventh audit).
+        manager.$takingRestorePoint
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
     }
 
     // MARK: - Session Control
@@ -125,8 +129,25 @@ final class VMSession: ObservableObject {
     /// many minutes. After two minutes it reminds the user once, then keeps
     /// waiting. A paused VM is resumed first, because the shutdown request
     /// only reaches a running guest. Wording approved by Allison 2026-09-27.
+    /// Quit Now (2026-10-29, seventh audit): the shutdown wait, if one is
+    /// running, must not read the end as a clean shut down.
+    func terminateForQuit() {
+        forceStopRequested = true
+        manager.terminateForQuit()
+    }
+
     func stopGracefully() async throws {
         forceStopRequested = false
+        // Once (2026-10-29, seventh audit): a second Shut Down started a
+        // second wait, and "has shut down" was said twice.
+        if case .stopping = manager.state {
+            throw AVMError.refused("\(configuration.name) is already shutting down.")
+        }
+        // A restore point under way finishes first (seventh audit).
+        if manager.takingRestorePoint {
+            Announcer.shared.announce("\(configuration.name) is taking a restore point, and shuts down when that's done.", tone: .info)
+            while manager.takingRestorePoint { try? await Task.sleep(for: .milliseconds(200)) }
+        }
         // A save under way finishes first (2026-10-29, sixth audit): a paused
         // machine was resumed in the middle of its own save, "Shutting down"
         // was said, and then the shut down was refused. The save stops it.
@@ -213,6 +234,10 @@ final class VMSession: ObservableObject {
                     Announcer.shared.announce("\(configuration.name) hasn't shut down yet. AVM is asking it again through its agent, which closes its open apps without saving.", tone: .info)
                 } else {
                     AVMLog.write("VMSession: stopGracefully: no shutdown after \(Int(agentAfter)) seconds, and no guest agent to ask")
+                    // The promise was made (seventh audit): say it can't be kept.
+                    if warnedAboutAgent, case .stopping = manager.state {
+                        Announcer.shared.announce("\(configuration.name)'s agent stopped answering, so AVM can't hurry it. If it doesn't finish, Force Stop ends it.", tone: .info)
+                    }
                 }
             }
             if !reminded, Date().timeIntervalSince(started) >= reminderAfter {

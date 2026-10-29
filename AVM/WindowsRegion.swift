@@ -102,10 +102,12 @@ nonisolated struct WindowsRegion: Sendable, Equatable {
     var answerFileComponent: String {
         guard locale != nil || inputLocale != nil else { return "" }
         var lines = [#"<component name="Microsoft-Windows-International-Core" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">"#]
-        if let inputLocale { lines.append("  <InputLocale>\(inputLocale)</InputLocale>") }
+        // Escaped like every other value in the answer file (2026-10-29,
+        // seventh audit).
+        if let inputLocale { lines.append("  <InputLocale>\(WindowsSetupAnswers.xml(inputLocale))</InputLocale>") }
         if let locale {
-            lines.append("  <SystemLocale>\(locale)</SystemLocale>")
-            lines.append("  <UserLocale>\(locale)</UserLocale>")
+            lines.append("  <SystemLocale>\(WindowsSetupAnswers.xml(locale))</SystemLocale>")
+            lines.append("  <UserLocale>\(WindowsSetupAnswers.xml(locale))</UserLocale>")
         }
         lines.append("</component>")
         return lines.joined(separator: "\n    ")

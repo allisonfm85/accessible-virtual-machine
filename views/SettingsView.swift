@@ -122,7 +122,16 @@ struct SettingsView: View {
         cpuCount != saved.cpuCount || ramSizeGB != saved.ramSizeGB
             || shareMicrophone != saved.sharesMicrophone || shareCamera != saved.sharesCamera
             || gpu3D != (saved.gpu3D == true)
+            // Secure Boot and the disk too (2026-10-29, seventh audit): they
+            // were dropped without a word.
+            || secureBoot != saved.usesSecureBoot || diskSizeGB != saved.diskSizeGB
     }
+
+    /// Started while this sheet, or one of its questions, was open
+    /// (2026-10-29, seventh audit): avmctl or the Virtual Machine menu can
+    /// start it meanwhile, and its disk or settings were then changed under
+    /// the running machine.
+    private var startedMeanwhile: Bool { MachineSessions.shared.session(for: saved.id) != nil }
 
     // MARK: - State
 
@@ -559,6 +568,10 @@ struct SettingsView: View {
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if startedMeanwhile {
+            Announcer.shared.announce("\(saved.name) started while you were asked, so no restore point was saved. Use Save Restore Point in its row while it runs, or shut it down first.", tone: .failure)
+            return
+        }
         let label = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = label.isEmpty ? "Restore point from \(restorePointDate(Date()))" : label
         guard let dir = try? vmStore.vmDirectoryURL(for: saved) else { return }
@@ -741,6 +754,10 @@ struct SettingsView: View {
             alert.window.initialFirstResponder = field
         }
         guard alert.runModal() == .alertSecondButtonReturn else { return }
+        if startedMeanwhile {
+            Announcer.shared.announce("\(saved.name) started while you were asked, so Windows wasn't reinstalled. Shut it down first.", tone: .failure)
+            return
+        }
         if let passwordField, let confirmField, passwordField.stringValue != confirmField.stringValue {
             Announcer.shared.announce("The two passwords aren't the same, so Windows wasn't reinstalled. Choose Reinstall Windows again.", tone: .failure)
             return
@@ -774,6 +791,10 @@ struct SettingsView: View {
         alert.addButton(withTitle: "Restore")
         guard alert.runModal() == .alertSecondButtonReturn,
               let dir = try? vmStore.vmDirectoryURL(for: saved) else { return }
+        if startedMeanwhile {
+            Announcer.shared.announce("\(saved.name) started while you were asked, so it wasn't restored. Shut it down first.", tone: .failure)
+            return
+        }
         restorePointsBusy = true
         Task { @MainActor in
             do {
@@ -825,6 +846,10 @@ struct SettingsView: View {
         alert.addButton(withTitle: "Delete")
         guard alert.runModal() == .alertSecondButtonReturn,
               let dir = try? vmStore.vmDirectoryURL(for: saved) else { return }
+        if startedMeanwhile {
+            Announcer.shared.announce("\(saved.name) started while you were asked, so the restore point wasn't deleted. Shut it down first.", tone: .failure)
+            return
+        }
         restorePointsBusy = true
         Task { @MainActor in
             do {
@@ -917,7 +942,12 @@ struct SettingsView: View {
     private func applyRemoteDesktop(_ updated: VMConfiguration, wasOn: Bool, oldPort: Int?) {
         let id = updated.id
         if updated.remoteDesktopOn, let port = updated.remoteDesktopPort {
-            if !remoteDesktopPassword.isEmpty { RemoteDesktop.savePassword(remoteDesktopPassword, for: id) }
+            // A failed keychain save is said (2026-10-29, seventh audit): the
+            // promise below was made, and the next start then skipped in silence.
+            if !remoteDesktopPassword.isEmpty, !RemoteDesktop.savePassword(remoteDesktopPassword, for: id) {
+                Announcer.shared.announce("The Remote Desktop password couldn't be kept in your keychain, so Remote Desktop isn't set up. Next: unlock your keychain, then save the settings again.", tone: .failure)
+                return
+            }
             guard isRunning, let manager = MachineSessions.shared.session(for: id)?.manager else {
                 Announcer.shared.announce("Remote Desktop is set up the next time \(guest) starts.", tone: .info)
                 return
@@ -967,6 +997,9 @@ struct SettingsView: View {
                 if sharedFolderPath != nil {
                     Button("Stop Sharing") {
                         sharedFolderPath = nil
+                        // Said (2026-10-29, seventh audit): the form changed
+                        // without a word.
+                        Announcer.shared.announce("No folder is shared now. Takes effect when you save.", tone: .info)
                     }
                 }
             }
@@ -993,6 +1026,7 @@ struct SettingsView: View {
         panel.message = "Choose a folder for \(guest) to open."
         if panel.runModal() == .OK, let url = panel.url {
             sharedFolderPath = url.path
+            Announcer.shared.announce("Sharing \(url.lastPathComponent). Takes effect when you save.", tone: .info)
         }
     }
 
@@ -1088,6 +1122,7 @@ struct SettingsView: View {
                         Text("\(device.name): \(decisionText(for: device))")
                         Button("Forget") {
                             rememberedDevices.removeAll { $0.id == device.id }
+                            Announcer.shared.announce("\(device.name) forgotten. AVM asks about it again at its next plug-in, once you save.", tone: .info)
                         }
                         .accessibilityLabel("Forget \(device.name)")
                         .accessibilityHint("AVM will follow the setting above for this device again. Takes effect when you save.")
@@ -1194,6 +1229,14 @@ struct SettingsView: View {
             Announcer.shared.announce(message, tone: .failure)
             return
         }
+        // Nor while it runs (seventh audit): saved with open apps as a
+        // template, nothing could start or copy it.
+        if isTemplate, !saved.isATemplate, isRunning || startedMeanwhile {
+            let message = "\(saved.name) is running, so it can't be a template yet. Nothing was saved. Next: shut it down, then make it a template."
+            validationErrors = [message]
+            Announcer.shared.announce(message, tone: .failure)
+            return
+        }
         let keptShape = isRunning && shapeChanged
         if keptShape {
             cpuCount = saved.cpuCount
@@ -1201,6 +1244,8 @@ struct SettingsView: View {
             shareMicrophone = saved.sharesMicrophone
             shareCamera = saved.sharesCamera
             gpu3D = saved.gpu3D == true
+            secureBoot = saved.usesSecureBoot
+            diskSizeGB = saved.diskSizeGB
         }
         // Not while its files are being copied (sixth audit): Settings was
         // checked only as it opened, and an export could be changed mid-copy.
@@ -1234,6 +1279,11 @@ struct SettingsView: View {
                 isSaving = false
                 return
             }
+            if startedMeanwhile {
+                Announcer.shared.announce("\(saved.name) started while you were asked, so nothing was saved. Shut it down first.", tone: .failure)
+                isSaving = false
+                return
+            }
             discardSaved = saved
         }
 
@@ -1258,6 +1308,12 @@ struct SettingsView: View {
                 secureBoot = saved.usesSecureBoot
                 isSaving = false
                 Announcer.shared.announce("Secure Boot left as it was. Nothing was saved.", tone: .info)
+                return
+            }
+            if started, startedMeanwhile {
+                secureBoot = saved.usesSecureBoot
+                isSaving = false
+                Announcer.shared.announce("\(saved.name) started while you were asked, so nothing was saved. Shut it down first.", tone: .failure)
                 return
             }
         }
@@ -1383,7 +1439,7 @@ struct SettingsView: View {
                 return
             }
             let said = keptShape
-                ? "\(message) \(saved.name) started while Settings was open, so its processor cores, memory, microphone, camera and 3D graphics stay as they were; shut it down to change them."
+                ? "\(message) \(saved.name) started while Settings was open, so its processor cores, memory, microphone, camera, 3D graphics, Secure Boot and disk size stay as they were; shut it down to change them."
                 : message
             saveMessage = said
             Announcer.shared.announce(said, tone: .info)

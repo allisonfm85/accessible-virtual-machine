@@ -120,8 +120,15 @@ final class USBHotPlugWatcher {
 
     func stop(reason: String) {
         guard vmID != nil || notifyPort != nil else { return }
-        USBPlugPrompt.shared.vmStopped()
-        USBRedirectController.shared.clearAllFollowThrough()
+        // Only the stopping machine's send gates and follow-through records
+        // (2026-10-29, seventh audit): VMManager stops the watch for the
+        // machine it watches, and the watch moves ("switching to another
+        // VM") only once that machine's session is gone (MachineSessions.
+        // watchUSB), so the machine watched is the one stopping. Every
+        // machine's went before, and a device owed a send back into another
+        // machine stayed on the Mac without a word. nil means all.
+        USBPlugPrompt.shared.vmStopped(machine: vmID)
+        USBRedirectController.shared.clearAllFollowThrough(for: vmID)
         if arrivedIterator != 0 { IOObjectRelease(arrivedIterator); arrivedIterator = 0 }
         if removedIterator != 0 { IOObjectRelease(removedIterator); removedIterator = 0 }
         if let port = notifyPort { IONotificationPortDestroy(port); notifyPort = nil }
@@ -377,6 +384,14 @@ final class USBHotPlugWatcher {
     /// True when the Mac sees a device at exactly this address.
     func isPresentAtThisAddress(_ device: AVMUSBDeviceIdentity) -> Bool {
         known.values.contains(device)
+    }
+
+    /// How many devices the Mac sees with this one's followKey
+    /// (2026-10-29, seventh audit): more than one means a second unit is
+    /// plugged in, which the send gate mustn't retry with.
+    func presentCount(like device: AVMUSBDeviceIdentity) -> Int {
+        let key = USBRedirectController.followKey(device)
+        return known.values.filter { USBRedirectController.followKey($0) == key }.count
     }
 
     // MARK: Helpers

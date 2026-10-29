@@ -962,7 +962,10 @@ final class MachineArchiveTests: XCTestCase {
         XCTAssertNil(imported.storageFolderPath)
         XCTAssertEqual(imported.diskImagePath, newFolder.appendingPathComponent("disk.qcow2").path)
         XCTAssertEqual(imported.secureBoot, true)
-        XCTAssertEqual(imported.installISOPath, original.installISOPath, "kept, so the install-complete check still runs")
+        // The file name only (2026-10-29, seventh audit): the folder under
+        // the user's home travelled in a package for other people. Non-empty
+        // is what the install-complete check needs.
+        XCTAssertEqual(imported.installISOPath, "Win11.iso", "the name is kept, so the install-complete check still runs")
         XCTAssertEqual(try Data(contentsOf: newFolder.appendingPathComponent("disk.qcow2")),
                        try Data(contentsOf: dir.appendingPathComponent("disk.qcow2")))
         XCTAssertFalse(fm.fileExists(atPath: newFolder.appendingPathComponent(MachineArchive.manifestName).path))

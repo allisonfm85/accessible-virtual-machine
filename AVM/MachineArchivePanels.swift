@@ -324,7 +324,7 @@ final class MachineArchiveController: ObservableObject {
             return
         }
         let original = manifest.configuration
-        let name = MachineArchive.uniqueName(original.name, existing: store.configurations.map(\.name))
+        let name = MachineArchive.uniqueName(MachineArchive.cleanName(original.name), existing: store.configurations.map(\.name))
         let needed = MachineFileCopier.bytesNeeded(plan, from: package, to: container)
         if let free = MachineFileCopier.availableBytes(at: container), free < needed + Self.spareBytes {
             refuse("There isn't room on your Mac for \(name). It needs \(MachineArchive.spokenSize(needed)), and \(MachineArchive.spokenSize(free)) is free. Nothing was imported. Next: free some space, then import again.", log: "not enough space for '\(name)' (\(needed) needed, \(free) free)")
@@ -368,8 +368,11 @@ final class MachineArchiveController: ObservableObject {
         store.save(config)
         AVMLog.write("AVM: Import — '\(config.name)' added to the list.")
         var words = "\(config.name) is ready. It's in your list of virtual machines."
-        if config.name != original.name {
-            words += " AVM named it \(config.name), because \(original.name) is already in your list."
+        let cleaned = MachineArchive.cleanName(original.name)
+        if config.name != cleaned {
+            words += " AVM named it \(config.name), because \(cleaned) is already in your list."
+        } else if cleaned != original.name {
+            words += " AVM shortened its name."
         }
         // Lowered to this Mac's limits (2026-10-28, fifth audit): silently,
         // a saved machine's memory then couldn't load.
@@ -384,6 +387,9 @@ final class MachineArchiveController: ObservableObject {
         if original.sharesCamera { turnedOff.append("the camera") }
         if original.sharesPrinters { turnedOff.append("printers") }
         if original.windowsKeyboardID != nil { turnedOff.append("the keyboard for Windows") }
+        if original.usbMode != nil { turnedOff.append("the USB plug-in rule") }
+        if !(original.usbRememberedDevices ?? []).isEmpty { turnedOff.append("the remembered USB devices") }
+        if original.displayID != nil { turnedOff.append("the chosen monitor") }
         if !turnedOff.isEmpty {
             words += " AVM turned off \(MachineArchive.spokenList(turnedOff)), which came from the other Mac; turn on what you want in Settings."
         }

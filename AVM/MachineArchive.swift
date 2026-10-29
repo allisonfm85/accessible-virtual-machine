@@ -137,6 +137,24 @@ enum MachineArchive {
         config.remoteDesktopUser = nil
         config.remoteDesktopReach = nil
         config.remoteDesktopPort = nil
+        // Nor the Mac's own paths and devices (2026-10-29, seventh audit):
+        // the installer's folder under the user's home, the shared folder,
+        // USB serial numbers, the keyboard and the monitor travelled in a
+        // package meant for other people, and import throws them all away.
+        // The installer keeps its file name only: non-empty means "installed
+        // from an ISO" to import's checks.
+        if let iso = config.installISOPath, !iso.isEmpty {
+            config.installISOPath = (iso as NSString).lastPathComponent
+        }
+        if config.sharedFolderPath != nil {
+            config.sharedFolderPath = ((config.sharedFolderPath ?? "") as NSString).lastPathComponent
+        }
+        config.usbRememberedDevices = nil
+        config.windowsKeyboardID = nil
+        config.windowsKeyboardName = nil
+        config.windowsKeyboardAppleISO = nil
+        config.displayID = nil
+        config.displayName = nil
         let manifest = Manifest(format: formatVersion, exportedAt: date, appVersion: appVersion, configuration: config)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -187,8 +205,11 @@ enum MachineArchive {
         let fm = FileManager.default
         let parent = packageURL.deletingLastPathComponent()
         let partialPrefix = ".\(packageURL.lastPathComponent)-partial-"
-        // An earlier export of this name that AVM's quitting cut short.
-        for leftover in (try? fm.contentsOfDirectory(atPath: parent.path)) ?? [] where leftover.hasPrefix(partialPrefix) {
+        let replacingPrefix = ".\(packageURL.lastPathComponent)-replacing-"
+        // An earlier export of this name that AVM's quitting cut short, and
+        // an old package set aside whose removal was cut short (seventh audit).
+        for leftover in (try? fm.contentsOfDirectory(atPath: parent.path)) ?? []
+        where leftover.hasPrefix(partialPrefix) || leftover.hasPrefix(replacingPrefix) {
             try? fm.removeItem(at: parent.appendingPathComponent(leftover))
         }
         let partial = parent.appendingPathComponent(partialPrefix + UUID().uuidString, isDirectory: true)
@@ -205,7 +226,8 @@ enum MachineArchive {
             // (2026-10-28, fifth audit): the old package is moved aside, the
             // new one put in place, and only then is the old one removed.
             var oldAside: URL?
-            if fm.fileExists(atPath: packageURL.path) {
+            let hadOld = fm.fileExists(atPath: packageURL.path)
+            if hadOld {
                 do {
                     try fm.trashItem(at: packageURL, resultingItemURL: nil)
                 } catch {
@@ -213,7 +235,7 @@ enum MachineArchive {
                     // package of the user's called "<name> (previous)" was
                     // deleted to make room for the old one.
                     let aside = packageURL.deletingLastPathComponent()
-                        .appendingPathComponent(".\(packageURL.lastPathComponent)-replacing-\(UUID().uuidString.prefix(8))")
+                        .appendingPathComponent(replacingPrefix + UUID().uuidString.prefix(8))
                     try fm.moveItem(at: packageURL, to: aside)
                     oldAside = aside
                 }
@@ -222,8 +244,12 @@ enum MachineArchive {
                 try fm.moveItem(at: partial, to: packageURL)
             } catch {
                 // The old package goes back where it was, as the message
-                // promises (sixth audit).
+                // promises (sixth audit); one already in the Trash is said
+                // to be there (seventh audit).
                 if let oldAside { try? fm.moveItem(at: oldAside, to: packageURL) }
+                if hadOld, oldAside == nil {
+                    throw MachineArchiveError("\(error.localizedDescription) The earlier \(packageURL.lastPathComponent) is in the Trash.")
+                }
                 throw error
             }
             if let oldAside { try? fm.removeItem(at: oldAside) }
@@ -333,7 +359,9 @@ enum MachineArchive {
         guard await QEMUSavedState.snapshotTags(disk: disk)?.contains(QEMUSavedState.tag) != false else { return }
         _ = try? await RestorePoints.qemuImg(["snapshot", "-d", QEMUSavedState.tag, disk.path])
         if await QEMUSavedState.snapshotTags(disk: disk)?.contains(QEMUSavedState.tag) != false {
-            FileManager.default.createFile(atPath: folder.appendingPathComponent(QEMUSavedState.loadedMarker).path, contents: nil)
+            // With the "carried on" word (seventh audit): without it the first
+            // Start said the session "couldn't be carried on last time".
+            try? QEMUSavedState.carriedOnWord.write(to: folder.appendingPathComponent(QEMUSavedState.loadedMarker), atomically: true, encoding: .utf8)
             AVMLog.write("AVM: Import — the package's saved state couldn't be deleted; marked so it's never loaded.")
         } else {
             AVMLog.write("AVM: Import — deleted a saved state that came in the package.")
@@ -394,9 +422,7 @@ enum MachineArchive {
         config.diskImagePath = folder.appendingPathComponent(diskFileName(for: original)).path
         // A name to say (sixth audit): no control characters, and not
         // without end.
-        let cleanName = String(original.name.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
-            .trimmingCharacters(in: .whitespacesAndNewlines).prefix(100)
-        config.name = uniqueName(cleanName.isEmpty ? "Imported machine" : String(cleanName), existing: existingNames)
+        config.name = uniqueName(cleanName(original.name), existing: existingNames)
         // Nothing of the other Mac's (2026-10-28, security review): a
         // package from someone else carried a shared folder, which its
         // disk's software would have read and written on this Mac, and the
@@ -425,6 +451,14 @@ enum MachineArchive {
         config.remoteDesktopPort = nil
         config.remoteDesktopPasswordMark = nil
         return config
+    }
+
+    /// A package's name as AVM says it (2026-10-29, seventh audit): no
+    /// control characters, at most 100 characters, never empty.
+    static func cleanName(_ name: String) -> String {
+        let clean = String(name.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+            .trimmingCharacters(in: .whitespacesAndNewlines).prefix(100)
+        return clean.isEmpty ? "Imported machine" : String(clean)
     }
 
     /// "Windows 11", or "Windows 11 2" when that's taken, and so on.
@@ -526,6 +560,7 @@ nonisolated enum MachineFileCopier {
         }
         // A cut-short export or import's own working folders.
         return name.hasPrefix(".importing-") || name.contains(".\(MachineArchive.packageExtension)-partial-")
+            || name.contains(".\(MachineArchive.packageExtension)-replacing-")
     }
 
     /// Everything under `source` that `skip` lets through. Only folders and
@@ -617,6 +652,9 @@ nonisolated enum MachineFileCopier {
                 continue
             }
             if clonefile(from.path, to.path, UInt32(CLONE_NOFOLLOW)) == 0 {
+                // The copy is the user's to write (seventh audit): a read-only
+                // package (a DVD, a share) gave a disk QEMU could only read.
+                chmod(to.path, mode_t((entry.permissions & 0o777) | 0o600))
                 done += entry.allocatedBytes
                 progress(min(done, total), total)
                 continue
@@ -683,7 +721,7 @@ nonisolated enum MachineFileCopier {
         }
         guard ftruncate(output, length) == 0 else { throw failure("write") }
         guard fsync(output) == 0 else { throw failure("finish writing") }
-        fchmod(output, mode_t(permissions & 0o777))
+        fchmod(output, mode_t((permissions & 0o777) | 0o600))
     }
 
     private static func isAllZero(_ pointer: UnsafeMutableRawPointer, count: Int) -> Bool {

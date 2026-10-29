@@ -187,7 +187,18 @@ final class MacInstaller: NSObject, URLSessionDownloadDelegate {
 
         let imageURL = try await restoreImage(ipsw, diskGB: config.diskSizeGB)
         say("Checking the macOS installer.")
-        let image = try await VZMacOSRestoreImage.image(from: imageURL)
+        let image: VZMacOSRestoreImage
+        do {
+            image = try await VZMacOSRestoreImage.image(from: imageURL)
+        } catch {
+            // A cached installer that can't be read goes (2026-10-29, seventh
+            // audit): it was "used again" at every attempt, failing each time.
+            if ipsw == nil {
+                try? FileManager.default.removeItem(at: imageURL)
+                throw MacGuestError("The macOS installer AVM downloaded before can't be read, so AVM removed it. Next: try again; AVM downloads macOS afresh.")
+            }
+            throw error
+        }
         guard let requirements = image.mostFeaturefulSupportedConfiguration, requirements.hardwareModel.isSupported else {
             throw MacGuestError("This Mac can't run macOS \(image.operatingSystemVersion.description). Next: choose an older macOS installer.")
         }
@@ -287,6 +298,12 @@ final class MacInstaller: NSObject, URLSessionDownloadDelegate {
                 // time after, and failed every time.
                 if let http = downloadTask.response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                     throw MacGuestError("Apple's server answered \(http.statusCode) instead of sending macOS. Next: try again later.")
+                }
+                // Nor a page sent with status 200 (seventh audit): macOS is
+                // many gigabytes.
+                let size = ((try? FileManager.default.attributesOfItem(atPath: location.path))?[.size] as? Int64) ?? 0
+                if size < (1 << 30) {
+                    throw MacGuestError("What Apple's server sent isn't a macOS installer (\(size >> 20) megabytes). Next: check the connection, then try again.")
                 }
                 try? FileManager.default.removeItem(at: destination)
                 try FileManager.default.moveItem(at: location, to: destination)

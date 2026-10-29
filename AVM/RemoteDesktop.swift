@@ -309,9 +309,16 @@ extension VMManager {
     /// stopped, or reinstalled, is ready. Failures are spoken; success is
     /// logged.
     func keepRemoteDesktopReady(configuration: VMConfiguration) async {
-        guard let user = configuration.remoteDesktopUser, !user.isEmpty,
-              let password = RemoteDesktop.password(for: configuration.id), !password.isEmpty else {
-            AVMLog.write("remoteDesktop: no account or password kept for \(configuration.name); nothing to set up")
+        guard let user = configuration.remoteDesktopUser, !user.isEmpty else {
+            AVMLog.write("remoteDesktop: no account kept for \(configuration.name); nothing to set up")
+            return
+        }
+        guard let password = RemoteDesktop.password(for: configuration.id), !password.isEmpty else {
+            // Said (2026-10-29, seventh audit): with the account set and no
+            // password in the keychain, the Windows App couldn't sign in and
+            // nothing explained why.
+            AVMLog.write("remoteDesktop: no password kept for \(configuration.name); nothing to set up")
+            Announcer.shared.announce("Remote Desktop for \(configuration.name) isn't set up: its password isn't in your keychain. Next: in its Settings, type the Remote Desktop password again and save.", tone: .info)
             return
         }
         for _ in 0..<60 {

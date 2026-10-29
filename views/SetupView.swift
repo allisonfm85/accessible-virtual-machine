@@ -454,7 +454,10 @@ struct SetupView: View {
         // when it changes (2026-10-29, sixth audit: lowered in silence).
         let before = diskSizeGB
         diskSizeGB = max(40, min(diskSizeGB, maxDiskInGB))
-        let sizeNote = diskSizeGB < before ? " Its disk is now \(diskSizeGB) gigabytes, the most that fits there." : ""
+        // Truthful when even 40 doesn't fit (2026-10-29, seventh audit).
+        let sizeNote = maxDiskInGB < 40
+            ? " There isn't room for a 40 gigabyte disk there; choose another drive, or free some space."
+            : diskSizeGB < before ? " Its disk is now \(diskSizeGB) gigabytes, the most that fits there." : ""
         Announcer.shared.announce("The virtual machine will be stored \(storageDescription.prefix(1).lowercased() + storageDescription.dropFirst())\(sizeNote)", tone: .info)
     }
 
@@ -638,6 +641,9 @@ struct SetupView: View {
                 return .failure(SetupProblem(message: "The two Windows passwords don't match. Please type them again."))
             }
             let displayName = windowsDisplayName.trimmingCharacters(in: .whitespaces)
+            if let problem = WindowsSetupAnswers.problem(withDisplayName: displayName) {
+                return .failure(SetupProblem(message: problem))
+            }
             answers.localAccount = .init(
                 userName: userName,
                 displayName: displayName.isEmpty ? userName : displayName,

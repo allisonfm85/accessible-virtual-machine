@@ -112,7 +112,7 @@ enum WindowsReinstall {
         // The install marker right away: an empty disk with the marker
         // still there would boot to the firmware shell as "installed".
         try? fm.removeItem(at: dir.appendingPathComponent("autounattend.img"))
-        for name in ["install-avm.iso", "nvram.fd", "tpm-state", RestorePoints.folderName, "firmware-serial.log",
+        for name in ["install-avm.iso", "nvram.fd", "tpm-state", RestorePoints.folderName, "firmware-serial.log", "setup-carry-on-said",
                      QEMUSavedState.hintFile, QEMUSavedState.loadedMarker, QEMUSavedState.resumeFile] {
             try? fm.removeItem(at: dir.appendingPathComponent(name))
         }

@@ -2222,7 +2222,19 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         // Set on the main thread, where keys read it (2026-10-29, sixth
         // audit): written from SPICE's thread, a key typed as QEMU went away
         // could read a reference being freed.
-        DispatchQueue.main.async { [weak self] in self?.input = input }
+        // Set on the main thread, where keys read it, and a superseded or
+        // unwanted reference let go on the SPICE context (2026-10-29, seventh
+        // audit): CSInput's last release waits on that context, which the
+        // main thread must never do.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.connection != nil else {
+                CSMain.shared.async { _ = input }
+                return
+            }
+            let old = self.input
+            self.input = input
+            if let old { CSMain.shared.async { _ = old } }
+        }
         input.requestMouseMode(false)
         // PUBLIC (issue #4): a configuration choice, announced. false =
         // request ABSOLUTE (client-mode) positioning — the mode the fork's
@@ -2240,9 +2252,14 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
 
     func spiceInputUnavailable(_ connection: CSConnection, input: CSInput) {
         NSLog("AVM: SPICE input channel unavailable.")
+        // By identity, with the last release on the SPICE context (seventh
+        // audit): held in this block, the main thread owned the last
+        // reference and blocked in its dealloc at every stop.
+        let gone = ObjectIdentifier(input)
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.input === input else { return }
+            guard let self, let current = self.input, ObjectIdentifier(current) == gone else { return }
             self.input = nil
+            CSMain.shared.async { _ = current }
         }
     }
 

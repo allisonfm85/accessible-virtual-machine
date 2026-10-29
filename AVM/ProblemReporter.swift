@@ -16,7 +16,10 @@ import AppKit
 @MainActor
 enum ProblemReporter {
 
-    static let newIssueURL = "https://github.com/allisonfm85/accessible-virtual-machine/issues/new"
+    // The template named in the address (2026-10-29, seventh audit): with
+    // templates in the repository, a bare issues/new is GitHub's chooser
+    // page, one more step before the form.
+    static let newIssueURL = "https://github.com/allisonfm85/accessible-virtual-machine/issues/new?template=report-a-problem.md"
     /// Lines from the end of the log; enough for the last start, short
     /// enough to read before submitting.
     static let logLines = 120
@@ -35,9 +38,10 @@ enum ProblemReporter {
         AVMLog.write("AVM: Report a Problem — report copied (\(report.count) characters); opening a new GitHub issue.")
 
         var components = URLComponents(string: newIssueURL)
-        components?.queryItems = [
-            URLQueryItem(name: "body", value: "What happened, and what you expected:\n\n\n\nAVM's report (paste it below with Command-V):\n\n"),
-        ]
+        // Added to the template item, not in its place.
+        var items = components?.queryItems ?? []
+        items.append(URLQueryItem(name: "body", value: "What happened, and what you expected:\n\n\n\nAVM's report (paste it below with Command-V):\n\n"))
+        components?.queryItems = items
         if let url = components?.url {
             NSWorkspace.shared.open(url)
         }

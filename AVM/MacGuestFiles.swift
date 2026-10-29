@@ -98,9 +98,26 @@ nonisolated enum MacRestorePoints {
             for item in staged { try? fm.removeItem(at: item.fresh) }
             throw error
         }
-        for item in staged {
-            _ = try fm.replaceItemAt(item.live, withItemAt: item.fresh)
+        // Each swap keeps the file it replaced until both are done (seventh
+        // audit): a second swap that failed left the point's disk with
+        // today's boot storage, said as "wasn't restored".
+        var swapped: [(live: URL, backup: URL)] = []
+        do {
+            for item in staged {
+                let backupName = ".\(item.live.lastPathComponent).before-restore"
+                let backup = item.live.deletingLastPathComponent().appendingPathComponent(backupName)
+                try? fm.removeItem(at: backup)
+                _ = try fm.replaceItemAt(item.live, withItemAt: item.fresh, backupItemName: backupName, options: .withoutDeletingBackupItem)
+                swapped.append((item.live, backup))
+            }
+        } catch {
+            for done in swapped.reversed() where fm.fileExists(atPath: done.backup.path) {
+                _ = try? fm.replaceItemAt(done.live, withItemAt: done.backup)
+            }
+            for item in staged { try? fm.removeItem(at: item.fresh) }
+            throw error
         }
+        for done in swapped { try? fm.removeItem(at: done.backup) }
         try? fm.removeItem(at: files.savedState)
     }
 

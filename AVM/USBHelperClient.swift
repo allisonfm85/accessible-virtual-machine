@@ -374,7 +374,7 @@ final class USBHelperClient: NSObject, ObservableObject {
         return result
     }
 
-    func holdBluetooth(_ id: String, socketPath: String, peerPID: Int) async -> Result<Void, USBHelperError> {
+    func holdBluetooth(_ id: String, socketPath: String, peerPID: Int, retrying: Bool = false) async -> Result<Void, USBHelperError> {
         guard ensureRegistered() else { return .failure(.notEnabled(status)) }
         await ensureCurrentHelper()
         bluetoothHeld.insert(id)
@@ -391,6 +391,12 @@ final class USBHelperClient: NSObject, ObservableObject {
         if case .failure = result {
             bluetoothHeld.remove(id)
             disconnectIfIdle()
+        }
+        // A dropped launchd job (2026-10-29, seventh audit): re-registered
+        // and asked once more, as attach() does; without it the device
+        // "stayed on the Mac" for a cause a plug-in recovers from.
+        if case .failure(.helperUnavailable) = result, retrying == false, recoverLostRegistration() {
+            return await holdBluetooth(id, socketPath: socketPath, peerPID: peerPID, retrying: true)
         }
         return result
     }
@@ -635,7 +641,7 @@ final class USBHelperClient: NSObject, ObservableObject {
         return result
     }
 
-    func holdKeyboard(_ keyboardID: String) async -> Result<Void, USBHelperError> {
+    func holdKeyboard(_ keyboardID: String, retrying: Bool = false) async -> Result<Void, USBHelperError> {
         guard ensureRegistered() else { return .failure(.notEnabled(status)) }
         await ensureCurrentHelper()
         keyboardActive = true
@@ -653,6 +659,12 @@ final class USBHelperClient: NSObject, ObservableObject {
         if case .failure = result {
             keyboardActive = false
             disconnectIfIdle()
+        }
+        // A dropped launchd job (2026-10-29, seventh audit): re-registered
+        // and asked once more, as attach() does; without it the keyboard
+        // was given up with "AVM's helper didn't answer".
+        if case .failure(.helperUnavailable) = result, retrying == false, recoverLostRegistration() {
+            return await holdKeyboard(keyboardID, retrying: true)
         }
         return result
     }

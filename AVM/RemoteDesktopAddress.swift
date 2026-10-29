@@ -122,7 +122,10 @@ nonisolated enum RemoteDesktop {
 
     private static let service = "com.alllisonmeloy.AVM.remote-desktop"
 
-    static func savePassword(_ password: String, for id: UUID) {
+    /// False when the keychain refused (2026-10-29, seventh audit): the
+    /// caller then says so instead of promising a set-up that can't happen.
+    @discardableResult
+    static func savePassword(_ password: String, for id: UUID) -> Bool {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                     kSecAttrService as String: service,
                                     kSecAttrAccount as String: id.uuidString]
@@ -134,6 +137,7 @@ nonisolated enum RemoteDesktop {
         if status != errSecSuccess {
             AVMLog.write("AVM: Remote Desktop — the password couldn't be kept in the keychain (\(status))")
         }
+        return status == errSecSuccess
     }
 
     static func password(for id: UUID) -> String? {

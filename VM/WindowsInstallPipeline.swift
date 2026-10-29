@@ -680,7 +680,10 @@ nonisolated final class WindowsInstallPipeline {
                 pipelineLog("detachISO: \(mountPoint.path)")
                 return
             }
-            if attempt < 4 { try? await Task.sleep(for: .milliseconds(1500)) }
+            // A sleep that still sleeps in a cancelled task (2026-10-29,
+            // seventh audit): Task.sleep returned at once, and the four
+            // tries came within milliseconds.
+            if attempt < 4 { _ = try? await Task.detached { try await Task.sleep(for: .milliseconds(1500)) }.value }
         }
         pipelineLog("detachISO: \(mountPoint.path) is still in use; left mounted for whoever uses it")
     }

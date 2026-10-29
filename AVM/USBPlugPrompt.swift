@@ -111,6 +111,10 @@ final class USBPlugPrompt {
         var attempts = 0
         var bounces = 0
         var lastActivity = Date()
+        /// True once the gate took an arrival at another address as its
+        /// device (2026-10-29, seventh audit): with a second device like it
+        /// on the Mac, that may be the second one, never asked about.
+        var absorbedElsewhere = false
     }
     private var gates: [String: SendGate] = [:]
     private static let settleQuiet: TimeInterval = 3
@@ -249,8 +253,14 @@ final class USBPlugPrompt {
     }
 
     /// The VM stopped. Its questions no longer mean anything.
-    func vmStopped() {
-        for key in Array(gates.keys) { finishGate(key, .stopped) }
+    /// `machine`: the one that stopped (2026-10-29, seventh audit); only
+    /// its send gates close. The watched machine's stop closed every
+    /// machine's, and a device owed a send back into another machine, still
+    /// running, stayed on the Mac without a word. nil closes them all.
+    func vmStopped(machine: UUID? = nil) {
+        for key in Array(gates.keys) where machine == nil || gates[key]?.question.vmID == machine {
+            finishGate(key, .stopped)
+        }
         windowsHasBooted = false
         bootFallback?.cancel()
         bootFallback = nil
@@ -406,6 +416,16 @@ final class USBPlugPrompt {
 
     func send(_ question: USBPlugQuestion, because why: String) {
         let machine = MachineSessions.shared.session(for: question.vmID)?.manager ?? VMManager.shared
+        // Not held for a machine being saved (2026-10-29, seventh audit):
+        // Save is offered for a paused machine too, and a device plugged in
+        // during its save was promised "when A resumes", then dropped
+        // without a word when the save stopped A.
+        if let manager = machine, manager.isSaving {
+            let guest = Self.guestName(for: question.vmID)
+            log("send: \(guest) is being saved; \(question.identity) stays on the Mac (\(why))")
+            say(Self.savingLine(manager, guest: guest, name: Self.titleName(question)))
+            return
+        }
         if let manager = machine, case .paused = manager.state {
             heldForResume.append(question)
             log("send held: Windows is paused; \(question.identity) waits for resume (\(why))")
@@ -481,6 +501,7 @@ final class USBPlugPrompt {
                                         rememberOffered: gate.question.rememberOffered)
         gate.bounces += 1
         gate.lastActivity = Date()
+        if !atItsAddress { gate.absorbedElsewhere = true }
         gates[key] = gate
         log("send gate: \(question.identity) arrived again; noted (\(gate.bounces) so far)")
         return true
@@ -570,6 +591,17 @@ final class USBPlugPrompt {
                 finishGate(key, .failed)
                 return
             }
+            // Not with a device the gate took over at another address while
+            // a second one like it is on the Mac (2026-10-29, seventh audit):
+            // a second identical unit (no serial) plugged in while the first
+            // bounced was absorbed as the first's new address, and the retry
+            // sent it, a keyboard, without a question. The user decides.
+            let alike = USBHotPlugWatcher.shared.presentCount(like: settled.question.identity)
+            if settled.absorbedElsewhere, alike > 1 {
+                log("send gate: \(settled.question.identity) was taken over at a new address and \(alike) devices like it are on the Mac; not retrying with one that wasn't asked about")
+                finishGate(key, .failed)
+                return
+            }
             log("send gate: \(settled.question.identity) settled on the Mac; trying once more")
         }
     }
@@ -619,7 +651,7 @@ final class USBPlugPrompt {
             // running, and the device stayed on the Mac with no word.
             let guest = Self.guestName(for: gate.question.vmID)
             log("send gate closed: \(device) not sent; \(guest) is being saved (\(tries))")
-            say("\(guest) is being saved, so \(name) stays on the Mac. Send it again once that's done.")
+            say(Self.savingLine(MachineSessions.shared.session(for: gate.question.vmID)?.manager, guest: guest, name: name))
         case .paused:
             // Held for its resume, as send() holds one (2026-10-29, sixth
             // audit). Only the watched machine's resume sends what's held
@@ -732,6 +764,17 @@ final class USBPlugPrompt {
         return name
     }
 
+    /// Why a device stays on the Mac while its machine is saved, and when
+    /// to send it again (2026-10-29, seventh audit). A Save stops the
+    /// machine, so "send it again once that's done" pointed at a machine
+    /// that had stopped; a restore point keeps it running.
+    private static func savingLine(_ machine: VMManager?, guest: String, name: String) -> String {
+        if machine?.takingRestorePoint == true {
+            return "\(guest) is being saved, so \(name) stays on the Mac. Send it again once the restore point is saved, with Attach USB Device."
+        }
+        return "\(guest) is being saved and will stop, so \(name) stays on the Mac. Send \(name) again after its next Start."
+    }
+
     static func message(for kind: USBDeviceClassification.Kind, guest named: String? = nil) -> String {
         let guest = named ?? VMManager.currentGuestName
         let macLoses = "If you send it to \(guest), the Mac can't use it until you unplug it or shut down \(guest)."
@@ -748,7 +791,10 @@ final class USBPlugPrompt {
         case .mouse:
             return "This is a mouse or trackpad. \(macLoses)"
         case .soundOutput:
-            return "Your Mac is playing sound through this device right now, including VoiceOver speech. If you send it to \(guest), the Mac loses that sound until you unplug it or shut down \(guest)."
+            // "May": with VoiceOver on, any USB output asks (2026-10-29,
+            // seventh audit), because AVM can't read which output VoiceOver
+            // itself uses.
+            return "Your Mac may be playing sound through this device, VoiceOver's speech included. If you send it to \(guest), the Mac loses that sound until you unplug it or shut down \(guest)."
         case .unknownInput:
             return "This might be a keyboard, mouse, or other input device. \(macLoses)"
         }

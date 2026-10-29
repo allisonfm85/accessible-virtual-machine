@@ -444,7 +444,7 @@ private struct DashboardContent: View {
                                 // and a running machine that wasn't the
                                 // current one had no way to its Settings.
                                 QEMUMachineRow(session: session, errorMessage: $errorMessage, savedName: config.name,
-                                               openSettings: { openSettings(config) })
+                                               isTemplate: config.isATemplate, openSettings: { openSettings(config) })
                             } else {
                                 // Saved (2026-10-27): its Start carries on.
                                 if QEMUSavedState.looksSaved(config) {
@@ -541,7 +541,7 @@ private struct DashboardContent: View {
                 if let current = machines.current {
                     // Named (2026-10-28, fifth audit): with two machines
                     // running, which one this opened was anyone's guess.
-                    Button("Settings for \(current.configuration.name)") {
+                    Button("Settings for \(vmStore.configurations.first { $0.id == current.configuration.id }?.name ?? current.configuration.name)") {
                         settingsTarget = current.configuration
                     }
                     .accessibilityHint("Opens this virtual machine's settings")
@@ -846,6 +846,9 @@ private struct QEMUMachineRow: View {
     @ObservedObject var session: VMSession
     @Binding var errorMessage: String?
     let savedName: String
+    /// A template isn't saved with open apps (2026-10-29, seventh audit):
+    /// saved, nothing could start or copy it.
+    let isTemplate: Bool
     let openSettings: () -> Void
     @EnvironmentObject var focusLock: FocusLockManager
     @ObservedObject private var machines = MachineSessions.shared
@@ -936,7 +939,7 @@ private struct QEMUMachineRow: View {
                 .accessibilityLabel("Settings for \(name)")
                 .accessibilityHint("Opens settings for this virtual machine. Some settings change only while it's shut down.")
         }
-        if session.canSave {
+        if session.canSave, !isTemplate {
             Button("Save") { Task { await session.saveAndStop() } }
                 .accessibilityLabel("Save \(name)")
                 .accessibilityHint("Keeps it as it is, open apps and all, and stops it. The next Start carries on from there in seconds.")
@@ -1012,8 +1015,9 @@ private struct QEMUMachineRow: View {
 @MainActor
 func chooseFileToSend(_ session: VMSession) {
     let panel = NSOpenPanel()
-    panel.title = "Send a File to \(session.configuration.name)"
-    panel.message = "Choose a file. It goes into Downloads in \(session.configuration.name)."
+    let machine = VMStore.shared?.configurations.first { $0.id == session.configuration.id }?.name ?? session.configuration.name
+    panel.title = "Send a File to \(machine)"
+    panel.message = "Choose a file. It goes into Downloads in \(machine)."
     panel.prompt = "Send"
     panel.canChooseFiles = true
     panel.canChooseDirectories = false
@@ -1034,7 +1038,7 @@ func chooseFileToSend(_ session: VMSession) {
 @MainActor
 func askRestorePointName(_ session: VMSession) {
     let alert = NSAlert()
-    alert.messageText = "Save a restore point for \(session.configuration.name)?"
+    alert.messageText = "Save a restore point for \(VMStore.shared?.configurations.first { $0.id == session.configuration.id }?.name ?? session.configuration.name)?"
     alert.informativeText = "It keeps open apps too, and \(session.configuration.guestOS.displayName) keeps running. Give it a name you'll recognize, such as Before the October update."
     let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
     field.stringValue = "Restore point from \(Date().formatted(date: .long, time: .shortened))"
@@ -1145,7 +1149,9 @@ enum DashboardStatus {
 
         var parts: [String] = macPart.map { [$0] } ?? []
         for session in running {
-            let name = session.configuration.name
+            // The saved name (2026-10-29, seventh audit): a machine renamed
+            // while running kept its old one here.
+            let name = VMStore.shared?.configurations.first { $0.id == session.configuration.id }?.name ?? session.configuration.name
             switch session.vmState {
             case .stopped:            parts.append("\(name) is stopped.")
             case .starting:

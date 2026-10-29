@@ -44,6 +44,9 @@ final class MacClipboard {
         }
         let installer = folder.appendingPathComponent("Install Clipboard Sharing.command")
         try Self.installerScript.write(to: installer, atomically: true, encoding: .utf8)
+        // The current sync script beside it (2026-10-29, seventh audit): an
+        // installed copy in the machine replaces itself with it.
+        try Self.syncScript.write(to: folder.appendingPathComponent("sync.sh"), atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: installer.path)
         lastFromMacOS = (try? fm.attributesOfItem(atPath: fromMacOS.path))?[.modificationDate] as? Date
     }
@@ -109,18 +112,9 @@ final class MacClipboard {
         lastChangeCount = board.changeCount   // not sent back
     }
 
-    /// Run once in the machine. Puts the sync script in the user's Library
-    /// and a LaunchAgent that keeps it running at every login.
-    private static let installerScript = #"""
-    #!/bin/bash
-    # Installs AVM's clipboard sharing in this macOS machine. Run it once.
-    set -e
-    SHARE="/Volumes/My Shared Files/AVM Clipboard"
-    [ -d "$SHARE" ] || SHARE="$(cd "$(dirname "$0")" && pwd)"
-    DIR="$HOME/Library/Application Support/AVM Clipboard"
-    AGENT="$HOME/Library/LaunchAgents/com.alllisonmeloy.avm-clipboard.plist"
-    mkdir -p "$DIR" "$HOME/Library/LaunchAgents"
-    cat > "$DIR/sync.sh" <<'SYNC'
+    /// The script that runs in the machine; also written to the shared folder
+    /// at every start, so an installed copy updates itself (seventh audit).
+    static let syncScript = #"""
     #!/bin/bash
     # AVM clipboard sharing: keeps this machine's clipboard and the Mac's in
     # step through the shared AVM Clipboard folder. Text only.
@@ -130,6 +124,12 @@ final class MacClipboard {
     # a copy in this machine never reached the Mac.
     export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
     SHARE="/Volumes/My Shared Files/AVM Clipboard"
+    # A newer copy of this script in the shared folder replaces this one
+    # (2026-10-29, seventh audit): AVM writes it there at every start, so a
+    # fix reaches machines where sharing was installed before the fix.
+    if [ -f "$SHARE/sync.sh" ] && [ -n "$0" ] && ! cmp -s "$SHARE/sync.sh" "$0"; then
+        cp "$SHARE/sync.sh" "$0.new" && mv "$0.new" "$0" && exec /bin/bash "$0"
+    fi
     last_mine=""
     last_theirs=""
     while true; do
@@ -152,6 +152,21 @@ final class MacClipboard {
         fi
         sleep 0.5
     done
+    """#
+
+    /// Run once in the machine. Puts the sync script in the user's Library
+    /// and a LaunchAgent that keeps it running at every login.
+    private static let installerScript = #"""
+    #!/bin/bash
+    # Installs AVM's clipboard sharing in this macOS machine. Run it once.
+    set -e
+    SHARE="/Volumes/My Shared Files/AVM Clipboard"
+    [ -d "$SHARE" ] || SHARE="$(cd "$(dirname "$0")" && pwd)"
+    DIR="$HOME/Library/Application Support/AVM Clipboard"
+    AGENT="$HOME/Library/LaunchAgents/com.alllisonmeloy.avm-clipboard.plist"
+    mkdir -p "$DIR" "$HOME/Library/LaunchAgents"
+    cat > "$DIR/sync.sh" <<'SYNC'
+    \#(syncScript)
     SYNC
     chmod 700 "$DIR/sync.sh"
     cat > "$AGENT" <<PLIST

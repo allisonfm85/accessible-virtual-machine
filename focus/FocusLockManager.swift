@@ -275,8 +275,19 @@ class FocusLockManager: ObservableObject {
     /// Mac's clipboard to the guest (AVMPasteboard, 2026-10-25).
     private lazy var activeObserver: NSObjectProtocol = NotificationCenter.default.addObserver(
         forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
-    ) { _ in
-        MainActor.assumeIsolated { AVMPasteboard.shared.macPasteboardMayHaveChanged() }
+    ) { [weak self] _ in
+        MainActor.assumeIsolated {
+            AVMPasteboard.shared.macPasteboardMayHaveChanged()
+            // Back after a long absence that began with the lock dropping
+            // (2026-10-29, seventh audit): a screen saver that never locked
+            // the screen said "Entering Mac" to nobody, and nothing on return.
+            guard let self, !self.isLocked, let resigned = self.resignedWhileLocked else { return }
+            self.resignedWhileLocked = nil
+            if Date().timeIntervalSince(resigned.at) > 30 {
+                self.droppedBySystem = resigned.guest
+                self.sayKeyboardIsBack()
+            }
+        }
     }
 
     // MARK: - Capture view registration
@@ -529,6 +540,12 @@ class FocusLockManager: ObservableObject {
             }
             if self.voiceOverIsRunning {
                 AVMLog.write("AVM: FocusLock — key watch: key LOST >1s; announcement suppressed (VoiceOver running).")
+                return
+            }
+            // AVM's own question has the keyboard (seventh audit): "another
+            // window took the keyboard" came in the middle of the quit question.
+            if NSApp.modalWindow != nil {
+                AVMLog.write("AVM: FocusLock — key watch: key LOST to AVM's own dialog; silent.")
                 return
             }
             self.keyLossAnnounced = true

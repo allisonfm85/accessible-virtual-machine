@@ -75,7 +75,8 @@ final class WindowsKeyboard {
     private init() {}
 
     /// Which start a wait belongs to (2026-10-28): a stop and a new start
-    /// during the approval wait left two waits for one keyboard.
+    /// during the approval wait left two waits for one keyboard. The ask
+    /// at an unlock counts as one (seventh audit).
     private var startGeneration = 0
 
     func start(keyboardID: String, name: String?, target: VMManager? = nil, appleISO: Bool = false) {
@@ -106,8 +107,27 @@ final class WindowsKeyboard {
         keyboardName = name ?? "The keyboard for Windows"
         announcedHeld = false
         startGeneration += 1
-        let generation = startGeneration
+        // Not while the screen is locked (2026-10-29, seventh audit): a
+        // start under a lock (a machine started at login, a hand-over from
+        // a machine that stopped, the helper's restart) took the keyboard
+        // for the whole lock, so it typed nowhere, and couldn't type the
+        // password. Asked for at the unlock, like one given back for a lock.
+        if screenLocked {
+            releasedForScreenLock = true
+            AVMLog.write("AVM: WindowsKeyboard — the screen is locked; the keyboard stays with the Mac, and the helper is asked at the unlock.")
+            return
+        }
         AVMLog.write("AVM: WindowsKeyboard — asking the helper for the keyboard for Windows.")
+        askHelper(for: keyboardID, generation: startGeneration)
+    }
+
+    /// Asks the helper for the keyboard and acts on its answer: from
+    /// start(), and at the unlock after a screen lock gave it back
+    /// (2026-10-29, seventh audit: that ask dropped the answer, so a
+    /// refusal left the keyboard typing on the Mac while AVM believed it
+    /// was in Windows). `generation`: the start this ask belongs to; a
+    /// stop or a newer start meanwhile makes the answer nobody's.
+    private func askHelper(for keyboardID: String, generation: Int) {
         Task { @MainActor in
             var result = await USBHelperClient.shared.holdKeyboard(keyboardID)
             // The helper is waiting for its approval in Login Items
@@ -235,7 +255,13 @@ final class WindowsKeyboard {
                         self.releasedForScreenLock = false
                         if let id = self.keyboardID {
                             AVMLog.write("AVM: WindowsKeyboard — the screen is unlocked; asking for the keyboard again.")
-                            Task { _ = await USBHelperClient.shared.holdKeyboard(id) }
+                            // The one ask (2026-10-29, seventh audit): this
+                            // one dropped the helper's answer. Its own
+                            // generation, so a wait left by the start (for
+                            // the helper's approval, say) ends instead of
+                            // asking too.
+                            self.startGeneration += 1
+                            self.askHelper(for: id, generation: self.startGeneration)
                         }
                     }
                 }

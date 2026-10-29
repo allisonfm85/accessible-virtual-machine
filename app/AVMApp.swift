@@ -527,6 +527,18 @@ struct AVMApp: App {
                         NSWorkspace.shared.open(url)
                     }
                 }
+                // Open Source Licenses (2026-10-29, seventh audit): the
+                // bundled software's license texts and AVM's offer of their
+                // source code, in Resources/Licenses, opened in the Finder.
+                Button("Open Source Licenses") {
+                    let folder = Bundle.main.resourceURL?.appendingPathComponent("Licenses", isDirectory: true)
+                    if let folder, FileManager.default.fileExists(atPath: folder.path) {
+                        AVMLog.write("AVM: Help menu — opening the Licenses folder.")
+                        NSWorkspace.shared.open(folder)
+                    } else {
+                        Announcer.shared.announce("This build of AVM has no Licenses folder. The license texts and the source offer are in THIRD-PARTY-NOTICES.txt in AVM's repository on GitHub.", tone: .info)
+                    }
+                }
             }
         }
 
@@ -597,7 +609,7 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
             // user's AVM settings, and restored Caps Lock under the user's
             // own AVM while its keyboard was in Windows, or turned VoiceOver
             // back on while the user was in a macOS machine.
-            let testRun = CommandLine.arguments.contains { $0.hasPrefix("--test-") }
+            let testRun = CommandLine.arguments.contains { $0.hasPrefix("--test-") || $0 == "--run-in-guest" }
             if !testRun {
                 CapsLockRemapper.shared.recoverAtLaunch()
                 // The Mac's VoiceOver back on if AVM ended while it was off for a
@@ -678,8 +690,9 @@ enum DashboardCommand {
     static func post(_ name: Notification.Name, object: Any? = nil) {
         // A window already open on the list (2026-10-29, sixth audit): the
         // next one waited, out of sight and unsaid, until it was closed.
-        let opensWindow: Set<Notification.Name> = [.avmAttachUSBFromMenu, .avmDetachUSBFromMenu, .avmBluetoothDevices,
-                                                   .avmReclaimFromMenu, .avmBackgroundSettings]
+        // Only the commands that always open one (seventh audit): Detach
+        // with one device and Reclaim with nothing to reclaim just speak.
+        let opensWindow: Set<Notification.Name> = [.avmAttachUSBFromMenu, .avmBluetoothDevices, .avmBackgroundSettings]
         if opensWindow.contains(name), MainWindowCloseGuard.hasOpenSheet {
             Announcer.shared.announce("A window is open in AVM's list. Close it, then choose the command again.", tone: .info)
             MainWindowCloseGuard.bringMainWindowForward()
@@ -863,7 +876,10 @@ enum QuitCoordinator {
             ? " The choices are \(titles.joined(separator: ", ")). Return chooses \(titles[0]); to hear and choose the others, turn VoiceOver on with Command F5."
             : ""
         var timer: Timer?
-        if !NSWorkspace.shared.isVoiceOverEnabled || FocusLockManager.shared?.isLocked == true {
+        // Only with VoiceOver off (2026-10-29, seventh audit): on, it reads
+        // the alert itself once AVM is in front, lock or no lock, and the
+        // Command F5 advice would have turned it off.
+        if !NSWorkspace.shared.isVoiceOverEnabled {
             Announcer.shared.announce(alert.messageText + choices, tone: .info)
         } else {
             // Said after all if AVM wasn't let in front (sixth audit): macOS
@@ -904,6 +920,14 @@ enum QuitCoordinator {
     }
 
     static func shouldTerminate() -> NSApplication.TerminateReply {
+        // The Mac's own restart, shut down or log out, read once while the
+        // Apple event is still current (2026-10-29, seventh audit): every
+        // Cancel below stops it, and only the Windows branch said so.
+        let stop = macStop
+        func stopCancelled(_ why: String) {
+            guard let stop else { return }
+            Announcer.shared.announce("The Mac's \(stop.word) is stopped; \(why) Choose \(stop.item) again when you're ready.", tone: .info)
+        }
         // A macOS machine being made (2026-10-28, fourth audit): quitting
         // threw the download and the half-made machine away without asking.
         if MacInstaller.running > 0 {
@@ -915,6 +939,7 @@ enum QuitCoordinator {
             alert.addButton(withTitle: "Quit and Stop")
             guard ask(alert) == .alertSecondButtonReturn else {
                 AVMLog.write("AVM: Quit — cancelled while a macOS machine was being made.")
+                stopCancelled("AVM keeps making the macOS machine.")
                 return .terminateCancel
             }
         }
@@ -930,6 +955,7 @@ enum QuitCoordinator {
             alert.addButton(withTitle: "Quit and Stop")
             guard ask(alert) == .alertSecondButtonReturn else {
                 AVMLog.write("AVM: Quit — cancelled while \(activity).")
+                stopCancelled("AVM goes on \(activity).")
                 return .terminateCancel
             }
             AVMLog.write("AVM: Quit — chosen while \(activity).")
@@ -963,24 +989,36 @@ enum QuitCoordinator {
                 MacGuestRunner.shared.forceStop()
             case .alertThirdButtonReturn where saveable:
                 // Stopped while the question was up (2026-10-29, sixth
-                // audit): nothing is left to save, so AVM just quits.
-                guard MacGuestRunner.shared.runningID != nil, MacGuestRunner.shared.canSave else {
-                    return otherActive ? .terminateCancel : .terminateNow
-                }
-                if !otherActive {
+                // audit): nothing is left to save. With no other machine AVM
+                // just quits; with one, that machine's question follows
+                // (seventh audit: it was cancelled in silence).
+                if MacGuestRunner.shared.runningID == nil {
+                    if !otherActive { return .terminateNow }
+                } else if !MacGuestRunner.shared.canSave {
+                    // A save began meanwhile (avmctl): it finishes first.
+                    Announcer.shared.announce("macOS is being saved. Quit AVM again when it's done.", tone: .info)
+                    stopCancelled("macOS is being saved.")
+                    return .terminateCancel
+                } else if !otherActive {
                     // The reply comes a turn later at the soonest (sixth
                     // audit): a save that ends at once replied inside this
                     // call, before .terminateLater was returned.
                     MacGuestRunner.shared.saveAndStop { saved in
-                        DispatchQueue.main.async { NSApp.reply(toApplicationShouldTerminate: saved) }
+                        DispatchQueue.main.async {
+                            if !saved { stopCancelled("macOS couldn't be saved and keeps running.") }
+                            NSApp.reply(toApplicationShouldTerminate: saved)
+                        }
                     }
                     return .terminateLater
+                } else {
+                    MacGuestRunner.shared.saveAndStop { saved in
+                        if saved { NSApp.terminate(nil) }
+                    }
+                    stopCancelled("macOS is being saved first, and AVM asks about the other machine when it's done.")
+                    return .terminateCancel
                 }
-                MacGuestRunner.shared.saveAndStop { saved in
-                    if saved { NSApp.terminate(nil) }
-                }
-                return .terminateCancel
             default:
+                stopCancelled("macOS keeps running. Shut it down in its window first.")
                 return .terminateCancel
             }
         }
@@ -1101,8 +1139,21 @@ enum QuitCoordinator {
         Task { @MainActor in
             await releaseUSBDevices()
             if vmActive {
-                for manager in MachineSessions.shared.managers {
-                    manager.terminateForQuit()
+                // Through the session (2026-10-29, seventh audit): a Shut
+                // Down still waiting saw .stopped and said "has shut down",
+                // with the success sound, as the plug was pulled.
+                let sessions = Array(MachineSessions.shared.sessions.values)
+                let managers = sessions.isEmpty ? MachineSessions.shared.managers : sessions.map(\.manager)
+                for session in sessions { session.terminateForQuit() }
+                if sessions.isEmpty { for manager in managers { manager.terminateForQuit() } }
+                // A moment for a cancelled install media build to end
+                // (2026-10-29, seventh audit): its tool outlived AVM, with
+                // the installer ISO mounted and the scratch folder kept.
+                let deadline = Date().addingTimeInterval(8)
+                for manager in managers {
+                    while manager.mediaBuildTask != nil, Date() < deadline {
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
                 }
             }
             NSApp.reply(toApplicationShouldTerminate: true)

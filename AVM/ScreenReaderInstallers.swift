@@ -188,7 +188,9 @@ nonisolated enum ScreenReaderInstallers {
             if Task.isCancelled { break }
             let installer = await latest(reader)
             let file = cache.appendingPathComponent("\(reader.rawValue)-\(installer.version).exe")
-            if (try? matches(file, installer.checksum)) == true {
+            // Hashed off the main actor (2026-10-29, seventh audit): this runs
+            // on the caller's actor, and 1.5 GB of SHA-256 froze AVM's speech.
+            if (try? await Task.detached { try matches(file, installer.checksum) }.value) == true {
                 AVMLog.write("AVM: ScreenReaders — reusing \(reader.displayName) \(installer.version).")
                 got[reader] = file
                 continue
@@ -203,7 +205,7 @@ nonisolated enum ScreenReaderInstallers {
                 if Task.isCancelled { break }
                 do {
                     try await download(installer, to: file, resumeData: resumeData, say: say)
-                    guard try matches(file, installer.checksum) else {
+                    guard try await Task.detached { try matches(file, installer.checksum) }.value else {
                         try? FileManager.default.removeItem(at: file)
                         throw ScreenReaderInstallerError.checksum(reader.displayName)
                     }
@@ -227,6 +229,9 @@ nonisolated enum ScreenReaderInstallers {
                     }
                 }
             }
+            // The last try's piece goes too (2026-10-29, seventh audit): up to
+            // 1.5 GB stayed in the temporary folder.
+            if let resumeData { discardResumeFile(resumeData) }
             if let lastError, !Task.isCancelled {
                 await say("\(reader.displayName) couldn't be downloaded after \(downloadAttempts) tries, so it won't be installed this time. Reason: \(lastError.localizedDescription) Windows still has Narrator: in Windows, press Control Command Return to turn it on, then install \(reader.displayName) from its maker's website there.", true)
             }
@@ -342,6 +347,13 @@ nonisolated enum ScreenReaderInstallers {
         }
         try? FileManager.default.removeItem(at: file)
         try FileManager.default.moveItem(at: part, to: file)
+    }
+
+    /// The temporary file a stopped download's resume data names.
+    private static func discardResumeFile(_ resumeData: Data) {
+        guard let info = try? PropertyListSerialization.propertyList(from: resumeData, format: nil) as? [String: Any],
+              let name = info["NSURLSessionResumeInfoTempFileName"] as? String, !name.isEmpty, !name.contains("/") else { return }
+        try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent(name))
     }
 
     /// The running download task, for the progress poll and a cancel. A

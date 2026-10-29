@@ -176,7 +176,7 @@ nonisolated struct WindowsSetupAnswers: Codable, Equatable, Sendable {
 
     // MARK: Answer file sections
 
-    private static func xml(_ text: String) -> String {
+    static func xml(_ text: String) -> String {
         text.replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
@@ -284,7 +284,31 @@ nonisolated struct WindowsSetupAnswers: Codable, Equatable, Sendable {
 
     static func load(fromVMDirectory dir: URL) -> WindowsSetupAnswers? {
         guard let data = try? Data(contentsOf: dir.appendingPathComponent(fileName)) else { return nil }
-        return try? JSONDecoder().decode(WindowsSetupAnswers.self, from: data)
+        guard var answers = try? JSONDecoder().decode(WindowsSetupAnswers.self, from: data) else { return nil }
+        // Only values shaped as Windows names them (2026-10-29, seventh
+        // audit): a hand-edited or imported file is checked as the wizard's
+        // own values were.
+        if let locale = answers.locale, locale.range(of: #"^[A-Za-z]{2,3}(-[A-Za-z]{2,8})*$"#, options: .regularExpression) == nil {
+            answers.locale = nil
+        }
+        if let keyboard = answers.inputLocale, keyboard.range(of: #"^[0-9A-Fa-f]{4}:[0-9A-Fa-f]{8}$"#, options: .regularExpression) == nil {
+            answers.inputLocale = nil
+        }
+        return answers
+    }
+
+    /// Why this display name won't do, or nil (2026-10-29, seventh audit):
+    /// a control character made the answer file unreadable, which was then
+    /// blamed on AVM, and Windows refuses a very long one on a page a blind
+    /// user can't see.
+    static func problem(withDisplayName name: String) -> String? {
+        if name.rangeOfCharacter(from: .controlCharacters) != nil {
+            return "The Windows display name can't contain control characters. Type it again."
+        }
+        if name.utf16.count > 256 {
+            return "The Windows display name must be 256 characters or fewer."
+        }
+        return nil
     }
 
     /// Once the media is built the password's encoding is no longer needed.

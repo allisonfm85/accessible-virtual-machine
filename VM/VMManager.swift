@@ -536,7 +536,11 @@ final class VMManager: ObservableObject {
     var buildIsWanted: Bool { headlessBuild || state == .starting }
     /// A restore point with memory is being taken (2026-10-29, sixth
     /// audit): devices aren't sent meanwhile, as during a save.
-    var takingRestorePoint = false
+    @Published private(set) var takingRestorePoint = false
+    /// The screen readers that reached this start's install media
+    /// (2026-10-29, seventh audit): the milestone promised the ones chosen,
+    /// downloaded or not.
+    var screenReadersOnMedia: [ScreenReader]?
 
     // MARK: - Binary Discovery
 
@@ -835,7 +839,7 @@ final class VMManager: ObservableObject {
     /// feedback: the silence read as AVM not working). With a Microsoft
     /// account, Windows stops at its sign-in pages for the user, so those
     /// updates say so.
-    private func watchForFirstSignIn(configuration: VMConfiguration, runtimeDir: URL, installStart: Date) async {
+    private func watchForFirstSignIn(configuration: VMConfiguration, runtimeDir: URL, installStart: Date, quietAfterAnHour: Bool = false) async {
         let since = Date()
         var lastProgress = Date()
         // After the hour's warning the watch goes on quietly, every 5
@@ -868,7 +872,9 @@ final class VMManager: ObservableObject {
             if !warnedAtHour, Date().timeIntervalSince(since) > 60 * 60 {
                 warnedAtHour = true
                 avmLog("installWatchdog: no first sign-in 60 minutes after the marker; watching on quietly")
-                Announcer.shared.announce("Windows has been setting up for an hour without reaching its first sign-in; one of its steps may be waiting. Next: enter Windows and turn on Narrator with Control Command Return to hear where it is.", tone: .failure)
+                if !quietAfterAnHour {
+                    Announcer.shared.announce("Windows has been setting up for an hour without reaching its first sign-in; one of its steps may be waiting. Next: enter Windows and turn on Narrator with Control Command Return to hear where it is.", tone: .failure)
+                }
             }
         }
     }
@@ -1024,7 +1030,9 @@ final class VMManager: ObservableObject {
             .appendingPathComponent("screen-readers", isDirectory: true)
         let isoBytes = ((try? FileManager.default.attributesOfItem(atPath: iso))?[.size] as? Int64) ?? 0
         let readerBytes = configuration.windowsScreenReaders.reduce(Int64(0)) { total, reader in
-            total + (readerCache.flatMap { ScreenReaderInstallers.cachedBytes(of: reader, in: $0) } ?? 2 * reader.typicalBytes)
+            // Twice (2026-10-29, seventh audit): once in the ISO tree, once in
+            // the rebuilt ISO; a copy not downloaded yet, once more.
+            total + (readerCache.flatMap { ScreenReaderInstallers.cachedBytes(of: reader, in: $0) }.map { 2 * $0 } ?? 3 * reader.typicalBytes)
         }
         let needed = isoBytes * 22 / 10 + readerBytes + (Int64(1) << 30)
         if let support = try? AVMPaths.supportDirectory(),
@@ -1062,6 +1070,7 @@ final class VMManager: ObservableObject {
             for (reader, file) in got {
                 readerFiles[reader.mediaFileName] = file
             }
+            screenReadersOnMedia = Array(got.keys)
         }
 
         var input = PipelineInput(
@@ -1340,7 +1349,9 @@ final class VMManager: ObservableObject {
             if configuration.guestOS.isLinux {
                 removeFinishedUbuntuMedia(runtimeDir: runtimeDir)
             } else {
-                let signedIn = speakSetupReport(configuration: configuration, runtimeDir: runtimeDir)
+                let carryOnSaid = runtimeDir.appendingPathComponent("setup-carry-on-said")
+                let saidBefore = FileManager.default.fileExists(atPath: carryOnSaid.path)
+                let signedIn = speakSetupReport(configuration: configuration, runtimeDir: runtimeDir, announce: !saidBefore)
                 // Only with a DVD to keep (2026-10-28, fifth audit): under a
                 // saved state this was true with no ISO, which also left out
                 // the camera the state was saved with, and the load failed.
@@ -1353,14 +1364,18 @@ final class VMManager: ObservableObject {
                 // Once per machine (2026-10-29, sixth audit): a first sign-in
                 // cut short never writes its last line, and a Windows in daily
                 // use heard this, and an hour's warning, at every Start.
-                let carryOnSaid = runtimeDir.appendingPathComponent("setup-carry-on-said")
-                if !resuming, !signedIn, !FileManager.default.fileExists(atPath: carryOnSaid.path),
-                   setupStillRunning(runtimeDir: runtimeDir) {
-                    FileManager.default.createFile(atPath: carryOnSaid.path, contents: nil)
-                    Announcer.shared.announce("Windows Setup is carrying on in \(configuration.name) from where it was stopped. AVM says how it's going every 10 minutes, and when Windows is signed in.", tone: .info)
+                // The watch at every such Start (2026-10-29, seventh audit):
+                // gated with the sentence, the second resumed Start of an
+                // interrupted install finished in silence. Only the sentence
+                // and the hour's warning are said once.
+                if !resuming, !signedIn, setupStillRunning(runtimeDir: runtimeDir) {
+                    if !saidBefore {
+                        FileManager.default.createFile(atPath: carryOnSaid.path, contents: nil)
+                        Announcer.shared.announce("Windows Setup is carrying on in \(configuration.name) from where it was stopped. AVM says how it's going every 10 minutes, and when Windows is signed in.", tone: .info)
+                    }
                     stopInstallWatchdog()
                     installWatchdogTask = Task { [weak self] in
-                        await self?.watchForFirstSignIn(configuration: configuration, runtimeDir: runtimeDir, installStart: Date())
+                        await self?.watchForFirstSignIn(configuration: configuration, runtimeDir: runtimeDir, installStart: Date(), quietAfterAnHour: saidBefore)
                     }
                 }
                 if resuming {
@@ -1575,12 +1590,14 @@ final class VMManager: ObservableObject {
         cleanUp()
         if case .starting = state {
             let reason = error.localizedDescription
-            if case AVMError.refused(let message) = error {
-                // Said as it is (2026-10-29, sixth audit): a refusal is a
-                // whole sentence with its own "Next:", and the wrapping
-                // below gave it two.
+            // Said as it is (2026-10-29, sixth audit): a refusal is a whole
+            // sentence with its own "Next:", and the wrapping below gave it
+            // two. The socket folder's and the drive's refusals too (seventh
+            // audit).
+            switch error {
+            case AVMError.refused(let message), AVMError.socketDirectoryUnsafe(let message), AVMError.storageMissing(let message):
                 Announcer.shared.announce(message, tone: .failure)
-            } else {
+            default:
                 Announcer.shared.announce(
                     "\(configuration.name) could not start. Reason: \(reason) Next: try Start again. If it fails again, save the diagnostic log and report the problem.",
                     tone: .failure
@@ -1597,6 +1614,11 @@ final class VMManager: ObservableObject {
         // saved" were both said of a machine whose next Start resumes.
         if savingTask != nil {
             throw AVMError.refused("\(machineName) is being saved; it can't shut down until that has finished.")
+        }
+        // Nor while a restore point is taken (2026-10-29, seventh audit): the
+        // point captured a Windows in the middle of shutting down.
+        if takingRestorePoint {
+            throw AVMError.refused("\(machineName) is taking a restore point; it can shut down when that's done.")
         }
         state = .stopping
         do {
@@ -1890,7 +1912,7 @@ final class VMManager: ObservableObject {
                         self.setupUnderwaySince = Date()
                         // Narrator only for a machine with no screen reader
                         // of its own coming (2026-10-29, sixth audit).
-                        let readers = configuration.windowsScreenReaders.map(\.displayName)
+                        let readers = (self.screenReadersOnMedia ?? configuration.windowsScreenReaders).map(\.displayName)
                         let afterSetup = readers.isEmpty
                             ? "Windows will not speak on its own. When Setup is done, enter Windows and press Control Command Return to turn on Narrator."
                             : "Windows doesn't speak while it installs; \(readers.joined(separator: " or ")) talks once Windows signs in. If nothing talks then, enter Windows and press Control Command Return to turn on Narrator."
@@ -2846,9 +2868,10 @@ final class VMManager: ObservableObject {
                 "\(machineName) stopped unexpectedly.",
                 tone: .failure
             )
-        } else if userStopped {
+        } else if userStopped, savingTask == nil {
             // A crash while shutting down (2026-10-29, sixth audit) was said
-            // as "has shut down", with the success sound.
+            // as "has shut down", with the success sound. Not after a save's
+            // own quit (seventh audit): the state is saved either way.
             let msg = "QEMU exited with code \(exitCode) while shutting down. Details are in AVM's diagnostic log."
             state = .error(msg)
             avmLog("handleQEMUProcessExit: nonzero exit while shutting down — state -> error, announcing")
@@ -3110,7 +3133,7 @@ final class VMManager: ObservableObject {
     /// (SetupReport.swift), then rename the report so it is said once.
     /// Returns true when the report says the first sign-in has finished.
     @discardableResult
-    private func speakSetupReport(configuration: VMConfiguration, runtimeDir: URL) -> Bool {
+    private func speakSetupReport(configuration: VMConfiguration, runtimeDir: URL, announce: Bool = true) -> Bool {
         guard let read = mtools(["mtype", "-i", "IMG", "::AVMSTATUS.TXT"], runtimeDir: runtimeDir), read.status == 0,
               let summary = SetupReport.summary(
                 reportText: read.output.replacingOccurrences(of: "\r", with: ""),
@@ -3123,6 +3146,10 @@ final class VMManager: ObservableObject {
         // it (fifth audit: it was said at every resume until then).
         let savedStateWaits = FileManager.default.fileExists(atPath: QEMUSavedState.hint(in: runtimeDir).path)
         guard !savedStateWaits else { return signedIn }
+        // Nor at every Start of a machine whose first sign-in never wrote
+        // its last line (2026-10-29, seventh audit): "NVDA installs when you
+        // first sign in" was said weeks after the user had.
+        guard announce else { return signedIn }
         appendConsole("AVM: \(summary.message)\n")
         // The failure sound only for something missing (2026-10-28, second
         // review): before the first sign-in nothing has failed.
@@ -3963,7 +3990,10 @@ final class VMManager: ObservableObject {
         if let dir = vmSocketDir {
             // Ports 5 through 8 are the free root ports on the p2=8,p3=8 map.
             let usbRedirSockets = (5...8).map { VMManager.usbRedirSocketName(port: $0) }
-            for name in ["spice.sock", "qmp.sock", "qmp2.sock", "tpm.sock"] + usbRedirSockets {
+            // qga.sock too (2026-10-29, seventh audit): left behind, an agent
+            // call that began as QEMU exited retried "connection refused"
+            // for 15 seconds, and "has shut down" came that late.
+            for name in ["spice.sock", "qmp.sock", "qmp2.sock", "tpm.sock", "qga.sock"] + usbRedirSockets {
                 try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
             }
         }
@@ -3983,6 +4013,10 @@ final class VMManager: ObservableObject {
     func terminateForQuit() {
         stopBootKeypressTask()
         stopInstallWatchdog()
+        // The install media build too (2026-10-29, seventh audit): its tool
+        // outlived AVM, with the installer ISO still mounted and the scratch
+        // folder kept; QuitCoordinator waits a moment for it to end.
+        mediaBuildTask?.cancel()
         endQEMUAndWait()
         swtpmProcess?.terminate()
         swtpmProcess = nil
@@ -4268,12 +4302,23 @@ extension VMManager {
     @discardableResult
     func saveStateAndStop() async -> Bool {
         if let saving = savingTask { return await saving.value }
+        // Said (2026-10-29, seventh audit): Save during a restore point did
+        // nothing, without a word.
+        if takingRestorePoint {
+            Announcer.shared.announce("\(machineName) is taking a restore point, so it can't be saved right now. Try again when that's done.", tone: .info)
+            return false
+        }
         guard canSaveState else { return false }
-        let task = Task { await self.performSaveStateAndStop() }
+        // savingTask is cleared inside the task (seventh audit): cleared
+        // after the await, a Shut Down waiting on the same task could run
+        // first and be refused with "is being saved".
+        let task = Task { () -> Bool in
+            let saved = await self.performSaveStateAndStop()
+            self.savingTask = nil
+            return saved
+        }
         savingTask = task
-        let saved = await task.value
-        savingTask = nil
-        return saved
+        return await task.value
     }
 
     private func performSaveStateAndStop() async -> Bool {
@@ -4396,7 +4441,9 @@ extension VMManager {
         try? fm.removeItem(at: note)
         try? fm.removeItem(at: noteAside)
         // A saved state is spent either way: deleted now, so it's never
-        // carried on twice.
+        // carried on twice. Its loss, if any, was said above (2026-10-29,
+        // seventh audit): a failed delete made the next Start say it again.
+        if plan.isSavedState { try? QEMUSavedState.carriedOnWord.write(to: marker, atomically: true, encoding: .utf8) }
         if plan.isSavedState, !node.isEmpty {
             do {
                 try await runQMPJob("snapshot-delete", id: "avm-delete",
@@ -4411,7 +4458,8 @@ extension VMManager {
         // came seconds before the machine was, while the delete above and
         // the clock below were still to do, and keys typed then went to
         // the Mac. The clock is set after, without holding up the start.
-        if carriedOn { Announcer.shared.announce("\(guest) is running again.", tone: .success) }
+        // Not after a Force Stop or Quit that landed meanwhile (seventh audit).
+        if carriedOn, state == .starting { Announcer.shared.announce("\(guest) is running again.", tone: .success) }
         // The guest's clock stopped while it was saved.
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
@@ -4781,7 +4829,8 @@ extension VMManager {
                 // sixth audit): exFAT drives give no "important usage"
                 // figure, and the warning never came.
                 let values = try? runtimeDir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
-                let free = values?.volumeAvailableCapacityForImportantUsage
+                // A zero "important usage" figure counts as none (seventh audit).
+                let free = values?.volumeAvailableCapacityForImportantUsage.flatMap { $0 > 0 ? $0 : nil }
                     ?? values?.volumeAvailableCapacity.map { Int64($0) } ?? Int64.max
                 let host = DiskWatch.hostWarning(free: free, lastSpoken: hostSpoken)
                 hostSpoken = host.lastSpoken

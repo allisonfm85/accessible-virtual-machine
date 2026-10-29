@@ -253,10 +253,23 @@ final class USBRedirectController: ObservableObject {
     /// when it finishes, so its own bounces never count as leaving Windows.
     /// The watch ended (the machine stopped, 2026-10-28, deep audit): no
     /// device follows "the user's choice" into the next machine.
-    func clearAllFollowThrough() {
-        leftWindowsAt.removeAll()
-        leftWindowsCopy.removeAll()
-        leftWindowsMachine.removeAll()
+    /// `machine`: only the records of devices that left this machine
+    /// (2026-10-29, seventh audit). The watched machine's stop forgot a
+    /// device that left another machine, still running, seconds earlier,
+    /// so its return was asked about, or sent in Always mode, instead of
+    /// following back. nil forgets them all.
+    func clearAllFollowThrough(for machine: UUID? = nil) {
+        let keys = leftWindowsAt.keys.filter { key in
+            guard let machine else { return true }
+            // A record whose machine is gone can't be followed anyway.
+            guard let left = leftWindowsMachine[key]?.manager?.machineID else { return true }
+            return left == machine
+        }
+        for key in keys {
+            leftWindowsAt[key] = nil
+            leftWindowsCopy[key] = nil
+            leftWindowsMachine[key] = nil
+        }
     }
 
     func clearFollowThrough(_ device: AVMUSBDeviceIdentity) {
