@@ -344,6 +344,9 @@ final class DeviceRegistry {
                     os_log("release of %{public}@ never finished; setting it aside", log: log, type: .error, device.description)
                     self.entries[device] = nil
                     self.abandoned.append(entry)
+                    // Counted out (2026-10-28, fifth audit): otherwise the idle
+                    // exit, the one thing that frees a stuck device, never came.
+                    idle.devicesChanged(count: self.entries.count)
                 }
             }
             entry.detachTimeout = timeout

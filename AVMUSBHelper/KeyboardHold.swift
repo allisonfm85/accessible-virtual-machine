@@ -86,6 +86,8 @@ final class KeyboardHold {
     /// AVM has been told, once, that the helper is waiting for the Mac to
     /// have another keyboard.
     private var saidWaiting = false
+    /// Opens refused as exclusive and looked for again (fifth audit).
+    private var exclusiveRetries = 0
 
     var isActive: Bool { queue.sync { wantedID != nil } }
 
@@ -124,7 +126,14 @@ final class KeyboardHold {
             if HeldByHelper.contains(device) { return false }   // in a machine already
             let vendor = property(device, kIOHIDVendorIDKey) as? Int ?? 0
             let transport = (property(device, kIOHIDTransportKey) as? String ?? "").lowercased()
+            // A keyboard first and foremost (2026-10-28, fifth audit): the
+            // match in keyboards() takes any device with a keyboard
+            // collection, so a gaming mouse or a barcode scanner counted,
+            // and the Mac's only typing keyboard could be taken.
+            let primaryPage = property(device, kIOHIDPrimaryUsagePageKey) as? Int ?? 0
+            let primaryUsage = property(device, kIOHIDPrimaryUsageKey) as? Int ?? 0
             return identifier(device) != wanted
+                && primaryPage == kHIDPage_GenericDesktop && primaryUsage == kHIDUsage_GD_Keyboard
                 && vendor != 0x1050                 // Yubico
                 && transport != "virtual"
                 && !(property(device, kIOHIDProductKey) as? String ?? "").lowercased().contains("karabiner")
@@ -221,7 +230,21 @@ final class KeyboardHold {
             guard result == kIOReturnSuccess else {
                 os_log("couldn't hold the keyboard for Windows: 0x%{public}x", log: log, type: .error, result)
                 for done in opened { IOHIDDeviceClose(done, IOOptionBits(kIOHIDOptionsTypeSeizeDevice)) }
-                refuse(wanted, String(format: "macOS wouldn't let the helper take the keyboard (error 0x%08x).", result))
+                // Held exclusively by someone (2026-10-28, fifth audit): most
+                // often the helper's own last hold, closing in a cancel
+                // handler queued behind this block (a hand-over between
+                // machines releases and holds back to back). Looked for
+                // again, a few times, before it's a refusal.
+                let exclusive = IOReturn(bitPattern: 0xe00002c5)
+                if result == exclusive, exclusiveRetries < 5 {
+                    exclusiveRetries += 1
+                    startLooking()
+                    return
+                }
+                exclusiveRetries = 0
+                refuse(wanted, result == exclusive
+                       ? "another app has taken the keyboard."
+                       : String(format: "macOS wouldn't let the helper take the keyboard (error 0x%08x).", result))
                 return
             }
             opened.append(device)
@@ -247,6 +270,7 @@ final class KeyboardHold {
             IOHIDDeviceActivate(device)
         }
         held = opened
+        exclusiveRetries = 0
         for device in opened { HeldByHelper.add(device) }
         heldID = wanted
         saidWaiting = false
