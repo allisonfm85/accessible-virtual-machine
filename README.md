@@ -229,10 +229,24 @@ agent, so its clock catches up at its next time sync.
 
 ## Sound
 
-If speech from Windows starts to lag behind your keys during a long
-session, turn on Shorter speech delay in the machine's Settings. It
-keeps less sound waiting on the Mac: 70 ms instead of 220 ms on the
-Mac's side. It's experimental, so turn it off again if sound crackles.
+Each machine's Settings has a Sound choice. Balanced is the default.
+Fastest speech gets speech to you about 40 milliseconds sooner, but can
+crackle while your Mac is busy; Smoothest sound is for when Balanced
+crackles. A change takes effect at the machine's next Start.
+
+## Remote Desktop
+
+A machine's Settings has Remote Desktop: a user name, a password, and
+whether only this Mac or the whole network may connect. AVM makes the
+account in the machine, turns on its Remote Desktop host (Windows 11
+Pro's own, or xrdp on Linux), forwards a port on the Mac to it, and
+publishes the machine's name on the local network while it runs. In
+Microsoft's Windows App, add a PC named like amena-pc.local and sign in
+with that account. The password is kept in the Mac's keychain. On
+Linux, AVM also installs the distribution's xrdp sound module where
+there is one (Debian 13, Ubuntu 24.04 and newer), so the remote session
+has sound there and is silent elsewhere; it should use an account other
+than the one signed in at the machine's screen.
 
 ## Restore points
 
@@ -293,6 +307,8 @@ fix, backported from upstream). The staging steps live in
 the Run Script build phase inside
 `AVM.xcodeproj/project.pbxproj`. The SPICE display layer comes from a
 pinned fork of CocoaSpice: https://github.com/allisonfm85/CocoaSpice
+(a copy of Allison's, https://github.com/allisonfm85/CocoaSpice, at the
+same commit, so builds don't depend on another account).
 
 ## Building from source
 
@@ -335,6 +351,20 @@ along with checks of the build scripts and the update feed. If you
 build in a folder under ~/Documents, add
 `--scratch-path ~/Library/Caches/AVM-build/swiftpm`: file syncing adds
 file attributes there that stop the tests from being signed.
+
+## Running every test
+
+`Tools/run-all-tests.sh` runs everything AVM can test by itself, one
+after another, and prints one report: the logic tests, the
+accessibility audit, and the machine tests (save and resume, two
+machines at once, the shared folder, Send File, printers, the camera,
+the Bluetooth bridge, background mode, Shut Down through the agent,
+Remote Desktop, and more) on the Windows, Debian and Fedora test
+machines that the install tests below leave in `~/Library/Caches/AVM-build`.
+It takes about 45 minutes in full; `--only` and `--skip` pick tests by
+name, `--list` shows what would run, and `--out` keeps every test's
+output. It uses the Debug build unless `--app` says otherwise, and runs
+one machine at a time.
 
 ## Testing an install
 

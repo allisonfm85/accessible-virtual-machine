@@ -207,7 +207,7 @@ step "Starting Windows Setup (no window)"
     -drive "if=none,id=unattend,file=$WORK/autounattend.img,format=raw,cache=writeback" \
     -device usb-storage,drive=unattend,bus=usb.0,port=4,removable=on \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
-    -spice "unix=on,addr=$WORK/spice.sock,disable-ticketing=on,agent-mouse=on" \
+    -spice "unix=on,addr=$WORK/spice.sock,disable-ticketing=on,agent-mouse=on,gl=off" \
     -device ramfb -device virtio-gpu-pci,id=gpu0 \
     -audiodev "$AUDIODEV" -device intel-hda -device "$HDA" \
     -device virtio-serial-pci \

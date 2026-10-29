@@ -145,7 +145,7 @@ step "Starting the $GUEST installer (no window)"
     -drive "if=none,id=unattend,file=$WORK/autounattend.img,format=raw,cache=writeback" \
     -device usb-storage,drive=unattend,bus=usb.0,port=4,removable=on \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
-    -spice "unix=on,addr=$WORK/spice.sock,disable-ticketing=on,agent-mouse=on" \
+    -spice "unix=on,addr=$WORK/spice.sock,disable-ticketing=on,agent-mouse=on,gl=off" \
     -device ramfb -device virtio-gpu-pci,id=gpu0 \
     -audiodev none,id=noaudio -device intel-hda -device hda-duplex,audiodev=noaudio \
     -device virtio-serial-pci \
@@ -211,7 +211,7 @@ rm -f "$QMP"
     -drive "if=none,id=disk0,file=$WORK/disk.qcow2,format=qcow2,cache=writeback,discard=unmap,detect-zeroes=unmap" \
     -device "$DISKDEV,drive=disk0,serial=avmdisk0,bootindex=1" \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
-    -spice "unix=on,addr=$WORK/spice.sock,disable-ticketing=on,agent-mouse=on" \
+    -spice "unix=on,addr=$WORK/spice.sock,disable-ticketing=on,agent-mouse=on,gl=off" \
     -device ramfb -device virtio-gpu-pci,id=gpu0 \
     -audiodev none,id=noaudio -device intel-hda -device hda-duplex,audiodev=noaudio \
     -device virtio-serial-pci \

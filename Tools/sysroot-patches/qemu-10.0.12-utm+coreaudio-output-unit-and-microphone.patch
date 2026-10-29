@@ -29,7 +29,7 @@ CoreAudio in the backend's frameworks.
 
 --- a/audio/coreaudio.m
 +++ b/audio/coreaudio.m
-@@ -24,6 +24,7 @@
+@@ -24,131 +24,49 @@
  
  #include "qemu/osdep.h"
  #include <CoreAudio/CoreAudio.h>
@@ -37,7 +37,10 @@ CoreAudio in the backend's frameworks.
  #include <pthread.h>            /* pthread_X */
  
  #include "qemu/main-loop.h"
-@@ -33,122 +34,28 @@
++#include "qemu/error-report.h"
+ #include "qemu/module.h"
+ #include "audio.h"
+ 
  #define AUDIO_CAP "coreaudio"
  #include "audio_int.h"
  
@@ -64,8 +67,18 @@ CoreAudio in the backend's frameworks.
 -    AudioDeviceIOProcID ioprocid;
      bool enabled;
 +    bool running;
++    /*
++     * Frames per render the ring was sized for, at QEMU's rate, and the
++     * latest render's request (written by the render thread). A device
++     * that takes over the default output later can ask for more (AVM,
++     * 2026-10-28): see coreaudio_buffer_get_free.
++     */
++    UInt32 plannedFrames;
++    UInt32 lastRequest;
++    bool refitTried;
++    bool refitWarned;
  } coreaudioVoiceOut;
- 
+-
 -static const AudioObjectPropertyAddress voice_addr = {
 -    kAudioHardwarePropertyDefaultOutputDevice,
 -    kAudioObjectPropertyScopeGlobal,
@@ -110,7 +123,7 @@ CoreAudio in the backend's frameworks.
 -        kAudioDevicePropertyScopeOutput,
 -        kAudioObjectPropertyElementMain
 -    };
--
+ 
 -    return AudioObjectGetPropertyData(id,
 -                                      &addr,
 -                                      0,
@@ -174,7 +187,21 @@ CoreAudio in the backend's frameworks.
  static void coreaudio_logstatus (OSStatus status)
  {
      const char *str = "BUG";
-@@ -297,269 +204,89 @@
+@@ -283,283 +201,176 @@
+         coreaudio_buf_unlock(core, "coreaudio_" #name);             \
+         return ret;                                             \
+     }
+-COREAUDIO_WRAPPER_FUNC(buffer_get_free, size_t, (HWVoiceOut *hw), (hw))
+ COREAUDIO_WRAPPER_FUNC(get_buffer_out, void *, (HWVoiceOut *hw, size_t *size),
+                        (hw, size))
+ COREAUDIO_WRAPPER_FUNC(put_buffer_out, size_t,
+                        (HWVoiceOut *hw, void *buf, size_t size),
+                        (hw, buf, size))
+-COREAUDIO_WRAPPER_FUNC(write, size_t, (HWVoiceOut *hw, void *buf, size_t size),
+-                       (hw, buf, size))
+ #undef COREAUDIO_WRAPPER_FUNC
+ 
+ /*
   * callback to feed audiooutput buffer. called without BQL.
   * allowed to lock "buf_mutex", but disallowed to have any other locks.
   */
@@ -206,22 +233,20 @@ CoreAudio in the backend's frameworks.
 -    if (coreaudio_buf_lock (core, "audioDeviceIOProc")) {
 -        inInputTime = 0;
 -        return 0;
-+    if (len > ioData->mBuffers[0].mDataByteSize) {
-+        len = ioData->mBuffers[0].mDataByteSize;
-     }
+-    }
++    qatomic_set(&core->lastRequest, inNumberFrames);
  
 -    if (inDevice != core->outputDeviceID) {
 -        coreaudio_buf_unlock (core, "audioDeviceIOProc(old device)");
 -        return 0;
--    }
-+    if (!coreaudio_buf_lock(core, "audioUnitRender")) {
-+        size_t want = MIN(hw->pending_emul, len);
++    if (len > ioData->mBuffers[0].mDataByteSize) {
++        len = ioData->mBuffers[0].mDataByteSize;
+     }
  
 -    frameCount = core->audioDevicePropertyBufferFrameSize;
 -    pending_frames = hw->pending_emul / hw->info.bytes_per_frame;
-+        want -= want % hw->info.bytes_per_frame;
-+        while (copied < want) {
-+            size_t write_len, start;
++    if (!coreaudio_buf_lock(core, "audioUnitRender")) {
++        size_t want = MIN(hw->pending_emul, len);
  
 -    /* if there are not enough samples, set signal and return */
 -    if (pending_frames < frameCount) {
@@ -229,18 +254,21 @@ CoreAudio in the backend's frameworks.
 -        coreaudio_buf_unlock (core, "audioDeviceIOProc(empty)");
 -        return 0;
 -    }
-+            start = audio_ring_posb(hw->pos_emul, hw->pending_emul,
-+                                    hw->size_emul);
-+            assert(start < hw->size_emul);
++        want -= want % hw->info.bytes_per_frame;
++        while (copied < want) {
++            size_t write_len, start;
  
 -    len = frameCount * hw->info.bytes_per_frame;
 -    while (len) {
 -        size_t write_len, start;
-+            write_len = MIN(want - copied, hw->size_emul - start);
++            start = audio_ring_posb(hw->pos_emul, hw->pending_emul,
++                                    hw->size_emul);
++            assert(start < hw->size_emul);
  
 -        start = audio_ring_posb(hw->pos_emul, hw->pending_emul, hw->size_emul);
 -        assert(start < hw->size_emul);
--
++            write_len = MIN(want - copied, hw->size_emul - start);
+ 
 -        write_len = MIN(MIN(hw->pending_emul, len),
 -                        hw->size_emul - start);
 -
@@ -256,17 +284,40 @@ CoreAudio in the backend's frameworks.
      }
  
 -    coreaudio_buf_unlock (core, "audioDeviceIOProc");
--    return 0;
--}
--
++    /* what the guest hasn't produced yet is silence */
++    if (copied < len) {
++        memset(out + copied, 0, len - copied);
++    }
++    if (copied == 0) {
++        *ioActionFlags |= kAudioUnitRenderAction_OutputIsSilence;
++    }
+     return 0;
+ }
+ 
 -static OSStatus init_out_device(coreaudioVoiceOut *core)
--{
--    OSStatus status;
++/*
++ * The default output can change under a running voice (AVM, 2026-10-28): a
++ * Bluetooth hearing aid that connects after a machine started at login
++ * takes over with its own, larger buffer, or AirPods drop to a lower rate in
++ * hands-free mode. The output unit follows by itself, but each render then
++ * asks for more than the ring was sized for, and every one ended in silence:
++ * choppy, robotic speech until the machine was stopped and started. The
++ * ring can't grow under the audio core (its size is the mixing buffer's),
++ * so the new device is asked for the buffer the ring was planned around,
++ * as coreaudio_init_out asks the first one. Called from the main loop, not
++ * holding buf_mutex, which the render callback takes.
++ */
++static void coreaudio_refit_device_buffer(coreaudioVoiceOut *core, UInt32 seen)
+ {
++    AudioStreamBasicDescription device_format = { 0 };
++    UInt32 size = sizeof(device_format);
++    UInt32 frames;
+     OSStatus status;
 -    AudioDeviceID deviceID;
 -    AudioValueRange frameRange;
 -    UInt32 audioDevicePropertyBufferFrameSize;
 -    AudioDeviceIOProcID ioprocid;
--
+ 
 -    AudioStreamBasicDescription streamBasicDescription = {
 -        .mBitsPerChannel = core->hw.info.bits,
 -        .mBytesPerFrame = core->hw.info.bytes_per_frame,
@@ -287,21 +338,32 @@ CoreAudio in the backend's frameworks.
 -    if (deviceID == kAudioDeviceUnknown) {
 -        dolog ("Could not initialize playback - Unknown Audiodevice\n");
 -        return status;
--    }
++    status = AudioUnitGetProperty(core->unit, kAudioUnitProperty_StreamFormat,
++                                  kAudioUnitScope_Output, 0,
++                                  &device_format, &size);
++    if (status != noErr || device_format.mSampleRate <= 0) {
++        return;
+     }
 -
 -    /* get minimum and maximum buffer frame sizes */
 -    status = coreaudio_get_framesizerange(deviceID, &frameRange);
 -    if (status == kAudioHardwareBadObjectError) {
 -        return 0;
--    }
++    frames = MAX(1, (UInt32)(core->frameSizeSetting * device_format.mSampleRate
++                             / core->hw.info.freq));
++    status = AudioUnitSetProperty(core->unit, kAudioDevicePropertyBufferFrameSize,
++                                  kAudioUnitScope_Global, 0,
++                                  &frames, sizeof(frames));
++    if (status != noErr) {
++        coreaudio_logerr(status, "Could not set the new output device's buffer to %" PRIu32 " frames\n",
++                         (uint32_t)frames);
++        return;
+     }
 -    if (status != kAudioHardwareNoError) {
 -        coreaudio_playback_logerr (status,
 -                                    "Could not get device buffer frame range\n");
 -        return status;
-+    /* what the guest hasn't produced yet is silence */
-+    if (copied < len) {
-+        memset(out + copied, 0, len - copied);
-     }
+-    }
 -
 -    if (frameRange.mMinimum > core->frameSizeSetting) {
 -        audioDevicePropertyBufferFrameSize = (UInt32) frameRange.mMinimum;
@@ -311,9 +373,7 @@ CoreAudio in the backend's frameworks.
 -        dolog ("warning: Downsizing Buffer Frames to %f\n", frameRange.mMaximum);
 -    } else {
 -        audioDevicePropertyBufferFrameSize = core->frameSizeSetting;
-+    if (copied == 0) {
-+        *ioActionFlags |= kAudioUnitRenderAction_OutputIsSilence;
-     }
+-    }
 -
 -    /* set Buffer Frame Size */
 -    status = coreaudio_set_framesize(deviceID,
@@ -381,14 +441,21 @@ CoreAudio in the backend's frameworks.
 -    audio_generic_initialize_buffer_out(&core->hw);
 -    core->ioprocid = ioprocid;
 -
-     return 0;
+-    return 0;
++    info_report("coreaudio: the output device asked for %" PRIu32 " frames a render, "
++                "%" PRIu32 " were planned; its buffer is now %" PRIu32 " frames at %.0f Hz",
++                (uint32_t)seen, (uint32_t)core->plannedFrames, (uint32_t)frames,
++                device_format.mSampleRate);
  }
  
 -static void fini_out_device(coreaudioVoiceOut *core)
-+static void update_playback_state(coreaudioVoiceOut *core)
++static size_t coreaudio_buffer_get_free(HWVoiceOut *hw)
  {
-     OSStatus status;
+-    OSStatus status;
 -    UInt32 isrunning;
++    coreaudioVoiceOut *core = (coreaudioVoiceOut *) hw;
++    UInt32 seen = qatomic_read(&core->lastRequest);
++    size_t ret;
  
 -    /* stop playback */
 -    status = coreaudio_get_isrunning(core->outputDeviceID, &isrunning);
@@ -396,7 +463,19 @@ CoreAudio in the backend's frameworks.
 -        if (status != kAudioHardwareNoError) {
 -            coreaudio_logerr(status,
 -                             "Could not determine whether Device is playing\n");
--        }
++    /* A little over plan is the rate converter rounding; well over is a new device. */
++    if (core->unit && core->plannedFrames
++        && seen > core->plannedFrames + core->plannedFrames / 4) {
++        if (!core->refitTried) {
++            core->refitTried = true;
++            coreaudio_refit_device_buffer(core, seen);
++        } else if (!core->refitWarned) {
++            core->refitWarned = true;
++            warn_report("coreaudio: the output device still asks for %" PRIu32 " frames a render, "
++                        "more than the %" PRIu32 " this machine's Sound setting planned; "
++                        "sound may break up until the machine is stopped and started",
++                        (uint32_t)seen, (uint32_t)core->plannedFrames);
+         }
 -
 -        if (isrunning) {
 -            status = AudioDeviceStop(core->outputDeviceID, core->ioprocid);
@@ -404,22 +483,32 @@ CoreAudio in the backend's frameworks.
 -                coreaudio_logerr(status, "Could not stop playback\n");
 -            }
 -        }
--    }
--
++    } else if (seen && seen <= core->plannedFrames + core->plannedFrames / 4) {
++        /* Back within plan (the device changed back, or the refit took). */
++        core->refitTried = false;
++        core->refitWarned = false;
+     }
+ 
 -    /* remove callback */
 -    status = AudioDeviceDestroyIOProcID(core->outputDeviceID,
 -                                        core->ioprocid);
 -    if (status != kAudioHardwareBadDeviceError && status != kAudioHardwareNoError) {
 -        coreaudio_logerr(status, "Could not remove IOProc\n");
--    }
++    if (coreaudio_buf_lock(core, "coreaudio_buffer_get_free")) {
++        return 0;
+     }
 -    core->outputDeviceID = kAudioDeviceUnknown;
--}
--
++    ret = audio_generic_buffer_get_free(hw);
++    coreaudio_buf_unlock(core, "coreaudio_buffer_get_free");
++    return ret;
+ }
+ 
 -static void update_device_playback_state(coreaudioVoiceOut *core)
--{
--    OSStatus status;
++static void update_playback_state(coreaudioVoiceOut *core)
+ {
+     OSStatus status;
 -    UInt32 isrunning;
--
+ 
 -    status = coreaudio_get_isrunning(core->outputDeviceID, &isrunning);
 -    if (status != kAudioHardwareNoError) {
 -        if (status != kAudioHardwareBadObjectError) {
@@ -495,7 +584,7 @@ CoreAudio in the backend's frameworks.
  }
  
  static int coreaudio_init_out(HWVoiceOut *hw, struct audsettings *as,
-@@ -571,6 +298,18 @@
+@@ -571,6 +382,18 @@
      Audiodev *dev = drv_opaque;
      AudiodevCoreaudioPerDirectionOptions *cpdo = dev->u.coreaudio.out;
      struct audsettings obt_as;
@@ -514,7 +603,7 @@ CoreAudio in the backend's frameworks.
  
      /* create mutex */
      err = pthread_mutex_init(&core->buf_mutex, NULL);
-@@ -589,47 +328,105 @@
+@@ -589,47 +412,106 @@
  
      core->bufferCount = cpdo->has_buffer_count ? cpdo->buffer_count : 4;
  
@@ -529,25 +618,14 @@ CoreAudio in the backend's frameworks.
 +    if (!component) {
 +        dolog("Could not initialize playback - no default output unit\n");
 +        goto fail;
-     }
++    }
 +    status = AudioComponentInstanceNew(component, &core->unit);
 +    if (status != noErr) {
 +        coreaudio_playback_logerr(status, "Could not open the default output\n");
 +        core->unit = NULL;
 +        goto fail;
 +    }
- 
--    if (init_out_device(core)) {
--        status = AudioObjectRemovePropertyListener(kAudioObjectSystemObject,
--                                                   &voice_addr,
--                                                   handle_voice_change,
--                                                   core);
--        if (status != kAudioHardwareNoError) {
--            coreaudio_playback_logerr(status,
--                                      "Could not remove voice property change listener\n");
--        }
--
--        return -1;
++
 +    format = (AudioStreamBasicDescription) {
 +        .mSampleRate = hw->info.freq,
 +        .mFormatID = kAudioFormatLinearPCM,
@@ -566,6 +644,15 @@ CoreAudio in the backend's frameworks.
 +        goto fail;
      }
  
+-    if (init_out_device(core)) {
+-        status = AudioObjectRemovePropertyListener(kAudioObjectSystemObject,
+-                                                   &voice_addr,
+-                                                   handle_voice_change,
+-                                                   core);
+-        if (status != kAudioHardwareNoError) {
+-            coreaudio_playback_logerr(status,
+-                                      "Could not remove voice property change listener\n");
+-        }
 +    callback = (AURenderCallbackStruct) {
 +        .inputProc = audioUnitRender,
 +        .inputProcRefCon = core
@@ -578,7 +665,8 @@ CoreAudio in the backend's frameworks.
 +        coreaudio_playback_logerr(status, "Could not set the render callback\n");
 +        goto fail;
 +    }
-+
+ 
+-        return -1;
 +    /*
 +     * The device's buffer for this process only, as long as the buffer
 +     * QEMU was asked for: the device counts it in its own frames, at its
@@ -599,8 +687,8 @@ CoreAudio in the backend's frameworks.
 +    if (status != noErr) {
 +        coreaudio_logerr(status, "Could not set device buffer frame size %" PRIu32 "\n",
 +                         (uint32_t)frames);
-+    }
-+
+     }
+ 
 +    status = AudioUnitInitialize(core->unit);
 +    if (status != noErr) {
 +        coreaudio_playback_logerr(status, "Could not start the default output\n");
@@ -619,7 +707,8 @@ CoreAudio in the backend's frameworks.
 +        frames = core->frameSizeSetting;
 +    }
 +    request = (int)ceil(frames * hw->info.freq / device_rate);
-+    hw->samples = (core->bufferCount + 1) * MAX(request, core->frameSizeSetting);
++    core->plannedFrames = MAX(request, core->frameSizeSetting);
++    hw->samples = (core->bufferCount + 1) * core->plannedFrames;
      return 0;
 +
 +fail:
@@ -648,7 +737,7 @@ CoreAudio in the backend's frameworks.
      /* destroy mutex */
      err = pthread_mutex_destroy(&core->buf_mutex);
      if (err) {
-@@ -642,9 +439,373 @@
+@@ -642,9 +524,373 @@
      coreaudioVoiceOut *core = (coreaudioVoiceOut *) hw;
  
      core->enabled = enable;
@@ -1023,7 +1112,19 @@ CoreAudio in the backend's frameworks.
  static void *coreaudio_audio_init(Audiodev *dev, Error **errp)
  {
      return dev;
-@@ -665,7 +826,18 @@
+@@ -657,15 +903,27 @@
+ static struct audio_pcm_ops coreaudio_pcm_ops = {
+     .init_out = coreaudio_init_out,
+     .fini_out = coreaudio_fini_out,
+-  /* wrapper for audio_generic_write */
+-    .write    = coreaudio_write,
+-  /* wrapper for audio_generic_buffer_get_free */
++  /* audio_generic_write itself, for the same reason as .read below; it
++   * calls the buffer wrappers, which lock (mixing-engine=off, 2026-10-28) */
++    .write    = audio_generic_write,
++  /* audio_generic_buffer_get_free, after a check for a new output device */
+     .buffer_get_free = coreaudio_buffer_get_free,
+   /* wrapper for audio_generic_get_buffer_out */
      .get_buffer_out = coreaudio_get_buffer_out,
    /* wrapper for audio_generic_put_buffer_out */
      .put_buffer_out = coreaudio_put_buffer_out,
@@ -1043,7 +1144,7 @@ CoreAudio in the backend's frameworks.
  };
  
  static struct audio_driver coreaudio_audio_driver = {
-@@ -675,9 +847,9 @@
+@@ -675,9 +933,9 @@
      .fini           = coreaudio_audio_fini,
      .pcm_ops        = &coreaudio_pcm_ops,
      .max_voices_out = 1,

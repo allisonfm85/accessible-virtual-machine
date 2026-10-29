@@ -28,7 +28,7 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
  system_ss.add(when: 'CONFIG_USB_STORAGE_BOT', if_true: files('dev-storage-bot.c'))
 --- /dev/null
 +++ b/hw/usb/dev-hid-bridge.c
-@@ -0,0 +1,468 @@
+@@ -0,0 +1,534 @@
 +/*
 + * USB HID bridge: a USB HID device whose reports come from outside QEMU
 + * (AVM, 2026-10-27)
@@ -74,6 +74,7 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +#define HB_MAX_REPORT       1024
 +#define HB_MAX_DESCRIPTOR   4096
 +#define HB_QUEUE            64
++#define HB_OUT_BYTES        8192    /* output frames waiting for the socket */
 +#define HB_PACKET           64
 +#define HB_EP_IN            1
 +#define HB_EP_OUT           2
@@ -123,6 +124,11 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +    /* Bytes read from the socket, not yet a whole frame */
 +    uint8_t rx[3 + HB_MAX_REPORT];
 +    size_t rx_len;
++
++    /* Output and feature frames the socket hasn't taken yet (2026-10-28) */
++    uint8_t out[HB_OUT_BYTES];
++    size_t out_len;
++    guint out_watch;
 +};
 +
 +/* ---------------------------------------------------------------- */
@@ -189,16 +195,74 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +/* ---------------------------------------------------------------- */
 +/* The socket */
 +
++/*
++ * Never blocking (2026-10-28, fourth audit): send_frame runs on the vCPU
++ * thread with the BQL held, and qemu_chr_fe_write_all spins while the
++ * socket is full. The helper sends each report to the device before it
++ * reads more, so a braille display going out of range while the screen
++ * reader kept writing, or a controller slow to take rumble reports,
++ * froze the whole machine, sound and speech too. Frames now wait here,
++ * written as the socket takes them; when even this fills, a new report
++ * is dropped whole, never part of one, as queue_input drops input.
++ */
++static gboolean bridge_out_ready(void *do_not_use, GIOCondition cond, void *opaque);
++
++static void bridge_flush_out(USBHIDBridgeState *s)
++{
++    while (s->out_len) {
++        int n = qemu_chr_fe_write(&s->chr, s->out, s->out_len);
++        if (n <= 0) {
++            break;
++        }
++        memmove(s->out, s->out + n, s->out_len - n);
++        s->out_len -= n;
++    }
++    if (s->out_len && !s->out_watch) {
++        s->out_watch = qemu_chr_fe_add_watch(&s->chr, G_IO_OUT | G_IO_HUP,
++                                             bridge_out_ready, s);
++    }
++}
++
++static gboolean bridge_out_ready(void *do_not_use, GIOCondition cond, void *opaque)
++{
++    USBHIDBridgeState *s = opaque;
++
++    s->out_watch = 0;
++    if (!qemu_chr_fe_backend_open(&s->chr)) {
++        s->out_len = 0;
++        return G_SOURCE_REMOVE;
++    }
++    bridge_flush_out(s);
++    return G_SOURCE_REMOVE;
++}
++
++static void bridge_drop_out(USBHIDBridgeState *s)
++{
++    if (s->out_watch) {
++        g_source_remove(s->out_watch);
++        s->out_watch = 0;
++    }
++    s->out_len = 0;
++}
++
 +static void send_frame(USBHIDBridgeState *s, uint8_t type, const uint8_t *data, size_t len)
 +{
 +    if (!qemu_chr_fe_backend_open(&s->chr) || len > HB_MAX_REPORT) {
 +        return;
 +    }
-+    uint8_t header[3] = { type, len & 0xff, (len >> 8) & 0xff };
-+    qemu_chr_fe_write_all(&s->chr, header, 3);
-+    if (len) {
-+        qemu_chr_fe_write_all(&s->chr, data, len);
++    if (s->out_len + 3 + len > sizeof(s->out)) {
++        warn_report_once("usb-hid-bridge: the device isn't taking reports as fast "
++                         "as the guest sends them; dropping some");
++        return;
 +    }
++    s->out[s->out_len++] = type;
++    s->out[s->out_len++] = len & 0xff;
++    s->out[s->out_len++] = (len >> 8) & 0xff;
++    if (len) {
++        memcpy(s->out + s->out_len, data, len);
++        s->out_len += len;
++    }
++    bridge_flush_out(s);
 +}
 +
 +static void queue_input(USBHIDBridgeState *s, const uint8_t *data, size_t len)
@@ -258,6 +322,7 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +        s->rx_len = 0;
 +        s->count = 0;
 +        s->sent = 0;
++        bridge_drop_out(s);
 +    }
 +}
 +
@@ -444,6 +509,7 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +static void bridge_unrealize(USBDevice *dev)
 +{
 +    USBHIDBridgeState *s = USB_HID_BRIDGE(dev);
++    bridge_drop_out(s);
 +    qemu_chr_fe_deinit(&s->chr, false);
 +    g_free(s->rdesc);
 +    s->rdesc = NULL;

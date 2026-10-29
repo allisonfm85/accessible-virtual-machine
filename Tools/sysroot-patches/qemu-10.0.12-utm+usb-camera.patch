@@ -141,7 +141,7 @@ reopens at the guest's next read after a restore.
 +    QEMUTimer *idle_timer;
 +    QEMUBH *wakeup_bh;
 +    AVMCameraCapture *capture;      /* non-nil while the Mac's camera is open */
-+    dispatch_queue_t drain_queue;   /* the last capture's queue, for a close that must wait */
++    dispatch_group_t captures;      /* every capture until its stop has run, for unplug */
 +
 +    /* Guarded by lock: filled by the capture queue */
 +    QemuMutex lock;
@@ -520,44 +520,40 @@ reopens at the guest's next read after a restore.
 +    capture->width = size->width;
 +    capture->height = size->height;
 +    s->capture = capture;
-+    if (s->drain_queue) {
-+        dispatch_release(s->drain_queue);
-+    }
-+    s->drain_queue = capture->queue;
-+    dispatch_retain(s->drain_queue);
++    dispatch_group_enter(s->captures);
 +    [capture start];
 +    timer_mod(s->idle_timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 1000);
 +}
 +
++/*
++ * Every capture is in s->captures until its stop has run on its queue, and
++ * unplug waits for the group (2026-10-28, fourth audit): a frame queued
++ * ahead of a stop that didn't wait would use this state after unrealize
++ * freed it, and waiting on the newest queue alone missed older captures.
++ * Only unplug waits now; a close the guest causes (another size, a stopped
++ * stream, a reset) doesn't hold the machine while macOS stops the camera.
++ */
 +static void camera_close(USBCameraState *s, bool wait)
 +{
 +    if (!s->capture) {
-+        /* An earlier close that didn't wait may still be finishing on the
-+         * capture queue; a frame queued ahead of its stop block would use
-+         * this state after unrealize has freed it (2026-10-28). A close
-+         * that waits lets that queue run dry first. */
-+        if (wait && s->drain_queue) {
-+            dispatch_sync(s->drain_queue, ^{});
-+            dispatch_release(s->drain_queue);
-+            s->drain_queue = NULL;
-+        }
 +        return;
 +    }
 +    AVMCameraCapture *capture = s->capture;
++    dispatch_group_t captures = s->captures;
 +    s->capture = nil;
 +    timer_del(s->idle_timer);
 +    if (wait) {
 +        [capture stopWaiting:true];
 +        [capture release];
-+        if (s->drain_queue) {
-+            dispatch_release(s->drain_queue);
-+            s->drain_queue = NULL;
-+        }
++        dispatch_group_leave(captures);
 +    } else {
 +        /* The capture queue clears its state pointer before any later
 +         * frame could use it; the object goes once that has run. */
 +        [capture stopWaiting:false];
-+        dispatch_async(capture->queue, ^{ [capture release]; });
++        dispatch_async(capture->queue, ^{
++            [capture release];
++            dispatch_group_leave(captures);
++        });
 +    }
 +    s->sending = false;
 +    qemu_mutex_lock(&s->lock);
@@ -635,7 +631,7 @@ reopens at the guest's next read after a restore.
 +        if (selector == VS_COMMIT_CONTROL) {
 +            int index = s->probe[3];
 +            if (s->capture && index != s->frame_index) {
-+                camera_close(s, true);
++                camera_close(s, false);
 +            }
 +            s->frame_index = index;
 +            s->committed = true;
@@ -692,7 +688,7 @@ reopens at the guest's next read after a restore.
 +    if (request == (EndpointOutRequest | USB_REQ_CLEAR_FEATURE)) {
 +        /* Linux stops a bulk stream by clearing the endpoint's halt. */
 +        if ((index & 0x0f) == EP_VIDEO) {
-+            camera_close(s, true);
++            camera_close(s, false);
 +        }
 +        return;
 +    }
@@ -809,7 +805,7 @@ reopens at the guest's next read after a restore.
 +static void usb_camera_handle_reset(USBDevice *dev)
 +{
 +    USBCameraState *s = USB_CAMERA(dev);
-+    camera_close(s, true);
++    camera_close(s, false);
 +    s->committed = false;
 +    s->frame_index = 0;
 +    s->sending = false;
@@ -833,12 +829,16 @@ reopens at the guest's next read after a restore.
 +    s->next = g_malloc0(MAX_FRAME_BYTES);
 +    s->wakeup_bh = qemu_bh_new(camera_frame_arrived, s);
 +    s->idle_timer = timer_new_ms(QEMU_CLOCK_REALTIME, camera_idle_check, s);
++    s->captures = dispatch_group_create();
 +}
 +
 +static void usb_camera_unrealize(USBDevice *dev)
 +{
 +    USBCameraState *s = USB_CAMERA(dev);
 +    camera_close(s, true);
++    dispatch_group_wait(s->captures, DISPATCH_TIME_FOREVER);
++    dispatch_release(s->captures);
++    s->captures = NULL;
 +    timer_free(s->idle_timer);
 +    qemu_bh_delete(s->wakeup_bh);
 +    g_free(s->cur);

@@ -572,11 +572,15 @@ while IFS= read -r f; do
     fi
 done < <(find "$OUT/bin" "$OUT/lib" "$OUT/Frameworks" -type f \( -perm -u+x -o -name '*.dylib' \) 2>/dev/null)
 [ "$brew_refs" = "0" ] || problem "$brew_refs binaries link Homebrew libraries"
-"$OUT/bin/qemu-system-aarch64" -device help 2>/dev/null | grep -q '"usb-camera"' \
+# The list read whole first (2026-10-28, fourth audit): grep -q stops at
+# its first match, and under pipefail QEMU dying of SIGPIPE read as a
+# missing device.
+devices=$("$OUT/bin/qemu-system-aarch64" -device help 2>/dev/null || true)
+grep -q '"usb-camera"' <<<"$devices" \
     || problem "QEMU has no usb-camera device (Tools/sysroot-patches/qemu-10.0.12-utm+usb-camera.patch)"
-"$OUT/bin/qemu-system-aarch64" -device help 2>/dev/null | grep -q '"usb-hid-bridge"' \
+grep -q '"usb-hid-bridge"' <<<"$devices" \
     || problem "QEMU has no usb-hid-bridge device (Tools/sysroot-patches/qemu-10.0.12-utm+usb-hid-bridge.patch)"
-"$OUT/bin/qemu-system-aarch64" -device help 2>/dev/null | grep -q '"virtio-gpu-gl-pci"' \
+grep -q '"virtio-gpu-gl-pci"' <<<"$devices" \
     || problem "QEMU has no virtio-gpu-gl-pci: it was built without OpenGL or virglrenderer"
 for lib in libEGL.dylib libGLESv2.dylib libepoxy.0.dylib libvirglrenderer.1.dylib; do
     [ -f "$OUT/lib/$lib" ] || problem "$lib is missing: Linux 3D acceleration needs it"
