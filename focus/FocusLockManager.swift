@@ -25,8 +25,8 @@ import Carbon.HIToolbox
 ///   remap that lets guest screen readers use Caps Lock as their modifier.
 ///   See CapsLockRemapper.swift for the root cause and the full rationale.
 ///   Here, only the placement matters, and it is deliberate on both sides:
-///     - lock() APPLIES the remap BEFORE announcing "Windows keyboard on".
-///     - unlock() RESTORES it BEFORE announcing "Mac keyboard on".
+///     - lock() APPLIES the remap BEFORE announcing "Entering Windows".
+///     - unlock() RESTORES it BEFORE announcing "Entering Mac".
 ///   Both orderings exist for the same reason: a .failure announcement
 ///   INTERRUPTS and FLUSHES the Announcer queue, so a remap failure that
 ///   spoke AFTER the mode-transition announcement would cut that
@@ -91,7 +91,8 @@ import Carbon.HIToolbox
 ///       in place at lock time enters the same debounced path.
 ///
 /// AUDIBLE MODE TRANSITIONS (added 2026-07-19):
-///   lock/unlock announce "Windows keyboard on" / "Mac keyboard on" via
+///   lock/unlock announce "Entering Windows" / "Entering Mac" (2026-10-26,
+///   the same words for every guest, at the user's request) via
 ///   Announcer (.info — Tink, neutral by design). Reclaims themselves are
 ///   SILENT: with VO-cursor sync on, every arrow press triggers one, and
 ///   per-reclaim speech would make VO navigation unbearable.
@@ -142,6 +143,8 @@ class FocusLockManager: ObservableObject {
     /// display / key-capture view). Weak: the view's lifecycle belongs to
     /// SwiftUI; if it goes away the enforcement simply has nothing to defend.
     private weak var captureView: NSView?
+    /// True when `view` is the screen that has (or last had) the keyboard.
+    func isCaptureView(_ view: NSView?) -> Bool { view != nil && captureView === view }
     /// KVO observation of the capture view's window's firstResponder.
     /// Non-nil exactly while enforcement is active (locked with a registered
     /// view in a window).
@@ -167,6 +170,56 @@ class FocusLockManager: ObservableObject {
     // MARK: - Init
     init() {
         FocusLockManager.shared = self
+        // AVM STOPPED BEING THE ACTIVE APP (2026-10-25, code audit): the
+        // Caps Lock remap applies to the whole Mac, so a lock left on while
+        // another app is in front made Caps Lock F19 everywhere, VoiceOver
+        // included when Caps Lock is its key. Process switching is blocked
+        // while locked, but routes remain (VoiceOver's app chooser, a system
+        // dialog). Leaving AVM now unlocks, which restores Caps Lock and
+        // says "Mac keyboard on".
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isLocked else { return }
+                AVMLog.write("AVM: FocusLock — AVM is no longer the active app while locked; unlocking.")
+                self.unlock()
+            }
+        }
+        // The screen locking, the Mac sleeping, or another user taking the
+        // Mac also ends the lock (2026-10-28, fourth audit): AVM stays the
+        // active app through them, so Caps Lock stayed F19 at the login
+        // window and for the other user.
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.willSleepNotification] {
+            systemObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                MainActor.assumeIsolated {
+                    guard let self, self.isLocked else { return }
+                    AVMLog.write("AVM: FocusLock — \(note.name.rawValue) while locked; unlocking.")
+                    self.unlock(bringListForward: false)
+                }
+            })
+        }
+        systemObservers.append(DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isLocked else { return }
+                AVMLog.write("AVM: FocusLock — the screen locked while locked; unlocking.")
+                self.unlock(bringListForward: false)
+            }
+        })
+        _ = activeObserver
+    }
+
+    private var resignObserver: NSObjectProtocol?
+    private var systemObservers: [NSObjectProtocol] = []
+
+    /// Back in AVM after copying something in another app: offer the
+    /// Mac's clipboard to the guest (AVMPasteboard, 2026-10-25).
+    private lazy var activeObserver: NSObjectProtocol = NotificationCenter.default.addObserver(
+        forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+    ) { _ in
+        MainActor.assumeIsolated { AVMPasteboard.shared.macPasteboardMayHaveChanged() }
     }
 
     // MARK: - Capture view registration
@@ -176,9 +229,22 @@ class FocusLockManager: ObservableObject {
     /// (auto-lock fired before the view landed in the window), start
     /// enforcement now.
     func registerCaptureView(_ view: NSView) {
+        // While the keyboard is in one machine, another machine's screen
+        // appearing doesn't take it (2026-10-27, code audit: several
+        // machines). Entering that machine unlocks first, then registers.
+        if isLocked, let existing = captureView, existing !== view,
+           let window = existing.window, window.isVisible, window !== view.window {
+            AVMLog.write("AVM: FocusLock — another machine's screen appeared while locked; keeping the keyboard where it is.")
+            return
+        }
+        // The same view again (its window became key) keeps the "keyboard
+        // lost" note (2026-10-28, fourth audit): restarting the watch reset
+        // it, so "keyboard back in Windows" was never said after a window
+        // took the keyboard and gave it back.
+        let sameView = captureView === view
         captureView = view
         AVMLog.write("AVM: FocusLock — capture view registered (window=\(view.window != nil ? "present" : "nil")).")
-        if isLocked {
+        if isLocked, !sameView {
             startEnforcement()
         }
     }
@@ -188,6 +254,16 @@ class FocusLockManager: ObservableObject {
         AVMLog.write("AVM: FocusLock.lock() called — isLocked was \(isLocked)")
         guard !isLocked else {
             AVMLog.write("AVM: FocusLock.lock() — already locked, no-op.")
+            return
+        }
+        // Not while another app is in front (2026-10-25, code audit): the
+        // automatic lock when a VM reaches running could fire while the user
+        // was in Mail, sending nothing to the guest while Caps Lock became
+        // F19 across the Mac. Say where things stand instead.
+        guard NSApp.isActive else {
+            let guest = VMManager.currentGuestName
+            AVMLog.write("AVM: FocusLock.lock() — AVM is not the active app; not locking.")
+            Announcer.shared.announce("\(guest) is running. To use it, switch to AVM and press Command Shift E.", tone: .info)
             return
         }
         NSApp.presentationOptions = [
@@ -206,12 +282,16 @@ class FocusLockManager: ObservableObject {
         // remapper is silent on success and handles its own failure speech.
         CapsLockRemapper.shared.applyForLock()
         guestName = VMManager.currentGuestName
-        Announcer.shared.announce("\(guestName) keyboard on", tone: .info)
+        // Copied on the Mac before entering? Offer it to the guest now.
+        AVMPasteboard.shared.macPasteboardMayHaveChanged()
+        Announcer.shared.announce("Entering \(guestName)", tone: .enterGuest)
         AVMLog.write("AVM: FocusLock.lock() — NOW LOCKED (isLocked=true).")
     }
 
     // MARK: - Unlock (Return to Mac)
-    func unlock() {
+    /// `bringListForward` false: the caller is putting another window in
+    /// front (2026-10-28), so the list stays where it is.
+    func unlock(bringListForward: Bool = true) {
         AVMLog.write("AVM: FocusLock.unlock() called — isLocked was \(isLocked)")
         guard isLocked else {
             AVMLog.write("AVM: FocusLock.unlock() — already unlocked, no-op.")
@@ -226,8 +306,10 @@ class FocusLockManager: ObservableObject {
         // Caps Lock back to normal Mac behavior BEFORE the transition
         // announcement, for the same queue-flush reason as lock().
         CapsLockRemapper.shared.restoreForUnlock()
-        Announcer.shared.announce("Mac keyboard on", tone: .info)
+        Announcer.shared.announce("Entering Mac", tone: .leaveGuest)
         AVMLog.write("AVM: FocusLock.unlock() — NOW UNLOCKED (isLocked=false).")
+        // From a machine's own window (2026-10-27), back to the list.
+        if bringListForward { MachineSessions.shared.returnedToMac() }
     }
 
     // MARK: - First-responder enforcement
@@ -347,7 +429,7 @@ class FocusLockManager: ObservableObject {
             if voiceOverIsRunning {
                 AVMLog.write("AVM: FocusLock — key watch: window REGAINED key; announcement suppressed (VoiceOver running).")
             } else {
-                Announcer.shared.announce("Keyboard back in \(guestName)", tone: .info)
+                Announcer.shared.announce("Entering \(guestName)", tone: .enterGuest)
                 AVMLog.write("AVM: FocusLock — key watch: window REGAINED key; ANNOUNCED return.")
             }
         } else {
@@ -390,15 +472,23 @@ class FocusLockManager: ObservableObject {
             eventKind: UInt32(kEventHotKeyPressed)
         )
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
-        InstallEventHandler(
+        let installed = InstallEventHandler(
             GetApplicationEventTarget(),
-            { _, _, userData -> OSStatus in
+            { _, event, userData -> OSStatus in
                 guard let userData = userData else {
                     return OSStatus(eventNotHandledErr)
                 }
                 let manager = Unmanaged<FocusLockManager>
                     .fromOpaque(userData)
                     .takeUnretainedValue()
+                // Its own hotkey only (2026-10-28, code review): a macOS
+                // machine's chord registers beside it.
+                var id = EventHotKeyID()
+                GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                                  nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
+                guard id.signature == manager.hotkeyID.signature, id.id == manager.hotkeyID.id else {
+                    return OSStatus(eventNotHandledErr)
+                }
                 DispatchQueue.main.async {
                     // Escape-only by design: the chord always means "take me
                     // to the Mac." See the header. Never lock from here.
@@ -411,8 +501,7 @@ class FocusLockManager: ObservableObject {
             selfPtr,
             &eventHandlerRef
         )
-        AVMLog.write("AVM: FocusLock — Carbon hotkey registered (Control-Command-Escape).")
-        RegisterEventHotKey(
+        let registered = RegisterEventHotKey(
             hotkeyKeyCode,
             hotkeyModifiers,
             hotkeyID,
@@ -420,6 +509,16 @@ class FocusLockManager: ObservableObject {
             0,
             &hotKeyRef
         )
+        // Checked, not assumed (2026-10-26, keyboard audit): the line used
+        // to say "registered" before the call and ignore its result. If the
+        // chord is taken, the in-window Control-Command-Escape (the capture
+        // view's own check) is the way back, and the user hears so.
+        if installed == noErr && registered == noErr {
+            AVMLog.write("AVM: FocusLock — Carbon hotkey registered (Control-Command-Escape).")
+        } else {
+            AVMLog.write("AVM: FocusLock — Carbon hotkey NOT registered (handler \(installed), hotkey \(registered)).")
+            Announcer.shared.announce("AVM couldn't reserve Control-Command-Escape; it still returns to your Mac while the machine's window is in front.", tone: .failure)
+        }
     }
 
     private func unregisterHotKey() {
