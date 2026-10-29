@@ -45,8 +45,14 @@
 //     do not call into this logger, and must never be made to. A scrubber
 //     could have a bug, miss a format, or be bypassed by a call site added a
 //     year from now; an absent call cannot.
-//     MECHANICAL CHECK (belongs in every handoff):
-//       grep -n "AVMLog\|avmLog" views/VMView.swift   -> expect NO output
+//     MECHANICAL CHECK (belongs in every handoff; reworded 2026-10-28,
+//     code review: the file now has a few lifecycle lines, none in the
+//     key path):
+//       grep -n "AVMLog\|avmLog" views/VMView.swift
+//     -> expect ONLY clipboard, SPICE-agent and the in-window
+//        Control-Command-Escape lines; nothing in handleKey,
+//        handleFlagsChanged or performKeyEquivalent, and no line that
+//        carries a key, a character or a key code.
 //     Keystroke logging still exists for development (the vk= NSLogs), but it
 //     goes to the unified log only, and Stage B gates it off by default.
 //
@@ -87,7 +93,44 @@
 // interesting lines are the last ones before the freeze.
 import Foundation
 
-final class AVMLog: @unchecked Sendable {
+// MARK: - Where AVM keeps its data (2026-10-25)
+
+/// The folder under Application Support that holds everything AVM stores:
+/// configurations.json, the VMs, logs and install scratch. Every file that
+/// needs it reads it here. A build with the original bundle identifier
+/// keeps the original folder, "AVM"; any other build uses its bundle
+/// identifier, the usual macOS convention, so two differently identified
+/// copies of AVM on one Mac never share or disturb each other's machines.
+enum AVMPaths {
+    nonisolated static let supportFolderName: String = {
+        let id = Bundle.main.bundleIdentifier ?? "com.alllisonmeloy.AVM"
+        return id == "com.alllisonmeloy.AVM" ? "AVM" : id
+    }()
+
+    /// A stand-in for Application Support/<supportFolderName> (2026-10-26),
+    /// set before anything reads or writes by the accessibility audit
+    /// (AccessibilityAudit.swift) and by every test job (SaveResumeTestJob,
+    /// 2026-10-28), so their sample machines, files and control socket go
+    /// to a temporary folder and the user's real machine list is never
+    /// opened. nil in every normal run.
+    nonisolated(unsafe) static var supportDirectoryOverride: URL?
+
+    /// Application Support/<supportFolderName>, or the audit's stand-in.
+    /// Not created here; callers that need it create it, as before.
+    nonisolated static func supportDirectory() throws -> URL {
+        if let override = supportDirectoryOverride { return override }
+        // The avmctl test's own folder (2026-10-27): its `AVM ctl` children
+        // find the test's control socket, never the user's AVM.
+        if let test = ProcessInfo.processInfo.environment["AVM_TEST_SUPPORT_DIR"], !test.isEmpty {
+            return URL(fileURLWithPath: test, isDirectory: true)
+        }
+        return try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                           appropriateFor: nil, create: true)
+            .appendingPathComponent(supportFolderName, isDirectory: true)
+    }
+}
+
+nonisolated final class AVMLog: @unchecked Sendable {
 
     static let shared = AVMLog()
 
@@ -141,11 +184,21 @@ final class AVMLog: @unchecked Sendable {
 
     /// Directory holding the kept log files.
     static var logDirectory: URL? {
-        FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first?
-            .appendingPathComponent("AVM", isDirectory: true)
+        if let logDirectoryOverride { return logDirectoryOverride }
+        return (try? AVMPaths.supportDirectory())?
             .appendingPathComponent("logs", isDirectory: true)
+    }
+
+    /// Set by the window-less test runs (InstallMediaJob, MacTestJob,
+    /// KeyboardTestJob) before anything is logged (2026-10-26, code audit):
+    /// each run used to open a new log in the real folder, and keeping only
+    /// the newest few pushed out the user's own, the previous launch's
+    /// most of all.
+    nonisolated(unsafe) static var logDirectoryOverride: URL?
+
+    /// The test runs' log folder: beside the system's temporary files.
+    static func useTestLogFolder() {
+        logDirectoryOverride = FileManager.default.temporaryDirectory.appendingPathComponent("avm-test-logs", isDirectory: true)
     }
 
     // MARK: - Sanitizer (Promise 2)
@@ -166,17 +219,61 @@ final class AVMLog: @unchecked Sendable {
     /// are effectively unique and safe to replace.
     ///
     /// nonisolated static so it can be reasoned about and tested on its own.
+    /// Words the log must not carry besides the Mac's user name
+    /// (2026-10-28, deep audit): Remote Desktop account names, which
+    /// VMStore registers. Whole words, any case.
+    nonisolated private static let privateLock = NSLock()
+    nonisolated(unsafe) private static var privateWords: [String] = []
+    nonisolated static func setPrivateWords(_ words: [String]) {
+        privateLock.lock(); defer { privateLock.unlock() }
+        privateWords = Array(Set(words.filter { $0.count >= 3 && !genericAccountNames.contains($0.lowercased()) }))
+            .sorted { $0.count > $1.count }
+    }
+    /// Account names that say nothing about a person, and are words the
+    /// log uses (2026-10-28, fourth audit): a Remote Desktop account called
+    /// "test" or "admin" turned every "test" and "admin" in the log into
+    /// "the Remote Desktop account".
+    nonisolated private static let genericAccountNames: Set<String> = [
+        "admin", "administrator", "user", "users", "guest", "test", "tester", "testing", "demo",
+        "owner", "root", "support", "remote", "rdp", "windows", "linux", "ubuntu", "debian",
+        "fedora", "home", "office", "work", "family", "student", "teacher", "default", "account",
+        "desktop", "machine", "computer", "local", "public", "temp", "mac", "macos", "pc"]
+    nonisolated private static let ipv4Regex = try? NSRegularExpression(pattern: "\\b(?:[0-9]{1,3}\\.){3}[0-9]{1,3}\\b")
+
     nonisolated static func sanitize(_ s: String) -> String {
         var out = s
+        privateLock.lock()
+        let words = privateWords
+        privateLock.unlock()
+        for word in words {
+            if let rx = try? NSRegularExpression(pattern: "\\b" + NSRegularExpression.escapedPattern(for: word) + "\\b", options: .caseInsensitive) {
+                out = rx.stringByReplacingMatches(in: out, options: [], range: NSRange(out.startIndex..<out.endIndex, in: out), withTemplate: "the Remote Desktop account")
+            }
+        }
+        // The Mac's network address (2026-10-28): Remote Desktop speaks it.
+        if let rx = ipv4Regex {
+            out = rx.stringByReplacingMatches(in: out, options: [], range: NSRange(out.startIndex..<out.endIndex, in: out), withTemplate: "an IP address")
+        }
 
         if let rx = homePathRegex {
             let range = NSRange(out.startIndex..<out.endIndex, in: out)
             out = rx.stringByReplacingMatches(in: out, options: [], range: range, withTemplate: "~")
         }
 
+        // Any capitalisation, and the full name too (2026-10-25, privacy
+        // audit): the Ubuntu account's name defaults to the Mac short name
+        // lowercased and its real name to the full name, and either can come
+        // back in a guest's console log.
+        // The full name first (2026-10-26, code audit): the short name is
+        // often its first word ("amena" in "Amena Thomas"), and replacing
+        // that first left "~ Thomas", which the full name no longer matched.
         let user = NSUserName()
+        let fullName = NSFullUserName()
+        if fullName.count >= 4, fullName != user {
+            out = out.replacingOccurrences(of: fullName, with: "~", options: .caseInsensitive)
+        }
         if user.count >= 4 {
-            out = out.replacingOccurrences(of: user, with: "~")
+            out = out.replacingOccurrences(of: user, with: "~", options: .caseInsensitive)
         }
 
         return out
