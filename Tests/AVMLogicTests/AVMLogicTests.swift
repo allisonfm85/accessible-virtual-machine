@@ -1331,6 +1331,32 @@ final class VirtioDiskTests: XCTestCase {
     }
 }
 
+// MARK: - Setup's drives (2026-10-29)
+
+final class SetupDrivesTests: XCTestCase {
+    /// A snapshot carries on with the UNATTEND drive as it was taken: one
+    /// taken with it out is noted, and one not noted had it in.
+    func testSnapshotsKeepTheDrivesTheyWereTakenWith() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("avm-setup-drives-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        let point = "avm-1793192125958"
+        XCTAssertFalse(QEMUSavedState.unattendWasOut(tag: QEMUSavedState.tag, in: dir), "a snapshot from before the note had the drive in")
+        QEMUSavedState.setUnattendOut(true, tag: QEMUSavedState.tag, in: dir)
+        QEMUSavedState.setUnattendOut(true, tag: point, in: dir)
+        XCTAssertTrue(QEMUSavedState.unattendWasOut(tag: QEMUSavedState.tag, in: dir))
+        XCTAssertTrue(QEMUSavedState.unattendWasOut(tag: point, in: dir))
+        // Saved again with the drive in: an old state carried on, then saved
+        // before the drive came out.
+        QEMUSavedState.setUnattendOut(false, tag: QEMUSavedState.tag, in: dir)
+        XCTAssertFalse(QEMUSavedState.unattendWasOut(tag: QEMUSavedState.tag, in: dir))
+        XCTAssertTrue(QEMUSavedState.unattendWasOut(tag: point, in: dir))
+        QEMUSavedState.setUnattendOut(false, tag: point, in: dir)
+        XCTAssertFalse(fm.fileExists(atPath: dir.appendingPathComponent(QEMUSavedState.unattendOutFile).path), "an empty note is removed")
+    }
+}
+
 // MARK: - Disk space (2026-10-27)
 
 final class DiskWatchTests: XCTestCase {

@@ -33,6 +33,12 @@ nonisolated enum QEMUSavedState {
     /// A restore point with memory, put back while the machine was
     /// stopped: its tag, for the next Start to load (RestorePoints.restore).
     static let resumeFile = "resume-from.txt"
+    /// The snapshots, one tag a line, taken while Windows Setup's UNATTEND
+    /// drive was out of the machine (2026-10-29). A plain Start of a set-up
+    /// Windows leaves the drive out, and a snapshot must carry on with the
+    /// drives it was taken with; a tag not listed was taken with the drive
+    /// in, as every one was before.
+    static let unattendOutFile = "unattend-out.txt"
 
     /// What a Start carries on from: the saved state (deleted once
     /// loaded) or a restore point with memory (kept).
@@ -42,6 +48,31 @@ nonisolated enum QEMUSavedState {
     }
 
     static func hint(in dir: URL) -> URL { dir.appendingPathComponent(hintFile) }
+
+    static func unattendWasOut(tag: String, in dir: URL) -> Bool {
+        tagsWithUnattendOut(in: dir).contains(tag)
+    }
+
+    /// Noted before the snapshot is taken, so no crash between the two can
+    /// leave a snapshot without its note.
+    static func setUnattendOut(_ out: Bool, tag: String, in dir: URL) {
+        var tags = tagsWithUnattendOut(in: dir)
+        guard tags.contains(tag) != out else { return }
+        if out { tags.insert(tag) } else { tags.remove(tag) }
+        let url = dir.appendingPathComponent(unattendOutFile)
+        if tags.isEmpty {
+            try? FileManager.default.removeItem(at: url)
+        } else {
+            try? (tags.sorted().joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private static func tagsWithUnattendOut(in dir: URL) -> Set<String> {
+        let text = (try? String(contentsOf: dir.appendingPathComponent(unattendOutFile), encoding: .utf8)) ?? ""
+        return Set(text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty })
+    }
 
     /// True if the machine's list row should say it's saved.
     static func looksSaved(_ configuration: VMConfiguration) -> Bool {

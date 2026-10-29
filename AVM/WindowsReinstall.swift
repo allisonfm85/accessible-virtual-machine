@@ -113,7 +113,7 @@ enum WindowsReinstall {
         // still there would boot to the firmware shell as "installed".
         try? fm.removeItem(at: dir.appendingPathComponent("autounattend.img"))
         for name in ["install-avm.iso", "nvram.fd", "tpm-state", RestorePoints.folderName, "firmware-serial.log", "setup-carry-on-said",
-                     QEMUSavedState.hintFile, QEMUSavedState.loadedMarker, QEMUSavedState.resumeFile] {
+                     QEMUSavedState.hintFile, QEMUSavedState.loadedMarker, QEMUSavedState.resumeFile, QEMUSavedState.unattendOutFile] {
             try? fm.removeItem(at: dir.appendingPathComponent(name))
         }
         AVMLog.write("AVM: Reinstall — \(configuration.name) is ready to install Windows again at its next start.")

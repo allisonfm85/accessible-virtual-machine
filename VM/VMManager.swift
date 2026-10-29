@@ -150,6 +150,10 @@
 //   start, so nulling installISOPath in configurations.json is no longer
 //   REQUIRED for safety (still harmless). The autounattend image itself stays
 //   attached always — it is the marker's home and the guest→host file courier.
+//   Until Setup is done with it (2026-10-29): with it and the DVD in, BitLocker
+//   couldn't take effect, so both come out at the first sign-in
+//   (removeSetupDrives) and the image isn't attached again; the marker is read
+//   from the file on the Mac.
 //
 //   FIELD NOTE from the first true end-to-end run (2026-07-08): install reached
 //   OOBE with Narrator working, but NetKVM did NOT bind during the first OOBE
@@ -342,6 +346,12 @@ final class VMManager: ObservableObject {
     /// (the install-complete marker). USB 2c: during setup, start-time
     /// devices wait for the SPICE agent, with no fallback.
     private(set) var installCompleteAtStart = false
+    /// Windows Setup's drives in this run's QEMU (2026-10-29), from its
+    /// arguments, until removeSetupDrives takes them out.
+    private var unattendInSession = false
+    private var dvdInSession = false
+    /// A removal under way, which a save or restore point waits for.
+    private var setupDrivesRemoval: Task<Void, Never>?
     /// The disk bus this run started on (2026-10-28): what Save needs.
     private(set) var startedOnVirtioDisk = false
     /// How a move to the virtio disk went this run (2026-10-27): "ready",
@@ -860,6 +870,8 @@ final class VMManager: ObservableObject {
                         ? " JAWS is talking in it."
                         : " Enter Windows and press Control Command Return to turn on Narrator."
                 Announcer.shared.announce("Windows is installed and signed in.\(talking)", tone: .success)
+                // Setup's drives come out now (2026-10-29), not at the next Start.
+                removeSetupDrives(runtimeDir: runtimeDir)
                 return
             }
             if !warnedAtHour, state == .running, Date().timeIntervalSince(lastProgress) >= Self.installProgressInterval {
@@ -1454,6 +1466,16 @@ final class VMManager: ObservableObject {
             throw error
         }
 
+        // Setup's UNATTEND drive once Setup is done with it (2026-10-29): in,
+        // it kept BitLocker from taking effect. The install marker on it is
+        // read from the file on the Mac, so a plain Start of a set-up Windows
+        // leaves it out; a snapshot carries on with it as it was taken.
+        let attachUnattend: Bool
+        if let resumePlan {
+            attachUnattend = !QEMUSavedState.unattendWasOut(tag: resumePlan.tag, in: runtimeDir)
+        } else {
+            attachUnattend = !installComplete || configuration.guestOS.isLinux || setupStillRunning(runtimeDir: runtimeDir)
+        }
         var args = buildQEMUArguments(
             configuration: configuration,
             spiceSocketPath: spicePath,
@@ -1462,8 +1484,11 @@ final class VMManager: ObservableObject {
             tpmArguments: tpmArgs,
             runtimeDir: runtimeDir,
             attachInstallMedia: !installComplete,
-            attachDVDWithoutBoot: keepDVDWithoutBoot
+            attachDVDWithoutBoot: keepDVDWithoutBoot,
+            attachUnattend: attachUnattend
         )
+        unattendInSession = args.contains { $0.contains("id=avm-unattend") }
+        dvdInSession = args.contains { $0.contains("id=avm-dvd") }
         // Paused until the saved state is loaded into it.
         if resuming { args.append("-S") }
         // A pending move to the virtio disk (Settings, 2026-10-27).
@@ -1498,6 +1523,11 @@ final class VMManager: ObservableObject {
         state = .running
         appendConsole("AVM: VM is running.\n")
         beginQMPEventMonitoring()
+        // An UNATTEND drive a snapshot was taken with comes out once it has
+        // carried on (2026-10-29), as a plain Start leaves it out after Setup.
+        if resumePlan != nil, !configuration.guestOS.isLinux, unattendInSession, !setupStillRunning(runtimeDir: runtimeDir) {
+            removeSetupDrives(runtimeDir: runtimeDir)
+        }
 
         // The keyboard for Windows (WindowsKeyboard.swift) starts here, now
         // that QMP, which carries its keys, is connected (2026-10-28, a
@@ -2331,7 +2361,8 @@ final class VMManager: ObservableObject {
         tpmArguments: [String],
         runtimeDir: URL,
         attachInstallMedia: Bool,
-        attachDVDWithoutBoot: Bool = false
+        attachDVDWithoutBoot: Bool = false,
+        attachUnattend: Bool = true
     ) -> [String] {
 
         var args: [String] = []
@@ -2469,7 +2500,7 @@ final class VMManager: ObservableObject {
             if attachDVDWithoutBoot, FileManager.default.fileExists(atPath: kept) {
                 args += [
                     "-drive", "if=none,id=cdrom0,file=\(Self.qemuOptionValue(kept)),media=cdrom,readonly=on",
-                    "-device", "usb-storage,drive=cdrom0,bus=usb.0,port=3,removable=on"
+                    "-device", "usb-storage,drive=cdrom0,bus=usb.0,port=3,removable=on,id=avm-dvd"
                 ]
                 avmLog("buildQEMUArguments: the install DVD rides along without booting, for Setup's remaining steps")
             }
@@ -2488,7 +2519,7 @@ final class VMManager: ObservableObject {
             if FileManager.default.fileExists(atPath: rebuiltISOPath) {
                 args += [
                     "-drive", "if=none,id=cdrom0,file=\(Self.qemuOptionValue(rebuiltISOPath)),media=cdrom,readonly=on",
-                    "-device", "usb-storage,drive=cdrom0,bus=usb.0,port=3,bootindex=0,removable=on"
+                    "-device", "usb-storage,drive=cdrom0,bus=usb.0,port=3,bootindex=0,removable=on,id=avm-dvd"
                 ]
                 avmLog("buildQEMUArguments: attached AVM-built install ISO at \(rebuiltISOPath)")
             } else {
@@ -2509,11 +2540,15 @@ final class VMManager: ObservableObject {
         // existing (not installISOPath, and NOT gated by the reinstall guard), so
         // the writable UNATTEND volume stays available after install — it is the
         // install-complete marker's home and the guest→host file courier.
+        // Until Setup is done with it (2026-10-29): then attachUnattend leaves
+        // it out (see startVM), and the marker is read from the file on the Mac.
         let autounattendImagePath = runtimeDir.appendingPathComponent("autounattend.img").path
-        if FileManager.default.fileExists(atPath: autounattendImagePath) {
+        if !attachUnattend, FileManager.default.fileExists(atPath: autounattendImagePath) {
+            avmLog("buildQEMUArguments: the UNATTEND drive is left out; Setup is done with it")
+        } else if FileManager.default.fileExists(atPath: autounattendImagePath) {
             args += [
                 "-drive", "if=none,id=unattend,file=\(Self.qemuOptionValue(autounattendImagePath)),format=raw,cache=writeback",
-                "-device", "usb-storage,drive=unattend,bus=usb.0,port=4,removable=on"
+                "-device", "usb-storage,drive=unattend,bus=usb.0,port=4,removable=on,id=avm-unattend"
             ]
             avmLog("buildQEMUArguments: attached autounattend image at \(autounattendImagePath)")
             appendConsole("AVM: Attached autounattend.xml image for unattended install.\n")
@@ -3094,6 +3129,81 @@ final class VMManager: ObservableObject {
             avmLog("removeFinishedWindowsMedia: couldn't delete install-avm.iso: \(error.localizedDescription)")
         }
         return true
+    }
+
+    // MARK: - Setup's drives in a running machine (2026-10-29)
+
+    /// Takes Windows Setup's drives out of the running machine once its
+    /// first sign-in has finished (2026-10-29, the developer's Windows):
+    /// the UNATTEND drive stayed in for good, and the install DVD until AVM
+    /// stopped the machine, and with them in BitLocker couldn't take
+    /// effect. The DVD only in the install's own run, which can't be saved:
+    /// a carry-on run starts without the camera because of its DVD, and a
+    /// snapshot of that run must load with both as they were.
+    private func removeSetupDrives(runtimeDir: URL) {
+        guard setupDrivesRemoval == nil, unattendInSession || (dvdInSession && !installCompleteAtStart) else { return }
+        setupDrivesRemoval = Task { [weak self] in
+            await self?.performRemoveSetupDrives(runtimeDir: runtimeDir)
+            self?.setupDrivesRemoval = nil
+        }
+    }
+
+    private func performRemoveSetupDrives(runtimeDir: URL) async {
+        // Not under a save or a restore point: each snapshot is noted with
+        // the drives it has (noteSetupDrives), and they mustn't change under it.
+        guard state == .running || state == .paused, savingTask == nil, !takingRestorePoint else {
+            avmLog("removeSetupDrives: not now (the machine is saving, taking a restore point, or not running)")
+            return
+        }
+        var removed: [String] = []
+        if unattendInSession, await removeDevice("avm-unattend") {
+            unattendInSession = false
+            removed.append("the UNATTEND drive")
+        }
+        if dvdInSession, !installCompleteAtStart, await removeDevice("avm-dvd") {
+            dvdInSession = false
+            removed.append("the install DVD")
+        }
+        guard !removed.isEmpty else { return }
+        avmLog("removeSetupDrives: took out \(removed.joined(separator: " and "))")
+        appendConsole("AVM: Windows is set up, so \(removed.joined(separator: " and ")) came out of the virtual machine.\n")
+        // With neither in Windows, its answer file and the DVD's copy go now
+        // rather than at the next Start.
+        if !unattendInSession, !dvdInSession { removeFinishedWindowsMedia(runtimeDir: runtimeDir) }
+    }
+
+    /// device_del, then a wait (at most 5 seconds) until the device has left
+    /// QEMU's tree. A USB unplug doesn't wait for the guest.
+    private func removeDevice(_ id: String) async -> Bool {
+        do {
+            try await sendQMPCommand("device_del", arguments: ["id": id])
+        } catch {
+            avmLog("removeSetupDrives: device_del \(id) was refused: \(error.localizedDescription)")
+            return false
+        }
+        for _ in 0..<25 {
+            if await hasDevice(id) == false { return true }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        avmLog("removeSetupDrives: \(id) is still in the machine 5 seconds after device_del")
+        return false
+    }
+
+    /// Whether QEMU has a device with this id now; nil if it couldn't say.
+    private func hasDevice(_ id: String) async -> Bool? {
+        guard let children = (try? await sendQMPCommand("qom-list", arguments: ["path": "/machine/peripheral"])) as? [[String: Any]] else {
+            return nil
+        }
+        return children.contains { $0["name"] as? String == id }
+    }
+
+    /// Before a snapshot with memory (2026-10-29): a removal under way ends
+    /// first, and the snapshot's tag is noted with the UNATTEND drive as it
+    /// is, for the Start that carries it on.
+    private func noteSetupDrives(forSnapshot tag: String, runtimeDir: URL) async {
+        await setupDrivesRemoval?.value
+        let present = await hasDevice("avm-unattend") ?? unattendInSession
+        QEMUSavedState.setUnattendOut(!present, tag: tag, in: runtimeDir)
     }
 
     /// The "Fresh install" point owed from a resumed first sign-in.
@@ -4270,6 +4380,7 @@ extension VMManager {
         await detachDevicesSentMeanwhile()
         let tag = RestorePoints.newTag()
         try RestorePoints.writeFolder(vmDirectory: runtimeDir, tag: tag, label: label, secureBoot: configuration.usesSecureBoot, diskBus: configuration.diskBus ?? "nvme")
+        await noteSetupDrives(forSnapshot: tag, runtimeDir: runtimeDir)
         do {
             let node = try await diskNodeName()
             try await runQMPJob("snapshot-save", id: "avm-point",
@@ -4335,6 +4446,7 @@ extension VMManager {
         Announcer.shared.announce("Saving \(guest).", tone: .info)
         avmLog("saveStateAndStop: saving \(configuration.name)")
         await detachDevicesSentMeanwhile()
+        await noteSetupDrives(forSnapshot: QEMUSavedState.tag, runtimeDir: runtimeDir)
         let started = Date()
         do {
             let node = try await diskNodeName()
