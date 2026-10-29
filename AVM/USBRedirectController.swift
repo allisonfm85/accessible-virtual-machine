@@ -466,8 +466,8 @@ final class USBRedirectController: ObservableObject {
         switch await USBHelperClient.shared.restartHelper() {
         case .success:
             announce("AVM's USB helper restarted. Plug the device in again, or choose Attach USB Device.", tone: .success)
-        case .failure(.notEnabled):
-            break   // the client has asked for its approval
+        case .failure(.notEnabled), .failure(.notStarting):
+            break   // the client has asked for its approval, or said why it isn't starting
         case .failure(let error):
             log("restart failed: \(error)")
             announce("AVM's USB helper didn't restart. Reason: \(error). Next: quit and reopen AVM, or restart your Mac.", tone: .failure)

@@ -216,6 +216,9 @@ final class BluetoothDevices: ObservableObject {
                 }
                 return false
             }
+            // The client has said the helper isn't starting, and what to do
+            // (2026-10-29); a second line would cut that one off.
+            if case .notStarting = error { return false }
             // Not "stayed on the Mac" for a machine's keyboard for Windows,
             // which the helper has already (2026-10-29, sixth audit).
             let reason = Self.reason(error)
@@ -382,6 +385,9 @@ struct BluetoothDevicesView: View {
     @State private var devices: [BluetoothDeviceInfo] = []
     @State private var looking = true
     @State private var busy: String?
+    /// Why the list couldn't be read, in place of "No Bluetooth devices"
+    /// (2026-10-29: a helper that wasn't starting read as no devices).
+    @State private var problem: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -394,6 +400,9 @@ struct BluetoothDevicesView: View {
 
             if looking {
                 Text("Looking for Bluetooth devices…")
+            } else if let problem {
+                Text(problem)
+                    .fixedSize(horizontal: false, vertical: true)
             } else if devices.isEmpty {
                 Text("No Bluetooth devices are connected. Turn the device on, or press a key on it to wake it, then choose Look Again.")
                     .fixedSize(horizontal: false, vertical: true)
@@ -406,6 +415,7 @@ struct BluetoothDevicesView: View {
             HStack {
                 Button("Look Again") { Task { await look() } }
                     .accessibilityHint("Lists the Bluetooth devices connected to your Mac now")
+                    .disabled(looking)
                 Spacer()
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.cancelAction)
@@ -447,14 +457,26 @@ struct BluetoothDevicesView: View {
 
     private func look() async {
         looking = true
+        problem = nil
         switch await USBHelperClient.shared.listBluetoothDevices() {
         case .success(let list):
             devices = list.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             Announcer.shared.announce(list.isEmpty ? "No Bluetooth devices are connected." : "\(list.count) Bluetooth \(list.count == 1 ? "device" : "devices") found.", tone: .info)
         case .failure(let error):
             devices = []
-            if case .notEnabled = error { break }
-            Announcer.shared.announce("AVM couldn't list Bluetooth devices. Reason: \(error)", tone: .failure)
+            // The approval dialog and the client's own line are spoken
+            // already; the window shows them (2026-10-29).
+            switch error {
+            case .notEnabled(.requiresApproval):
+                problem = "AVM's helper is waiting for your approval. In System Settings, under General, then Login Items and Extensions, allow AVM in the background, then choose Look Again."
+            case .notEnabled:
+                problem = "AVM's helper couldn't be set up. Choose Look Again to try again."
+            case .notStarting:
+                problem = "AVM's helper isn't starting. In System Settings, under General, then Login Items and Extensions, turn AVM off and on again under Allow in the Background, then quit and reopen AVM."
+            default:
+                problem = "AVM couldn't list Bluetooth devices. Reason: \(error)."
+                Announcer.shared.announce("AVM couldn't list Bluetooth devices. Reason: \(error)", tone: .failure)
+            }
         }
         looking = false
     }

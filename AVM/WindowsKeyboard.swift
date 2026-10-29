@@ -168,6 +168,12 @@ final class WindowsKeyboard {
                 // same keyboard's included (sixth audit: its failure ended the
                 // newer start's wait for the helper's approval).
                 guard self.keyboardID == keyboardID, self.startGeneration == generation else { return }
+                // Not after the client's line about a helper that isn't
+                // starting (2026-10-29), which says what to do.
+                if case .notStarting = error {
+                    self.keyboardID = nil
+                    return
+                }
                 Announcer.shared.announce("\(keyboardName) can't be used for Windows. Reason: \(Self.reason(error)) It still types on the Mac.", tone: .failure)
                 self.keyboardID = nil
             }

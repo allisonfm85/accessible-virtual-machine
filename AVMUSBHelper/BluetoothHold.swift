@@ -117,8 +117,14 @@ final class BluetoothHold {
         return String(format: "bt:%04x:%04x:%@:%x:%x", vendor, product, serial, page, usage)
     }
 
-    /// What kind of device it is, from its primary usage, for AVM to name.
+    /// What kind of device it is, for AVM to name: a braille display by any
+    /// of its usages, as KeyboardHold.isBraille tells one (2026-10-29: an
+    /// APH Mantis Q40's primary usage is on page 0x93, its braille display
+    /// another collection, and it was named only "Bluetooth device"), and
+    /// anything else by its primary usage.
     private static func kind(_ device: IOHIDDevice) -> String {
+        let pairs = property(device, kIOHIDDeviceUsagePairsKey) as? [[String: Any]] ?? []
+        if pairs.contains(where: { ($0[kIOHIDDeviceUsagePageKey] as? Int) == 0x41 }) { return "braille" }
         let page = property(device, kIOHIDPrimaryUsagePageKey) as? Int ?? 0
         let usage = property(device, kIOHIDPrimaryUsageKey) as? Int ?? 0
         switch (page, usage) {

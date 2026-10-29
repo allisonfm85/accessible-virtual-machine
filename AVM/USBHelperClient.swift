@@ -40,6 +40,13 @@
 //  client re-registers once and retries; register() on an enabled
 //  service re-submits the job to launchd without a new approval.
 //
+//  A job that can't start (learned live 2026-10-29): launchd can also
+//  keep a job whose program it no longer finds, one AVM 0.3.8 had made
+//  six updates earlier ("No such process"). A call then gets no answer
+//  and no error, ever. The version check and the lists have a time
+//  limit; no answer to the check re-registers the helper
+//  (repairRegistration), and holds wait behind that check.
+//
 //  Approval prompt (Allison, 2026-09-07): the "needs your approval"
 //  moment is a standard NSAlert with an Open Login Items button, not a
 //  self-voiced paragraph. Native dialogs are VoiceOver territory;
@@ -115,6 +122,14 @@ nonisolated enum USBHelperError: Error, CustomStringConvertible {
     case helperUnavailable(String)
     /// The helper answered and said no. Step names where, detail why.
     case helper(step: String, detail: String)
+    /// A call got no answer in time (2026-10-29): launchd can keep the
+    /// helper's service while it can't start the program, and a call then
+    /// gets neither a reply nor an error. Spoken by callers like any error.
+    case noAnswer
+    /// No answer even after AVM registered the helper again (2026-10-29).
+    /// The client has said so, with what to do; callers stay quiet, as
+    /// they do for .notEnabled.
+    case notStarting
 
     var description: String {
         switch self {
@@ -122,6 +137,8 @@ nonisolated enum USBHelperError: Error, CustomStringConvertible {
         case .xpc(let s): return s
         case .helperUnavailable(let s): return "helper unavailable: \(s)"
         case .helper(let step, let detail): return "\(step): \(detail)"
+        case .noAnswer: return "AVM's helper didn't answer"
+        case .notStarting: return "AVM's helper isn't starting"
         }
     }
 
@@ -132,6 +149,27 @@ nonisolated enum USBHelperError: Error, CustomStringConvertible {
             return .helperUnavailable(ns.localizedDescription)
         }
         return .xpc(ns.localizedDescription)
+    }
+}
+
+// MARK: - One answer per call
+
+/// The first of a call's reply, its connection's error and its time limit
+/// (2026-10-29). The later ones are dropped: a continuation resumes once.
+nonisolated final class HelperAnswer<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Never>?
+
+    init(_ continuation: CheckedContinuation<Value, Never>) {
+        self.continuation = continuation
+    }
+
+    func give(_ value: Value) {
+        lock.lock()
+        let waiting = continuation
+        continuation = nil
+        lock.unlock()
+        waiting?.resume(returning: value)
     }
 }
 
@@ -352,15 +390,11 @@ final class USBHelperClient: NSObject, ObservableObject {
 
     func listBluetoothDevices() async -> Result<[BluetoothDeviceInfo], USBHelperError> {
         guard ensureRegistered() else { return .failure(.notEnabled(status)) }
-        await ensureCurrentHelper()
+        if let problem = await ensureCurrentHelper() { return .failure(problem) }
         let c = connect()
-        let result: Result<[BluetoothDeviceInfo], USBHelperError> = await withCheckedContinuation { cont in
-            let proxy = c.remoteObjectProxyWithErrorHandler { error in
-                cont.resume(returning: .failure(USBHelperError.fromXPC(error)))
-            } as? AVMUSBHelperProtocol
-            guard let proxy else { cont.resume(returning: .failure(.xpc("could not build the helper proxy"))); return }
+        let result: Result<[BluetoothDeviceInfo], USBHelperError> = await ask(c, within: answerLimit) { proxy, done in
             proxy.listBluetoothDevices { list in
-                cont.resume(returning: .success(list.compactMap { entry in
+                done(.success(list.compactMap { entry in
                     guard let id = entry["id"] as? String, let descriptor = entry["descriptor"] as? Data else { return nil }
                     return BluetoothDeviceInfo(id: id, name: entry["name"] as? String ?? "Bluetooth device",
                                                kind: entry["kind"] as? String ?? "other",
@@ -376,7 +410,7 @@ final class USBHelperClient: NSObject, ObservableObject {
 
     func holdBluetooth(_ id: String, socketPath: String, peerPID: Int, retrying: Bool = false) async -> Result<Void, USBHelperError> {
         guard ensureRegistered() else { return .failure(.notEnabled(status)) }
-        await ensureCurrentHelper()
+        if let problem = await ensureCurrentHelper() { return .failure(problem) }
         bluetoothHeld.insert(id)
         let c = connect()
         let result: Result<Void, USBHelperError> = await withCheckedContinuation { cont in
@@ -443,25 +477,50 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// One check per run, which every caller waits for (2026-10-28, fourth
     /// audit): set before its await, the flag let a second request go to
     /// the stale helper, which the first then restarted under it.
-    private var helperCheck: Task<Void, Never>?
-    func ensureCurrentHelper() async {
+    /// Returns what stops the call (2026-10-29): a helper that isn't
+    /// starting, or one waiting for its approval. A check that failed is
+    /// made again at the next request; kept, it failed the whole run.
+    private var helperCheck: Task<USBHelperError?, Never>?
+    func ensureCurrentHelper() async -> USBHelperError? {
         if let helperCheck { return await helperCheck.value }
         let check = Task { await self.checkHelperVersion() }
         helperCheck = check
-        await check.value
+        let problem = await check.value
+        if problem != nil, helperCheck == check { helperCheck = nil }
+        return problem
     }
 
-    private func checkHelperVersion() async {
+    private func checkHelperVersion() async -> USBHelperError? {
         // The helper answers "service-name version" (2026-10-28, second
         // review: compared whole, it never matched, and every run restarted
         // the helper at its first device). The connection stays up: the
         // hold that follows uses it, and a disconnect here fired the
         // "helper lost" handlers into that hold.
-        guard case .success(let answer) = await fetchHelperVersion(keepConnection: true) else { return }
+        let answer: String
+        switch await fetchHelperVersion(keepConnection: true) {
+        case .success(let reply):
+            answer = reply
+        case .failure(.noAnswer):
+            // No answer at all (2026-10-29): launchd isn't starting it.
+            return Self.stopping(await repairRegistration())
+        case .failure:
+            return nil
+        }
         let version = answer.split(separator: " ").last.map(String.init) ?? answer
-        guard version != AVMUSBHelperNames.helperBuildVersion else { return }
+        guard version != AVMUSBHelperNames.helperBuildVersion else { return nil }
         log("the running helper is \(version), this AVM expects \(AVMUSBHelperNames.helperBuildVersion); restarting it")
-        _ = await restartHelper()
+        return Self.stopping(await restartHelper())
+    }
+
+    /// What a check's outcome stops. Any other failure lets the call go
+    /// ahead and meet it, as before.
+    private static func stopping(_ outcome: Result<String, USBHelperError>) -> USBHelperError? {
+        switch outcome {
+        case .failure(.notStarting): return .notStarting
+        case .failure(.notEnabled(.requiresApproval)): return .notEnabled(.requiresApproval)
+        case .failure(.noAnswer): return .noAnswer
+        default: return nil
+        }
     }
 
     /// Restart USB Helper (2026-10-27): asks the helper to exit, then
@@ -471,25 +530,127 @@ final class USBHelperClient: NSObject, ObservableObject {
         guard ensureRegistered() else { return .failure(.notEnabled(status)) }
         log("restart: asking the helper to exit")
         let c = connect()
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            let proxy = c.remoteObjectProxyWithErrorHandler { _ in cont.resume() } as? AVMUSBHelperProtocol
-            guard let proxy else { cont.resume(); return }
-            proxy.restart { cont.resume() }
+        let asked: Result<Void, USBHelperError> = await ask(c, within: answerLimit) { proxy, done in
+            proxy.restart { done(.success(())) }
+        }
+        // Nothing to restart (2026-10-29): launchd isn't starting it.
+        if case .failure(.noAnswer) = asked {
+            log("restart: the helper didn't answer the request to exit")
+            return await repairRegistration()
         }
         try? await Task.sleep(for: .seconds(2))
         let fresh = connect()
-        let version: String? = await withCheckedContinuation { cont in
-            let proxy = fresh.remoteObjectProxyWithErrorHandler { _ in cont.resume(returning: nil) } as? AVMUSBHelperProtocol
-            guard let proxy else { cont.resume(returning: nil); return }
-            proxy.helperVersion { cont.resume(returning: $0) }
+        let version: Result<String, USBHelperError> = await ask(fresh, within: answerLimit) { proxy, done in
+            proxy.helperVersion { done(.success($0)) }
         }
         disconnectIfIdle()
-        guard let version else {
+        switch version {
+        case .success(let reply):
+            log("restart: a fresh helper answered (\(reply))")
+            return .success(reply)
+        case .failure(.noAnswer):
             log("restart: the helper didn't answer afterwards")
+            return await repairRegistration()
+        case .failure(let error):
+            log("restart: the helper didn't answer afterwards: \(error)")
             return .failure(.xpc("the helper didn't start again"))
         }
-        log("restart: a fresh helper answered (\(version))")
-        return .success(version)
+    }
+
+    // MARK: Repair (2026-10-29)
+
+    /// Registers the helper again when it doesn't answer though Login
+    /// Items says it's allowed. On the developer's Mac (2026-10-29, a
+    /// Mantis Q40 the Bluetooth window never listed) launchd still had the
+    /// job AVM 0.3.8 made, six updates earlier. It couldn't find its
+    /// program ("No such process"), launchd tried every 10 seconds, and
+    /// every call waited for good. register() again replaces the job
+    /// without a new approval (see the header); if the helper still
+    /// doesn't answer, it's removed and registered afresh, which macOS may
+    /// want approved again. Once per run; after that it's only said.
+    /// Returns the helper's version.
+    private var repairTried = false
+    private func repairRegistration() async -> Result<String, USBHelperError> {
+        // Never under a hold: dropping the connection gives its devices back.
+        guard attachedDevices.isEmpty, pendingDevices.isEmpty, !keyboardActive, bluetoothHeld.isEmpty else {
+            log("repair: the helper didn't answer, but devices are held on its connection; its registration is left alone")
+            return .failure(.noAnswer)
+        }
+        disconnect()
+        log("repair: no answer in \(Int(answerLimit)) seconds though Login Items says enabled. launchd: \(await Self.launchdJob())")
+        guard !repairTried else { return .failure(sayNotStarting()) }
+        repairTried = true
+        announce("AVM's helper didn't answer, so AVM is setting it up again.", tone: .info)
+
+        do {
+            try service.register()
+            log("repair: register() returned without error")
+        } catch {
+            log("repair: register() threw: \(error)")
+        }
+        if refreshStatus() == .enabled,
+           case .success(let reply) = await fetchHelperVersion(keepConnection: true, within: repairAnswerLimit) {
+            log("repair: the helper answers after registering again (\(reply))")
+            return .success(reply)
+        }
+
+        disconnect()
+        do {
+            try await service.unregister()
+            log("repair: unregister() done")
+        } catch {
+            log("repair: unregister() threw: \(error)")
+        }
+        do {
+            try service.register()
+            log("repair: register() after unregister returned without error")
+        } catch {
+            log("repair: register() after unregister threw: \(error)")
+        }
+        switch refreshStatus() {
+        case .enabled:
+            if case .success(let reply) = await fetchHelperVersion(keepConnection: true, within: repairAnswerLimit) {
+                log("repair: the helper answers after a fresh registration (\(reply))")
+                return .success(reply)
+            }
+            disconnect()
+        case .requiresApproval:
+            // The callers wait for the approval and ask again.
+            log("repair: the fresh registration waits for approval in Login Items")
+            presentApprovalDialog()
+            return .failure(.notEnabled(.requiresApproval))
+        case .notRegistered, .notFound, .unknown:
+            log("repair: after a fresh registration the status is \(status.rawValue)")
+        }
+        log("repair: the helper still doesn't answer. launchd: \(await Self.launchdJob())")
+        return .failure(sayNotStarting())
+    }
+
+    /// Said once for each request that finds the helper not starting.
+    private func sayNotStarting() -> USBHelperError {
+        announce("AVM's helper isn't starting, so devices stay on the Mac. Next: in System Settings, under General, then Login Items and Extensions, turn AVM off and on again under Allow in the Background, then quit and reopen AVM.", tone: .failure)
+        return .notStarting
+    }
+
+    /// launchd's view of the helper's job, for the log (2026-10-29: the
+    /// job that couldn't start showed only here). launchctl print reads it
+    /// without root. The job's label is the Mach service's name.
+    private nonisolated static func launchdJob() async -> String {
+        await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            process.arguments = ["print", "system/\(AVMUSBHelperNames.machServiceName)"]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+            do { try process.run() } catch { return "launchctl didn't run (\(error.localizedDescription))" }
+            let text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            process.waitUntilExit()
+            let lines = text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            let wanted = ["state = ", "job state = ", "last exit code = ", "parent bundle version = ", "runs = "]
+            let found = wanted.compactMap { key in lines.first { $0.hasPrefix(key) } }
+            return found.isEmpty ? "no job (\(lines.first ?? "nothing printed"))" : found.joined(separator: "; ")
+        }.value
     }
 
     /// Polls status until the approval lands, then says so (1e:
@@ -580,30 +741,52 @@ final class USBHelperClient: NSObject, ObservableObject {
         }
     }
 
+    // MARK: Time limits (2026-10-29)
+
+    /// How long a call waits for the helper. launchd can keep the helper's
+    /// service while it can't start the program (see repairRegistration),
+    /// and a call then gets no answer and no error, ever: the Bluetooth
+    /// window said "Looking for Bluetooth devices" for good. More than
+    /// launchd's 10 seconds between starts of a job, so a helper that was
+    /// just restarted has time to come back.
+    private let answerLimit: TimeInterval = 12
+    /// For the checks inside a repair, where the job is new.
+    private let repairAnswerLimit: TimeInterval = 6
+
+    /// One call to the helper, ended by its reply, its connection's error,
+    /// or .noAnswer once `limit` has passed, whichever comes first.
+    private func ask<Value>(_ c: NSXPCConnection, within limit: TimeInterval,
+                            _ call: (AVMUSBHelperProtocol, @escaping (Result<Value, USBHelperError>) -> Void) -> Void) async -> Result<Value, USBHelperError> {
+        await withCheckedContinuation { cont in
+            let answer = HelperAnswer(cont)
+            DispatchQueue.global().asyncAfter(deadline: .now() + limit) { answer.give(.failure(.noAnswer)) }
+            let proxy = c.remoteObjectProxyWithErrorHandler { error in
+                answer.give(.failure(USBHelperError.fromXPC(error)))
+            } as? AVMUSBHelperProtocol
+            guard let proxy else {
+                answer.give(.failure(.xpc("could not build the helper proxy")))
+                return
+            }
+            call(proxy) { answer.give($0) }
+        }
+    }
+
     // MARK: Calls
 
     /// Ask the helper who it is. The first end-to-end proof: register,
     /// launchd start, code-signing gate, reply.
-    func fetchHelperVersion(retrying: Bool = false, keepConnection: Bool = false) async -> Result<String, USBHelperError> {
+    func fetchHelperVersion(retrying: Bool = false, keepConnection: Bool = false,
+                            within limit: TimeInterval? = nil) async -> Result<String, USBHelperError> {
         guard ensureRegistered() else {
             return .failure(.notEnabled(status))
         }
         let c = connect()
-        let result: Result<String, USBHelperError> = await withCheckedContinuation { cont in
-            let proxy = c.remoteObjectProxyWithErrorHandler { error in
-                cont.resume(returning: .failure(USBHelperError.fromXPC(error)))
-            } as? AVMUSBHelperProtocol
-            guard let proxy else {
-                cont.resume(returning: .failure(.xpc("could not build the helper proxy")))
-                return
-            }
-            proxy.helperVersion { version in
-                cont.resume(returning: .success(version))
-            }
+        let result: Result<String, USBHelperError> = await ask(c, within: limit ?? answerLimit) { proxy, done in
+            proxy.helperVersion { done(.success($0)) }
         }
         if !keepConnection { disconnectIfIdle() }
         if case .failure(.helperUnavailable) = result, retrying == false, recoverLostRegistration() {
-            return await fetchHelperVersion(retrying: true)
+            return await fetchHelperVersion(retrying: true, keepConnection: keepConnection, within: limit)
         }
         return result
     }
@@ -626,16 +809,15 @@ final class USBHelperClient: NSObject, ObservableObject {
     func listKeyboards(registering: Bool = true) async -> Result<[NSDictionary], USBHelperError> {
         if registering {
             guard ensureRegistered() else { return .failure(.notEnabled(status)) }
+            // Look Again repairs a helper that isn't starting (2026-10-29);
+            // opening Settings only says it didn't answer.
+            if let problem = await ensureCurrentHelper() { return .failure(problem) }
         } else if refreshStatus() != .enabled {
             return .failure(.notEnabled(status))
         }
         let c = connect()
-        let result: Result<[NSDictionary], USBHelperError> = await withCheckedContinuation { cont in
-            let proxy = c.remoteObjectProxyWithErrorHandler { error in
-                cont.resume(returning: .failure(USBHelperError.fromXPC(error)))
-            } as? AVMUSBHelperProtocol
-            guard let proxy else { cont.resume(returning: .failure(.xpc("could not build the helper proxy"))); return }
-            proxy.listKeyboards { cont.resume(returning: .success($0)) }
+        let result: Result<[NSDictionary], USBHelperError> = await ask(c, within: answerLimit) { proxy, done in
+            proxy.listKeyboards { done(.success($0)) }
         }
         disconnectIfIdle()
         return result
@@ -643,7 +825,7 @@ final class USBHelperClient: NSObject, ObservableObject {
 
     func holdKeyboard(_ keyboardID: String, retrying: Bool = false) async -> Result<Void, USBHelperError> {
         guard ensureRegistered() else { return .failure(.notEnabled(status)) }
-        await ensureCurrentHelper()
+        if let problem = await ensureCurrentHelper() { return .failure(problem) }
         keyboardActive = true
         keyboardGeneration += 1
         let c = connect()
@@ -707,7 +889,14 @@ final class USBHelperClient: NSObject, ObservableObject {
         guard ensureRegistered() else {
             return .failure(.notEnabled(status))
         }
-        await ensureCurrentHelper()
+        if let problem = await ensureCurrentHelper() {
+            // The approval dialog, or the line about a helper that isn't
+            // starting, has said why (2026-10-29).
+            if case .noAnswer = problem, isQuiet(device) == false {
+                announce("Could not reach the USB helper to attach \(device.displayName). Step: XPC call. Next: check Login Items, then the diagnostic log.", tone: .failure)
+            }
+            return .failure(problem)
+        }
         announcedAttachFailures.remove(device)
         reached.remove(device)
         pendingDevices.insert(device)
