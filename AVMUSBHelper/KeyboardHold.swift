@@ -93,7 +93,8 @@ final class KeyboardHold {
     /// AVM has been told, once, that the helper is waiting for the Mac to
     /// have another keyboard.
     private var saidWaiting = false
-    /// Opens refused as exclusive and looked for again (fifth audit).
+    /// Opens refused as exclusive (fifth audit), or by a device on its way
+    /// out (seventh audit), and looked for again.
     private var exclusiveRetries = 0
 
     var isActive: Bool { queue.sync { wantedID != nil } }
@@ -154,10 +155,15 @@ final class KeyboardHold {
     }
 
     /// A braille display: usage page 0x41 among the interface's top-level
-    /// collections, beside the keyboard one that put it in keyboards().
+    /// collections, beside the keyboard one that put it in keyboards(); or
+    /// a product name that says so (2026-10-29, seventh audit): a display
+    /// whose cells are driven over a vendor page or another interface shows
+    /// macOS only its keyboard, and was listed and taken.
     private static func isBraille(_ device: IOHIDDevice) -> Bool {
         let pairs = property(device, kIOHIDDeviceUsagePairsKey) as? [[String: Any]] ?? []
-        return pairs.contains { ($0[kIOHIDDeviceUsagePageKey] as? Int) == 0x41 }
+        if pairs.contains(where: { ($0[kIOHIDDeviceUsagePageKey] as? Int) == 0x41 }) { return true }
+        let name = (property(device, kIOHIDProductKey) as? String ?? "").lowercased()
+        return name.contains("braille") || name.contains("brailliant")
     }
 
     /// One row per keyboard, not per interface (2026-10-29, sixth audit):
@@ -193,6 +199,15 @@ final class KeyboardHold {
             if let other = self.owner, other !== connection, self.wantedID != nil {
                 _ = other
                 reply(false, "Another copy of AVM is using a keyboard for Windows.")
+                return
+            }
+            // Held for this AVM already (2026-10-29, seventh audit): asked
+            // again for the keyboard it held, the helper let it go, took it
+            // back and reported it held once more, which AVM spoke as "is
+            // back, typing in Windows" right after "now types only in
+            // Windows", with the keyboard on the Mac for an instant between.
+            if self.owner === connection, self.wantedID == keyboardID, !self.held.isEmpty {
+                reply(true, nil)
                 return
             }
             self.releaseHeld(notify: false)
@@ -285,8 +300,16 @@ final class KeyboardHold {
                 // handler queued behind this block (a hand-over between
                 // machines releases and holds back to back). Looked for
                 // again, a few times, before it's a refusal.
-                let exclusive = IOReturn(bitPattern: 0xe00002c5)
-                if result == exclusive, exclusiveRetries < 5 {
+                let exclusive = IOReturn(bitPattern: 0xe00002c5)   // kIOReturnExclusiveAccess
+                // Or on its way out (2026-10-29, seventh audit): an unplugged
+                // keyboard's other interface, still in the registry while
+                // its own removal waits its turn. Looked for again like an
+                // exclusive hold; a final refusal here ended the keyboard
+                // for Windows until the machine restarted.
+                let goingAway = [IOReturn(bitPattern: 0xe00002c0),    // kIOReturnNoDevice
+                                 IOReturn(bitPattern: 0xe00002d7),    // kIOReturnOffline
+                                 IOReturn(bitPattern: 0xe00002d9)]    // kIOReturnNotAttached
+                if result == exclusive || goingAway.contains(result), exclusiveRetries < 5 {
                     exclusiveRetries += 1
                     // The first time on the queue's next turn, after those
                     // cancel handlers (2026-10-29, sixth audit): 3 seconds
@@ -406,7 +429,11 @@ final class KeyboardHold {
         os_log("keyboard for Windows disconnected", log: log, type: .default)
         releaseHeld(notify: false)
         client()?.keyboardState(id, held: false, detail: "disconnected")
-        lookForKeyboard()
+        // In 3 seconds, not in this turn (2026-10-29, seventh audit): a
+        // keyboard with two interfaces is removed one callback at a time,
+        // and a look from the first still found the second in the registry,
+        // on its way out. Both removals have landed by the timer's look.
+        startLooking()
     }
 
     private func refuse(_ id: String, _ reason: String) {
