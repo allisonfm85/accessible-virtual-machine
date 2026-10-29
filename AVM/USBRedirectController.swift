@@ -98,10 +98,31 @@ final class USBRedirectController: ObservableObject {
         // Only a device that actually reached Windows can follow back.
         // A device also holds a port while its attach is still being
         // tried (thumb drive, 2026-10-18).
-        if USBHelperClient.shared.reachedWindows(held) {
+        // And only into the machine it left, while that machine runs and
+        // is the one watched (2026-10-28, fourth audit): a machine that
+        // stopped releases its devices, macOS drops and re-adds each one,
+        // and with another machine running and watched, they followed
+        // "the user's choice" into that other machine.
+        let machine = machineByDevice[held]?.manager
+        let followsBack: Bool = {
+            guard let machine, case .running = machine.state else { return false }
+            return true
+        }()
+        // Given back by a machine that has stopped (2026-10-29, sixth audit):
+        // macOS drops the device before the helper reports it released, and
+        // with that report later than vanishGrace, the cleanup below called
+        // it unplugged, the hand-back mark was never set, and its return was
+        // decided as a fresh plug-in for the watched machine. Not a paused
+        // machine's: a device leaving one was unplugged.
+        let givenBack = !followsBack && machine?.state != .paused
+        if !followsBack {
+            log("vanished \(held.description): its machine isn't running, so it won't follow back")
+            if givenBack { handedBackAt[USBPlugPrompt.deviceKey(held)] = Date() }
+        } else if USBHelperClient.shared.reachedWindows(held), let machine {
             let followKey = Self.followKey(held)
             leftWindowsAt[followKey] = Date()
             leftWindowsCopy[followKey] = held
+            leftWindowsMachine[followKey] = WeakManager(manager: machine)
         } else {
             log("vanished \(held.description): it never reached Windows, so it won't follow back")
         }
@@ -122,6 +143,8 @@ final class USBRedirectController: ObservableObject {
             USBHelperClient.shared.forget(held)
             if USBHelperClient.shared.isQuiet(held) {
                 self.log("vanished \(held.description): the send gate is handling it; unplug not spoken")
+            } else if givenBack {
+                self.log("vanished \(held.description): its machine stopped and gave it back; unplug not spoken")
             } else {
                 self.announce("\(held.displayName) was unplugged.", tone: .info)
             }
@@ -157,26 +180,65 @@ final class USBRedirectController: ObservableObject {
     /// port under, by followKey.
     private var leftWindowsAt: [String: Date] = [:]
     private var leftWindowsCopy: [String: AVMUSBDeviceIdentity] = [:]
+    /// The machine it left, which it follows back into (2026-10-28, fifth
+    /// audit): before, a question could only name the watched machine.
+    private var leftWindowsMachine: [String: WeakManager] = [:]
 
     /// The same physical device across mode changes: maker and serial.
     /// A Monarch is 1c71:d100 for file transfer and 1c71:d110 in Braille
-    /// Terminal (2026-10-17). With no serial, maker and product.
+    /// Terminal (2026-10-17). With no serial, or one that isn't this
+    /// unit's (2026-10-28, third audit: some makers put "0000" or
+    /// "1234567890" on every unit, so a webcam and a headset from one of
+    /// them shared a key and followed each other's choices), maker and
+    /// product as well.
     nonisolated static func followKey(_ device: AVMUSBDeviceIdentity) -> String {
-        if let serial = device.serialNumber, serial.isEmpty == false {
+        let serial = device.serialNumber ?? ""
+        if serial.isEmpty == false, isPlaceholderSerial(serial) == false {
             return "\(device.vendorID):serial:\(serial)"
         }
-        return "\(device.vendorID):\(device.productID):noserial"
+        return "\(device.vendorID):\(device.productID):\(serial.isEmpty ? "noserial" : serial)"
     }
 
-    /// True when this device left Windows less than followWindow seconds
-    /// ago. Takes the record, and quietly clears the vanished copy if
-    /// it still holds a port, so the return is not also announced as an
-    /// unplug.
-    func takeFollowThrough(_ device: AVMUSBDeviceIdentity) -> Bool {
+    /// A serial a maker gives every unit rather than this one: too short
+    /// to tell units apart, one character repeated, a counting sequence,
+    /// or a word standing in for a serial. Mistaking a real serial for one
+    /// costs only the follow-through across a mode change; the reverse
+    /// conflates two devices.
+    nonisolated static func isPlaceholderSerial(_ serial: String) -> Bool {
+        let s = serial.trimmingCharacters(in: .whitespaces).lowercased()
+        if s.count < 4 || Set(s).count == 1 { return true }
+        // Zeros then a small number: "0001", "00000001" (CP210x's default).
+        if s.allSatisfy(\.isNumber), let value = Int(s.suffix(18)), value < 10 { return true }
+        let placeholders: Set<String> = ["0123456789", "1234567890", "123456789", "12345678", "1234567", "123456",
+                                         "12345", "1234", "0123456789abcdef", "abcdef", "default", "serial",
+                                         "none", "null", "n/a", "unknown", "serial number", "xxxxxxxx"]
+        return placeholders.contains(s)
+    }
+
+    /// The machine this device follows back into, or nil, without taking
+    /// the record. It's the machine the device left less than followWindow
+    /// seconds ago, while that machine still runs. Never the watched machine
+    /// instead (2026-10-29, sixth audit): a device that left a machine since
+    /// stopped, paused or restarted went into the watched one, which it was
+    /// never in, without a question. The watcher reads this machine's
+    /// settings before it decides.
+    func followThroughTarget(_ device: AVMUSBDeviceIdentity) -> UUID? {
+        let key = Self.followKey(device)
+        guard let left = leftWindowsAt[key], Date().timeIntervalSince(left) < Self.followWindow,
+              let machine = leftWindowsMachine[key]?.manager, case .running = machine.state else { return nil }
+        return machine.machineID
+    }
+
+    /// followThroughTarget, and takes the record. Also quietly clears the
+    /// vanished copy if it still holds a port, so the return is not also
+    /// announced as an unplug.
+    func takeFollowThrough(_ device: AVMUSBDeviceIdentity) -> UUID? {
+        let target = followThroughTarget(device)
         let key = Self.followKey(device)
         let stale = leftWindowsCopy.removeValue(forKey: key)
-        guard let left = leftWindowsAt.removeValue(forKey: key),
-              Date().timeIntervalSince(left) < Self.followWindow else { return false }
+        leftWindowsAt[key] = nil
+        leftWindowsMachine[key] = nil
+        guard let target else { return nil }
         if let stale, portByDevice[stale] != nil {
             Task { @MainActor in
                 USBHelperClient.shared.forget(stale)
@@ -184,15 +246,37 @@ final class USBRedirectController: ObservableObject {
                 _ = await USBHelperClient.shared.detach(stale, quiet: true)
             }
         }
-        return true
+        return target
     }
 
     /// Drops this device's follow-through record. The send gate calls it
     /// when it finishes, so its own bounces never count as leaving Windows.
+    /// The watch ended (the machine stopped, 2026-10-28, deep audit): no
+    /// device follows "the user's choice" into the next machine.
+    /// `machine`: only the records of devices that left this machine
+    /// (2026-10-29, seventh audit). The watched machine's stop forgot a
+    /// device that left another machine, still running, seconds earlier,
+    /// so its return was asked about, or sent in Always mode, instead of
+    /// following back. nil forgets them all.
+    func clearAllFollowThrough(for machine: UUID? = nil) {
+        let keys = leftWindowsAt.keys.filter { key in
+            guard let machine else { return true }
+            // A record whose machine is gone can't be followed anyway.
+            guard let left = leftWindowsMachine[key]?.manager?.machineID else { return true }
+            return left == machine
+        }
+        for key in keys {
+            leftWindowsAt[key] = nil
+            leftWindowsCopy[key] = nil
+            leftWindowsMachine[key] = nil
+        }
+    }
+
     func clearFollowThrough(_ device: AVMUSBDeviceIdentity) {
         let key = Self.followKey(device)
         leftWindowsAt[key] = nil
         leftWindowsCopy[key] = nil
+        leftWindowsMachine[key] = nil
     }
 
     // MARK: Send gate helpers (USB 2c)
@@ -200,9 +284,17 @@ final class USBRedirectController: ObservableObject {
     /// True when this physical device, under any address, holds a port
     /// and the helper reports it attached.
     func isInWindows(_ device: AVMUSBDeviceIdentity) -> Bool {
+        // This address first; another address only if it has been left (a
+        // bounce), never a second unit still there (2026-10-28, fifth
+        // audit: two identical devices, and the second was called "in
+        // Windows" because of the first).
+        if let exact = portByDevice.keys.first(where: { $0 == device }) {
+            return USBHelperClient.shared.attachedDevices.contains(exact)
+        }
         let key = Self.followKey(device)
         return portByDevice.keys.contains {
-            Self.followKey($0) == key && USBHelperClient.shared.attachedDevices.contains($0)
+            Self.followKey($0) == key && !USBHotPlugWatcher.shared.isPresentAtThisAddress($0)
+                && USBHelperClient.shared.attachedDevices.contains($0)
         }
     }
 
@@ -211,7 +303,13 @@ final class USBRedirectController: ObservableObject {
     /// a retry, since a bouncing device leaves old addresses behind.
     func releaseStale(_ device: AVMUSBDeviceIdentity) async {
         let key = Self.followKey(device)
-        let stale = portByDevice.keys.filter { Self.followKey($0) == key && $0 != device }
+        // Only addresses the Mac no longer sees (2026-10-28, fourth audit):
+        // a second identical device, or one from a maker that gives every
+        // unit the same serial, shares the key, and sending one pulled the
+        // other out of its machine without a word.
+        let stale = portByDevice.keys.filter {
+            Self.followKey($0) == key && $0 != device && !USBHotPlugWatcher.shared.isPresentAtThisAddress($0)
+        }
         for held in stale {
             USBHelperClient.shared.forget(held)
             await releasePort(for: held, reason: "an old address of a device the send gate is resending")
@@ -241,24 +339,49 @@ final class USBRedirectController: ObservableObject {
         portByDevice.sorted { $0.value < $1.value }.map { $0.key }
     }
 
+    /// Which machine each device went to (2026-10-27, several machines at
+    /// once). Ports 5-8 are per machine: each QEMU has its own.
+    private var machineByDevice: [AVMUSBDeviceIdentity: WeakManager] = [:]
+    private struct WeakManager { weak var manager: VMManager? }
+
+    /// The devices sent to one machine.
+    func devices(for manager: VMManager) -> [AVMUSBDeviceIdentity] {
+        redirectedDevices.filter { machineByDevice[$0]?.manager === manager }
+    }
+
+    /// The machine a device went to, if it's still running.
+    func machine(for device: AVMUSBDeviceIdentity) -> VMManager? {
+        machineByDevice[device]?.manager
+    }
+
     // MARK: Attach
 
     /// Returns true when the helper accepted the device (the attached
     /// event comes later) or it already holds a port. quiet: log the
     /// failures instead of speaking them; the send gate speaks one
     /// outcome itself.
+    /// `machine`: the machine to send it to; the current one (in front)
+    /// if nil.
     @discardableResult
-    func attach(_ device: AVMUSBDeviceIdentity, quiet: Bool = false) async -> Bool {
-        guard let manager = VMManager.shared, case .running = manager.state else {
+    func attach(_ device: AVMUSBDeviceIdentity, to machine: VMManager? = nil, quiet: Bool = false) async -> Bool {
+        // Not into a machine being saved (2026-10-29, sixth audit): its save
+        // has listed the devices to give back already, and one sent now went
+        // into a saved state that couldn't carry on.
+        if let saving = machine ?? VMManager.shared, saving.isSaving {
+            say("\(saving.machineName) is being saved, so \(device.displayName) stays on the Mac.", tone: .info, quiet: quiet)
+            return false
+        }
+        guard let manager = machine ?? VMManager.shared, case .running = manager.state else {
             say("The virtual machine is not running. Start it, then attach \(device.displayName).", tone: .failure, quiet: quiet)
             return false
         }
         if refusesStorage(device) { return false }
         if let port = portByDevice[device] {
-            say("\(device.displayName) is already attached to the virtual machine on port \(port).", tone: .info, quiet: quiet)
+            let name = machineByDevice[device]?.manager?.machineName ?? "the virtual machine"
+            say("\(device.displayName) is already attached to \(name) on port \(port).", tone: .info, quiet: quiet)
             return true
         }
-        guard let port = freePort() else {
+        guard let port = freePort(on: manager) else {
             say("All \(USBRedirectController.ports.count) USB slots are in use. Next: detach a device, then attach \(device.displayName).", tone: .failure, quiet: quiet)
             return false
         }
@@ -267,17 +390,23 @@ final class USBRedirectController: ObservableObject {
             return false
         }
 
+        // RESERVED BEFORE THE AWAIT (2026-10-25, code audit): the port used
+        // to be recorded only after QEMU answered, so two attaches running at
+        // once (the picker and a plug-in send) could both pick the same free
+        // port, and the second removed the first one's socket and chardev.
+        portByDevice[device] = port
+        machineByDevice[device] = WeakManager(manager: manager)
         do {
             try await manager.attachUSBRedirect(port: port, socketPath: socketPath)
         } catch {
+            portByDevice[device] = nil
+            machineByDevice[device] = nil
             log("QMP attach failed for \(device.description): \(error)")
             say("QEMU refused the USB redirection port. Step: QMP device add. Reason: \(error.localizedDescription). Next: check the diagnostic log.", tone: .failure, quiet: quiet)
             return false
         }
-
-        portByDevice[device] = port
         log("port \(port) -> \(device.description)")
-        switch await USBHelperClient.shared.attach(device, socketPath: socketPath) {
+        switch await USBHelperClient.shared.attach(device, socketPath: socketPath, peerPID: manager.qemuPID) {
         case .success:
             log("helper accepted \(device.description); waiting for the attached event")
             return true
@@ -294,7 +423,54 @@ final class USBRedirectController: ObservableObject {
             if quiet == false {
                 handedBackAt[USBPlugPrompt.deviceKey(device)] = Date()
             }
+            // Asked for the helper's approval (USBHelperClient.waitForApproval):
+            // sent once it's approved, if still plugged in. The send gate
+            // waits in its own way.
+            if quiet == false, case .notEnabled(.requiresApproval) = error {
+                log("waiting for the USB helper's approval to send \(device.description)")
+                Task { @MainActor [weak manager] in
+                    guard await USBHelperClient.shared.waitForApproval(while: { USBHotPlugWatcher.shared.isPresent(device) != false }) else {
+                        self.log("no approval for \(device.description); not sent")
+                        // Said (2026-10-28, fifth audit): the approval dialog
+                        // was the last word.
+                        self.announce("\(device.displayName) stayed on the Mac: AVM's helper wasn't allowed in time, or it was unplugged. Try Attach USB Device again.", tone: .info)
+                        return
+                    }
+                    guard let manager, case .running = manager.state, USBHotPlugWatcher.shared.isPresent(device) != false else {
+                        self.announce("\(device.displayName) stayed on the Mac: the virtual machine isn't running any more, or it was unplugged.", tone: .info)
+                        return
+                    }
+                    self.log("helper approved; sending \(device.description) now")
+                    await self.attach(device, to: manager)
+                }
+            }
             return false
+        }
+    }
+
+    // MARK: Restart USB Helper (2026-10-27)
+
+    /// Returns every device to the Mac, restarts the root helper, and says
+    /// how it went. For a device that stays on the Mac when it shouldn't,
+    /// from the dashboard or the Virtual Machine menu.
+    private(set) var restartingHelper = false
+
+    func restartHelper() async {
+        guard !restartingHelper else { return }
+        restartingHelper = true
+        defer { restartingHelper = false }
+        let held = redirectedDevices
+        announce(held.isEmpty && BluetoothDevices.shared.attached.isEmpty ? "Restarting AVM's USB helper." : "Returning devices to the Mac and restarting AVM's USB helper.", tone: .info)
+        for device in held { await detach(device) }
+        await BluetoothDevices.shared.detachAll()
+        switch await USBHelperClient.shared.restartHelper() {
+        case .success:
+            announce("AVM's USB helper restarted. Plug the device in again, or choose Attach USB Device.", tone: .success)
+        case .failure(.notEnabled):
+            break   // the client has asked for its approval
+        case .failure(let error):
+            log("restart failed: \(error)")
+            announce("AVM's USB helper didn't restart. Reason: \(error). Next: quit and reopen AVM, or restart your Mac.", tone: .failure)
         }
     }
 
@@ -331,10 +507,16 @@ final class USBRedirectController: ObservableObject {
 
     func detach(_ device: AVMUSBDeviceIdentity) async {
         guard let port = portByDevice[device] else {
-            announce("\(device.displayName) is not attached to the virtual machine.", tone: .info)
+            announce("\(device.displayName) is not attached to a virtual machine.", tone: .info)
             return
         }
         portByDevice[device] = nil
+        let machine = machineByDevice.removeValue(forKey: device)?.manager
+        // Still in use until QEMU has let it go (2026-10-28, fourth audit):
+        // freed here first, an attach in the two seconds the helper takes
+        // was given this port, and QEMU refused the chardev still there.
+        if let machine { portsBeingFreed[ObjectIdentifier(machine), default: []].insert(port) }
+        defer { if let machine { portsBeingFreed[ObjectIdentifier(machine)]?.remove(port) } }
         let key = USBPlugPrompt.deviceKey(device)
         handingBack.insert(key)
 
@@ -350,31 +532,88 @@ final class USBRedirectController: ObservableObject {
         }
         handingBack.remove(key)
         handedBackAt[key] = Date()
-        await removeQEMUPort(port, for: device)
+        await removeQEMUPort(port, for: device, on: machine)
     }
 
     // MARK: Port bookkeeping
 
-    private func freePort() -> Int? {
-        let used = Set(portByDevice.values)
+    private var portsBeingFreed: [ObjectIdentifier: Set<Int>] = [:]
+
+    private func freePort(on manager: VMManager) -> Int? {
+        let used = Set(portByDevice.filter { machineByDevice[$0.key]?.manager === manager }.values)
+            .union(reserved.values.filter { $0.machine.manager === manager }.map(\.port))
+            .union(portsBeingFreed[ObjectIdentifier(manager)] ?? [])
         return USBRedirectController.ports.first { !used.contains($0) }
+    }
+
+    /// Ports held by something other than a USB device: a Bluetooth device
+    /// (BluetoothDevices.swift, 2026-10-27), which shares ports 5 to 8.
+    private var reserved: [String: (port: Int, machine: WeakManager)] = [:]
+
+    func reservePort(_ key: String, on manager: VMManager) -> Int? {
+        guard let port = freePort(on: manager) else { return nil }
+        reserved[key] = (port, WeakManager(manager: manager))
+        return port
+    }
+
+    func releaseReservedPort(_ key: String) {
+        reserved[key] = nil
+    }
+
+    /// Only when the reservation is still this send's (2026-10-28, second
+    /// review): released after a wait, a key could belong to a newer send.
+    func releaseReservedPort(_ key: String, port: Int) {
+        guard reserved[key]?.port == port else { return }
+        reserved[key] = nil
+    }
+
+    /// AVM's helper stopped (2026-10-26, code audit): the kernel has given
+    /// every device it held back to the Mac, so their ports go, and the
+    /// next plug-in attaches afresh instead of "already attached".
+    func helperLost() {
+        let devices = Array(portByDevice.keys)
+        guard !devices.isEmpty else { return }
+        Task { @MainActor in
+            for device in devices {
+                await releasePort(for: device, reason: "the helper stopped")
+            }
+            Announcer.shared.announce("USB devices sent to the virtual machine are back on the Mac: AVM's helper stopped. Plug them in again to send them.", tone: .failure)
+        }
     }
 
     /// Called for every helper-reported ending. Idempotent: a device
     /// with no port here is already handled.
     private func handleDeviceEnded(_ device: AVMUSBDeviceIdentity, state: AVMUSBDeviceState) async {
         guard portByDevice[device] != nil else { return }
+        // Given back by a machine that has stopped (2026-10-28, fifth
+        // audit): macOS drops and re-adds it, and the arrival was decided
+        // for the machine still watched, as a fresh plug-in. It comes home.
+        if state == .released, machineByDevice[device]?.manager?.state != .running {
+            handedBackAt[USBPlugPrompt.deviceKey(device)] = Date()
+        }
         await releasePort(for: device, reason: "helper reported \(state)")
     }
 
     private func releasePort(for device: AVMUSBDeviceIdentity, reason: String) async {
         guard let port = portByDevice.removeValue(forKey: device) else { return }
+        let machine = machineByDevice.removeValue(forKey: device)?.manager
         log("releasing port \(port) for \(device.description): \(reason)")
-        await removeQEMUPort(port, for: device)
+        // In use until QEMU has let it go, as for Detach (fifth audit).
+        if let machine { portsBeingFreed[ObjectIdentifier(machine), default: []].insert(port) }
+        defer { if let machine { portsBeingFreed[ObjectIdentifier(machine)]?.remove(port) } }
+        await removeQEMUPort(port, for: device, on: machine)
     }
 
-    private func removeQEMUPort(_ port: Int, for device: AVMUSBDeviceIdentity) async {
-        guard let manager = VMManager.shared, case .running = manager.state else {
+    /// The device's own machine's port. A machine that's gone took its
+    /// ports with it: never the current machine's port of the same number
+    /// (2026-10-27, code audit), which belongs to another device.
+    private func removeQEMUPort(_ port: Int, for device: AVMUSBDeviceIdentity, on machine: VMManager?) async {
+        // Paused too (2026-10-28, fourth audit): skipping QMP for a paused
+        // machine left its usb-redir device and chardev in QEMU while the
+        // port was freed here, so every later attach to that port failed,
+        // and a Save made then couldn't be resumed. QEMU removes a USB
+        // device and its chardev with the vCPUs stopped.
+        guard let manager = machine, manager.state == .running || manager.state == .paused else {
             log("VM not running; port \(port) forgotten without QMP")
             return
         }
