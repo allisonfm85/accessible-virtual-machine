@@ -180,6 +180,9 @@ run_one() {
     local name="$1" needs="$2" args="$3"
     local safe; safe="$(echo "$name" | tr ' ' '-')"
     local log="$OUT/$safe.txt" err="$OUT/$safe.err"
+    # Not an earlier run's verdict (2026-10-29, sixth audit): with --out
+    # reused, a test that wrote nothing still read as PASSED.
+    rm -f "$log" "$err"
     local start; start=$(date +%s)
     local verdict="NO VERDICT" status=0
 

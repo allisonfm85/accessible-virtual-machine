@@ -69,6 +69,17 @@ if [ -n "$TOP_BUILD" ] && [ "$NEW_BUILD" -le "$TOP_BUILD" ]; then
 fi
 # Nothing else staged rides along in the feed's commit (fourth audit).
 git -C "$REPO_ROOT" diff --cached --quiet || fail "Something is already staged in git." "Commit or unstage it first (git status)."
+# Nor an edit of the feed not yet committed (2026-10-29, sixth audit): the
+# commit below takes appcast.xml as it is, and every installed copy reads it.
+git -C "$REPO_ROOT" diff --quiet -- appcast.xml || fail "appcast.xml has changes that aren't committed." "Commit or undo them first (git diff appcast.xml)."
+# A tag already on GitHub names this build's commit (2026-10-29, sixth
+# audit): a tag kept from a deleted release made the new release name an
+# older commit than the one its files were built from.
+REMOTE_TAG="$(git -C "$REPO_ROOT" ls-remote -q --tags origin "refs/tags/v$VERSION^{}" | cut -f1)"
+[ -n "$REMOTE_TAG" ] || REMOTE_TAG="$(git -C "$REPO_ROOT" ls-remote -q --tags origin "refs/tags/v$VERSION" | cut -f1)"
+if [ -n "$REMOTE_TAG" ] && [ "$REMOTE_TAG" != "$BUILT" ]; then
+    fail "GitHub's tag v$VERSION names commit ${REMOTE_TAG:0:7}, not ${BUILT:0:7}, which this build was made from." "Delete the old tag (git push origin :refs/tags/v$VERSION) if it's from an abandoned release, or raise the version."
+fi
 # A release that already exists, with this version not yet in the feed, is
 # carried on with rather than refused (2026-10-26, code audit): a run that
 # stopped after making the release (a failed push, or the --draft flow)
@@ -96,7 +107,9 @@ if [ "$EXISTING" = "1" ]; then
     fi
     echo "Release v$VERSION updated."
 else
-    gh release create "v$VERSION" "$DMG" "$ZIP" --repo "$REPO_SLUG" --target "$FEED_BRANCH" \
+    # The built commit itself, not the branch (sixth audit): a push to the
+    # branch while this waited for "yes" tagged a newer commit.
+    gh release create "v$VERSION" "$DMG" "$ZIP" --repo "$REPO_SLUG" --target "$BUILT" \
         --title "AVM $VERSION" --notes "AVM $VERSION. Install from the DMG; existing installs update from inside AVM." \
         ${DRAFT_FLAG[@]+"${DRAFT_FLAG[@]}"} || fail "gh could not create the release."
     echo "Created release v$VERSION."

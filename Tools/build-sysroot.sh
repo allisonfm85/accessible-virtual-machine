@@ -82,6 +82,7 @@ OUT="${AVM_SYSROOT:-$HOME/Developer/sysroot-macos-arm64/sysroot-macOS-arm64}"
 JOBS="$(sysctl -n hw.ncpu)"
 SPEAK=1
 SKIP_UTM=0
+MARK_BUILT=0
 
 usage() {
     cat <<'EOF'
@@ -94,6 +95,9 @@ Options:
   --jobs N        Parallel compile jobs (default: every core).
   --tools-only    Skip the UTM build; rebuild the install tools and
                   re-check an existing sysroot.
+  --mark-built    Record that the sysroot at --out was built from this
+                  checkout's patches, after QEMU was rebuilt by hand from
+                  exactly them, and stop. Tools/build-installer.sh checks it.
   --no-speech     Don't speak the result at the end.
   -h, --help      This help.
 EOF
@@ -104,6 +108,7 @@ while [ $# -gt 0 ]; do
         --out)        OUT="$2"; shift 2 ;;
         --jobs)       JOBS="$2"; shift 2 ;;
         --tools-only) SKIP_UTM=1; shift ;;
+        --mark-built) MARK_BUILT=1; shift ;;
         --no-speech)  SPEAK=0; shift ;;
         -h|--help)    usage; exit 0 ;;
         *) echo "Unknown option: $1"; usage; exit 64 ;;
@@ -178,6 +183,20 @@ MARKER="$OUT/.avm-sysroot-build"
 if [ -d "$OUT" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ] && [ ! -f "$MARKER" ]; then
     fail "$OUT already exists and was not made by this script, so it was left alone." \
          "Move it aside, or pass --out with a different folder."
+fi
+
+# Which patches the sysroot was built from (2026-10-29, sixth audit):
+# Tools/build-installer.sh compares this with the checkout, so a release
+# never ships a QEMU older than its patches, or built from edits no commit has.
+patch_fingerprint() {
+    ( cd "$REPO_ROOT" && { echo "utm $UTM_COMMIT"; shasum -a 256 Tools/sysroot-patches/*.patch Tools/sysroot-patches/clones/*.patch; } )
+}
+if [ "$MARK_BUILT" = "1" ]; then
+    [ -f "$MARKER" ] || fail "There is no sysroot made by this script at $OUT." "Pass --out with the sysroot to mark."
+    patch_fingerprint > "$OUT/.avm-sysroot-patches"
+    info "Recorded this checkout's patches as the ones $OUT was built from."
+    trap - EXIT
+    exit 0
 fi
 
 FREE_GB=$(( $(df -k "$PARENT" | awk 'NR==2 {print $4}') / 1024 / 1024 ))
@@ -367,6 +386,7 @@ PY
         fail "UTM's dependency build stopped (exit $utm_rc)." "Read $UTM_LOG; the error is usually near the end."
     fi
     touch "$MARKER"
+    patch_fingerprint > "$OUT/.avm-sysroot-patches"
 else
     step "Skipping the UTM build (--tools-only)"
     [ -x "$OUT/host/bin/pkg-config" ] || fail "There is no earlier UTM build in $OUT to add the tools to." "Run without --tools-only first."

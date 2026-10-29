@@ -48,8 +48,11 @@ jobs:
       - uses: actions/checkout@v5
       - name: Shell syntax
         run: |
+          # Every file's error fails the step (2026-10-29, sixth audit):
+          # only the last file's status counted.
           for f in Tools/*.sh; do
-            bash -n "$f" && echo "ok: $f"
+            bash -n "$f" || exit 1
+            echo "ok: $f"
           done
       - name: ShellCheck (errors only)
         run: shellcheck -S error Tools/*.sh

@@ -154,6 +154,17 @@ for need in bin/qemu-system-aarch64 bin/qemu-img bin/swtpm bin/xorriso bin/wimli
 done
 info "Sysroot: $SYSROOT"
 
+# Built from this checkout's patches (2026-10-29, sixth audit): a pull that
+# changed Tools/sysroot-patches, or QEMU rebuilt by hand before its patch was
+# committed, shipped a QEMU the release's commit doesn't describe.
+UTM_COMMIT="$(sed -nE 's/^UTM_COMMIT="([0-9a-f]+)".*/\1/p' "$REPO_ROOT/Tools/build-sysroot.sh")"
+EXPECTED_PATCHES="$( (cd "$REPO_ROOT" && { echo "utm $UTM_COMMIT"; shasum -a 256 Tools/sysroot-patches/*.patch Tools/sysroot-patches/clones/*.patch; }) )"
+if [ ! -f "$SYSROOT/.avm-sysroot-patches" ] || [ "$(cat "$SYSROOT/.avm-sysroot-patches")" != "$EXPECTED_PATCHES" ]; then
+    fail "The sysroot wasn't built from this checkout's QEMU and GStreamer patches." \
+         "Run Tools/build-sysroot.sh (most of an hour). If QEMU was rebuilt by hand from exactly these patches, run Tools/build-sysroot.sh --mark-built instead."
+fi
+info "Sysroot built from this checkout's patches"
+
 # The README's rule: earlier xorriso makes install ISOs Windows can't boot.
 XORRISO_VERSION="$("$SYSROOT/bin/xorriso" -version 2>/dev/null | sed -nE 's/^(GNU )?xorriso ([0-9]+\.[0-9]+\.[0-9]+(\.pl[0-9]+)?).*/\2/p' | sed -n 1p)"
 [ -n "$XORRISO_VERSION" ] || fail "Could not read the sysroot's xorriso version."
@@ -446,7 +457,17 @@ elif [ -z "$SIGN_UPDATE" ]; then
 else
 info "Signing the update zip with the update key ($SPARKLE_ACCOUNT). If macOS asks, choose Always Allow."
 SIGNATURE="$("$SIGN_UPDATE" --account "$SPARKLE_ACCOUNT" "$ZIP")" || \
-    fail "sign_update could not sign the zip." "Check the key: run generate_keys --account $SPARKLE_ACCOUNT, and allow keychain access."
+    fail "sign_update could not sign the zip." "Allow keychain access. If this Mac has no update key, import the existing one with generate_keys -f <exported key file> --account $SPARKLE_ACCOUNT. Never make a new one: installed copies trust only the key in SUPublicEDKey."
+# The key that signed is the one installed copies trust (2026-10-29, sixth
+# audit): a new key, made on a Mac without the old one, signed releases that
+# every installed AVM refused, with nothing here to say so.
+GENERATE_KEYS="$(dirname "$SIGN_UPDATE")/generate_keys"
+TRUSTED_KEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist" 2>/dev/null | tr -d '[:space:]' || true)"
+SIGNING_KEY="$("$GENERATE_KEYS" -p --account "$SPARKLE_ACCOUNT" 2>/dev/null | tr -d '[:space:]' || true)"
+if [ -z "$TRUSTED_KEY" ] || [ "$SIGNING_KEY" != "$TRUSTED_KEY" ]; then
+    fail "The update key in this Mac's keychain isn't the one installed copies of AVM trust." "Import the existing key with generate_keys -f <exported key file> --account $SPARKLE_ACCOUNT, then build again. Never make a new one."
+fi
+info "The update key matches SUPublicEDKey."
 ITEM="$OUT_DIR/appcast-item.xml"
 cat > "$ITEM" <<ITEMXML
         <item>
