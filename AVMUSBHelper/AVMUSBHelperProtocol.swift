@@ -31,6 +31,12 @@ nonisolated public enum AVMUSBHelperNames {
     /// Lives at AVM.app/Contents/Library/LaunchDaemons/.
     public static let launchdPlistName = "com.alllisonmeloy.AVM.usbhelper.plist"
 
+    /// The helper this AVM expects (2026-10-28, code review). Bumped with
+    /// every change to the helper or its protocol: after an update, the
+    /// helper from before keeps running for its idle grace period, and
+    /// AVM asks one that answers with another version to exit first.
+    public static let helperBuildVersion = "0.4.5"
+
     /// The bundle identifier of the app that is allowed to talk to the helper.
     public static let clientBundleIdentifier = "com.alllisonmeloy.AVM"
 }
@@ -190,8 +196,11 @@ nonisolated public protocol AVMUSBHelperProtocol {
     /// streamSocketPath. QEMU listens; the helper dials.
     /// Reply: success, failing step (nil on success), detail.
     /// Attach calls stack. Each device is an independent claim.
+    /// peerPID: the QEMU listening on the socket, which the helper checks
+    /// it is talking to (2026-10-28); 0 when AVM doesn't know.
     func attach(_ device: AVMUSBDeviceIdentity,
                 streamSocketPath: String,
+                peerPID: Int,
                 reply: @escaping (Bool, String?, String?) -> Void)
 
     /// Release one device. Reply: success, detail.
@@ -204,6 +213,47 @@ nonisolated public protocol AVMUSBHelperProtocol {
     /// Helper build identity, so AVM can tell a stale helper from a
     /// current one after an update. Reply: version string.
     func helperVersion(reply: @escaping (String) -> Void)
+
+    // A keyboard for Windows (2026-10-26, KeyboardHold.swift). macOS lets
+    // only a privileged process take a keyboard over, so the helper does:
+    // it holds the chosen keyboard exclusively, so neither macOS nor
+    // VoiceOver sees its keys, and passes each key to the AVM that asked,
+    // and to no one else, through keyboardKey. Never the built-in keyboard,
+    // never the only keyboard, only for the user at the Mac's screen.
+
+    /// The keyboards connected now: dictionaries with "id", "name",
+    /// "transport" and "builtIn", one per keyboard rather than per
+    /// interface, braille displays left out (2026-10-29).
+    func listKeyboards(reply: @escaping ([NSDictionary]) -> Void)
+
+    /// Hold the keyboard with this id, now or as soon as it connects,
+    /// until releaseKeyboard or this connection ends. Replies whether the
+    /// request was accepted, and the reason if not.
+    func holdKeyboard(_ keyboardID: String, reply: @escaping (Bool, String?) -> Void)
+
+    /// Give the keyboard back to the Mac.
+    func releaseKeyboard(reply: @escaping () -> Void)
+
+    /// Restart USB Helper (2026-10-27): the helper replies, lets go of
+    /// everything and exits; launchd starts a fresh one at the next call.
+    func restart(reply: @escaping () -> Void)
+
+    // Bluetooth devices for a virtual machine (2026-10-27, BluetoothHold.swift):
+    // the helper takes a Bluetooth HID device from macOS and relays its
+    // reports to QEMU's usb-hid-bridge over the socket AVM names.
+
+    /// The Bluetooth HID devices connected now: dictionaries with "id",
+    /// "name", "kind" (braille, controller, keyboard, pointer, remote,
+    /// other), "vendor", "product", "descriptor" (the report descriptor)
+    /// and "held".
+    func listBluetoothDevices(reply: @escaping ([NSDictionary]) -> Void)
+
+    /// Take the device with this id and relay it to the usb-hid-bridge
+    /// socket. Replies whether it was taken, and why not.
+    func holdBluetoothDevice(_ id: String, streamSocketPath: String, peerPID: Int, reply: @escaping (Bool, String?) -> Void)
+
+    /// Give the device back to the Mac.
+    func releaseBluetoothDevice(_ id: String, reply: @escaping () -> Void)
 }
 
 // MARK: - AVM side (the helper calls this back)
@@ -216,6 +266,22 @@ nonisolated public protocol AVMUSBHelperClientProtocol {
     func stateChanged(_ device: AVMUSBDeviceIdentity,
                       state: AVMUSBDeviceState,
                       detail: String?)
+
+    /// A Bluetooth device the helper held was let go without AVM asking:
+    /// it disconnected, or the virtual machine closed its side.
+    func bluetoothState(_ id: String, held: Bool, detail: String?)
+
+    /// A key on the held keyboard: its HID usage (page 7) and whether it
+    /// went down or up. Never logged by either side.
+    func keyboardKey(usage: Int, pressed: Bool)
+
+    /// The held keyboard connected (held now) or went away, or couldn't be
+    /// held, with the reason. Not held with detail "disconnected": the
+    /// keyboard went away, and is taken again when it's back; "waiting":
+    /// the Mac has no other keyboard, and it's taken once it does;
+    /// "away": its user left the Mac's screen, and it's taken again when
+    /// they're back (2026-10-28). Any other detail is final.
+    func keyboardState(_ keyboardID: String, held: Bool, detail: String?)
 }
 
 // MARK: - Interfaces with secure-coding class lists
@@ -230,6 +296,11 @@ nonisolated public enum AVMUSBHelperInterfaces {
         let statusClasses = NSSet(array: [NSArray.self, AVMUSBDeviceStatus.self, AVMUSBDeviceIdentity.self]) as! Set<AnyHashable>
         iface.setClasses(statusClasses,
                          for: #selector(AVMUSBHelperProtocol.status(reply:)),
+                         argumentIndex: 0,
+                         ofReply: true)
+        let keyboardClasses = NSSet(array: [NSArray.self, NSDictionary.self, NSString.self, NSNumber.self]) as! Set<AnyHashable>
+        iface.setClasses(keyboardClasses,
+                         for: #selector(AVMUSBHelperProtocol.listKeyboards(reply:)),
                          argumentIndex: 0,
                          ofReply: true)
         return iface
