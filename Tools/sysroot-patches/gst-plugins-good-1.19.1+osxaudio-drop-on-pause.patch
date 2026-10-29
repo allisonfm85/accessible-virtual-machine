@@ -1,0 +1,212 @@
+AVM backport: osxaudio: Drop in io_proc on pause instead of removing it
+
+Upstream GStreamer commit efb5f4abc572be3fd0566261ff6e43aceb06c57e
+(Nirbheek Chauhan, 2025-11-17, merge request 10107), which fixes
+https://gitlab.freedesktop.org/gstreamer/gstreamer/-/issues/4155,
+backported to gst-plugins-good 1.19.1 as UTM patches it.
+
+The deadlock it fixes is the one AVM sampled on 2026-07-12 (VMView.swift):
+pausing set io_proc_needs_deactivation, and CoreAudio's IO thread then
+removed the render callback from inside its own render notification,
+waiting on the AudioUnit's mutex, while the SPICE worker sat in
+AudioOutputUnitStop holding that mutex and waiting on the IO thread.
+After this patch nothing removes the callback from the IO thread: pause
+sets io_proc_dropping, and the sink writes silence (the source drops
+samples) until the unit is started again or stopped.
+
+Differences from upstream, both because 1.19.1 is older:
+  - The sink hunk's rbuf refactor and the CORE_AUDIO_TIMING_LOCK context
+    are left out; only the silence branch is taken.
+  - The comment change in gst_core_audio_io_proc_stop is left out, since
+    UTM's patch already moved that code.
+
+Applied after UTM's own patches/gst-plugins-good-1.19.1.patch by
+Tools/build-sysroot.sh.
+
+--- a/sys/osxaudio/gstosxaudiosink.c
++++ b/sys/osxaudio/gstosxaudiosink.c
+@@ -525,10 +525,18 @@
+   gint stream_idx = buf->core_audio->stream_idx;
+   gint remaining = bufferList->mBuffers[stream_idx].mDataByteSize;
+   gint offset = 0;
++  GstAudioRingBuffer *rbuf = GST_AUDIO_RING_BUFFER (buf);
++  const GstAudioFormatInfo *finfo = rbuf->spec.info.finfo;
+ 
+   while (remaining) {
+-    if (!gst_audio_ring_buffer_prepare_read (GST_AUDIO_RING_BUFFER (buf),
+-            &readseg, &readptr, &len))
++    if (g_atomic_int_get (&buf->core_audio->io_proc_dropping)) {
++      gst_audio_format_info_fill_silence (finfo, (char *)
++          bufferList->mBuffers[stream_idx].mData + offset, remaining);
++      GST_TRACE_OBJECT (buf, "Wrote silence, %d samples", remaining);
++      return 0;
++    }
++
++    if (!gst_audio_ring_buffer_prepare_read (rbuf, &readseg, &readptr, &len))
+       return 0;
+ 
+     len -= buf->segoffset;
+--- a/sys/osxaudio/gstosxaudiosrc.c
++++ b/sys/osxaudio/gstosxaudiosrc.c
+@@ -364,6 +364,11 @@
+ 
+   remaining = buf->core_audio->recBufferList->mBuffers[0].mDataByteSize;
+ 
++  if (g_atomic_int_get (&buf->core_audio->io_proc_dropping)) {
++    GST_TRACE_OBJECT (buf, "Dropped %d samples", remaining);
++    return 0;
++  }
++
+   while (remaining) {
+     if (!gst_audio_ring_buffer_prepare_read (GST_AUDIO_RING_BUFFER (buf),
+             &writeseg, &writeptr, &len))
+--- a/sys/osxaudio/gstosxcoreaudio.h
++++ b/sys/osxaudio/gstosxcoreaudio.h
+@@ -93,7 +93,7 @@
+   GstCaps *cached_caps;
+   gint stream_idx;
+   gboolean io_proc_active;
+-  gboolean io_proc_needs_deactivation;
++  gboolean io_proc_dropping;
+ 
+   /* For LPCM in/out */
+   AudioUnit audiounit;
+--- a/sys/osxaudio/gstosxcoreaudiocommon.c
++++ b/sys/osxaudio/gstosxcoreaudiocommon.c
+@@ -43,42 +43,11 @@
+         "Failed to remove render callback %d", (int) status);
+   }
+ 
+-  /* Remove the RenderNotify too */
+-  status = AudioUnitRemoveRenderNotify (core_audio->audiounit,
+-      (AURenderCallback) gst_core_audio_render_notify, core_audio);
+-
+-  if (status) {
+-    GST_WARNING_OBJECT (core_audio->osxbuf,
+-        "Failed to remove render notify callback %d", (int) status);
+-  }
+-
+   /* We're deactivated.. */
+-  core_audio->io_proc_needs_deactivation = FALSE;
++  g_atomic_int_set (&core_audio->io_proc_dropping, FALSE);
+   core_audio->io_proc_active = FALSE;
+ }
+ 
+-OSStatus
+-gst_core_audio_render_notify (GstCoreAudio * core_audio,
+-    AudioUnitRenderActionFlags * ioActionFlags,
+-    const AudioTimeStamp * inTimeStamp,
+-    unsigned int inBusNumber,
+-    unsigned int inNumberFrames, AudioBufferList * ioData)
+-{
+-  /* Before rendering a frame, we get the PreRender notification.
+-   * Here, we detach the RenderCallback if we've been paused.
+-   *
+-   * This is necessary (rather than just directly detaching it) to
+-   * work around some thread-safety issues in CoreAudio
+-   */
+-  if ((*ioActionFlags) & kAudioUnitRenderAction_PreRender) {
+-    if (core_audio->io_proc_needs_deactivation) {
+-      gst_core_audio_remove_render_callback (core_audio);
+-    }
+-  }
+-
+-  return noErr;
+-}
+-
+ gboolean
+ gst_core_audio_io_proc_start (GstCoreAudio * core_audio)
+ {
+@@ -105,19 +74,11 @@
+           "AudioUnitSetProperty failed: %d", (int) status);
+       return FALSE;
+     }
+-    // ### does it make sense to do this notify stuff for input mode?
+-    status = AudioUnitAddRenderNotify (core_audio->audiounit,
+-        (AURenderCallback) gst_core_audio_render_notify, core_audio);
+ 
+-    if (status) {
+-      GST_ERROR_OBJECT (core_audio->osxbuf,
+-          "AudioUnitAddRenderNotify failed %d", (int) status);
+-      return FALSE;
+-    }
+     core_audio->io_proc_active = TRUE;
+   }
+ 
+-  core_audio->io_proc_needs_deactivation = FALSE;
++  g_atomic_int_set (&core_audio->io_proc_dropping, FALSE);
+ 
+   status = AudioOutputUnitStart (core_audio->audiounit);
+   if (status) {
+--- a/sys/osxaudio/gstosxcoreaudiocommon.h
++++ b/sys/osxaudio/gstosxcoreaudiocommon.h
+@@ -54,13 +54,6 @@
+                                                            OSType sub_type,
+                                                            const gchar *adesc);
+ 
+-OSStatus gst_core_audio_render_notify                     (GstCoreAudio * core_audio,
+-                                                           AudioUnitRenderActionFlags * ioActionFlags,
+-                                                           const AudioTimeStamp * inTimeStamp,
+-                                                           unsigned int inBusNumber,
+-                                                           unsigned int inNumberFrames,
+-                                                           AudioBufferList * ioData);
+-
+ AudioChannelLabel gst_audio_channel_position_to_core_audio (GstAudioChannelPosition position, int channel);
+ 
+ GstAudioChannelPosition gst_core_audio_channel_label_to_gst (AudioChannelLabel label, int channel, gboolean warn);
+--- a/sys/osxaudio/gstosxcoreaudiohal.c
++++ b/sys/osxaudio/gstosxcoreaudiohal.c
+@@ -937,7 +937,7 @@
+ 
+   /* We're deactivated.. */
+   core_audio->procID = 0;
+-  core_audio->io_proc_needs_deactivation = FALSE;
++  g_atomic_int_set (&core_audio->io_proc_dropping, FALSE);
+   core_audio->io_proc_active = FALSE;
+ }
+ 
+@@ -963,7 +963,7 @@
+     core_audio->io_proc_active = TRUE;
+   }
+ 
+-  core_audio->io_proc_needs_deactivation = FALSE;
++  g_atomic_int_set (&core_audio->io_proc_dropping, FALSE);
+ 
+   /* Start device */
+   status = AudioDeviceStart (core_audio->device_id, core_audio->procID);
+@@ -1149,11 +1149,13 @@
+         "osx ring buffer pause ioproc: %p device_id %lu",
+         core_audio->element->io_proc, (gulong) core_audio->device_id);
+     if (core_audio->io_proc_active) {
+-      /* CoreAudio isn't threadsafe enough to do this here;
+-       * we must deactivate the render callback elsewhere. See:
++      /* CoreAudio isn't threadsafe enough to remove the render callback in the
++       * render notify callback, so we pause by having the callback drop
++       * samples or feed silence. See:
+        * http://lists.apple.com/archives/Coreaudio-api/2006/Mar/msg00010.html
++       * https://gitlab.freedesktop.org/gstreamer/gstreamer/-/issues/4155
+        */
+-      core_audio->io_proc_needs_deactivation = TRUE;
++      g_atomic_int_set (&core_audio->io_proc_dropping, TRUE);
+     }
+   }
+   return TRUE;
+--- a/sys/osxaudio/gstosxcoreaudioremoteio.c
++++ b/sys/osxaudio/gstosxcoreaudioremoteio.c
+@@ -49,11 +49,13 @@
+       core_audio->element->io_proc, (gulong) core_audio->device_id);
+ 
+   if (core_audio->io_proc_active) {
+-    /* CoreAudio isn't threadsafe enough to do this here;
+-     * we must deactivate the render callback elsewhere. See:
++    /* CoreAudio isn't threadsafe enough to remove the render callback in the
++     * render notify callback, so we pause by having the callback drop
++     * samples or feed silence. See:
+      * http://lists.apple.com/archives/Coreaudio-api/2006/Mar/msg00010.html
++     * https://gitlab.freedesktop.org/gstreamer/gstreamer/-/issues/4155
+      */
+-    core_audio->io_proc_needs_deactivation = TRUE;
++    g_atomic_int_set (&core_audio->io_proc_dropping, TRUE);
+   }
+   return TRUE;
+ }
