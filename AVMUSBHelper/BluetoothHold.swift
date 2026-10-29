@@ -352,7 +352,18 @@ final class BluetoothHold {
         let id = identifier(device)
         let keyboards = [kHIDUsage_GD_Keyboard]
         let pointers = [kHIDUsage_GD_Mouse, kHIDUsage_GD_Pointer]
-        if isKind(device, keyboards), !all.contains(where: { isKind($0, keyboards) && identifier($0) != id }) {
+        // A keyboard a person can type with (2026-10-28, fourth audit): a
+        // YubiKey, a virtual keyboard or Karabiner's show macOS a keyboard,
+        // and counted, they let the Mac's only real keyboard go to a
+        // machine. The same rule the keyboard for Windows uses
+        // (KeyboardHold.otherKeyboards).
+        func typable(_ d: IOHIDDevice) -> Bool {
+            let vendor = property(d, kIOHIDVendorIDKey) as? Int ?? 0
+            let transport = (property(d, kIOHIDTransportKey) as? String ?? "").lowercased()
+            let product = (property(d, kIOHIDProductKey) as? String ?? "").lowercased()
+            return vendor != 0x1050 && transport != "virtual" && !product.contains("karabiner")
+        }
+        if isKind(device, keyboards), !all.contains(where: { isKind($0, keyboards) && identifier($0) != id && typable($0) }) {
             return "That is the Mac's only keyboard, and the Mac must keep one."
         }
         if isKind(device, pointers), !all.contains(where: { isKind($0, pointers) && identifier($0) != id }) {
