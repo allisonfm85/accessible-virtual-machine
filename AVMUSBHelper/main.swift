@@ -163,7 +163,10 @@ final class IdleWatch {
             registry.queue.sync {
                 guard registry.isEmpty else { return }
                 os_log("idle for %{public}.0f s with no connections and no devices; exiting", log: log, type: .default, idleGracePeriod)
-                avm_usb_runtime_stop()
+                // Not under a release set aside (2026-10-29, sixth audit): its
+                // pump still uses libusb's context, which libusb_exit freed.
+                // The process exiting lets go of its device either way.
+                if registry.noStreamsLeft { avm_usb_runtime_stop() }
                 exit(0)
             }
         }
@@ -215,6 +218,10 @@ final class DeviceRegistry {
     /// Entries whose release never finished; kept so their streams'
     /// callbacks stay valid. The process exiting releases their devices.
     private var abandoned: [DeviceEntry] = []
+    /// No stream left that could still call libusb, live or set aside
+    /// (2026-10-29, sixth audit): a pump stuck in its release still does,
+    /// so libusb is stopped only then. Read inside queue.sync.
+    var noStreamsLeft: Bool { entries.isEmpty && abandoned.isEmpty }
     private var runtimeStarted = false
     // MARK: Attach
     func attach(_ device: AVMUSBDeviceIdentity,
@@ -554,7 +561,10 @@ final class HelperService: NSObject, AVMUSBHelperProtocol {
                log: log, type: .default, connection?.processIdentifier ?? 0)
         reply()
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
-            registry.queue.sync { avm_usb_runtime_stop() }
+            // Only with no stream left (2026-10-29, sixth audit): Restart is
+            // the remedy for a stuck one, whose pump used libusb's context
+            // after libusb_exit freed it. Exiting lets go of every device.
+            registry.queue.sync { if registry.noStreamsLeft { avm_usb_runtime_stop() } }
             exit(0)
         }
     }

@@ -173,28 +173,48 @@ final class BluetoothHold {
                 reply(false, "That Bluetooth device isn't connected. Turn it on, or wake it, and try again.")
                 return
             }
-            if let reason = Self.mustStayOnMac(device, among: all.filter { !HeldByHelper.contains($0) }) {
-                reply(false, reason)
-                return
-            }
+            // Connected before the lock below (2026-10-29, sixth audit), so
+            // that only the checks, the open and the add are under it.
             let socket = Self.connectSocket(streamSocketPath, owner: uid, peerPID: pid_t(clamping: peerPID))
             guard socket >= 0 else {
                 reply(false, "The helper couldn't reach the virtual machine's socket.")
                 return
             }
+            // The count, the open and the add under the lock the keyboard for
+            // Windows takes too (2026-10-29, sixth audit), so the two can't
+            // both find the Mac another keyboard at once. Unlocked on every
+            // way out, before replying.
+            HeldByHelper.taking.lock()
+            // The keyboard for Windows (2026-10-29, sixth audit): the helper
+            // has it already, and the open failed as exclusive, blamed on
+            // macOS.
+            if HeldByHelper.contains(device) {
+                HeldByHelper.taking.unlock()
+                close(socket)
+                reply(false, "That is a machine's keyboard for Windows, and types only in Windows while it runs.")
+                return
+            }
+            if let reason = Self.mustStayOnMac(device, among: all.filter { !HeldByHelper.contains($0) }) {
+                HeldByHelper.taking.unlock()
+                close(socket)
+                reply(false, reason)
+                return
+            }
             let result = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
             guard result == kIOReturnSuccess else {
+                HeldByHelper.taking.unlock()
                 close(socket)
                 os_log("couldn't take a Bluetooth device: 0x%{public}x", log: log, type: .error, result)
                 reply(false, String(format: "macOS wouldn't let the helper take the device (error 0x%08x).", result))
                 return
             }
+            HeldByHelper.add(device)
+            HeldByHelper.taking.unlock()
             let size = max(64, min(4096, Self.property(device, kIOHIDMaxInputReportSizeKey) as? Int ?? 64))
             let descriptor = Self.property(device, kIOHIDReportDescriptorKey) as? Data ?? Data()
             let entry = Held(id: id, device: device, socket: socket, owner: connection, ownerUID: uid,
                              inputSize: size, usesReportIDs: Self.usesReportIDs(descriptor))
             self.held[id] = entry
-            HeldByHelper.add(device)
             self.start(entry)
             self.watchWhileHeld()
             idle.bluetoothChanged(count: self.held.count)

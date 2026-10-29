@@ -20,6 +20,8 @@
 //     and takes the keyboard once it does; while held, the other going
 //     away for more than a few seconds gives the keyboard back until the
 //     Mac has another again (2026-10-28).
+//   - Never a braille display with a keyboard (2026-10-29): seized, it's
+//     gone from VoiceOver. It goes to a machine as itself instead.
 //   - Let go when AVM asks, when its connection ends (quit or crash), or
 //     when the keyboard disconnects; while wanted and not connected, the
 //     helper looks for it every few seconds, so a Bluetooth keyboard that
@@ -40,6 +42,11 @@ import os.log
 enum HeldByHelper {
     private static let lock = NSLock()
     private static var entries = Set<UInt64>()
+    /// Taken by both holds across "count the Mac's other keyboards, open,
+    /// add" (2026-10-29, sixth audit): each could count before the other's
+    /// add, and between them take the Mac's last two keyboards at once.
+    /// Never held while AVM is told anything.
+    static let taking = NSLock()
 
     static func entryID(_ device: IOHIDDevice) -> UInt64? {
         let service = IOHIDDeviceGetService(device)
@@ -146,13 +153,30 @@ final class KeyboardHold {
             || (property(device, kIOHIDTransportKey) as? String) == "FIFO"
     }
 
+    /// A braille display: usage page 0x41 among the interface's top-level
+    /// collections, beside the keyboard one that put it in keyboards().
+    private static func isBraille(_ device: IOHIDDevice) -> Bool {
+        let pairs = property(device, kIOHIDDeviceUsagePairsKey) as? [[String: Any]] ?? []
+        return pairs.contains { ($0[kIOHIDDeviceUsagePageKey] as? Int) == 0x41 }
+    }
+
+    /// One row per keyboard, not per interface (2026-10-29, sixth audit):
+    /// a keyboard with a boot and an n-key-rollover interface was listed,
+    /// and read by VoiceOver, twice under one id. Built in if any of its
+    /// interfaces is. A braille display isn't listed: it's never taken.
     func list() -> [NSDictionary] {
-        Self.keyboards().map { device in
-            [
-                "id": Self.identifier(device),
+        let all = Self.keyboards()
+        var seen = Set<String>()
+        return all.compactMap { device -> NSDictionary? in
+            let id = Self.identifier(device)
+            guard seen.insert(id).inserted else { return nil }
+            let interfaces = all.filter { Self.identifier($0) == id }
+            if interfaces.contains(where: Self.isBraille) { return nil }
+            return [
+                "id": id,
                 "name": Self.property(device, kIOHIDProductKey) as? String ?? "Keyboard",
                 "transport": Self.property(device, kIOHIDTransportKey) as? String ?? "",
-                "builtIn": NSNumber(value: Self.isBuiltIn(device)),
+                "builtIn": NSNumber(value: interfaces.contains(where: Self.isBuiltIn)),
             ] as NSDictionary
         }
     }
@@ -176,6 +200,9 @@ final class KeyboardHold {
             self.owner = connection
             self.heldOwnerUID = connection.effectiveUserIdentifier
             self.saidWaiting = false
+            // Not a count left by tries for the last hold (2026-10-29,
+            // sixth audit): it was reset only on success or refusal.
+            self.exclusiveRetries = 0
             idle.keyboardChanged(held: true)
             reply(true, nil)
             os_log("keyboard for Windows requested", log: log, type: .default)
@@ -191,6 +218,7 @@ final class KeyboardHold {
             self.wantedID = nil
             self.owner = nil
             self.heldOwnerUID = nil
+            self.exclusiveRetries = 0
             idle.keyboardChanged(held: false)
         }
     }
@@ -211,11 +239,32 @@ final class KeyboardHold {
             refuse(wanted, "AVM never takes the Mac's built-in keyboard.")
             return
         }
+        // A braille display with a keyboard (2026-10-29, sixth audit): seized
+        // whole, it was gone from VoiceOver for as long as the machine ran,
+        // its cells and keys reaching neither the Mac nor Windows.
+        if interfaces.contains(where: Self.isBraille) {
+            refuse(wanted, "it's a braille display; send it to a machine with Bluetooth Devices or Attach USB Device instead.")
+            return
+        }
+        // The count, the open and the add under the lock the Bluetooth hold
+        // takes too (2026-10-29, sixth audit), so the two can't both find
+        // the Mac another keyboard at once. Unlocked on every way out,
+        // before AVM is told anything.
+        HeldByHelper.taking.lock()
+        // In a machine through Bluetooth Devices (2026-10-29, sixth audit):
+        // the helper's own Bluetooth hold has it, and the open was tried
+        // for 15 seconds, then blamed on another app.
+        if interfaces.contains(where: HeldByHelper.contains) {
+            HeldByHelper.taking.unlock()
+            refuse(wanted, "it's in a virtual machine already, sent there from Bluetooth Devices.")
+            return
+        }
         // The only keyboard: not a refusal (2026-10-28, a user's report). At
         // login the Mac's own Bluetooth keyboard connects seconds after AVM
         // asks, so the helper waits and takes this one once the Mac has
         // another; AVM is told once, as "waiting".
         if Self.otherKeyboards(all, than: wanted) < 1 {
+            HeldByHelper.taking.unlock()
             if !saidWaiting {
                 saidWaiting = true
                 os_log("keyboard for Windows: waiting for the Mac to have another keyboard", log: log, type: .default)
@@ -230,6 +279,7 @@ final class KeyboardHold {
             guard result == kIOReturnSuccess else {
                 os_log("couldn't hold the keyboard for Windows: 0x%{public}x", log: log, type: .error, result)
                 for done in opened { IOHIDDeviceClose(done, IOOptionBits(kIOHIDOptionsTypeSeizeDevice)) }
+                HeldByHelper.taking.unlock()
                 // Held exclusively by someone (2026-10-28, fifth audit): most
                 // often the helper's own last hold, closing in a cancel
                 // handler queued behind this block (a hand-over between
@@ -238,7 +288,15 @@ final class KeyboardHold {
                 let exclusive = IOReturn(bitPattern: 0xe00002c5)
                 if result == exclusive, exclusiveRetries < 5 {
                     exclusiveRetries += 1
-                    startLooking()
+                    // The first time on the queue's next turn, after those
+                    // cancel handlers (2026-10-29, sixth audit): 3 seconds
+                    // left the keyboard typing into the Mac's front app
+                    // meanwhile. The 3-second look is the fallback.
+                    if exclusiveRetries == 1 {
+                        queue.async { [weak self] in self?.lookForKeyboard() }
+                    } else {
+                        startLooking()
+                    }
                     return
                 }
                 exclusiveRetries = 0
@@ -249,6 +307,8 @@ final class KeyboardHold {
             }
             opened.append(device)
         }
+        for device in opened { HeldByHelper.add(device) }
+        HeldByHelper.taking.unlock()
         let context = Unmanaged.passUnretained(self).toOpaque()
         for device in opened {
             IOHIDDeviceRegisterInputValueCallback(device, { context, _, _, value in
@@ -271,7 +331,6 @@ final class KeyboardHold {
         }
         held = opened
         exclusiveRetries = 0
-        for device in opened { HeldByHelper.add(device) }
         heldID = wanted
         saidWaiting = false
         checksWithoutAnother = 0

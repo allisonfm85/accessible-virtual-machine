@@ -35,7 +35,7 @@ nonisolated public enum AVMUSBHelperNames {
     /// every change to the helper or its protocol: after an update, the
     /// helper from before keeps running for its idle grace period, and
     /// AVM asks one that answers with another version to exit first.
-    public static let helperBuildVersion = "0.4.4"
+    public static let helperBuildVersion = "0.4.5"
 
     /// The bundle identifier of the app that is allowed to talk to the helper.
     public static let clientBundleIdentifier = "com.alllisonmeloy.AVM"
@@ -222,7 +222,8 @@ nonisolated public protocol AVMUSBHelperProtocol {
     // never the only keyboard, only for the user at the Mac's screen.
 
     /// The keyboards connected now: dictionaries with "id", "name",
-    /// "transport" and "builtIn".
+    /// "transport" and "builtIn", one per keyboard rather than per
+    /// interface, braille displays left out (2026-10-29).
     func listKeyboards(reply: @escaping ([NSDictionary]) -> Void)
 
     /// Hold the keyboard with this id, now or as soon as it connects,
