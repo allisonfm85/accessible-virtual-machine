@@ -354,6 +354,12 @@ CoreAudio in the backend's frameworks.
 -    if (deviceID == kAudioDeviceUnknown) {
 -        dolog ("Could not initialize playback - Unknown Audiodevice\n");
 -        return status;
+-    }
+-
+-    /* get minimum and maximum buffer frame sizes */
+-    status = coreaudio_get_framesizerange(deviceID, &frameRange);
+-    if (status == kAudioHardwareBadObjectError) {
+-        return 0;
 +    frames = MAX(1, (UInt32)(core->frameSizeSetting * device_format.mSampleRate
 +                             / core->hw.info.freq));
 +    status = AudioUnitSetProperty(core->unit, kAudioDevicePropertyBufferFrameSize,
@@ -364,11 +370,10 @@ CoreAudio in the backend's frameworks.
 +                         (uint32_t)frames);
 +        return;
      }
--
--    /* get minimum and maximum buffer frame sizes */
--    status = coreaudio_get_framesizerange(deviceID, &frameRange);
--    if (status == kAudioHardwareBadObjectError) {
--        return 0;
+-    if (status != kAudioHardwareNoError) {
+-        coreaudio_playback_logerr (status,
+-                                    "Could not get device buffer frame range\n");
+-        return status;
 +    /* What the device took (it may clamp), and a fresh look at the next
 +     * render: the warning in buffer_get_free judges a render made after
 +     * this, not the one that asked for the refit (fifth audit: it fired
@@ -380,11 +385,6 @@ CoreAudio in the backend's frameworks.
 +            frames = got;
 +        }
      }
--    if (status != kAudioHardwareNoError) {
--        coreaudio_playback_logerr (status,
--                                    "Could not get device buffer frame range\n");
--        return status;
--    }
 -
 -    if (frameRange.mMinimum > core->frameSizeSetting) {
 -        audioDevicePropertyBufferFrameSize = (UInt32) frameRange.mMinimum;
@@ -638,18 +638,8 @@ CoreAudio in the backend's frameworks.
 -        coreaudio_playback_logerr (status,
 -                                   "Could not listen to voice property change\n");
 -        return -1;
-+    component = AudioComponentFindNext(NULL, &description);
-+    if (!component) {
-+        dolog("Could not initialize playback - no default output unit\n");
-+        goto fail;
-+    }
-+    status = AudioComponentInstanceNew(component, &core->unit);
-+    if (status != noErr) {
-+        coreaudio_playback_logerr(status, "Could not open the default output\n");
-+        core->unit = NULL;
-+        goto fail;
-     }
- 
+-    }
+-
 -    if (init_out_device(core)) {
 -        status = AudioObjectRemovePropertyListener(kAudioObjectSystemObject,
 -                                                   &voice_addr,
@@ -659,6 +649,20 @@ CoreAudio in the backend's frameworks.
 -            coreaudio_playback_logerr(status,
 -                                      "Could not remove voice property change listener\n");
 -        }
+-
+-        return -1;
++    component = AudioComponentFindNext(NULL, &description);
++    if (!component) {
++        dolog("Could not initialize playback - no default output unit\n");
++        goto fail;
+     }
++    status = AudioComponentInstanceNew(component, &core->unit);
++    if (status != noErr) {
++        coreaudio_playback_logerr(status, "Could not open the default output\n");
++        core->unit = NULL;
++        goto fail;
++    }
+ 
 +    format = (AudioStreamBasicDescription) {
 +        .mSampleRate = hw->info.freq,
 +        .mFormatID = kAudioFormatLinearPCM,
@@ -676,8 +680,7 @@ CoreAudio in the backend's frameworks.
 +        coreaudio_playback_logerr(status, "Could not set the stream format\n");
 +        goto fail;
 +    }
- 
--        return -1;
++
 +    callback = (AURenderCallbackStruct) {
 +        .inputProc = audioUnitRender,
 +        .inputProcRefCon = core
@@ -689,8 +692,8 @@ CoreAudio in the backend's frameworks.
 +    if (status != noErr) {
 +        coreaudio_playback_logerr(status, "Could not set the render callback\n");
 +        goto fail;
-     }
- 
++    }
++
 +    /*
 +     * The device's buffer for this process only, as long as the buffer
 +     * QEMU was asked for: the device counts it in its own frames, at its
@@ -761,7 +764,7 @@ CoreAudio in the backend's frameworks.
      /* destroy mutex */
      err = pthread_mutex_destroy(&core->buf_mutex);
      if (err) {
-@@ -642,9 +540,381 @@
+@@ -642,9 +540,399 @@
      coreaudioVoiceOut *core = (coreaudioVoiceOut *) hw;
  
      core->enabled = enable;
@@ -978,6 +981,19 @@ CoreAudio in the backend's frameworks.
 +        coreaudio_logerr(status, "Could not open the microphone\n");
 +        goto fail;
 +    }
++    /*
++     * What the device took (AVM, 2026-10-29): one that can't go as small as
++     * asked delivers more per callback, and more than the ring holds is
++     * dropped. Logged, so the symptom can be told from its cause.
++     */
++    {
++        UInt32 got = 0, gotSize = sizeof(got);
++        if (AudioUnitGetProperty(core->unit, kAudioDevicePropertyBufferFrameSize, kAudioUnitScope_Global, 0, &got, &gotSize) == noErr
++            && got != frames) {
++            dolog("The microphone's buffer is %u frames at %.0f Hz (asked for %u); the ring holds %zu voice frames\n",
++                  (unsigned)got, rate, (unsigned)frames, (size_t)(hw->size_emul / hw->info.bytes_per_frame));
++        }
++    }
 +    return 0;
 +
 +fail:
@@ -1072,7 +1088,12 @@ CoreAudio in the backend's frameworks.
 +    core->converted->mBuffers[0].mDataByteSize = core->convertedFrames * hw->info.bytes_per_frame;
 +    core->converted->mBuffers[0].mData = g_malloc0(core->converted->mBuffers[0].mDataByteSize);
 +
-+    hw->samples = (core->bufferCount + 1) * core->frameSizeSetting;
++    /*
++     * At least 4096 frames (AVM, 2026-10-29): a device held at a bigger
++     * buffer than asked, converted to the voice's rate, overran a ring sized
++     * to the request alone, and the rest of every callback was dropped.
++     */
++    hw->samples = MAX((core->bufferCount + 1) * core->frameSizeSetting, 4096);
 +    hw->size_emul = hw->samples * hw->info.bytes_per_frame;
 +    hw->buf_emul = g_malloc0(hw->size_emul);
 +    hw->pos_emul = hw->pending_emul = 0;
@@ -1144,7 +1165,7 @@ CoreAudio in the backend's frameworks.
  static void *coreaudio_audio_init(Audiodev *dev, Error **errp)
  {
      return dev;
-@@ -657,15 +927,27 @@
+@@ -657,15 +945,27 @@
  static struct audio_pcm_ops coreaudio_pcm_ops = {
      .init_out = coreaudio_init_out,
      .fini_out = coreaudio_fini_out,
@@ -1176,7 +1197,7 @@ CoreAudio in the backend's frameworks.
  };
  
  static struct audio_driver coreaudio_audio_driver = {
-@@ -675,9 +957,9 @@
+@@ -675,9 +975,9 @@
      .fini           = coreaudio_audio_fini,
      .pcm_ops        = &coreaudio_pcm_ops,
      .max_voices_out = 1,
