@@ -761,7 +761,7 @@ final class VMManager: ObservableObject {
             // Remembered (2026-10-28): see below.
             var updated = VMStore.shared?.configurations.first { $0.id == configuration.id } ?? configuration
             updated.installMarkerSeen = true
-            VMStore.shared?.save(updated)
+            VMStore.shared?.update(updated)
             if activeConfiguration?.id == configuration.id { activeConfiguration?.installMarkerSeen = true }
         }
         // No marker on a volume that reads fine, on a machine whose marker
@@ -4117,7 +4117,7 @@ extension VMManager {
         var updated = VMStore.shared?.configurations.first { $0.id == configuration.id } ?? configuration
         updated.diskBus = bus
         updated.diskBusSwitch = step
-        VMStore.shared?.save(updated)
+        VMStore.shared?.update(updated)
         if activeConfiguration?.id == configuration.id {
             activeConfiguration?.diskBus = bus
             activeConfiguration?.diskBusSwitch = step

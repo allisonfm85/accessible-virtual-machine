@@ -120,6 +120,27 @@ enum SaveResumeTestJob {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
         }
+        // A support folder of the job's own (2026-10-28): the machines a job
+        // starts are in no list, yet VMManager's bookkeeping (an install
+        // marker seen, a port moved, a disk switched) wrote them into the
+        // user's configurations.json, 41 "Save test" entries by the time it
+        // was noticed, and the job's control socket replaced the user's.
+        // VMStore, the control socket and the rest now live here for the
+        // run; the machine folders, the test logs and the keychain are
+        // where they were. Day-old leftovers of earlier runs go.
+        if AVMPaths.supportDirectoryOverride == nil {
+            let temporary = FileManager.default.temporaryDirectory
+            let support = temporary.appendingPathComponent("avm-test-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+            try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+            AVMPaths.supportDirectoryOverride = support
+            let dayAgo = Date().addingTimeInterval(-86_400)
+            for old in (try? FileManager.default.contentsOfDirectory(at: temporary, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+            where old.lastPathComponent.range(of: "^avm-test-[0-9]+$", options: .regularExpression) != nil && old != support {
+                if let changed = try? old.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, changed < dayAgo {
+                    try? FileManager.default.removeItem(at: old)
+                }
+            }
+        }
         if arguments.contains("--test-screen-readers") {
             AVMLog.useTestLogFolder()
             let readers: [ScreenReader] = arguments.contains("--jaws") ? [.nvda, .jaws] : [.nvda]

@@ -300,6 +300,19 @@ final class VMStore: ObservableObject {
         saveAll()
     }
 
+    /// A change to a machine that is already in the list. One that isn't
+    /// (a test job's, started from its folder alone) is not added as a
+    /// side effect: VMManager's own bookkeeping did that through save(),
+    /// and 41 "Save test" entries had piled up in the user's list by the
+    /// time it was noticed (2026-10-28).
+    func update(_ configuration: VMConfiguration) {
+        guard configurations.contains(where: { $0.id == configuration.id }) else {
+            AVMLog.write("AVM: VMStore — \(configuration.name) isn't in the list; its change wasn't written")
+            return
+        }
+        save(configuration)
+    }
+
     // MARK: - Secure Boot switch (2026-10-25)
 
     /// Switches which firmware's variable store the VM uses. Each firmware
