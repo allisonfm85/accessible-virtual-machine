@@ -59,6 +59,20 @@
 // KNOWN TRADEOFFS (accepted): the system voice does not coordinate with
 // VoiceOver — for rare, must-not-miss events, talking over VO is the point.
 // Speech is ephemeral — the console/debug log remains the durable record.
+//
+// VOICEOVER FIRST (2026-10-28, the user's request: "as much as possible
+// voiced by VoiceOver rather than the system voice"). With VoiceOver on:
+//   - AVM in front: an accessibility announcement, which VoiceOver reads in
+//     the user's own voice and rate, after what it's saying (medium
+//     priority, keeping Allison's never-interrupt rule).
+//   - AVM not in front, where VoiceOver doesn't read another app's
+//     announcements: VoiceOver's own "output" command through AppleScript,
+//     which it reads whatever app is in front. That needs VoiceOver
+//     Utility's "Allow VoiceOver to be controlled with AppleScript"; until
+//     it's on, those lines use the system voice, and AVM says once how to
+//     turn it on.
+// The system voice stays for VoiceOver off (a macOS machine has it, say)
+// and for any line VoiceOver couldn't be given. The sounds are unchanged.
 
 import AppKit
 import AVFoundation
@@ -131,10 +145,12 @@ final class Announcer {
     /// Set only by the accessibility audit, before any screen opens.
     nonisolated(unsafe) static var isMuted = false
 
-    /// True while the system voice is speaking or has lines waiting.
+    /// True while the system voice is speaking or has lines waiting, or
+    /// while VoiceOver is likely still reading AVM's last line (its own
+    /// queue can't be asked, so it's estimated from the line's length).
     /// USBPlugPrompt waits on this so a plug-in alert doesn't appear
     /// while "Mac keyboard on" is still being spoken.
-    var isSpeaking: Bool { synthesizer.isSpeaking }
+    var isSpeaking: Bool { synthesizer.isSpeaking || Date() < voiceOverBusyUntil }
 
     /// Lets what's being said finish, up to `seconds`, before AVM exits
     /// (2026-10-26, code audit): the last outcomes of a quit ("…is saved",
@@ -144,6 +160,56 @@ final class Announcer {
         while synthesizer.isSpeaking && Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         }
+    }
+
+    // MARK: VoiceOver first (2026-10-28)
+
+    private var voiceOverBusyUntil = Date.distantPast
+    /// VoiceOver's AppleScript refused (not allowed in VoiceOver Utility, or
+    /// AVM not allowed to control it): background lines use the system
+    /// voice for the rest of this run.
+    private var voiceOverScriptRefused = false
+    private var toldHowToAllowScripting = false
+    private let scriptQueue = DispatchQueue(label: "avm.announcer.voiceover")
+
+    /// Hands the line to VoiceOver. False when VoiceOver isn't on, or the
+    /// line has to go to the system voice.
+    private func speakWithVoiceOver(_ message: String) -> Bool {
+        guard NSWorkspace.shared.isVoiceOverEnabled else { return false }
+        let start = max(Date(), voiceOverBusyUntil)
+        voiceOverBusyUntil = start.addingTimeInterval(0.5 + Double(message.count) / 14)
+        if NSApp.isActive {
+            let element: Any = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp as Any
+            NSAccessibility.post(element: element, notification: .announcementRequested, userInfo: [
+                .announcement: message,
+                .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+            ])
+            return true
+        }
+        guard !voiceOverScriptRefused else { return false }
+        // The line as an argument, never inside the script.
+        scriptQueue.async {
+            let script = Process()
+            script.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            script.arguments = ["-e", "on run argv", "-e", "tell application \"VoiceOver\" to output (item 1 of argv)",
+                                "-e", "end run", message]
+            script.standardOutput = FileHandle.nullDevice
+            script.standardError = FileHandle.nullDevice
+            let sent = (try? script.run()) != nil && { script.waitUntilExit(); return script.terminationStatus == 0 }()
+            guard !sent else { return }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.voiceOverScriptRefused = true
+                    AVMLog.write("AVM: Announcer — VoiceOver's AppleScript refused; lines said while AVM isn't in front use the system voice.")
+                    self.synthesizer.speak(AVSpeechUtterance(string: message))
+                    if !self.toldHowToAllowScripting {
+                        self.toldHowToAllowScripting = true
+                        self.synthesizer.speak(AVSpeechUtterance(string: "To hear AVM in VoiceOver while you're in other apps, open VoiceOver Utility, and in General, turn on Allow VoiceOver to be controlled with AppleScript. Then allow AVM to control VoiceOver if your Mac asks."))
+                    }
+                }
+            }
+        }
+        return true
     }
 
     /// Play the tone's sound immediately, then speak the message with the
@@ -165,6 +231,7 @@ final class Announcer {
         default: tone.soundName.flatMap { NSSound(named: $0) }?.play()
         }
 
+        if speakWithVoiceOver(message) { return }
         let utterance = AVSpeechUtterance(string: message)
         synthesizer.speak(utterance)
     }
