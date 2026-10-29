@@ -339,11 +339,11 @@ final class USBPlugPrompt {
     private func makeAlert(for question: USBPlugQuestion) -> NSAlert {
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = "Send \(Self.titleName(question)) to \(VMManager.currentGuestName)?"
-        alert.informativeText = Self.message(for: question.kind)
+        alert.messageText = "Send \(Self.titleName(question)) to \(Self.guestName(for: question.vmID))?"
+        alert.informativeText = Self.message(for: question.kind, guest: Self.guestName(for: question.vmID))
         // First button: Return. Escape is mapped to it in installEscape.
         _ = alert.addButton(withTitle: "Keep on Mac")
-        _ = alert.addButton(withTitle: "Send to \(VMManager.currentGuestName)")
+        _ = alert.addButton(withTitle: "Send to \(Self.guestName(for: question.vmID))")
         if question.rememberOffered {
             alert.showsSuppressionButton = true
             alert.suppressionButton?.title = "Remember my choice for this device"
@@ -389,11 +389,19 @@ final class USBPlugPrompt {
 
     /// Sends a device to Windows: from the alert, a remembered choice,
     /// or Always mode. While Windows is paused, holds it until resume.
+    /// The machine a question is about, by name (2026-10-28, deep audit):
+    /// the alert used to name the current machine while the device went to
+    /// the watched one.
+    static func guestName(for vmID: UUID) -> String {
+        MachineSessions.shared.session(for: vmID)?.configuration.name ?? VMManager.currentGuestName
+    }
+
     func send(_ question: USBPlugQuestion, because why: String) {
-        if let manager = VMManager.shared, case .paused = manager.state {
+        let machine = MachineSessions.shared.session(for: question.vmID)?.manager ?? VMManager.shared
+        if let manager = machine, case .paused = manager.state {
             heldForResume.append(question)
             log("send held: Windows is paused; \(question.identity) waits for resume (\(why))")
-            let guest = VMManager.currentGuestName
+            let guest = Self.guestName(for: question.vmID)
             say("\(guest) is paused. AVM will send \(Self.titleName(question)) when \(guest) resumes.")
             return
         }
@@ -455,8 +463,42 @@ final class USBPlugPrompt {
             gates[key] = gate
             let device = gate.question.identity
             await USBRedirectController.shared.releaseStale(device)
-            let accepted = await USBRedirectController.shared.attach(device, quiet: true)
+            // To the machine the question was about (2026-10-27, several
+            // machines at once), if it's still running.
+            // A machine that has stopped meanwhile gets nothing; never the
+            // current machine instead (2026-10-27, code audit).
+            guard let machine = MachineSessions.shared.session(for: gate.question.vmID)?.manager else {
+                finishGate(key, .stopped)
+                return
+            }
+            let accepted = await USBRedirectController.shared.attach(device, to: machine, quiet: true)
             log("send gate: attempt \(gate.attempts) of \(Self.maxAttempts) for \(device): \(accepted ? "helper accepted" : "refused")")
+            // This send asked for the helper's approval (2026-10-27, a
+            // tester's keyboard): wait for it instead of using up the tries
+            // 3 seconds later, while the user is still in System Settings,
+            // and showing the approval dialog again. Then send it.
+            if !accepted, USBHelperClient.shared.refreshStatus() == .requiresApproval {
+                log("send gate: \(device) waits for the USB helper's approval")
+                let approved = await USBHelperClient.shared.waitForApproval(while: {
+                    gates[key] != nil && USBHotPlugWatcher.shared.isPresent(device) != false
+                })
+                guard gates[key] != nil else { return }
+                if USBHotPlugWatcher.shared.isPresent(device) == false {
+                    finishGate(key, .gone)
+                    return
+                }
+                guard approved else {
+                    finishGate(key, .notApproved)
+                    return
+                }
+                log("send gate: helper approved; sending \(device) now")
+                if var waiting = gates[key] {
+                    waiting.attempts -= 1   // the refused try doesn't count
+                    waiting.lastActivity = Date()
+                    gates[key] = waiting
+                }
+                continue
+            }
             await settle(key)
             guard let settled = gates[key] else { return }
             if USBRedirectController.shared.isInWindows(settled.question.identity) {
@@ -490,7 +532,7 @@ final class USBPlugPrompt {
         }
     }
 
-    private enum GateOutcome { case inWindows, gone, failed, stopped }
+    private enum GateOutcome { case inWindows, gone, failed, stopped, notApproved }
 
     /// Closes the gate and speaks its one outcome.
     private func finishGate(_ key: String, _ outcome: GateOutcome) {
@@ -503,15 +545,18 @@ final class USBPlugPrompt {
         switch outcome {
         case .inWindows:
             log("send gate closed: \(device) is in Windows (\(tries))")
-            say("\(name) is now in \(VMManager.currentGuestName).", tone: .success)
+            say("\(name) is now in \(Self.guestName(for: gate.question.vmID)).", tone: .success)
         case .gone:
             log("send gate closed: \(device) is no longer on the Mac, so it was unplugged; nothing spoken (\(tries))")
         case .failed:
-            let reason = gate.bounces > 0 ? "it kept disconnecting" : "\(VMManager.currentGuestName) didn't take it"
+            let reason = gate.bounces > 0 ? "it kept disconnecting" : "\(Self.guestName(for: gate.question.vmID)) didn't take it"
             log("send gate closed: \(device) not sent (\(tries))")
-            say("AVM couldn't send \(name) to \(VMManager.currentGuestName). Reason: \(reason). Next: try Attach USB Device.", tone: .failure)
+            say("AVM couldn't send \(name) to \(Self.guestName(for: gate.question.vmID)). Reason: \(reason). Next: try Attach USB Device.", tone: .failure)
         case .stopped:
             log("send gate closed: \(device); the VM stopped")
+        case .notApproved:
+            log("send gate closed: \(device) not sent; the USB helper wasn't approved within 5 minutes")
+            say("\(name) stayed on the Mac: AVM's USB helper hasn't been allowed. Next: in System Settings, General, Login Items and Extensions, allow AVM, then plug \(name) in again.", tone: .failure)
         }
     }
 
@@ -611,8 +656,8 @@ final class USBPlugPrompt {
         return name
     }
 
-    static func message(for kind: USBDeviceClassification.Kind) -> String {
-        let guest = VMManager.currentGuestName
+    static func message(for kind: USBDeviceClassification.Kind, guest named: String? = nil) -> String {
+        let guest = named ?? VMManager.currentGuestName
         let macLoses = "If you send it to \(guest), the Mac can't use it until you unplug it or shut down \(guest)."
         let voiceOverLoses = "If you send it to \(guest), VoiceOver can't use it until you unplug it or shut down \(guest). A screen reader in \(guest) can use it instead."
         switch kind {
