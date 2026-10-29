@@ -185,7 +185,7 @@ final class MacInstaller: NSObject, URLSessionDownloadDelegate {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let files = MacGuestFiles(folder: folder)
 
-        let imageURL = try await restoreImage(ipsw)
+        let imageURL = try await restoreImage(ipsw, diskGB: config.diskSizeGB)
         say("Checking the macOS installer.")
         let image = try await VZMacOSRestoreImage.image(from: imageURL)
         guard let requirements = image.mostFeaturefulSupportedConfiguration, requirements.hardwareModel.isSupported else {
@@ -235,7 +235,7 @@ final class MacInstaller: NSObject, URLSessionDownloadDelegate {
         }
     }
 
-    private func restoreImage(_ ipsw: URL?) async throws -> URL {
+    private func restoreImage(_ ipsw: URL?, diskGB: Int) async throws -> URL {
         if let ipsw { return ipsw }
         say("Asking Apple for the newest macOS this Mac can run.")
         let latest = try await VZMacOSRestoreImage.latestSupported
@@ -245,6 +245,15 @@ final class MacInstaller: NSObject, URLSessionDownloadDelegate {
         if fm.fileExists(atPath: cached.path) {
             say("Using the macOS \(latest.operatingSystemVersion.description) installer downloaded before.")
             return cached
+        }
+        // Room for it (2026-10-28, fifth audit): the sheet counted no
+        // download when an older installer was cached, and this newer one
+        // then filled the disk part way.
+        let free = (try? Self.cacheFolder.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+            .volumeAvailableCapacityForImportantUsage ?? Int64.max
+        let freeGB = Int(free / 1_000_000_000)
+        if freeGB < 26 + diskGB + 20 {
+            throw MacGuestError("There isn't room on this Mac for macOS \(latest.operatingSystemVersion.description): its download needs about 26 gigabytes, and the disk can grow to \(diskGB), with 20 to spare; \(freeGB) gigabytes are free. Free some space, then try again.")
         }
         // The size comes from the download itself (26 GB for macOS 27.0.1,
         // 2026-10-26), in the first progress line.
@@ -360,7 +369,8 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
     private var window: NSWindow?
     private var name = "macOS"
 
-    func start(_ config: VMConfiguration, attempt: Int = 1) {
+    func start(_ config: VMConfiguration, attempt: Int = 1, takesKeyboard: Bool = true) {
+        if attempt == 1 { entersOnStart = takesKeyboard }
         if runningID == config.id {
             window?.makeKeyAndOrderFront(nil)
             Announcer.shared.announce("\(config.name) is already running; its window is in front.", tone: .info)
@@ -439,7 +449,7 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
             case .success:
                 AVMLog.write("AVM: MacGuest — \(config.name) started.")
                 Announcer.shared.announce("\(config.name) is running.", tone: .success)
-                self.enterUnlessInAnotherMachine()
+                self.enterIfWanted()
                 self.offerVoiceOverOnce(config)
             case .failure(let error):
                 self.ended(spoken: "\(config.name) could not start. Reason: \(error.localizedDescription)", tone: .failure)
@@ -477,7 +487,7 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
                         case .success:
                             AVMLog.write("AVM: MacGuest — \(config.name) resumed from its saved state.")
                             Announcer.shared.announce("\(config.name) is running again.", tone: .success)
-                            self.enterUnlessInAnotherMachine()
+                            self.enterIfWanted()
                         case .failure(let error):
                             self.ended(spoken: "\(config.name) could not resume. Reason: \(error.localizedDescription) Start it again to start it as usual.", tone: .failure)
                         }
@@ -618,6 +628,18 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
     /// machine (2026-10-28, code review): entering then put two locks on
     /// at once, and the first Control-Command-Escape left the wrong one.
     /// The machine waits; Enter macOS brings it.
+    /// Whether the start under way enters the machine when it's up: not
+    /// for avmctl (2026-10-28, fifth audit: it took the keyboard from
+    /// whatever app the user was in, minutes later).
+    private var entersOnStart = true
+    private func enterIfWanted() {
+        if entersOnStart {
+            enterUnlessInAnotherMachine()
+        } else {
+            Announcer.shared.announce("Enter it from AVM's list to use the keyboard there.", tone: .info)
+        }
+    }
+
     private func enterUnlessInAnotherMachine() {
         if let lock = FocusLockManager.shared, lock.isLocked {
             Announcer.shared.announce("\(guestName) is running. Choose Enter \(guestName) when you're ready for it.", tone: .info)

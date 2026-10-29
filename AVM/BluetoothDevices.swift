@@ -50,19 +50,33 @@ final class BluetoothDevices: ObservableObject {
     @discardableResult
     func attach(_ device: BluetoothDeviceInfo, to machine: VMManager) async -> Bool {
         guard case .running = machine.state else {
-            say("\(machine.machineName) isn't running. Start it, then send \(device.name).", tone: .failure)
+            if case .paused = machine.state {
+                say("\(machine.machineName) is paused. Resume it, then send \(device.name).", tone: .failure)
+            } else {
+                say("\(machine.machineName) isn't running. Start it, then send \(device.name).", tone: .failure)
+            }
             return false
         }
         guard attached[device.id] == nil else {
             say("\(device.name) is already in a virtual machine.", tone: .info)
             return true
         }
+        // One send at a time per device (2026-10-28, fifth audit): a second
+        // Send while the first waited for the helper's approval reserved a
+        // second port, and its failure freed the first's reservation while
+        // that bridge device stayed in QEMU, so every later attach failed.
+        guard !sending.contains(device.id) else {
+            say("\(device.name) is being sent already.", tone: .info)
+            return false
+        }
+        sending.insert(device.id)
+        defer { sending.remove(device.id) }
         guard let port = USBRedirectController.shared.reservePort(portKey(device.id), on: machine) else {
             say("All \(USBRedirectController.ports.count) slots for devices are in use. Next: return a USB or Bluetooth device to the Mac, then try again.", tone: .failure)
             return false
         }
         guard let socket = machine.hidBridgeSocketPath(port: port) else {
-            USBRedirectController.shared.releaseReservedPort(portKey(device.id))
+            USBRedirectController.shared.releaseReservedPort(portKey(device.id), port: port)
             say("\(machine.machineName) isn't ready for devices yet. Wait for it to finish starting.", tone: .failure)
             return false
         }
@@ -70,7 +84,7 @@ final class BluetoothDevices: ObservableObject {
             try await machine.attachHIDBridge(port: port, socketPath: socket, descriptor: device.descriptor,
                                               vendor: device.vendor, product: device.product, name: device.name)
         } catch {
-            USBRedirectController.shared.releaseReservedPort(portKey(device.id))
+            USBRedirectController.shared.releaseReservedPort(portKey(device.id), port: port)
             AVMLog.write("Bluetooth: QEMU refused the bridge for \(device.name): \(error.localizedDescription)", category: "Bluetooth")
             say("\(machine.machineName) couldn't add \(device.name). Reason: \(error.localizedDescription)", tone: .failure)
             return false
@@ -98,7 +112,7 @@ final class BluetoothDevices: ObservableObject {
             return true
         case .failure(let error):
             await machine.detachHIDBridge(port: port)
-            USBRedirectController.shared.releaseReservedPort(portKey(device.id))
+            USBRedirectController.shared.releaseReservedPort(portKey(device.id), port: port)
             AVMLog.write("Bluetooth: the helper didn't take \(device.name): \(error)", category: "Bluetooth")
             // Said here too when the approval wait ended without a send
             // (2026-10-28, fourth audit): the promise above was the last word.
@@ -117,7 +131,7 @@ final class BluetoothDevices: ObservableObject {
         if let machine = entry.machine, Self.takesQMP(machine) {
             await machine.detachHIDBridge(port: entry.port)
         }
-        USBRedirectController.shared.releaseReservedPort(portKey(id))
+        USBRedirectController.shared.releaseReservedPort(portKey(id), port: entry.port)
         AVMLog.write("Bluetooth: \(entry.name) returned to the Mac", category: "Bluetooth")
         if !quietly { say("\(entry.name) is back on the Mac.", tone: .info) }
     }
@@ -135,6 +149,9 @@ final class BluetoothDevices: ObservableObject {
         }
     }
 
+    /// Devices whose send is under way (fifth audit).
+    private var sending: Set<String> = []
+
     // MARK: Things that end a hold
 
     /// The helper let a device go: it disconnected, or the machine closed
@@ -143,7 +160,7 @@ final class BluetoothDevices: ObservableObject {
         USBHelperClient.shared.forgetBluetooth(id)
         guard let entry = attached.removeValue(forKey: id) else { return }
         guard let machine = entry.machine, Self.takesQMP(machine) else {
-            USBRedirectController.shared.releaseReservedPort(portKey(id))
+            USBRedirectController.shared.releaseReservedPort(portKey(id), port: entry.port)
             say("\(entry.name) went back to the Mac\(detail.map { ": \($0)" } ?? "").", tone: .info)
             return
         }
@@ -169,7 +186,7 @@ final class BluetoothDevices: ObservableObject {
     func machineStopped(_ machine: VMManager) {
         for (id, entry) in attached where entry.machine === machine || entry.machine == nil {
             attached[id] = nil
-            USBRedirectController.shared.releaseReservedPort(portKey(id))
+            USBRedirectController.shared.releaseReservedPort(portKey(id), port: entry.port)
             Task { await USBHelperClient.shared.releaseBluetooth(id) }
         }
     }
@@ -186,7 +203,7 @@ final class BluetoothDevices: ObservableObject {
                     USBRedirectController.shared.releaseReservedPort(portKey(id), port: entry.port)
                 }
             } else {
-                USBRedirectController.shared.releaseReservedPort(portKey(id))
+                USBRedirectController.shared.releaseReservedPort(portKey(id), port: entry.port)
             }
         }
         if !lost.isEmpty {

@@ -630,6 +630,7 @@ nonisolated final class UbuntuInstallPipeline {
         scratchDir = scratch
         do {
             for stage in UbuntuPipelineStage.allCases {
+                try Task.checkCancellation()   // Force Stop during the build (fifth audit)
                 await emit(stage)
                 switch stage {
                 case .writeAnswers:     try stageWriteAnswers(input: input, account: account, scratch: scratch, distro: distro,
@@ -1636,9 +1637,16 @@ nonisolated final class UbuntuInstallPipeline {
     @discardableResult
     private static func runTool(_ executable: URL, _ arguments: [String],
                                 extraEnvironment: [String: String] = [:]) async -> (code: Int32, output: String) {
-        await withCheckedContinuation { continuation in
+        // Ended when the build is cancelled (2026-10-28, fifth audit).
+        nonisolated(unsafe) let process = Process()
+        nonisolated(unsafe) var cancelled = false
+        return await withTaskCancellationHandler {
+          await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
+                if cancelled {
+                    continuation.resume(returning: (-3, "the build was stopped"))
+                    return
+                }
                 process.executableURL = executable
                 process.arguments = arguments
                 if !extraEnvironment.isEmpty {
@@ -1666,6 +1674,10 @@ nonisolated final class UbuntuInstallPipeline {
                 if timedOut { output += "\n\(executable.lastPathComponent) took more than 45 minutes and was stopped. Is the installer's drive still connected?" }
                 continuation.resume(returning: (timedOut ? -2 : process.terminationStatus, output))
             }
+          }
+        } onCancel: {
+            cancelled = true
+            if process.isRunning { process.terminate() }
         }
     }
 }

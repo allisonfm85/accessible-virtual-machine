@@ -176,6 +176,12 @@ struct ContentView: View {
         // nothing happened; the announcement returns you where you were).
         // Orphans found: open the sheet, which re-scans on appear.
         .onReceive(NotificationCenter.default.publisher(for: .avmReclaimFromMenu)) { _ in
+            // The list wasn't readable at launch (2026-10-28, fifth audit):
+            // AVM didn't look, so it mustn't say it found nothing.
+            if vmStore.reclaimIsOff {
+                Announcer.shared.announce("AVM couldn't read your list of virtual machines when it opened, so Reclaim Disk Space is off until that's fixed. Next: report the problem from the Help menu.", tone: .failure)
+                return
+            }
             let orphans = vmStore.findOrphans()
             guard !orphans.isEmpty else {
                 AVMLog.write("AVM: Reclaim-from-menu — scan found no orphans; announcing.")
@@ -260,7 +266,10 @@ struct ContentView: View {
             USBDevicePickerView(mode: request.mode, devices: request.devices, machine: request.machine)
         }
         .onReceive(NotificationCenter.default.publisher(for: .avmBluetoothDevices)) { _ in
-            guard let manager = VMManager.shared, case .running = manager.state else {
+            // Paused too (2026-10-28, fifth audit): Return to Mac is in
+            // this window, and a device in a paused machine couldn't be got
+            // back any other way.
+            guard let manager = VMManager.shared, manager.state == .running || manager.state == .paused else {
                 Announcer.shared.announce("The virtual machine is not running. Start it, then send a Bluetooth device.", tone: .failure)
                 return
             }
@@ -315,56 +324,7 @@ struct ContentView: View {
     /// the keyboard is, then USB. Without a session, how many machines are
     /// set up, so "nothing running" is never confused with "nothing exists".
     private func spokenStatus() -> String {
-        // A macOS machine runs beside any QEMU session (2026-10-26).
-        let mac = MacGuestRunner.shared
-        let macPart = mac.runningID.flatMap { id in vmStore.configurations.first { $0.id == id } }.map { config in
-            "\(config.name), a macOS machine, is running. The keyboard is \(mac.keyboardInGuest ? "in macOS" : "on your Mac")."
-        }
-        let running = machines.sessions.values.sorted { $0.configuration.name < $1.configuration.name }
-        guard !running.isEmpty else {
-            if let macPart { return macPart }
-            switch vmStore.configurations.count {
-            case 0:
-                return "No virtual machine is set up yet. Use the Setup Wizard first."
-            case 1:
-                return "No virtual machine is running. \(vmStore.configurations[0].name) is ready to start."
-            case let n:
-                return "No virtual machine is running. \(n) virtual machines are set up."
-            }
-        }
-
-        var parts: [String] = macPart.map { [$0] } ?? []
-        for session in running {
-            let name = session.configuration.name
-            switch session.vmState {
-            case .stopped:            parts.append("\(name) is stopped.")
-            case .starting:
-                parts.append("\(name) is starting.")
-                if let install = session.manager.spokenInstallStatus() { parts.append(install) }
-            case .running:            parts.append("\(name) is running.")
-            case .paused:             parts.append("\(name) is paused.")
-            case .stopping:           parts.append("\(name) is shutting down.")
-            case .error(let message): parts.append("\(name) stopped with an error: \(message)")
-            }
-            if session.vmState == .running || session.vmState == .paused,
-               let install = session.manager.spokenInstallStatus() {
-                parts.append(install)
-            }
-        }
-        if running.contains(where: { $0.vmState == .running || $0.vmState == .paused }) {
-            if focusLock.isLocked, let current = machines.current {
-                parts.append("The keyboard is in \(current.configuration.name).")
-            } else {
-                parts.append("The keyboard is on the Mac.")
-            }
-            let devices = USBRedirectController.shared.redirectedDevices.map(\.displayName)
-            switch devices.count {
-            case 0:  parts.append("No USB devices are attached.")
-            case 1:  parts.append("One USB device is attached: \(devices[0]).")
-            default: parts.append("\(devices.count) USB devices are attached: \(devices.joined(separator: ", ")).")
-            }
-        }
-        return parts.joined(separator: " ")
+        DashboardStatus.spoken(store: vmStore, machines: machines, focusLock: focusLock)
     }
 
     /// Same start path as the dashboard's per-VM Start button (see
@@ -573,10 +533,12 @@ private struct DashboardContent: View {
                 .accessibilityHint("Brings back a virtual machine AVM exported, from a folder ending in .avmvm")
 
                 if let current = machines.current {
-                    Button("Settings") {
+                    // Named (2026-10-28, fifth audit): with two machines
+                    // running, which one this opened was anyone's guess.
+                    Button("Settings for \(current.configuration.name)") {
                         settingsTarget = current.configuration
                     }
-                    .accessibilityHint("Opens virtual machine settings")
+                    .accessibilityHint("Opens this virtual machine's settings")
                     .keyboardShortcut(",", modifiers: .command)
                 }
             }
@@ -949,7 +911,9 @@ private struct QEMUMachineRow: View {
                 .accessibilityLabel("Save a restore point for \(name)")
                 .accessibilityHint("Saves it as it is now, open apps and all, as a restore point you can go back to from Settings. It keeps running.")
         }
-        if session.vmState == .running || session.vmState == .paused {
+        // Not during a save (2026-10-28, fifth audit): the power-off landed
+        // between the snapshot and QEMU's quit.
+        if session.vmState == .running || session.vmState == .paused, !session.isSaving {
             Button("Shut Down") { shutDown() }
                 .accessibilityLabel("Shut down \(name)")
         }
@@ -960,7 +924,16 @@ private struct QEMUMachineRow: View {
         // building the install media, had no button and no menu item.
         if session.vmState == .running || session.vmState == .paused || session.vmState == .stopping || session.vmState == .starting {
             Button("Force Stop") {
+                let wasStarting = session.vmState == .starting
                 if confirmForceStop(guest: name) {
+                    // Finished starting under the question (2026-10-28, fifth
+                    // audit): its window came up and took the keyboard while
+                    // the alert was read, and a Force Stop now would kill the
+                    // machine the user was just put into.
+                    if wasStarting, session.vmState == .running {
+                        Announcer.shared.announce("\(name) finished starting while you were asked. It's running; use Force Stop again if you still want to turn it off.", tone: .info)
+                        return
+                    }
                     session.forceStop()
                     Announcer.shared.announce("\(name) was turned off.", tone: .info)
                 }
@@ -1090,5 +1063,69 @@ struct FlowLayout: Layout {
             x += size.width + spacing
             lineHeight = max(lineHeight, size.height)
         }
+    }
+}
+
+/// The Speak Status line, from the dashboard or without one (2026-10-28,
+/// fifth audit: DashboardCommand answers it when there's no dashboard to
+/// open, as with only a machine's window up).
+@MainActor
+enum DashboardStatus {
+    static func spoken() -> String {
+        guard let store = VMStore.shared, let focusLock = FocusLockManager.shared else { return "AVM is still opening." }
+        return spoken(store: store, machines: MachineSessions.shared, focusLock: focusLock)
+    }
+
+    static func spoken(store vmStore: VMStore, machines: MachineSessions, focusLock: FocusLockManager) -> String {
+        // A macOS machine runs beside any QEMU session (2026-10-26).
+        let mac = MacGuestRunner.shared
+        let macPart = mac.runningID.flatMap { id in vmStore.configurations.first { $0.id == id } }.map { config in
+            "\(config.name), a macOS machine, is running. The keyboard is \(mac.keyboardInGuest ? "in macOS" : "on your Mac")."
+        }
+        let running = machines.sessions.values.sorted { $0.configuration.name < $1.configuration.name }
+        guard !running.isEmpty else {
+            if let macPart { return macPart }
+            switch vmStore.configurations.count {
+            case 0:
+                return "No virtual machine is set up yet. Use the Setup Wizard first."
+            case 1:
+                return "No virtual machine is running. \(vmStore.configurations[0].name) is ready to start."
+            case let n:
+                return "No virtual machine is running. \(n) virtual machines are set up."
+            }
+        }
+
+        var parts: [String] = macPart.map { [$0] } ?? []
+        for session in running {
+            let name = session.configuration.name
+            switch session.vmState {
+            case .stopped:            parts.append("\(name) is stopped.")
+            case .starting:
+                parts.append("\(name) is starting.")
+                if let install = session.manager.spokenInstallStatus() { parts.append(install) }
+            case .running:            parts.append("\(name) is running.")
+            case .paused:             parts.append("\(name) is paused.")
+            case .stopping:           parts.append("\(name) is shutting down.")
+            case .error(let message): parts.append("\(name) stopped with an error: \(message)")
+            }
+            if session.vmState == .running || session.vmState == .paused,
+               let install = session.manager.spokenInstallStatus() {
+                parts.append(install)
+            }
+        }
+        if running.contains(where: { $0.vmState == .running || $0.vmState == .paused }) {
+            if focusLock.isLocked, let current = machines.current {
+                parts.append("The keyboard is in \(current.configuration.name).")
+            } else {
+                parts.append("The keyboard is on the Mac.")
+            }
+            let devices = USBRedirectController.shared.redirectedDevices.map(\.displayName)
+            switch devices.count {
+            case 0:  parts.append("No USB devices are attached.")
+            case 1:  parts.append("One USB device is attached: \(devices[0]).")
+            default: parts.append("\(devices.count) USB devices are attached: \(devices.joined(separator: ", ")).")
+            }
+        }
+        return parts.joined(separator: " ")
     }
 }

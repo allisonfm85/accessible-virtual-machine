@@ -83,7 +83,15 @@ final class WindowsKeyboard {
         // without a word, so the user thought it typed in this one.
         guard self.keyboardID == nil else {
             if let target, self.target !== target {
-                Announcer.shared.announce("\(keyboardName) is in \(self.target?.machineName ?? "another machine") already, so it types there, not in \(target.machineName).", tone: .info)
+                let holder = self.target?.machineName ?? "another machine"
+                if self.keyboardID == keyboardID {
+                    Announcer.shared.announce("\(keyboardName) is in \(holder) already, so it types there, not in \(target.machineName).", tone: .info)
+                } else {
+                    // A different keyboard (2026-10-28, fifth audit): AVM holds
+                    // one keyboard for Windows at a time, and the refusal
+                    // named the wrong one.
+                    Announcer.shared.announce("\(name ?? "The keyboard") can't go to \(target.machineName) while \(keyboardName) is in \(holder): AVM holds one keyboard for Windows at a time.", tone: .info)
+                }
             }
             return
         }
@@ -91,6 +99,10 @@ final class WindowsKeyboard {
         self.target = target
         self.appleISO = appleISO
         _ = lockObservers   // watching for the screen lock from now on
+        // Locked already (2026-10-28, fifth audit): the notification came
+        // before the observers existed, and the keyboard typed into the
+        // signed-in guest for anyone at the locked Mac.
+        screenLocked = FocusLockManager.screenIsLockedNow
         keyboardName = name ?? "The keyboard for Windows"
         announcedHeld = false
         startGeneration += 1
@@ -109,6 +121,14 @@ final class WindowsKeyboard {
                     guard self.keyboardID == keyboardID, self.startGeneration == generation else { return }
                     result = await USBHelperClient.shared.holdKeyboard(keyboardID)
                 }
+            }
+            // Stopped while the helper was asked (2026-10-28, fifth audit):
+            // the hold went ahead with nobody listening, and the keyboard
+            // was seized by root, dead, until the next start.
+            if case .success = result, self.keyboardID != keyboardID || self.startGeneration != generation {
+                AVMLog.write("AVM: WindowsKeyboard — the machine stopped while the helper took the keyboard; giving it back.")
+                await USBHelperClient.shared.releaseKeyboard()
+                return
             }
             if case .failure(let error) = result {
                 AVMLog.write("AVM: WindowsKeyboard — the helper couldn't hold it: \(error)")

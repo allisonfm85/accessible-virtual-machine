@@ -26,6 +26,11 @@ final class VMSession: ObservableObject {
     /// keyboard (2026-10-28): a machine started when AVM opens that has a
     /// keyboard for Windows of its own.
     var entersOnFirstShow = true
+    /// Its screen is being rebuilt for a QEMU started again (2026-10-28,
+    /// fifth audit): the old and new screens leave the lock alone.
+    var rebuildingScreen = false
+    /// A save is under way (fifth audit): Shut Down waits for it.
+    var isSaving: Bool { manager.isSaving }
 
     // MARK: - Private
 
@@ -163,7 +168,15 @@ final class VMSession: ObservableObject {
             // "save changes?" question nobody heard.
             if !warnedAboutAgent, Date().timeIntervalSince(started) >= agentAfter - 15 {
                 warnedAboutAgent = true
-                Announcer.shared.announce("\(configuration.name) is still shutting down. It may be asking whether to save your work; enter it to answer. In 15 seconds AVM makes it shut down, closing its apps without saving.", tone: .info)
+                // Only a promise AVM can keep (2026-10-28, fifth audit): with
+                // no agent answering, nothing happened at 60 seconds, and
+                // the user waited for a shut down that never came.
+                if await manager.guestAgentAnswers() {
+                    Announcer.shared.announce("\(configuration.name) is still shutting down. It may be asking whether to save your work; enter it to answer. In 15 seconds AVM makes it shut down, closing its apps without saving.", tone: .info)
+                } else {
+                    askedAgent = true
+                    Announcer.shared.announce("\(configuration.name) is still shutting down. It may be asking whether to save your work; enter it to answer. AVM can't hurry it, as its agent isn't answering; if it doesn't finish, Force Stop ends it.", tone: .info)
+                }
             }
             if !askedAgent, Date().timeIntervalSince(started) >= agentAfter {
                 askedAgent = true

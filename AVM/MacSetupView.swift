@@ -461,6 +461,17 @@ struct MacSettingsView: View {
             Announcer.shared.announce("Shut \(configuration.name) down to change its settings.", tone: .failure)
             return
         }
+        // Names, as the other Settings check them (2026-10-28, fifth audit):
+        // an empty one was kept silently, a duplicate saved.
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else {
+            Announcer.shared.announce("The virtual machine's name can't be empty. Type a name, then save again.", tone: .failure)
+            return
+        }
+        if vmStore.configurations.contains(where: { $0.id != configuration.id && $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            Announcer.shared.announce("Another virtual machine is already called \(trimmed). Choose a different name, then save again.", tone: .failure)
+            return
+        }
         // A saved machine resumes only on the configuration it was saved
         // with (2026-10-26, code audit): asked first, and the saved session
         // let go of, so the next Start is a plain start, not a failed resume.
@@ -479,8 +490,7 @@ struct MacSettingsView: View {
             try? FileManager.default.removeItem(at: files.savedState)
         }
         var updated = vmStore.configurations.first { $0.id == configuration.id } ?? configuration
-        let trimmed = name.trimmingCharacters(in: .whitespaces)
-        updated.name = trimmed.isEmpty ? configuration.name : trimmed
+        updated.name = trimmed
         updated.cpuCount = cpuCount
         updated.ramSizeGB = ramSizeGB
         updated.sharedFolderPath = sharedFolderPath

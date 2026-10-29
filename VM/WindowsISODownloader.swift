@@ -88,9 +88,15 @@ final class WindowsISODownloader: ObservableObject {
         // went by with no progress and no word.
         let unreadable = watchedFolders.filter { (try? FileManager.default.contentsOfDirectory(atPath: $0.path)) == nil }
         if !unreadable.isEmpty {
-            let names = unreadable.map(\.lastPathComponent).joined(separator: " and ")
             AVMLog.write("ISOAssistant: can't read \(unreadable.map(\.path).joined(separator: ", "))")
-            Announcer.shared.announce("AVM can't look in your \(names) folder, so it can't follow the download there. Next: in System Settings, Privacy and Security, Files and Folders, allow AVM to see \(names), or choose the ISO yourself once it has downloaded.", tone: .failure)
+        }
+        // Only the chosen folder is a failure (2026-10-28, fifth audit): the
+        // other places are watched in case the browser saves there, and a
+        // Desktop AVM may not read sent the user to System Settings while
+        // the download to Downloads was followed fine.
+        if unreadable.contains(where: { $0.standardizedFileURL == folder.standardizedFileURL }) {
+            let name = folder.lastPathComponent
+            Announcer.shared.announce("AVM can't look in your \(name) folder, so it can't follow the download there. Next: in System Settings, Privacy and Security, Files and Folders, allow AVM to see \(name), or choose the ISO yourself once it has downloaded.", tone: .failure)
         }
         snapshotExisting()
         lastSpokenGB = 0

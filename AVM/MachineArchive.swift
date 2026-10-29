@@ -101,6 +101,12 @@ enum MachineArchive {
         guard fm.fileExists(atPath: disk.path) else {
             return "\(configuration.name) has no disk in its folder, so there is nothing to export."
         }
+        // Saved with its apps open (2026-10-28, fifth audit), as Duplicate
+        // refuses: imported on a Mac with less memory, the saved memory
+        // can't load, and the machine starts as after a power cut.
+        if QEMUSavedState.looksSavedOrWaiting(configuration) {
+            return "\(configuration.name) is saved with its apps open. Next: start it, shut it down, then export it."
+        }
         // An install in progress, or one that hasn't started: the answers
         // (and a password's encoding) are still on the install media, and
         // the copy couldn't finish installing anywhere else.
@@ -123,6 +129,9 @@ enum MachineArchive {
         var config = configuration
         config.storageFolderPath = nil
         config.diskImagePath = diskFileName(for: configuration)
+        // Not the Remote Desktop password's mark (2026-10-28, fifth audit):
+        // a fast hash of the password, in a package handed to other people.
+        config.remoteDesktopPasswordMark = nil
         let manifest = Manifest(format: formatVersion, exportedAt: date, appVersion: appVersion, configuration: config)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -187,10 +196,23 @@ enum MachineArchive {
                 try answers.save(inVMDirectory: partial)
             }
             try manifest.write(to: partial.appendingPathComponent(manifestName), options: .atomic)
+            // A volume with no Trash (a network share) refuses trashItem
+            // (2026-10-28, fifth audit): the old package is moved aside, the
+            // new one put in place, and only then is the old one removed.
+            var oldAside: URL?
             if fm.fileExists(atPath: packageURL.path) {
-                try fm.trashItem(at: packageURL, resultingItemURL: nil)
+                do {
+                    try fm.trashItem(at: packageURL, resultingItemURL: nil)
+                } catch {
+                    let aside = packageURL.deletingLastPathComponent()
+                        .appendingPathComponent(packageURL.deletingPathExtension().lastPathComponent + " (previous).avmvm")
+                    try? fm.removeItem(at: aside)
+                    try fm.moveItem(at: packageURL, to: aside)
+                    oldAside = aside
+                }
             }
             try fm.moveItem(at: partial, to: packageURL)
+            if let oldAside { try? fm.removeItem(at: oldAside) }
         } catch {
             try? fm.removeItem(at: partial)
             throw error
@@ -294,7 +316,10 @@ enum MachineArchive {
 
     /// The configuration to save for an imported machine: a new id, its new
     /// folder, and a name no other machine in the list has.
-    static func importedConfiguration(_ original: VMConfiguration, id: UUID, folder: URL, existingNames: [String]) -> VMConfiguration {
+    /// `fromThisMac`: a duplicate or a template copy (2026-10-28, fifth
+    /// audit), which keeps the user's own shared folder, devices and
+    /// keyboard; only Remote Desktop is left off.
+    static func importedConfiguration(_ original: VMConfiguration, id: UUID, folder: URL, existingNames: [String], fromThisMac: Bool = false) -> VMConfiguration {
         var config = original
         config.id = id
         config.storageFolderPath = nil
@@ -309,17 +334,22 @@ enum MachineArchive {
         // package from someone else carried a shared folder, which its
         // disk's software would have read and written on this Mac, and the
         // microphone, camera and printers. They're chosen again here.
-        config.sharedFolderPath = nil
-        config.sharedFolderReadOnly = nil
-        config.shareMicrophone = nil
-        config.shareCamera = nil
-        config.sharePrinters = nil
-        config.usbRememberedDevices = nil
-        config.windowsKeyboardID = nil
-        config.windowsKeyboardName = nil
-        config.windowsKeyboardAppleISO = nil
-        config.displayID = nil
-        config.displayName = nil
+        if !fromThisMac {
+            config.sharedFolderPath = nil
+            config.sharedFolderReadOnly = nil
+            config.shareMicrophone = nil
+            config.shareCamera = nil
+            config.sharePrinters = nil
+            config.usbRememberedDevices = nil
+            config.windowsKeyboardID = nil
+            config.windowsKeyboardName = nil
+            config.windowsKeyboardAppleISO = nil
+            config.displayID = nil
+            config.displayName = nil
+            // Nor the sender's USB rule (fifth audit): "always" would send
+            // a plugged-in drive to its software without a question.
+            config.usbMode = nil
+        }
         // Remote Desktop too (2026-10-28, second review): the copy has no
         // keychain password, would claim the same port, and a package
         // from elsewhere would open a port to an account its sender knows.

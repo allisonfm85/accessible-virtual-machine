@@ -584,7 +584,9 @@ struct VMView: View {
             // Not for a machine started at login with a keyboard of its
             // own (2026-10-28, MachineSessions.start enter: false): the
             // Mac's keyboard stays on the Mac, with VoiceOver.
-            if session.entersOnFirstShow {
+            if session.rebuildingScreen {
+                avmPublicLog("VMView onAppear — a rebuilt screen; the keyboard stays where it is.")
+            } else if session.entersOnFirstShow {
                 avmPublicLog("VMView onAppear — auto-locking focus.")
                 focusLock.lock()
             } else {
@@ -596,6 +598,8 @@ struct VMView: View {
             // stopped), make sure we don't leave the Mac in a locked state.
             // Only if the keyboard is in this machine (2026-10-27, code
             // audit): another machine's screen closing mustn't take it.
+            // Not the old screen of a rebuild (2026-10-28, fifth audit).
+            if session.rebuildingScreen { return }
             if focusLock.isLocked, MachineSessions.shared.currentID == nil || MachineSessions.shared.currentID == session.configuration.id {
                 NSLog("AVM: VMView onDisappear — unlocking focus (view went away while locked).")
                 focusLock.unlock()
@@ -1099,6 +1103,7 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     // and on the unlock path. Modifier scancodes are NOT tracked here — they are
     // driven directly by flagsChanged.
     private var pressedScancodes = Set<Int32>()
+    private var codeSentForKey: [Int: Int32] = [:]
 
     // MOUSE INPUT (issue #4): the mouse buttons currently held in the guest
     // (as far as we've forwarded) — the pointer-side sibling of
@@ -1559,7 +1564,16 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
             }
             return
         }
-        let code = Int32(scancode)
+        // The code sent at the press is the one released (2026-10-28, fifth
+        // audit): the ISO swap is decided per event by the keyboard that
+        // sent it, so § held on an ISO keyboard while the built-in ANSI one
+        // typed was released as another key and stayed down in the guest.
+        var code = Int32(scancode)
+        if pressed {
+            codeSentForKey[vk] = code
+        } else if let sent = codeSentForKey.removeValue(forKey: vk) {
+            code = sent
+        }
         // Stage B: THE keylogger line — every character typed in the guest is
         // recoverable from it. Gated; see KeyEventLogging at the top of the
         // file. The send below is NOT gated — forwarding is unconditional.
@@ -2408,6 +2422,14 @@ extension SPICECoordinator {
         case kVK_ANSI_KeypadEquals: return 0x59
         case kVK_F13: return 0x100 | 0x37
         case kVK_F14: return 0x46
+        // F15 to F20 of an extended Apple keyboard (2026-10-28, fifth
+        // audit: unmapped), as QEMU numbers them; F19 is the Caps Lock
+        // courier above.
+        case kVK_F15: return 0x5F
+        case kVK_F16: return 0x55
+        case kVK_F17: return 0x100 | 0x03
+        case kVK_F18: return 0x100 | 0x77
+        case kVK_F20: return 0x5A
         case kVK_JIS_Yen: return 0x7D
         case kVK_JIS_Underscore: return 0x73
         case kVK_JIS_Kana: return 0x70

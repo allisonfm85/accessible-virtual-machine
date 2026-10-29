@@ -113,7 +113,9 @@ struct USBDevicePickerView: View {
                         switch mode {
                         case .attach:
                             // Still running, or nothing goes anywhere.
-                            if let machine, !(machine.state == .running || machine.state == .paused) {
+                            if let machine, machine.state == .paused {
+                                Announcer.shared.announce("\(machine.machineName) is paused. Resume it, then attach \(device.displayName).", tone: .info)
+                            } else if let machine, machine.state != .running {
                                 Announcer.shared.announce("\(machine.machineName) isn't running any more, so \(device.displayName) stays on the Mac.", tone: .info)
                             } else {
                                 await USBRedirectController.shared.attach(device, to: machine)

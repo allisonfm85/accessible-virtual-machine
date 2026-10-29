@@ -524,7 +524,8 @@ struct SettingsView: View {
     private func saveRestorePoint() {
         // A saved machine's disk is mid-session (2026-10-27), as on macOS
         // machines: a restore point of it would start as after a power cut.
-        if QEMUSavedState.looksSaved(saved) {
+        // Or one waiting to resume a restore point (fifth audit).
+        if QEMUSavedState.looksSavedOrWaiting(saved) {
             Announcer.shared.announce("\(saved.name) is saved with its apps open, so its disk is mid-session. Start it and shut it down first.", tone: .failure)
             return
         }
@@ -1170,8 +1171,7 @@ struct SettingsView: View {
         // too (2026-10-28, fourth audit): its next Start loaded that memory
         // into the changed machine, failed, and lost the unsaved work.
         let resumeNote = (try? saved.directoryURL())?.appendingPathComponent(QEMUSavedState.resumeFile)
-        let pointWaits = resumeNote.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
-        if !isRunning, changesMachine, QEMUSavedState.looksSaved(saved) || pointWaits {
+        if !isRunning, changesMachine, QEMUSavedState.looksSavedOrWaiting(saved) {
             let alert = NSAlert()
             alert.messageText = "\(saved.name) is saved with its apps open. Change its settings anyway?"
             alert.informativeText = "These changes mean it can't carry on where it was: its next Start is a normal start, as after a power cut, and anything unsaved in its apps is lost. To keep it, choose Cancel, start it, and shut it down first."

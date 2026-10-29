@@ -561,9 +561,18 @@ nonisolated final class WindowsInstallPipeline {
     /// `extraEnvironment` merges per-call variables (e.g. MTOOLS_SKIP_CHECK).
     @discardableResult
     private func runTool(_ executable: URL, _ arguments: [String], extraEnvironment: [String: String] = [:]) async -> (code: Int32, output: String) {
-        await withCheckedContinuation { continuation in
+        // Ended when the build is cancelled (2026-10-28, fifth audit: Force
+        // Stop during a build left the tool running, and the next Start's
+        // build was deleted from under it).
+        nonisolated(unsafe) let process = Process()
+        nonisolated(unsafe) var cancelled = false
+        return await withTaskCancellationHandler {
+          await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
+                if cancelled {
+                    continuation.resume(returning: (-3, "the build was stopped"))
+                    return
+                }
                 process.executableURL = executable
                 process.arguments = arguments
 
@@ -602,6 +611,10 @@ nonisolated final class WindowsInstallPipeline {
                 if timedOut { output += "\n\(executable.lastPathComponent) took more than 45 minutes and was stopped. Is the installer's drive still connected?" }
                 continuation.resume(returning: (timedOut ? -2 : process.terminationStatus, output))
             }
+          }
+        } onCancel: {
+            cancelled = true
+            if process.isRunning { process.terminate() }
         }
     }
 
@@ -781,6 +794,8 @@ nonisolated final class WindowsInstallPipeline {
 
         do {
             for stage in PipelineStage.allCases {
+                // Force Stop during the build (2026-10-28, fifth audit).
+                try Task.checkCancellation()
                 await emit(.forStage(stage))
                 try await runStage(stage, input: input, scratch: scratch)
             }
@@ -886,7 +901,9 @@ nonisolated final class WindowsInstallPipeline {
             // We found install.wim but couldn't read it. Unsure rather than
             // certain — let a techy user proceed. (discEditionNames stays nil;
             // Stage 4's backstop cannot assert without a list.)
-            return .warn(reason: "AVM found the Windows install image but couldn't read its details. The ISO may be unusual or partly corrupted. You can proceed, but the install might not complete cleanly.")
+            // Said as what happens, not a choice (2026-10-28, fifth audit:
+            // nothing could answer "you can proceed").
+            return .warn(reason: "AVM found the Windows install image but couldn't read its details, so it can't check the edition or the architecture. The ISO may be unusual or partly corrupted. AVM is going ahead; if Windows doesn't install, use a standard Windows 11 ARM64 ISO from Microsoft.")
         }
 
         let info = parseWIMInfo(result.output)
@@ -905,7 +922,7 @@ nonisolated final class WindowsInstallPipeline {
             }
         } else {
             // Couldn't read architecture — unsure, not certain. Warn.
-            return .warn(reason: "AVM couldn't confirm this ISO is the ARM64 version of Windows. If it isn't ARM64, the install won't boot. You can proceed if you're sure it's the ARM64 ISO.")
+            return .warn(reason: "AVM couldn't confirm this ISO is the ARM64 version of Windows, and is going ahead. If it isn't ARM64, Windows won't start from it: then make a new virtual machine with a Windows 11 ARM64 ISO from Microsoft.")
         }
 
         // The wim is readable — record the disc's edition names for Stage 4's
@@ -931,7 +948,7 @@ nonisolated final class WindowsInstallPipeline {
                 // build went ahead and Setup hung exactly as in issue #6.
                 // The wizard's names are Microsoft's image names, so a
                 // missing one is missing, not spelled differently.
-                return .hardStop(reason: "This ISO doesn't contain \(resolved.name), the edition chosen for this virtual machine. It contains: \(available). Next: make a new virtual machine and choose one of those editions, or use a standard Windows 11 ARM64 ISO from Microsoft's Windows 11 download page.")
+                return .hardStop(reason: "This ISO doesn't contain \(resolved.name), the edition chosen for this virtual machine. It contains: \(available). Next: make a new virtual machine and choose one of those editions if AVM offers it, or use a standard Windows 11 ARM64 ISO from Microsoft's Windows 11 download page.")
             }
         }
 

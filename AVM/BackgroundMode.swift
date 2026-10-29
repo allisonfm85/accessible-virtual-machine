@@ -127,14 +127,17 @@ final class BackgroundMode: ObservableObject {
 
     /// Back in Command-Tab and the Dock, in front: from the menu bar item,
     /// opening AVM again, or turning the setting off.
-    func comeForward(announce: Bool = true) {
+    func comeForward(announce: Bool = true, openingDashboard: Bool = true) {
         let wasBackground = inBackground
         inBackground = false
         NSApp.setActivationPolicy(.regular)
         guard wasBackground || announce else { return }
         NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
-        if MainWindowCloseGuard.hasMainWindow {
+        if !openingDashboard {
+            // A question is coming (2026-10-28, fifth audit): in front is
+            // enough; a dashboard opened under it stayed after Cancel.
+        } else if MainWindowCloseGuard.hasMainWindow {
             MainWindowCloseGuard.bringMainWindowForward()
         } else if let open = MainWindowCloseGuard.openMainWindow {
             open()
@@ -145,6 +148,14 @@ final class BackgroundMode: ObservableObject {
             NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: NSWorkspace.OpenConfiguration()) { _, _ in }
         }
         if wasBackground { AVMLog.write("AVM: out of the background") }
+    }
+
+    /// Whether comeForward can show a dashboard (2026-10-28, fifth audit):
+    /// one exists, SwiftUI's opener is known, or no window is visible, so
+    /// opening AVM again makes one.
+    var canOpenDashboard: Bool {
+        MainWindowCloseGuard.hasMainWindow || MainWindowCloseGuard.openMainWindow != nil
+            || !NSApp.windows.contains { $0.isVisible && !($0 is NSPanel) }
     }
 
     /// A machine stopped: with no machine left to type into, AVM is an
@@ -264,7 +275,12 @@ final class BackgroundMode: ObservableObject {
                     // Unless the user is using AVM now.
                     if !NSApp.isActive || NSApp.keyWindow == nil || MachineSessions.shared.windowsForDisplay.contains(where: \.isKeyWindow) {
                         self.goToBackgroundIfChosen()
-                        if !self.inBackground, self.applies {
+                        // Not under a dialog (2026-10-28, fifth audit): the
+                        // only time this ran was with one up, since
+                        // goToBackgroundIfChosen stands down for it, and AVM
+                        // deactivated itself under the question being answered.
+                        if !self.inBackground, self.applies, NSApp.modalWindow == nil,
+                           !NSApp.windows.contains(where: { $0.attachedSheet != nil }) {
                             // AVM was in front: it goes once the user leaves.
                             NSApp.deactivate()
                         }

@@ -5,7 +5,7 @@
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>AVM speaks its messages through VoiceOver while you're in other apps, and turns your Mac's VoiceOver off while a macOS virtual machine has the keyboard, so its own VoiceOver gets every key, and back on when you leave it.</string>
+	<string>AVM speaks its messages through VoiceOver, in your own VoiceOver voice, while you're in other apps.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>AVM lets a virtual machine use your Mac's camera, when you turn that on in its Settings, for video calls and camera apps inside it.</string>
 	<key>NSMicrophoneUsageDescription</key>

@@ -198,7 +198,7 @@ extension VMManager {
         $in = New-Object IO.StreamReader([Console]::OpenStandardInput(), (New-Object Text.UTF8Encoding $false))
         $u = $in.ReadLine(); $pw = $in.ReadLine(); $setPassword = ($in.ReadLine() -eq 'set')
         $edition = (Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion').EditionID
-        if ($edition -like 'Core*') { 'HOME'; exit 0 }
+        if ($edition -like 'Core*') { 'AVM-RD-HOME'; exit 0 }
         $p = ConvertTo-SecureString $pw -AsPlainText -Force
         if (Get-LocalUser -Name $u -ErrorAction SilentlyContinue) {
           if ($setPassword) { Set-LocalUser -Name $u -Password $p -PasswordNeverExpires $true }
@@ -211,14 +211,16 @@ extension VMManager {
         Enable-NetFirewallRule -Group '@FirewallAPI.dll,-28752' -ErrorAction SilentlyContinue
         Set-Service -Name TermService -StartupType Automatic
         Start-Service -Name TermService -ErrorAction SilentlyContinue
-        'READY'
+        'AVM-RD-READY'
         """
         let input = "\(user)\r\n\(password)\r\n\(setPassword ? "set" : "keep")\r\n"
         let out = try await agentRun("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], limit: .seconds(180), input: input)
-        if out.contains("HOME") {
+        // Markers nothing else prints (2026-10-28, fifth audit): an account
+        // named HOMEOFFICE in an error line read as the Home edition.
+        if out.contains("AVM-RD-HOME") {
             return .unsupported("This Windows is the Home edition, which has no Remote Desktop host built in. Remote Desktop needs Windows 11 Pro.")
         }
-        guard out.contains("READY") else {
+        guard out.contains("AVM-RD-READY") else {
             throw AVMError.qmpCommandFailed(out.trimmingCharacters(in: .whitespacesAndNewlines).description)
         }
         return .ready("Remote Desktop is on in \(configuration.name), with the account \(user).")
@@ -233,8 +235,14 @@ extension VMManager {
         new=
         id -u "$1" >/dev/null 2>&1 || { useradd -m -s /bin/bash "$1"; new=1; }
         if [ "$2" = set ] || [ -n "$new" ]; then chpasswd; fi
+        echo AVM-RD-ACCOUNT
         """
-        _ = try await agentRun("/bin/sh", ["-c", account, "sh", user, setPassword ? "set" : "keep"], limit: .seconds(60), input: "\(user):\(password)\n")
+        // Checked (2026-10-28, fifth audit): a failed useradd or chpasswd
+        // still ended in "Remote Desktop is on".
+        let made = try await agentRun("/bin/sh", ["-c", account, "sh", user, setPassword ? "set" : "keep"], limit: .seconds(60), input: "\(user):\(password)\n")
+        guard made.contains("AVM-RD-ACCOUNT") else {
+            throw AVMError.refused("the account \(user) couldn't be made, or its password set: \(made.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
         // xrdp, from the distribution, and its service.
         let host = """
         set -e
@@ -257,13 +265,13 @@ extension VMManager {
         adduser xrdp ssl-cert 2>/dev/null || true
         systemctl enable --now xrdp
         if command -v firewall-cmd >/dev/null; then firewall-cmd --permanent --add-port=3389/tcp >/dev/null 2>&1 || true; firewall-cmd --reload >/dev/null 2>&1 || true; fi
-        systemctl is-active xrdp && echo READY
+        systemctl is-active xrdp && echo AVM-RD-READY
         """
         let out = try await agentRun("/bin/sh", ["-c", host], limit: .seconds(600))
         if out.contains("NOPKG") {
             return .unsupported("AVM doesn't know how to install xrdp on this Linux. Install xrdp yourself, then connect with the account \(user).")
         }
-        guard out.contains("READY") else {
+        guard out.contains("AVM-RD-READY") else {
             throw AVMError.qmpCommandFailed(out.trimmingCharacters(in: .whitespacesAndNewlines).description)
         }
         let sound = out.contains("SOUND")

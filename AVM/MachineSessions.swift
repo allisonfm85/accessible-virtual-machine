@@ -131,7 +131,10 @@ final class MachineSessions: ObservableObject {
     /// watched has gone. That machine has been running, so the devices on
     /// the Mac are only recorded (USBHotPlugWatcher.start, alreadyRunning).
     private func watchUSB(for id: UUID) {
-        guard let session = sessions[id], session.vmState == .running else { return }
+        // A paused machine too (2026-10-28, fifth audit): the watch keeps
+        // listening while paused, and left unwatched, the resume applied
+        // the start rule.
+        guard let session = sessions[id], session.vmState == .running || session.vmState == .paused else { return }
         let watched = USBHotPlugWatcher.shared.vmID
         if watched == nil || watched.flatMap({ sessions[$0] }) == nil {
             USBHotPlugWatcher.shared.start(vmID: id, alreadyRunning: true)
@@ -145,7 +148,8 @@ final class MachineSessions: ObservableObject {
         // Said when it's paused (2026-10-28, fourth audit): entering a paused
         // machine said "Entering" over a screen that took no keys.
         if session.vmState == .paused {
-            Announcer.shared.announce("\(session.configuration.name) is paused. Keys typed in it wait until you resume it.", tone: .info)
+            // QEMU drops keys sent to a paused machine (2026-10-28, fifth audit).
+            Announcer.shared.announce("\(session.configuration.name) is paused. Nothing you type reaches it until you resume it from AVM's list.", tone: .info)
         }
         // Current first (2026-10-28, second review): a window made now for a
         // machine running without one otherwise saw the keyboard in another
@@ -191,6 +195,10 @@ final class MachineSessions: ObservableObject {
     }
 
     private func stateChanged(_ id: UUID, state: VMRuntimeState, restarting: Bool) {
+        // The dashboard's status line counts the sessions' states
+        // (2026-10-28, fifth audit): with nothing published here, it said
+        // "No virtual machine running" under a row that said Running.
+        objectWillChange.send()
         if id == currentID { VMActivity.shared.follow(state) }
         switch state {
         case .starting:
@@ -363,7 +371,12 @@ final class MachineWindow: NSObject, NSWindowDelegate {
             // (2026-10-28): its window opens, and the Mac's keyboard stays
             // on the Mac.
             window.orderFront(nil)
-            Announcer.shared.announce("\(session.configuration.name) is running. Your keyboard stays on the Mac; its own keyboard types into it. Enter \(session.configuration.name) from AVM's list to use this keyboard there too.", tone: .info)
+            // Or started by avmctl (2026-10-28, fifth audit), with no
+            // keyboard of its own.
+            let name = session.configuration.name
+            Announcer.shared.announce(latestConfiguration.windowsKeyboardID != nil
+                ? "\(name) is running. Your keyboard stays on the Mac; its own keyboard types into it. Enter \(name) from AVM's list to use this keyboard there too."
+                : "\(name) is running. Your keyboard stays on the Mac. Enter \(name) from AVM's list, or press Command Shift E, to use it there.", tone: .info)
         } else {
             show()
         }
@@ -385,7 +398,14 @@ final class MachineWindow: NSObject, NSWindowDelegate {
         let pid = session.manager.qemuPID
         guard shownOnce, !closing, pid != 0, pid != screenForPID else { return false }
         AVMLog.write("AVM: MachineSessions — \(session.configuration.name)'s QEMU started again; reconnecting its screen")
+        // Neither screen touches the lock (2026-10-28, fifth audit): the new
+        // one's onAppear locked the user into the machine unasked, and the
+        // old one's onDisappear unlocked, in SwiftUI's order. The keyboard
+        // stays where it was; the caller re-registers the new screen when
+        // the lock is in this machine.
+        session.rebuildingScreen = true
         buildScreen()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [session] in session.rebuildingScreen = false }
         return true
     }
 

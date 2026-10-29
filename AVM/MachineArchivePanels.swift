@@ -192,7 +192,7 @@ final class MachineArchiveController: ObservableObject {
             refuse(problem.replacingOccurrences(of: "export", with: "duplicate") + " Nothing was duplicated.", log: "'\(name)' can't be duplicated now")
             return
         }
-        if QEMUSavedState.looksSaved(config) {
+        if QEMUSavedState.looksSavedOrWaiting(config) {
             refuse("\(name) is saved with its apps open. Next: start it, shut it down, then duplicate it.", log: "'\(name)' is saved")
             return
         }
@@ -253,7 +253,7 @@ final class MachineArchiveController: ObservableObject {
             self.end()
             switch result {
             case .success(let folder):
-                var copy = MachineArchive.importedConfiguration(config, id: id, folder: folder, existingNames: store.configurations.map(\.name))
+                var copy = MachineArchive.importedConfiguration(config, id: id, folder: folder, existingNames: store.configurations.map(\.name), fromThisMac: true)
                 copy.name = newName
                 copy.isTemplate = nil
                 if copy.guestOS == .macOS {
@@ -264,7 +264,10 @@ final class MachineArchiveController: ObservableObject {
                 }
                 store.save(copy)
                 AVMLog.write("AVM: Duplicate — '\(newName)' added to the list.")
-                Announcer.shared.announce("\(newName) is ready, a copy of \(name). It's in your list of virtual machines.", tone: .success)
+                // Remote Desktop isn't copied (2026-10-28, fifth audit: the
+                // copy has no keychain password and would claim the port).
+                let remote = config.remoteDesktopUser != nil ? " Remote Desktop is off in the copy; turn it on in its settings if you want it." : ""
+                Announcer.shared.announce("\(newName) is ready, a copy of \(name). It's in your list of virtual machines.\(remote)", tone: .success)
             case .failure(let error):
                 AVMLog.write("AVM: Duplicate — FAILED for '\(name)': \(error.localizedDescription)")
                 Announcer.shared.announce("Duplicating \(name) failed. Nothing was added, and \(name) is untouched. Reason: \(error.localizedDescription)", tone: .failure)
@@ -343,6 +346,11 @@ final class MachineArchiveController: ObservableObject {
         var words = "\(config.name) is ready. It's in your list of virtual machines."
         if config.name != original.name {
             words += " AVM named it \(config.name), because \(original.name) is already in your list."
+        }
+        // Lowered to this Mac's limits (2026-10-28, fifth audit): silently,
+        // a saved machine's memory then couldn't load.
+        if config.ramSizeGB < original.ramSizeGB || config.cpuCount < original.cpuCount {
+            words += " It was made with \(original.ramSizeGB) gigabytes of memory and \(original.cpuCount) processor cores; on this Mac it gets \(config.ramSizeGB) gigabytes and \(config.cpuCount) cores."
         }
         // The same Mac to macOS (2026-10-26): its MachineIdentifier is kept,
         // so copies must not run together.

@@ -92,6 +92,11 @@ struct AVMApp: App {
         .commands {
             // Remove the default New Window menu item — AVM is single-window.
             CommandGroup(replacing: .newItem) { }
+            // A way to the list from any window (2026-10-28, fifth audit):
+            // with only a machine's window up, nothing could open it, and
+            // menu commands that need it waited for good. It also hands
+            // SwiftUI's window opener to comeForward and DashboardCommand.
+            CommandGroup(before: .windowList) { ShowDashboardCommand() }
 
             // Check for Updates… (application menu, after About AVM) — ADDED
             // 2026-08-16. Placement is the macOS convention and therefore the
@@ -421,7 +426,7 @@ struct AVMApp: App {
                     DashboardCommand.post(.avmBluetoothDevices, object: nil)
                 }
                 .keyboardShortcut("b", modifiers: [.command, .shift])
-                .disabled(!activity.isRunning)
+                .disabled(!activity.isRunningOrPaused)
                 Button("Restart USB Helper") {
                     Task { await USBRedirectController.shared.restartHelper() }
                 }
@@ -646,22 +651,40 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
 /// once it has appeared (ContentView calls deliverPending).
 @MainActor
 enum DashboardCommand {
-    private static var pending: [(name: Notification.Name, object: Any?)] = []
+    private static var pending: [(name: Notification.Name, object: Any?, asked: Date)] = []
+    /// How long a command waits for the dashboard (2026-10-28, fifth
+    /// audit): kept for good, a Start asked for an hour earlier started a
+    /// machine when the window finally came, with everything else queued.
+    private static let patience: TimeInterval = 30
 
     static func post(_ name: Notification.Name, object: Any? = nil) {
         if MainWindowCloseGuard.hasMainWindow {
             NotificationCenter.default.post(name: name, object: object)
             return
         }
+        // Speak Status needs no dashboard (fifth audit): with a machine's
+        // window up and no dashboard, none could be opened, and the glance
+        // that explains everything else said nothing.
+        if name == .avmSpeakStatusFromMenu {
+            let status = DashboardStatus.spoken()
+            AVMLog.write("AVM: Speak Status (no dashboard) — \(status)")
+            Announcer.shared.announce(status, tone: .info)
+            return
+        }
+        guard BackgroundMode.shared.canOpenDashboard else {
+            AVMLog.write("AVM: a menu command with no dashboard, and no way to open one")
+            Announcer.shared.announce("AVM's list of virtual machines isn't open. Press Command Shift L to open it, then choose the command again.", tone: .info)
+            return
+        }
         AVMLog.write("AVM: a menu command with no dashboard; opening it first")
-        pending.append((name, object))
+        pending.append((name, object, Date()))
         BackgroundMode.shared.comeForward()
     }
 
     /// The dashboard has appeared: the commands asked for while it was gone.
     static func deliverPending() {
         guard !pending.isEmpty else { return }
-        let waiting = pending
+        let waiting = pending.filter { Date().timeIntervalSince($0.asked) < patience }
         pending = []
         // A turn later, once the dashboard's listeners are in place.
         DispatchQueue.main.async {
@@ -780,10 +803,19 @@ enum QuitCoordinator {
     /// the alert belonged to an app that wasn't active, so it wasn't
     /// focused and VoiceOver didn't read it, and the Mac waited on it.
     private static func ask(_ alert: NSAlert) -> NSApplication.ModalResponse {
-        let wasInFront = NSApp.isActive
-        BackgroundMode.shared.comeForward()
+        // In front, without opening the dashboard (2026-10-28, fifth
+        // audit): a window the user didn't ask for came up under the
+        // question and stayed after Cancel.
+        BackgroundMode.shared.comeForward(openingDashboard: false)
         NSApp.activate(ignoringOtherApps: true)
-        if !wasInFront { Announcer.shared.announce(alert.messageText, tone: .info) }
+        // Said when VoiceOver won't read the alert itself (fifth audit):
+        // with the keyboard locked in a machine VoiceOver is usually off,
+        // and the Mac's own shut-down question went unheard; with
+        // VoiceOver on it reads the alert once AVM is in front, and saying
+        // it as well was heard twice.
+        if !NSWorkspace.shared.isVoiceOverEnabled || FocusLockManager.shared?.isLocked == true {
+            Announcer.shared.announce(alert.messageText, tone: .info)
+        }
         return alert.runModal()
     }
 
@@ -930,7 +962,10 @@ enum QuitCoordinator {
                     for session in active where session.canSave {
                         if !(await session.saveAndStop()) { allDone = false }
                     }
-                    let others = active.filter { $0.vmState == .running || $0.vmState == .paused }
+                    // Starting and shutting-down machines too (2026-10-28,
+                    // fifth audit): left out, AVM quit with their QEMU still
+                    // running, headless, holding the disk.
+                    let others = active.filter { ([.running, .paused, .starting, .stopping] as [VMRuntimeState]).contains($0.vmState) }
                     if allDone && !others.isEmpty {
                         // Machines that can't be saved are shut down first.
                         NSApp.reply(toApplicationShouldTerminate: false)
@@ -955,6 +990,11 @@ enum QuitCoordinator {
                 AVMLog.write("AVM: Quit — Quit Now chosen with \(active.count) machine(s) active.")
             } else {
                 AVMLog.write("AVM: Quit — cancelled with \(active.count) machine(s) active.")
+                // Said (2026-10-28, fifth audit): Cancel here cancels the
+                // Mac's own shut down, and nothing told the user.
+                if macIsShuttingDown {
+                    Announcer.shared.announce("The Mac's shut down is stopped; \(guest) \(several ? "keep" : "keeps") running. Shut \(several ? "them" : "it") down, then choose Shut Down or Restart again.", tone: .info)
+                }
                 return .terminateCancel
             }
         }
@@ -1065,6 +1105,29 @@ enum QuitCoordinator {
             done = true
             continuation.resume()
             return true
+        }
+    }
+}
+
+/// The Window menu's way to the list, and the owner of SwiftUI's window
+/// opener outside the dashboard (2026-10-28, fifth audit): a reopen event
+/// makes no window while a machine's window is visible, so without this
+/// the dashboard couldn't be opened at all from there.
+struct ShowDashboardCommand: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Virtual Machines List") {
+            MainWindowCloseGuard.openMainWindow = { openWindow(id: "main") }
+            if MainWindowCloseGuard.hasMainWindow {
+                MainWindowCloseGuard.bringMainWindowForward()
+            } else {
+                openWindow(id: "main")
+            }
+        }
+        .keyboardShortcut("l", modifiers: [.command, .shift])
+        .onAppear {
+            MainWindowCloseGuard.openMainWindow = { openWindow(id: "main") }
+            AVMLog.write("AVM: the dashboard opener is known from the Window menu")
         }
     }
 }

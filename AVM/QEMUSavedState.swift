@@ -46,6 +46,17 @@ nonisolated enum QEMUSavedState {
         return FileManager.default.fileExists(atPath: hint(in: dir).path)
     }
 
+    /// Saved, or waiting to resume a restore point with open apps
+    /// (2026-10-28, fifth audit): either way the disk is mid-session.
+    static func looksSavedOrWaiting(_ configuration: VMConfiguration) -> Bool {
+        if looksSaved(configuration) { return true }
+        guard let dir = try? configuration.directoryURL() else { return false }
+        return FileManager.default.fileExists(atPath: dir.appendingPathComponent(resumeFile).path)
+    }
+
+    /// The saved state is there but can't be read (fifth audit).
+    struct Unreadable: Error {}
+
     /// The disk's snapshot names, read while QEMU isn't running; nil when
     /// they couldn't be read (2026-10-28, fourth audit: a failed qemu-img
     /// read as "no snapshots", and the hint and marker were dropped while
@@ -60,18 +71,28 @@ nonisolated enum QEMUSavedState {
     /// behind by a load whose delete failed is deleted here instead; a
     /// saved state wins over a restore note (it's newer: saving needs the
     /// machine running, after any restore).
-    static func plan(configuration: VMConfiguration, runtimeDir: URL) async -> Plan? {
+    static func plan(configuration: VMConfiguration, runtimeDir: URL) async throws -> Plan? {
         let fm = FileManager.default
         let disk = URL(fileURLWithPath: configuration.diskImagePath)
         let marker = runtimeDir.appendingPathComponent(loadedMarker)
         guard let tags = await snapshotTags(disk: disk) else {
             AVMLog.write("AVM: SavedState — the disk's snapshots couldn't be read; nothing is loaded or deleted at this Start.")
+            // With a saved state waiting, the Start stops here (2026-10-28,
+            // fifth audit): booted fresh, the next Start loaded the old
+            // state over that session's work.
+            if fm.fileExists(atPath: hint(in: runtimeDir).path) { throw Unreadable() }
             return nil
         }
         let resume = runtimeDir.appendingPathComponent(resumeFile)
         if tags.contains(tag) {
             if fm.fileExists(atPath: marker.path) {
                 AVMLog.write("AVM: SavedState — a saved state already carried on once is still on the disk; deleting it, not loading it.")
+                // Said (2026-10-28, fifth audit): after QEMU died during the
+                // load, the list still said Saved, and this Start dropped the
+                // session without a word.
+                await MainActor.run {
+                    Announcer.shared.announce("\(configuration.name)'s saved session couldn't be carried on last time, so it starts fresh. Anything that wasn't saved in its apps then is lost.", tone: .info)
+                }
                 _ = try? await RestorePoints.qemuImg(["snapshot", "-d", tag, disk.path])
                 // The marker goes only once the saved state has (2026-10-28,
                 // code review): otherwise the Start after next loads it.

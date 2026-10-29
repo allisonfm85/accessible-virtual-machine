@@ -196,6 +196,7 @@ class FocusLockManager: ObservableObject {
                 MainActor.assumeIsolated {
                     guard let self, self.isLocked else { return }
                     AVMLog.write("AVM: FocusLock — \(note.name.rawValue) while locked; unlocking.")
+                    self.droppedBySystem = self.guestName
                     self.unlock(bringListForward: false)
                 }
             })
@@ -205,14 +206,46 @@ class FocusLockManager: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self, self.isLocked else { return }
                 AVMLog.write("AVM: FocusLock — the screen locked while locked; unlocking.")
+                self.droppedBySystem = self.guestName
                 self.unlock(bringListForward: false)
             }
+        })
+        // Said when the Mac is back (2026-10-28, fifth audit): "Entering
+        // Mac" went out as the Mac went down, unheard, and on return the
+        // user typed into the Mac with no word why.
+        for name in [NSWorkspace.sessionDidBecomeActiveNotification, NSWorkspace.didWakeNotification] {
+            systemObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.sayKeyboardIsBack() }
+            })
+        }
+        systemObservers.append(DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.sayKeyboardIsBack() }
         })
         _ = activeObserver
     }
 
     private var resignObserver: NSObjectProtocol?
     private var systemObservers: [NSObjectProtocol] = []
+    /// The machine the lock was in when the Mac slept, locked its screen
+    /// or switched users (fifth audit).
+    private var droppedBySystem: String?
+
+    private func sayKeyboardIsBack() {
+        guard let guest = droppedBySystem, !isLocked else { return }
+        // At the lock screen still (a wake before the unlock): the unlock says it.
+        if Self.screenIsLockedNow { return }
+        droppedBySystem = nil
+        Announcer.shared.announce("Your keyboard is on the Mac. Press Command Shift E to return to \(guest).", tone: .info)
+    }
+
+    /// Whether the Mac's screen is locked now (2026-10-28, fifth audit):
+    /// for code that starts after the lock's notification went out.
+    static var screenIsLockedNow: Bool {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        if let locked = session["CGSSessionScreenIsLocked"] as? Bool { return locked }
+        return (session["CGSSessionScreenIsLocked"] as? Int ?? 0) != 0
+    }
 
     /// Back in AVM after copying something in another app: offer the
     /// Mac's clipboard to the guest (AVMPasteboard, 2026-10-25).

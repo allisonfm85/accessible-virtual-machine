@@ -269,9 +269,13 @@ final class USBHotPlugWatcher {
            !keepsOnMac,
            !brailleAsks,
            classification.protection != .alwaysAsk,
-           USBRedirectController.shared.takeFollowThrough(identity) {
-            log("arrived: \(identity) left Windows moments ago; following the user's choice back to Windows")
-            USBPlugPrompt.shared.send(question, because: "came back within \(Int(USBRedirectController.followWindow)) seconds of leaving Windows")
+           let target = USBRedirectController.shared.takeFollowThrough(identity) {
+            log("arrived: \(identity) left Windows moments ago; following the user's choice back into \(target.uuidString)")
+            // Into the machine it left, which may not be the watched one
+            // (2026-10-28, fifth audit).
+            let back = USBPlugQuestion(entryID: entryID, vmID: target, identity: identity, vendorName: question.vendorName,
+                                       kind: question.kind, rememberOffered: question.rememberOffered)
+            USBPlugPrompt.shared.send(back, because: "came back within \(Int(USBRedirectController.followWindow)) seconds of leaving Windows")
             return
         }
         // At start, sends and the one alert wait until Windows has booted

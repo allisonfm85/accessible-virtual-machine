@@ -157,7 +157,15 @@ final class Announcer {
     /// a USB device given back) were cut off as the process ended.
     func waitUntilQuiet(seconds: TimeInterval) {
         let deadline = Date().addingTimeInterval(seconds)
-        while synthesizer.isSpeaking && Date() < deadline {
+        // Lines still waiting to be handed to VoiceOver go first (fifth audit).
+        let drained = DispatchSemaphore(value: 0)
+        scriptQueue.async { drained.signal() }
+        while drained.wait(timeout: .now()) == .timedOut && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        }
+        // VoiceOver's reading of the last line too (2026-10-28): a line
+        // handed to it as AVM quits was otherwise cut off with the window.
+        while (synthesizer.isSpeaking || Date() < voiceOverBusyUntil) && Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         }
     }
@@ -187,29 +195,52 @@ final class Announcer {
             return true
         }
         guard !voiceOverScriptRefused else { return false }
-        // The line as an argument, never inside the script.
+        // The line as an argument, never inside the script, after "--" (a
+        // line starting with "-" read as an option to osascript). Each line
+        // waits for the estimated end of the one before (2026-10-28, fifth
+        // audit): VoiceOver speaks a scripted line at once, so two lines a
+        // second apart cut each other off.
         scriptQueue.async {
+            let wait = start.timeIntervalSinceNow
+            if wait > 0 { Thread.sleep(forTimeInterval: min(wait, 20)) }
             let script = Process()
             script.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
             script.arguments = ["-e", "on run argv", "-e", "tell application \"VoiceOver\" to output (item 1 of argv)",
-                                "-e", "end run", message]
+                                "-e", "end run", "--", message]
             script.standardOutput = FileHandle.nullDevice
-            script.standardError = FileHandle.nullDevice
-            let sent = (try? script.run()) != nil && { script.waitUntilExit(); return script.terminationStatus == 0 }()
-            guard !sent else { return }
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    self.voiceOverScriptRefused = true
-                    AVMLog.write("AVM: Announcer — VoiceOver's AppleScript refused; lines said while AVM isn't in front use the system voice.")
-                    self.synthesizer.speak(AVSpeechUtterance(string: message))
-                    if !self.toldHowToAllowScripting {
-                        self.toldHowToAllowScripting = true
-                        self.synthesizer.speak(AVSpeechUtterance(string: "To hear AVM in VoiceOver while you're in other apps, open VoiceOver Utility, and in General, turn on Allow VoiceOver to be controlled with AppleScript. Then allow AVM to control VoiceOver if your Mac asks."))
-                    }
+            let errors = Pipe()
+            script.standardError = errors
+            guard (try? script.run()) != nil else {
+                self.scriptFailed(message, error: "osascript couldn't be run", refused: false)
+                return
+            }
+            let said = errors.fileHandleForReading.readDataToEndOfFile()
+            script.waitUntilExit()
+            guard script.terminationStatus != 0 else { return }
+            let error = String(decoding: said, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            // A refusal for the run: AVM isn't allowed to control VoiceOver
+            // (-1743), or VoiceOver's scripting is off (-1708, -10004).
+            // Anything else (VoiceOver restarting, a timeout) is this line
+            // only (fifth audit: every error latched the system voice for
+            // the rest of the run).
+            let refused = ["-1743", "-1708", "-10004"].contains { error.contains($0) }
+            self.scriptFailed(message, error: error, refused: refused)
+        }
+        return true
+    }
+
+    private nonisolated func scriptFailed(_ message: String, error: String, refused: Bool) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                AVMLog.write("AVM: Announcer — VoiceOver's AppleScript failed (\(error)); \(refused ? "lines said while AVM isn't in front use the system voice" : "this line uses the system voice").")
+                if refused { self.voiceOverScriptRefused = true }
+                self.synthesizer.speak(AVSpeechUtterance(string: message))
+                if refused, !self.toldHowToAllowScripting {
+                    self.toldHowToAllowScripting = true
+                    self.synthesizer.speak(AVSpeechUtterance(string: "To hear AVM in VoiceOver while you're in other apps, open VoiceOver Utility, and in General, turn on Allow VoiceOver to be controlled with AppleScript; and in System Settings, Privacy and Security, Automation, allow AVM to control VoiceOver."))
                 }
             }
         }
-        return true
     }
 
     /// Play the tone's sound immediately, then speak the message with the

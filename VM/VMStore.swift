@@ -149,14 +149,15 @@ final class VMStore: ObservableObject {
     /// Sorted largest first: in a space-reclaiming list, the biggest win
     /// leads.
     func findOrphans() -> [OrphanedVMDirectory] {
-        // Every folder would look orphaned (see loadAll).
-        guard !loadFailed else { return [] }
+        // Every folder would look orphaned (see loadAll), unless the
+        // unreadable entries are known and each names its folder's id.
+        guard !reclaimIsOff else { return [] }
         guard
             let container = try? vmsContainerURL,
             fileManager.fileExists(atPath: container.path)
         else { return [] }
 
-        let registered = Set(configurations.map { $0.id.uuidString.uppercased() })
+        let registered = Set(configurations.map { $0.id.uuidString.uppercased() } + unreadableIDs)
 
         guard let entries = try? fileManager.contentsOfDirectory(
             at: container,
@@ -194,7 +195,7 @@ final class VMStore: ObservableObject {
     /// configuration was created while the Reclaim sheet sat open. A
     /// refused trash throws, so it is never silent.
     func trashOrphan(_ orphan: OrphanedVMDirectory) throws {
-        let registered = Set(configurations.map { $0.id.uuidString.uppercased() })
+        let registered = Set(configurations.map { $0.id.uuidString.uppercased() } + unreadableIDs)
         if let uuid = UUID(uuidString: orphan.uuidString),
            registered.contains(uuid.uuidString.uppercased()) {
             AVMLog.write("AVM: VMStore — Reclaim REFUSED for \(orphan.uuidString): it is now a registered VM.")
@@ -267,6 +268,7 @@ final class VMStore: ObservableObject {
             // AVM couldn't read used to hide every machine. The others load;
             // only the unreadable ones wait in the copy.
             let readable = Self.readableEntries(in: (try? storeURL).flatMap { try? Data(contentsOf: $0) })
+            unreadableEntries = readable?.kept ?? []
             let message: String
             if let readable, !readable.machines.isEmpty {
                 message = "AVM couldn't read \(readable.unreadable == 1 ? "one machine" : "\(readable.unreadable) machines") in your list, so \(readable.unreadable == 1 ? "it isn't" : "they aren't") shown; \(kept). Your machines' files are untouched. Next: report the problem from the Help menu."
@@ -282,16 +284,33 @@ final class VMStore: ObservableObject {
 
     /// The entries of a list that won't decode whole, decoded one by one.
     /// nil when the file isn't a list at all.
-    nonisolated static func readableEntries(in data: Data?) -> (machines: [VMConfiguration], unreadable: Int)? {
+    nonisolated static func readableEntries(in data: Data?) -> (machines: [VMConfiguration], unreadable: Int, kept: [Any])? {
         guard let data, let entries = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else { return nil }
         var machines: [VMConfiguration] = []
+        var kept: [Any] = []
         for entry in entries {
             if let one = try? JSONSerialization.data(withJSONObject: entry),
                let machine = try? JSONDecoder().decode(VMConfiguration.self, from: one) {
                 machines.append(machine)
+            } else {
+                kept.append(entry)
             }
         }
-        return (machines, entries.count - machines.count)
+        return (machines, kept.count, kept)
+    }
+
+    /// The entries of the list AVM couldn't decode, kept as they were and
+    /// written back with every save (2026-10-28, fifth audit): written
+    /// without them, the next launch read the list whole, said nothing, and
+    /// Reclaim Disk Space offered the hidden machines' folders as leftovers.
+    private var unreadableEntries: [Any] = []
+    private var unreadableIDs: [String] {
+        unreadableEntries.compactMap { (($0 as? [String: Any])?["id"] as? String)?.uppercased() }
+    }
+    /// Reclaim Disk Space is off while the list is unreadable and the hidden
+    /// machines' folders can't be told from leftovers.
+    var reclaimIsOff: Bool {
+        loadFailed && (unreadableEntries.isEmpty || unreadableIDs.count != unreadableEntries.count)
     }
 
     /// True once an unreadable list has been copied aside (2026-10-28,
@@ -317,7 +336,12 @@ final class VMStore: ObservableObject {
         }
         do {
             let url = try storeURL
-            let data = try JSONEncoder().encode(configurations)
+            var data = try JSONEncoder().encode(configurations)
+            // The entries AVM couldn't read go back as they were (fifth audit).
+            if !unreadableEntries.isEmpty, var list = try JSONSerialization.jsonObject(with: data) as? [Any] {
+                list.append(contentsOf: unreadableEntries)
+                data = try JSONSerialization.data(withJSONObject: list, options: [.sortedKeys])
+            }
             try data.write(to: url, options: .atomic)
         } catch {
             AVMLog.write("AVM: VMStore — FAILED to save configurations: \(error.localizedDescription)")
@@ -439,6 +463,7 @@ final class VMStore: ObservableObject {
         guard fileManager.fileExists(atPath: url.path) else {
             AVMLog.write("AVM: VMStore — delete of '\(configuration.name)': no VM directory on disk (orphaned entry); removing entry only.")
             removeScratch(for: configuration)
+            RemoteDesktop.forgetPassword(for: configuration.id)
             delete(configuration)
             return 0
         }
@@ -454,6 +479,9 @@ final class VMStore: ObservableObject {
 
         AVMLog.write("AVM: VMStore — moved VM directory to Trash for '\(configuration.name)' (\(bytes) bytes).")
         removeScratch(for: configuration)
+        // Its Remote Desktop password too (2026-10-28, fifth audit): it
+        // stayed in the keychain for good, unreachable from AVM.
+        RemoteDesktop.forgetPassword(for: configuration.id)
         delete(configuration)
         return bytes
     }

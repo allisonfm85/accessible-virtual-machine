@@ -150,13 +150,16 @@ final class ControlServer {
             if config.isATemplate { return fail("\(name) is a template. Duplicate it to make a machine to start.") }
             if isMac {
                 guard mac.runningID == nil else { return fail("A macOS machine is already running.") }
-                mac.start(config)
-                return ["ok": true, "message": "Starting \(name)."]
+                // Without taking the keyboard (2026-10-28, fifth audit): a
+                // command-line start took it from whatever app the user was
+                // in, minutes later.
+                mac.start(config, takesKeyboard: false)
+                return ["ok": true, "message": "Starting \(name). Your keyboard stays on the Mac until you enter it."]
             }
             if session != nil { return fail("\(name) is already running.") }
             let windowless = request["noWindow"] as? Bool == true || config.startsWithoutWindow
-            MachineSessions.shared.start(config, vmStore: store, focusLock: FocusLockManager.shared, windowless: windowless)
-            return ["ok": true, "message": "Starting \(name)\(windowless ? " without a window" : "")."]
+            MachineSessions.shared.start(config, vmStore: store, focusLock: FocusLockManager.shared, windowless: windowless, takesKeyboard: false)
+            return ["ok": true, "message": "Starting \(name)\(windowless ? " without a window" : ""). Your keyboard stays on the Mac until you enter it."]
 
         case "stop":
             if isMac {
@@ -181,8 +184,15 @@ final class ControlServer {
                 }
                 return saved ? ["ok": true, "message": "\(name) is saved."] : fail("\(name) couldn't be saved.")
             }
-            guard let session, session.canSave else {
-                return fail(session == nil ? "\(name) isn't running." : "\(name) can't be saved: Save with Open Apps is off for it (see its Settings).")
+            guard let session else { return fail("\(name) isn't running.") }
+            // The right reason (2026-10-28, fifth audit): a save under way,
+            // or a machine starting or stopping, isn't a setting.
+            guard session.canSave else {
+                if session.isSaving { return fail("\(name) is being saved already.") }
+                if session.vmState != .running && session.vmState != .paused {
+                    return fail("\(name) isn't running; it's \(session.vmState == .starting ? "starting" : "shutting down").")
+                }
+                return fail("\(name) can't be saved: Save with Open Apps is off for it (see its Settings).")
             }
             return await session.saveAndStop() ? ["ok": true, "message": "\(name) is saved."] : fail("\(name) couldn't be saved.")
 

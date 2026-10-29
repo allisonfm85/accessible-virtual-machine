@@ -202,7 +202,9 @@ final class CapsLockRemapper {
             AVMLog.write("AVM: CapsLockRemapper — Caps Lock is already mapped (to \(String(theirs.dst, radix: 16))); leaving the user's mapping alone.")
             if !toldAboutUserMapping {
                 toldAboutUserMapping = true
-                Announcer.shared.announce("Your Mac already maps Caps Lock to another key, so AVM leaves it as it is. In the virtual machine, Caps Lock does what your mapping says, not the screen reader's commands; use Insert, or the screen reader's other key, instead.", tone: .info)
+                // No "use Insert" (2026-10-28, fifth audit): the Touch Bar
+                // Macs this is for have none.
+                Announcer.shared.announce("Your Mac already maps Caps Lock to another key, so AVM leaves it as it is. In the virtual machine, Caps Lock does what your mapping says, so it isn't the screen reader's key there. If this keyboard has no Insert key, set the screen reader's modifier to another key in Windows, or remove the Caps Lock mapping in System Settings, Keyboard, Modifier Keys.", tone: .info)
             }
             return
         }
