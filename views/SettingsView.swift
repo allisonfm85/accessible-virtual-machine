@@ -110,8 +110,18 @@ struct SettingsView: View {
     /// When CPU and memory changes land, worded for this VM's state.
     private var timingSentence: String {
         isRunning
-            ? "Changes take effect after restarting \(guest)."
+            ? "Shut down \(guest) to change this."
             : "Changes take effect the next time you start \(guest)."
+    }
+
+    /// While the machine runs, its cores, memory, microphone, camera and 3D
+    /// don't change (2026-10-29, sixth audit): changed then, a Save with open
+    /// apps made a saved state the next Start, with the new values, couldn't
+    /// load, and the unsaved work was lost.
+    private var shapeChanged: Bool {
+        cpuCount != saved.cpuCount || ramSizeGB != saved.ramSizeGB
+            || shareMicrophone != saved.sharesMicrophone || shareCamera != saved.sharesCamera
+            || gpu3D != (saved.gpu3D == true)
     }
 
     // MARK: - State
@@ -185,7 +195,8 @@ struct SettingsView: View {
                     // VoiceOver reads as its number, so the unit is in the label.
                     Stepper(value: $cpuCount, in: 2...maxCPUCount) { Text("CPU cores") }
                         .labelsHidden()
-                        .accessibilityHint("Adjust with arrow keys. Minimum 2, maximum \(maxCPUCount). \(timingSentence)")
+                        .disabled(isRunning)
+                        .accessibilityHint(isRunning ? timingSentence : "Adjust with arrow keys. Minimum 2, maximum \(maxCPUCount). \(timingSentence)")
                 }
 
                 // Memory
@@ -195,7 +206,8 @@ struct SettingsView: View {
                         .accessibilityLabel("Memory: \(ramSizeGB) gigabytes")
                     Stepper(value: $ramSizeGB, in: 4...maxMemoryInGB, step: 2) { Text("Memory in gigabytes") }
                         .labelsHidden()
-                        .accessibilityHint("Adjust with arrow keys. Minimum 4 GB, maximum \(maxMemoryInGB) GB. \(timingSentence)")
+                        .disabled(isRunning)
+                        .accessibilityHint(isRunning ? timingSentence : "Adjust with arrow keys. Minimum 4 GB, maximum \(maxMemoryInGB) GB. \(timingSentence)")
                 }
 
                 // Disk Size: grow only, stopped VMs only.
@@ -308,7 +320,8 @@ struct SettingsView: View {
                     .font(.headline)
                     .accessibilityAddTraits(.isHeader)
                 Toggle("Let \(guest) use your Mac's microphone", isOn: $shareMicrophone)
-                    .accessibilityHint("When on, \(guest) hears your Mac's microphone while an app in it records")
+                    .disabled(isRunning)
+                    .accessibilityHint(isRunning ? timingSentence : "When on, \(guest) hears your Mac's microphone while an app in it records")
                 Text("For dictation, calls and recordings in \(guest). The microphone is only open while something in \(guest) records, and macOS asks once for permission. Takes effect at the next Start.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -322,7 +335,8 @@ struct SettingsView: View {
                     .font(.headline)
                     .accessibilityAddTraits(.isHeader)
                 Toggle("Let \(guest) use your Mac's camera", isOn: $shareCamera)
-                    .accessibilityHint("When on, \(guest) has a camera that shows what your Mac's camera sees, while an app in it uses it")
+                    .disabled(isRunning)
+                    .accessibilityHint(isRunning ? timingSentence : "When on, \(guest) has a camera that shows what your Mac's camera sees, while an app in it uses it")
                 Text("For video calls and apps that read with the camera in \(guest), where it's called Mac Camera. Your Mac's camera is only on while an app in \(guest) uses it, and AVM says when it turns on and off. macOS asks once for permission. Takes effect at the next Start.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -337,7 +351,8 @@ struct SettingsView: View {
                         .font(.headline)
                         .accessibilityAddTraits(.isHeader)
                     Toggle("Draw \(guest) with your Mac's graphics chip", isOn: $gpu3D)
-                        .accessibilityHint("When on, \(guest)'s desktop and 3D apps use your Mac's GPU")
+                        .disabled(isRunning)
+                        .accessibilityHint(isRunning ? timingSentence : "When on, \(guest)'s desktop and 3D apps use your Mac's GPU")
                     Text("Makes \(guest)'s desktop smoother and lets apps that need 3D run. While it's on, \(guest) can't be saved with its apps open, and restore points are taken with \(guest) stopped: QEMU can't save 3D graphics yet. Takes effect at the next Start.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -454,7 +469,10 @@ struct SettingsView: View {
                     vmStore.save(updated)
                     Announcer.shared.announce("Save with open apps turns on over the next two Starts of \(guest).", tone: .info)
                 }
-                .accessibilityHint("Gets \(guest) ready at its next Start, and turns it on at the Start after")
+                // The reason when dimmed (2026-10-29, sixth audit).
+                .accessibilityHint(isRunning
+                    ? "Shut down \(guest) to turn this on"
+                    : "Gets \(guest) ready at its next Start, and turns it on at the Start after")
                 .disabled(isRunning)
             }
         }
@@ -522,6 +540,7 @@ struct SettingsView: View {
     }
 
     private func saveRestorePoint() {
+        if MachineArchiveController.shared.refusesWhileBusy(saved) { return }
         // A saved machine's disk is mid-session (2026-10-27), as on macOS
         // machines: a restore point of it would start as after a power cut.
         // Or one waiting to resume a restore point (fifth audit).
@@ -682,12 +701,16 @@ struct SettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Button(reinstalling ? "Preparing…" : "Reinstall Windows…") { reinstallWindows() }
                 .disabled(isRunning || reinstalling || saved.storageIsMissing)
-                .accessibilityHint("Asks first. Everything in Windows on this machine is erased.")
+                // The reason when dimmed (2026-10-29, sixth audit).
+                .accessibilityHint(saved.storageIsMissing && !isRunning
+                    ? saved.storageMissingMessage
+                    : "Asks first. Everything in Windows on this machine is erased.")
         }
         .padding(.horizontal)
     }
 
     private func reinstallWindows() {
+        if MachineArchiveController.shared.refusesWhileBusy(saved) { return }
         let alert = NSAlert()
         alert.messageText = "Erase Windows on \(saved.name) and install it again?"
         alert.informativeText = "Everything in Windows on this machine is erased: files, apps, settings and restore points. When you next start it, Windows installs as it did the first time, from the same installer and with the same setup answers. This can't be undone."
@@ -738,6 +761,7 @@ struct SettingsView: View {
     }
 
     private func restoreTo(_ point: RestorePoint) {
+        if MachineArchiveController.shared.refusesWhileBusy(saved) { return }
         let alert = NSAlert()
         alert.messageText = "Put \(saved.name) back to \(point.label)?"
         alert.informativeText = "Everything since \(restorePointDate(point.date)) is lost: files, settings and installed updates. AVM keeps the restore point, so you can use it again."
@@ -753,8 +777,13 @@ struct SettingsView: View {
         restorePointsBusy = true
         Task { @MainActor in
             do {
-                if wasSaved { await QEMUSavedState.discard(configuration: saved) }
-                try await RestorePoints.restore(point, vmDirectory: dir, currentSecureBoot: saved.usesSecureBoot)
+                // The saved session goes only once the restore can't refuse
+                // (2026-10-29, sixth audit): a Secure Boot mismatch or a
+                // failed copy said "not restored", with the session gone.
+                let toDiscard = wasSaved ? saved : nil
+                try await RestorePoints.restore(point, vmDirectory: dir, currentSecureBoot: saved.usesSecureBoot) {
+                    if let toDiscard { await QEMUSavedState.discard(configuration: toDiscard) }
+                }
                 // The disk bus comes back with it (2026-10-28, code review):
                 // a point from before the move to the virtio disk has no
                 // virtio driver, and would not boot on it.
@@ -786,6 +815,8 @@ struct SettingsView: View {
     }
 
     private func deleteRestorePoint(_ point: RestorePoint) {
+        // Not while its files are being copied (sixth audit).
+        if MachineArchiveController.shared.refusesWhileBusy(saved) { return }
         let alert = NSAlert()
         alert.messageText = "Delete the restore point \(point.label)?"
         alert.informativeText = "This frees the disk space it uses. It can't be undone."
@@ -1152,6 +1183,28 @@ struct SettingsView: View {
                 return
             }
         }
+        // Started while this sheet was open (sixth audit): the controls are
+        // off now, so their changed values go back to the saved ones, the
+        // rest is saved, and that is said.
+        // Not a template while saved (2026-10-29, sixth audit): a template
+        // can't start, and a saved machine can't be copied until it has.
+        if isTemplate, !saved.isATemplate, QEMUSavedState.looksSavedOrWaiting(saved) {
+            let message = "\(saved.name) is saved with its apps open, so it can't be a template yet. Nothing was saved. Next: start it, shut it down, then make it a template."
+            validationErrors = [message]
+            Announcer.shared.announce(message, tone: .failure)
+            return
+        }
+        let keptShape = isRunning && shapeChanged
+        if keptShape {
+            cpuCount = saved.cpuCount
+            ramSizeGB = saved.ramSizeGB
+            shareMicrophone = saved.sharesMicrophone
+            shareCamera = saved.sharesCamera
+            gpu3D = saved.gpu3D == true
+        }
+        // Not while its files are being copied (sixth audit): Settings was
+        // checked only as it opened, and an export could be changed mid-copy.
+        if MachineArchiveController.shared.refusesWhileBusy(saved) { return }
         validationErrors = []
         saveMessage = nil
         isSaving = true
@@ -1221,7 +1274,11 @@ struct SettingsView: View {
                         .appendingPathComponent("disk.qcow2").path
                     try await VMManager().growDiskImage(at: diskPath, toGB: growTo)
                 } catch {
-                    let message = "The disk could not be made larger. Nothing was saved. \(error.localizedDescription)"
+                    // Truthful when the saved session already went (sixth
+                    // audit): growing needs it gone first.
+                    let message = discardSaved != nil
+                        ? "The disk could not be made larger, and no other setting was saved. \(saved.name)'s saved session was already let go of, so its next Start is a normal start. \(error.localizedDescription)"
+                        : "The disk could not be made larger. Nothing was saved. \(error.localizedDescription)"
                     validationErrors = [message]
                     Announcer.shared.announce(message, tone: .failure)
                     isSaving = false
@@ -1310,7 +1367,9 @@ struct SettingsView: View {
             if let growTo {
                 message = savedDiskMessage(growTo)
             } else if isRunning {
-                message = "Settings saved. USB changes apply right away. Other changes take effect after you restart \(guest)."
+                // Not "restart" (sixth audit): a restart inside the machine
+                // keeps the same virtual hardware.
+                message = "Settings saved. USB changes apply right away; the others take effect when \(guest) next starts after shutting down."
             } else {
                 message = "Settings saved. Changes take effect the next time you start \(guest)."
             }
@@ -1323,8 +1382,11 @@ struct SettingsView: View {
                 isSaving = false
                 return
             }
-            saveMessage = message
-            Announcer.shared.announce(message, tone: .info)
+            let said = keptShape
+                ? "\(message) \(saved.name) started while Settings was open, so its processor cores, memory, microphone, camera and 3D graphics stay as they were; shut it down to change them."
+                : message
+            saveMessage = said
+            Announcer.shared.announce(said, tone: .info)
             isSaving = false
             // CLOSE ON SUCCESS (2026-09-26): this view works from the
             // configuration it was opened with. After a save that copy is

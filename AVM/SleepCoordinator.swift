@@ -88,6 +88,11 @@ final class SleepCoordinator {
         let once = AllowOnce(port: port, token: token)
         asleep = true
         Task { @MainActor in
+            // A moment for the keys first (2026-10-29, sixth audit): the
+            // keyboard lock lets go of the guest's held keys as the Mac goes
+            // to sleep, through SPICE, and QEMU drops input once paused, so a
+            // key held as the lid closed stayed down in Windows after wake.
+            try? await Task.sleep(for: .milliseconds(300))
             // All at once (2026-10-28, code review): one slow pause used to
             // run out the hold with the next machine still running.
             await withTaskGroup(of: Void.self) { group in

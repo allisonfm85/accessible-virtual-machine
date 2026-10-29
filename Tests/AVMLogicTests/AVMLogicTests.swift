@@ -1454,3 +1454,82 @@ final class RemoteDesktopTests: XCTestCase {
         XCTAssertFalse(machine("A", user: "me").remoteDesktopReachesNetwork)
     }
 }
+
+// MARK: - Sixth audit (2026-10-29)
+
+/// A machine list with a number, string or null in it used to crash AVM at
+/// every launch: JSONSerialization raised an exception try? can't catch.
+final class MachineListEntryTests: XCTestCase {
+    func testEntriesThatAreNotObjectsAreKeptNotDecoded() {
+        let data = Data(#"[1, "two", null, true, [3]]"#.utf8)
+        let readable = VMStore.readableEntries(in: data)
+        XCTAssertNotNil(readable)
+        XCTAssertEqual(readable?.machines.count, 0)
+        XCTAssertEqual(readable?.unreadable, 5)
+        XCTAssertEqual(readable?.kept.count, 5)
+    }
+
+    func testAnObjectThatIsNotAMachineIsKept() {
+        let readable = VMStore.readableEntries(in: Data(#"[{"hello": "world"}]"#.utf8))
+        XCTAssertEqual(readable?.machines.count, 0)
+        XCTAssertEqual(readable?.unreadable, 1)
+    }
+}
+
+/// Windows Setup can't make an account named like one of its own groups,
+/// and counts a name's length in UTF-16 units.
+final class WindowsAccountNameTests: XCTestCase {
+    func testBuiltInGroupNamesAreRefused() {
+        for name in ["Guests", "Replicator", "IIS_IUSRS", "Remote Desktop Users"] {
+            XCTAssertNotNil(WindowsSetupAnswers.problem(withUserName: name, computerName: nil), name)
+        }
+        XCTAssertNil(WindowsSetupAnswers.problem(withUserName: "Amena", computerName: nil))
+    }
+
+    func testLengthIsCountedAsWindowsCountsIt() {
+        // 10 emoji are 10 characters but 20 UTF-16 units: allowed. 11 aren't.
+        XCTAssertNil(WindowsSetupAnswers.problem(withUserName: String(repeating: "😀", count: 10), computerName: nil))
+        XCTAssertNotNil(WindowsSetupAnswers.problem(withUserName: String(repeating: "😀", count: 11), computerName: nil))
+    }
+}
+
+/// A machine kept on an external drive is told about that drive's space,
+/// not the Mac's.
+final class DiskWatchDriveWordsTests: XCTestCase {
+    func testDriveIsNamed() {
+        let words = DiskWatch.hostWords(machine: "Windows", free: 8 * DiskWatch.gigabyte, drive: "Backup")
+        XCTAssertTrue(words.contains("The drive Backup has 8 gigabytes free"))
+        XCTAssertTrue(words.contains("free some space on Backup"))
+        XCTAssertFalse(words.contains("Your Mac"))
+    }
+
+    func testTheMacsOwnDiskIsUnchanged() {
+        XCTAssertTrue(DiskWatch.hostWords(machine: "Windows", free: 8 * DiskWatch.gigabyte).hasPrefix("Your Mac has 8 gigabytes free"))
+    }
+}
+
+/// A package's numbers and names are anyone's, and a restore point's
+/// snapshot name is any bytes (2026-10-29, sixth audit).
+final class ImportedValuesTests: XCTestCase {
+    func testOnlyAVMsOwnRestorePointTagsAreUsed() {
+        XCTAssertTrue(RestorePoints.isOwnTag(RestorePoints.newTag()))
+        XCTAssertTrue(RestorePoints.isOwnTag("avm-1730000000000"))
+        XCTAssertFalse(RestorePoints.isOwnTag("avm-"))
+        XCTAssertFalse(RestorePoints.isOwnTag("avm-../../Documents"))
+        XCTAssertFalse(RestorePoints.isOwnTag("avm-1/../x"))
+        XCTAssertFalse(RestorePoints.isOwnTag("saved-state"))
+    }
+
+    func testNumbersAreKeptInRangeAndTheNameIsSayable() {
+        var original = VMConfiguration(name: "Bad\nname\u{7}")
+        original.ramSizeGB = -8
+        original.cpuCount = -2
+        original.diskSizeGB = -100
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let imported = MachineArchive.importedConfiguration(original, id: UUID(), folder: folder, existingNames: [])
+        XCTAssertGreaterThanOrEqual(imported.ramSizeGB, 1)
+        XCTAssertGreaterThanOrEqual(imported.cpuCount, 1)
+        XCTAssertGreaterThanOrEqual(imported.diskSizeGB, 1)
+        XCTAssertEqual(imported.name, "Badname")
+    }
+}

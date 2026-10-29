@@ -138,7 +138,7 @@ nonisolated struct UbuntuAccount: Codable, Equatable {
     /// system already.
     static func problem(withUserName name: String) -> String? {
         if name.isEmpty {
-            return "Please enter a user name for Ubuntu."
+            return "Please enter a user name for Linux."
         }
         guard name.range(of: "^[a-z][a-z0-9_-]{0,31}$", options: .regularExpression) != nil else {
             return "The user name can use only lower-case letters, digits, hyphens and underscores, and must start with a letter."
@@ -165,7 +165,7 @@ nonisolated struct UbuntuAccount: Codable, Equatable {
                                      "qemu", "brlapi", "pesign", "wsdd", "saslauth", "openvpn",
                                      "nm-openconnect", "passim", "dhcpcd"]
         if reserved.contains(name) || name.hasPrefix("systemd-") {
-            return "Ubuntu keeps the name \(name) for itself. Please choose another user name."
+            return "Linux keeps the name \(name) for itself. Please choose another user name."
         }
         return nil
     }
@@ -177,13 +177,13 @@ nonisolated struct UbuntuAccount: Codable, Equatable {
     static func problem(withRealName name: String) -> String? {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         if trimmed.isEmpty {
-            return "Please enter your name for the Ubuntu account."
+            return "Please enter your name for the Linux account."
         }
         if trimmed.unicodeScalars.count > 160 {   // the installer counts code points
-            return "Your name for the Ubuntu account can be at most 160 characters."
+            return "Your name for the Linux account can be at most 160 characters."
         }
         if trimmed.rangeOfCharacter(from: CharacterSet(charactersIn: ":,=\\").union(.controlCharacters)) != nil {
-            return "Your name for the Ubuntu account can't contain a colon, a comma, an equals sign or a backslash."
+            return "Your name for the Linux account can't contain a colon, a comma, an equals sign or a backslash."
         }
         return nil
     }
@@ -423,7 +423,7 @@ nonisolated enum UbuntuPipelineError: LocalizedError {
         case .stageFailed(let stage, let reason):
             return "\(stage.label) failed. \(reason)"
         case .accountMissing:
-            return "The Ubuntu account details for this virtual machine are missing, so Ubuntu can't be installed without questions. Delete this virtual machine and create it again with the Setup Wizard."
+            return "The account details for this virtual machine are missing, so it can't be installed without questions. Delete this virtual machine and create it again with the Setup Wizard."
         }
     }
 }
@@ -1663,6 +1663,8 @@ nonisolated final class UbuntuInstallPipeline {
                     continuation.resume(returning: (-1, "Failed to launch \(executable.lastPathComponent): \(error.localizedDescription)"))
                     return
                 }
+                // A cancel between the check and the launch (sixth audit).
+                if cancelled { process.terminate() }
                 // A time limit, as the Windows pipeline's (2026-10-26).
                 nonisolated(unsafe) var timedOut = false
                 let limit = DispatchWorkItem { timedOut = true; process.terminate() }

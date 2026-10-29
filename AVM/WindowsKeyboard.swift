@@ -126,14 +126,28 @@ final class WindowsKeyboard {
             // the hold went ahead with nobody listening, and the keyboard
             // was seized by root, dead, until the next start.
             if case .success = result, self.keyboardID != keyboardID || self.startGeneration != generation {
-                AVMLog.write("AVM: WindowsKeyboard — the machine stopped while the helper took the keyboard; giving it back.")
-                await USBHelperClient.shared.releaseKeyboard()
+                // Only when no newer start wants a keyboard (2026-10-29, sixth
+                // audit): the helper's release takes no id, and it let go of
+                // the newer start's hold, while AVM said the keyboard typed in
+                // the machine. A newer start for another keyboard asks for
+                // that one again, in case the helper took this one after it.
+                if self.keyboardID == nil {
+                    AVMLog.write("AVM: WindowsKeyboard — the machine stopped while the helper took the keyboard; giving it back.")
+                    await USBHelperClient.shared.releaseKeyboard()
+                } else if let newer = self.keyboardID, newer != keyboardID {
+                    AVMLog.write("AVM: WindowsKeyboard — a newer start wants another keyboard; asking for it again.")
+                    _ = await USBHelperClient.shared.holdKeyboard(newer)
+                } else {
+                    AVMLog.write("AVM: WindowsKeyboard — a newer start for the same keyboard; its hold stays.")
+                }
                 return
             }
             if case .failure(let error) = result {
                 AVMLog.write("AVM: WindowsKeyboard — the helper couldn't hold it: \(error)")
-                // Only if no newer start has replaced this one meanwhile.
-                guard self.keyboardID == keyboardID else { return }
+                // Only if no newer start has replaced this one meanwhile, the
+                // same keyboard's included (sixth audit: its failure ended the
+                // newer start's wait for the helper's approval).
+                guard self.keyboardID == keyboardID, self.startGeneration == generation else { return }
                 Announcer.shared.announce("\(keyboardName) can't be used for Windows. Reason: \(Self.reason(error)) It still types on the Mac.", tone: .failure)
                 self.keyboardID = nil
             }
@@ -146,6 +160,7 @@ final class WindowsKeyboard {
         keyboardID = nil
         target = nil
         retriedAfterHelperLoss = false
+        releasedForScreenLock = false
         AVMLog.write("AVM: WindowsKeyboard — giving the keyboard back to the Mac.")
         Task { await USBHelperClient.shared.releaseKeyboard() }
     }
@@ -164,6 +179,10 @@ final class WindowsKeyboard {
         }
         retriedAfterHelperLoss = true
         let name = keyboardName
+        // With its Apple ISO swap (2026-10-29, sixth audit): started again
+        // without it, the key left of 1 and the one by left Shift traded
+        // places in Windows for the rest of the run.
+        let iso = appleISO
         // For the same machine (2026-10-28, code review): started again
         // with no target, keys went to the front machine, and any machine
         // stopping ended the keyboard.
@@ -172,8 +191,11 @@ final class WindowsKeyboard {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, VMManager.shared != nil, self.keyboardID == nil else { return }
-                if let machine, case .running = machine.state {} else if machine != nil { return }
-                self.start(keyboardID: id, name: name, target: machine)
+                // A paused machine too (sixth audit): "Asking for it again"
+                // was followed by nothing, and after Resume the keyboard
+                // typed into the Mac's front app.
+                if let machine, machine.state == .running || machine.state == .paused {} else if machine != nil { return }
+                self.start(keyboardID: id, name: name, target: machine, appleISO: iso)
             }
         }
     }
@@ -183,6 +205,8 @@ final class WindowsKeyboard {
     /// anyone at the locked Mac. Keys are dropped until it's unlocked, and
     /// any held when it locked are let go.
     private var screenLocked = false
+    /// Given back for the screen lock, to be taken again at the unlock.
+    private var releasedForScreenLock = false
     private lazy var lockObservers: [NSObjectProtocol] = {
         let center = DistributedNotificationCenter.default()
         return [
@@ -190,11 +214,31 @@ final class WindowsKeyboard {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.screenLocked = true
-                    if self.keyboardID != nil { self.releaseAllKeys() }
+                    if self.keyboardID != nil {
+                        self.releaseAllKeys()
+                        // Back on the Mac while it's locked (2026-10-29, sixth
+                        // audit): when it was the only keyboard anyone could
+                        // type on (the Mac's other one switched off, say), its
+                        // keys were dropped and the password couldn't be typed.
+                        // Taken again at the unlock.
+                        self.releasedForScreenLock = true
+                        AVMLog.write("AVM: WindowsKeyboard — the screen locked; the keyboard goes back to the Mac until it's unlocked.")
+                        Task { await USBHelperClient.shared.releaseKeyboard() }
+                    }
                 }
             },
             center.addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.screenLocked = false }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.screenLocked = false
+                    if self.releasedForScreenLock {
+                        self.releasedForScreenLock = false
+                        if let id = self.keyboardID {
+                            AVMLog.write("AVM: WindowsKeyboard — the screen is unlocked; asking for the keyboard again.")
+                            Task { _ = await USBHelperClient.shared.holdKeyboard(id) }
+                        }
+                    }
+                }
             },
         ]
     }()
@@ -241,7 +285,10 @@ final class WindowsKeyboard {
             releaseAllKeys()
             keyboardID = nil
             AVMLog.write("AVM: WindowsKeyboard — not held: \(detail ?? "no reason")")
-            Announcer.shared.announce("\(keyboardName) can't be used for Windows. Reason: \(detail ?? "unknown.") It still types on the Mac.", tone: .failure)
+            // Not "on the Mac" when it's in a machine already, through
+            // Bluetooth Devices (2026-10-29, sixth audit).
+            let whereNow = detail?.contains("in a virtual machine already") == true ? "" : " It still types on the Mac."
+            Announcer.shared.announce("\(keyboardName) can't be used for Windows. Reason: \(detail ?? "unknown.")\(whereNow)", tone: .failure)
             Task { await USBHelperClient.shared.releaseKeyboard() }
         }
     }

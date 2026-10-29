@@ -209,6 +209,17 @@ final class CapsLockRemapper {
             return
         }
 
+        // Caps Lock to F19 already, and not AVM's (2026-10-29, sixth audit):
+        // the user's own mapping, a Hyper key say. It's what AVM needs, so
+        // nothing is applied, and nothing is restored: restoring wrote the
+        // Mac's mapping back without it, and the user's F19 shortcuts were
+        // gone after the first Return to Mac.
+        if existing.contains(where: { $0.src == Self.capsLockUsage && $0.dst == Self.f19Usage }),
+           !UserDefaults.standard.bool(forKey: Self.activeKey) {
+            AVMLog.write("AVM: CapsLockRemapper — Caps Lock is already mapped to F19 by the user; nothing to apply or restore.")
+            return
+        }
+
         // Merge: keep everything that is not a Caps Lock source, add ours.
         let preserved = existing.filter { $0.src != Self.capsLockUsage }
         let merged = preserved + [KeyMapping(src: Self.capsLockUsage, dst: Self.f19Usage)]

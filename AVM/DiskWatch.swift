@@ -34,8 +34,14 @@ nonisolated enum DiskWatch {
         return (crossed, crossed)
     }
 
-    static func hostWords(machine: String, free: Int64) -> String {
+    /// `drive` is the external drive the machine is kept on, or nil for
+    /// the Mac's own disk (2026-10-29, sixth audit: a drive's free space
+    /// was said as the Mac's, and the user sent to free the wrong disk).
+    static func hostWords(machine: String, free: Int64, drive: String? = nil) -> String {
         let gb = max(0, free / gigabyte)
+        if let drive {
+            return "The drive \(drive) has \(gb) gigabytes free, and \(machine)'s disk, kept on it, grows as it's used. When the drive is full, \(machine) pauses. Next: free some space on \(drive)."
+        }
         return "Your Mac has \(gb) gigabytes free, and \(machine)'s disk grows as it's used. When the Mac's disk is full, \(machine) pauses. Next: free some space on your Mac."
     }
 

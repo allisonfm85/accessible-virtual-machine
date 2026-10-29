@@ -81,11 +81,25 @@ nonisolated enum MacRestorePoints {
     /// it belongs to the disk being replaced.
     static func restore(_ point: MacRestorePoint, into files: MacGuestFiles) throws {
         let fm = FileManager.default
-        for (live, name) in [(files.disk, files.disk.lastPathComponent), (files.auxiliaryStorage, files.auxiliaryStorage.lastPathComponent)] {
-            let fresh = live.deletingLastPathComponent().appendingPathComponent(".\(name).restoring")
-            try? fm.removeItem(at: fresh)
-            try clone(point.folder.appendingPathComponent(name), to: fresh)
-            _ = try fm.replaceItemAt(live, withItemAt: fresh)
+        // Both copies made before either goes in (2026-10-29, sixth audit),
+        // as RestorePoints.restore does: a copy that failed on a full disk
+        // left the point's disk with today's boot storage, and "wasn't
+        // restored" was said of a machine that half was.
+        var staged: [(live: URL, fresh: URL)] = []
+        do {
+            for live in [files.disk, files.auxiliaryStorage] {
+                let name = live.lastPathComponent
+                let fresh = live.deletingLastPathComponent().appendingPathComponent(".\(name).restoring")
+                try? fm.removeItem(at: fresh)
+                try clone(point.folder.appendingPathComponent(name), to: fresh)
+                staged.append((live, fresh))
+            }
+        } catch {
+            for item in staged { try? fm.removeItem(at: item.fresh) }
+            throw error
+        }
+        for item in staged {
+            _ = try fm.replaceItemAt(item.live, withItemAt: item.fresh)
         }
         try? fm.removeItem(at: files.savedState)
     }

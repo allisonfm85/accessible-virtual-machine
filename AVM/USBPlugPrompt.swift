@@ -133,14 +133,22 @@ final class USBPlugPrompt {
         // One question per physical device. macOS can drop and re-add a
         // device several times in a row, with a new address each time
         // (log, 2026-10-12), so a repeat replaces the older question.
+        // Only when the older one's device has left its address, or is at
+        // this one's (2026-10-29, sixth audit): two identical devices with
+        // no serial share a key, and the second took over the first's
+        // question, so the first stayed on the Mac with nothing asked.
         let key = Self.deviceKey(question.identity)
-        if let index = waiting.firstIndex(where: { Self.deviceKey($0.identity) == key }) {
+        let sameDevice: (USBPlugQuestion) -> Bool = {
+            Self.deviceKey($0.identity) == key
+                && ($0.identity == question.identity || !USBHotPlugWatcher.shared.isPresentAtThisAddress($0.identity))
+        }
+        if let index = waiting.firstIndex(where: sameDevice) {
             waiting[index] = question
             log("arrived again while waiting: \(question.identity); replaced the older question for the same device")
             scheduleShow()
             return
         }
-        if let current = onScreen, Self.deviceKey(current.identity) == key {
+        if let current = onScreen, sameDevice(current) {
             onScreen = question
             log("arrived again while its alert is open: \(question.identity); the open alert now refers to it")
             return
@@ -419,7 +427,20 @@ final class USBPlugPrompt {
         if USBRedirectController.shared.refusesStorage(question.identity) { return }
         let key = USBRedirectController.followKey(question.identity)
         if gates[key] != nil {
-            _ = gateAbsorbs(question)
+            if gateAbsorbs(question) { return }
+            // Another device with the same key, such as a second identical
+            // one with no serial, gets a send of its own once this gate has
+            // closed (2026-10-29, sixth audit), if it's still plugged in.
+            log("send gate: \(question.identity) waits until the gate for another device like it closes")
+            let previous = lastSend
+            lastSend = Task { @MainActor in
+                await previous?.value
+                guard USBHotPlugWatcher.shared.isPresentAtThisAddress(question.identity) else {
+                    self.log("send gate: \(question.identity) left before its turn; not sent")
+                    return
+                }
+                self.attachInOrder(question)
+            }
             return
         }
         gates[key] = SendGate(question: question)
@@ -440,7 +461,24 @@ final class USBPlugPrompt {
     func gateAbsorbs(_ question: USBPlugQuestion) -> Bool {
         let key = USBRedirectController.followKey(question.identity)
         guard var gate = gates[key] else { return false }
-        gate.question = question
+        // Only the gate's own device bouncing (2026-10-29, sixth audit): back
+        // at its address, or arriving once that address is gone. A second
+        // identical device (no serial, or one every unit shares) has the same
+        // key, and was sent in the first one's place without a question, even
+        // a keyboard. It's decided on its own.
+        let own = gate.question.identity
+        let atItsAddress = question.identity.busNumber == own.busNumber && question.identity.deviceAddress == own.deviceAddress
+        guard atItsAddress || !USBHotPlugWatcher.shared.isPresentAtThisAddress(own) else {
+            log("send gate: \(question.identity) isn't \(own), which is still plugged in; not part of its send")
+            return false
+        }
+        // The gate keeps its own machine and Remember (2026-10-29, sixth
+        // audit): an arrival's question names the watched machine, so after
+        // a bounce, a device following back into another machine was sent to
+        // the watched one.
+        gate.question = USBPlugQuestion(entryID: question.entryID, vmID: gate.question.vmID, identity: question.identity,
+                                        vendorName: question.vendorName, kind: question.kind,
+                                        rememberOffered: gate.question.rememberOffered)
         gate.bounces += 1
         gate.lastActivity = Date()
         gates[key] = gate
@@ -468,6 +506,25 @@ final class USBPlugPrompt {
             // A machine that has stopped meanwhile gets nothing; never the
             // current machine instead (2026-10-27, code audit).
             guard let machine = MachineSessions.shared.session(for: gate.question.vmID)?.manager else {
+                finishGate(key, .stopped)
+                return
+            }
+            // Before each try (2026-10-29, sixth audit). A machine being saved
+            // takes nothing: its save has listed the devices to give back, and
+            // one sent now went into a saved state that couldn't carry on.
+            // Paused: held for its resume, as send() holds one. Otherwise not
+            // running: ended as for a stop. Before, attach refused quietly
+            // twice and the gate said the machine "didn't take it".
+            if machine.isSaving {
+                log("send gate: \(machine.machineName) is being saved; \(device) stays on the Mac")
+                finishGate(key, .saving)
+                return
+            }
+            if case .paused = machine.state {
+                finishGate(key, .paused)
+                return
+            }
+            guard case .running = machine.state else {
                 finishGate(key, .stopped)
                 return
             }
@@ -532,7 +589,7 @@ final class USBPlugPrompt {
         }
     }
 
-    private enum GateOutcome { case inWindows, gone, failed, stopped, notApproved }
+    private enum GateOutcome { case inWindows, gone, failed, stopped, notApproved, paused, saving }
 
     /// Closes the gate and speaks its one outcome.
     private func finishGate(_ key: String, _ outcome: GateOutcome) {
@@ -557,6 +614,25 @@ final class USBPlugPrompt {
         case .notApproved:
             log("send gate closed: \(device) not sent; the USB helper wasn't approved within 5 minutes")
             say("\(name) stayed on the Mac: AVM's USB helper hasn't been allowed. Next: in System Settings, General, Login Items and Extensions, allow AVM, then plug \(name) in again.", tone: .failure)
+        case .saving:
+            // Said (sixth audit): a machine taking a restore point keeps
+            // running, and the device stayed on the Mac with no word.
+            let guest = Self.guestName(for: gate.question.vmID)
+            log("send gate closed: \(device) not sent; \(guest) is being saved (\(tries))")
+            say("\(guest) is being saved, so \(name) stays on the Mac. Send it again once that's done.")
+        case .paused:
+            // Held for its resume, as send() holds one (2026-10-29, sixth
+            // audit). Only the watched machine's resume sends what's held
+            // (VMManager's state hook), so another machine gets no promise.
+            let guest = Self.guestName(for: gate.question.vmID)
+            if USBHotPlugWatcher.shared.vmID == gate.question.vmID {
+                heldForResume.append(gate.question)
+                log("send gate closed: \(device) waits for \(guest) to resume (\(tries))")
+                say("\(guest) is paused. AVM will send \(name) when \(guest) resumes.")
+            } else {
+                log("send gate closed: \(device) not sent; \(guest) is paused and isn't the machine watched, so nothing would send it at resume (\(tries))")
+                say("\(guest) is paused, so \(name) stays on the Mac.")
+            }
         }
     }
 

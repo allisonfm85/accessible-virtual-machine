@@ -76,7 +76,7 @@ enum MacGuestConfiguration {
         vz.cpuCount = max(VZVirtualMachineConfiguration.minimumAllowedCPUCount,
                           min(config.cpuCount, VZVirtualMachineConfiguration.maximumAllowedCPUCount))
         vz.memorySize = max(VZVirtualMachineConfiguration.minimumAllowedMemorySize,
-                            min(UInt64(config.ramSizeGB) << 30, VZVirtualMachineConfiguration.maximumAllowedMemorySize))
+                            min(UInt64(max(0, config.ramSizeGB)) << 30, VZVirtualMachineConfiguration.maximumAllowedMemorySize))
 
         let disk = try VZDiskImageStorageDeviceAttachment(url: files.disk, readOnly: false)
         vz.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment: disk)]

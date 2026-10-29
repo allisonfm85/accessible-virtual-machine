@@ -526,6 +526,15 @@ nonisolated enum ScreenReader: String, CaseIterable, Identifiable, Sendable {
         case .jaws: return "software.vfo.digital"
         }
     }
+
+    /// About how big its installer is, for the room check before it has
+    /// downloaded (2026-10-29, sixth audit). On the generous side.
+    var typicalBytes: Int64 {
+        switch self {
+        case .nvda: return 120 << 20
+        case .jaws: return 1700 << 20
+        }
+    }
 }
 
 // MARK: - QEMU option values (2026-10-25)

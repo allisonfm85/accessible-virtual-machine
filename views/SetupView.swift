@@ -259,7 +259,11 @@ struct SetupView: View {
                         .accessibilityLabel("Disk size: \(diskSizeGB) gigabytes")
                     Stepper(value: $diskSizeGB, in: 40...max(40, maxDiskInGB), step: 10) { Text("Disk size in gigabytes") }
                         .labelsHidden()
-                        .accessibilityHint("Adjust with arrow keys. Minimum 40 GB, maximum \(maxDiskInGB) GB based on available space")
+                        // Never "maximum -12 GB" (2026-10-29, sixth audit): on a
+                        // drive without room, it says so.
+                        .accessibilityHint(maxDiskInGB < 40
+                            ? "There isn't room for a 40 GB disk where this machine is stored. Choose another drive, or free some space."
+                            : "Adjust with arrow keys. Minimum 40 GB, maximum \(maxDiskInGB) GB based on available space")
                 }
 
                 storageSection
@@ -446,9 +450,12 @@ struct SetupView: View {
         panel.message = "Choose a drive or folder to store this virtual machine in. Windows needs 64 gigabytes or more."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         storageFolder = url
-        // Keep the disk size within what the new drive can hold.
+        // Keep the disk size within what the new drive can hold, and say so
+        // when it changes (2026-10-29, sixth audit: lowered in silence).
+        let before = diskSizeGB
         diskSizeGB = max(40, min(diskSizeGB, maxDiskInGB))
-        Announcer.shared.announce("The virtual machine will be stored \(storageDescription.prefix(1).lowercased() + storageDescription.dropFirst())", tone: .info)
+        let sizeNote = diskSizeGB < before ? " Its disk is now \(diskSizeGB) gigabytes, the most that fits there." : ""
+        Announcer.shared.announce("The virtual machine will be stored \(storageDescription.prefix(1).lowercased() + storageDescription.dropFirst())\(sizeNote)", tone: .info)
     }
 
     // MARK: - Windows edition

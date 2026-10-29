@@ -183,6 +183,7 @@ class FocusLockManager: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self, self.isLocked else { return }
                 AVMLog.write("AVM: FocusLock — AVM is no longer the active app while locked; unlocking.")
+                self.resignedWhileLocked = (Date(), self.guestName)
                 self.unlock()
             }
         }
@@ -204,7 +205,16 @@ class FocusLockManager: ObservableObject {
         systemObservers.append(DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.isLocked else { return }
+                guard let self else { return }
+                guard self.isLocked else {
+                    // Unlocked moments ago because AVM lost the front, as a
+                    // screen saver does before the lock (sixth audit): the
+                    // return is owed the same note as a sleep.
+                    if let resigned = self.resignedWhileLocked, Date().timeIntervalSince(resigned.at) < 10 {
+                        self.droppedBySystem = resigned.guest
+                    }
+                    return
+                }
                 AVMLog.write("AVM: FocusLock — the screen locked while locked; unlocking.")
                 self.droppedBySystem = self.guestName
                 self.unlock(bringListForward: false)
@@ -230,12 +240,26 @@ class FocusLockManager: ObservableObject {
     /// The machine the lock was in when the Mac slept, locked its screen
     /// or switched users (fifth audit).
     private var droppedBySystem: String?
+    private var toldHowToLeave = false
+    /// When AVM last stopped being the active app while locked, and in
+    /// which machine (sixth audit): a screen saver that starts first, then
+    /// locks the screen, unlocked through that path.
+    private var resignedWhileLocked: (at: Date, guest: String)?
 
     private func sayKeyboardIsBack() {
         guard let guest = droppedBySystem, !isLocked else { return }
         // At the lock screen still (a wake before the unlock): the unlock says it.
         if Self.screenIsLockedNow { return }
         droppedBySystem = nil
+        // Only about a machine still running (2026-10-29, sixth audit): one
+        // that shut itself down meanwhile was named, with a key that did
+        // nothing.
+        guard MachineSessions.shared.sessions.values.contains(where: {
+            $0.configuration.name == guest && ($0.vmState == .running || $0.vmState == .paused)
+        }) else {
+            AVMLog.write("AVM: FocusLock — \(guest) isn't running any more; nothing to say about returning to it.")
+            return
+        }
         Announcer.shared.announce("Your keyboard is on the Mac. Press Command Shift E to return to \(guest).", tone: .info)
     }
 
@@ -282,6 +306,13 @@ class FocusLockManager: ObservableObject {
         }
     }
 
+    /// Not another machine's screen (2026-10-29, sixth audit): the machine
+    /// being entered has none yet, and registers its own once it's made.
+    func forgetCaptureView() {
+        guard !isLocked else { return }
+        captureView = nil
+    }
+
     // MARK: - Lock (Enter Windows Full Screen)
     func lock() {
         AVMLog.write("AVM: FocusLock.lock() called — isLocked was \(isLocked)")
@@ -315,9 +346,17 @@ class FocusLockManager: ObservableObject {
         // remapper is silent on success and handles its own failure speech.
         CapsLockRemapper.shared.applyForLock()
         guestName = VMManager.currentGuestName
+        // A note owed from before is spent once the user is back in (sixth
+        // audit): it came out at a later wake, about a stale machine.
+        droppedBySystem = nil
         // Copied on the Mac before entering? Offer it to the guest now.
         AVMPasteboard.shared.macPasteboardMayHaveChanged()
-        Announcer.shared.announce("Entering \(guestName)", tone: .enterGuest)
+        // The way out, the first time in a run (2026-10-29, sixth audit), as
+        // macOS machines say it: with VoiceOver off, only the overlay's text
+        // said it, and nothing read that.
+        let wayOut = toldHowToLeave ? "" : ". Control-Command-Escape returns to your Mac."
+        toldHowToLeave = true
+        Announcer.shared.announce("Entering \(guestName)\(wayOut)", tone: .enterGuest)
         AVMLog.write("AVM: FocusLock.lock() — NOW LOCKED (isLocked=true).")
     }
 

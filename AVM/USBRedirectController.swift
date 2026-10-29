@@ -108,8 +108,16 @@ final class USBRedirectController: ObservableObject {
             guard let machine, case .running = machine.state else { return false }
             return true
         }()
+        // Given back by a machine that has stopped (2026-10-29, sixth audit):
+        // macOS drops the device before the helper reports it released, and
+        // with that report later than vanishGrace, the cleanup below called
+        // it unplugged, the hand-back mark was never set, and its return was
+        // decided as a fresh plug-in for the watched machine. Not a paused
+        // machine's: a device leaving one was unplugged.
+        let givenBack = !followsBack && machine?.state != .paused
         if !followsBack {
             log("vanished \(held.description): its machine isn't running, so it won't follow back")
+            if givenBack { handedBackAt[USBPlugPrompt.deviceKey(held)] = Date() }
         } else if USBHelperClient.shared.reachedWindows(held), let machine {
             let followKey = Self.followKey(held)
             leftWindowsAt[followKey] = Date()
@@ -135,6 +143,8 @@ final class USBRedirectController: ObservableObject {
             USBHelperClient.shared.forget(held)
             if USBHelperClient.shared.isQuiet(held) {
                 self.log("vanished \(held.description): the send gate is handling it; unplug not spoken")
+            } else if givenBack {
+                self.log("vanished \(held.description): its machine stopped and gave it back; unplug not spoken")
             } else {
                 self.announce("\(held.displayName) was unplugged.", tone: .info)
             }
@@ -205,22 +215,29 @@ final class USBRedirectController: ObservableObject {
         return placeholders.contains(s)
     }
 
-    /// True when this device left Windows less than followWindow seconds
-    /// ago. Takes the record, and quietly clears the vanished copy if
-    /// it still holds a port, so the return is not also announced as an
-    /// unplug.
-    /// The machine to follow into, or nil. It's the machine the device
-    /// left, while that machine still runs; the watched machine otherwise.
+    /// The machine this device follows back into, or nil, without taking
+    /// the record. It's the machine the device left less than followWindow
+    /// seconds ago, while that machine still runs. Never the watched machine
+    /// instead (2026-10-29, sixth audit): a device that left a machine since
+    /// stopped, paused or restarted went into the watched one, which it was
+    /// never in, without a question. The watcher reads this machine's
+    /// settings before it decides.
+    func followThroughTarget(_ device: AVMUSBDeviceIdentity) -> UUID? {
+        let key = Self.followKey(device)
+        guard let left = leftWindowsAt[key], Date().timeIntervalSince(left) < Self.followWindow,
+              let machine = leftWindowsMachine[key]?.manager, case .running = machine.state else { return nil }
+        return machine.machineID
+    }
+
+    /// followThroughTarget, and takes the record. Also quietly clears the
+    /// vanished copy if it still holds a port, so the return is not also
+    /// announced as an unplug.
     func takeFollowThrough(_ device: AVMUSBDeviceIdentity) -> UUID? {
+        let target = followThroughTarget(device)
         let key = Self.followKey(device)
         let stale = leftWindowsCopy.removeValue(forKey: key)
-        let machine = leftWindowsMachine.removeValue(forKey: key)?.manager
-        guard let left = leftWindowsAt.removeValue(forKey: key),
-              Date().timeIntervalSince(left) < Self.followWindow else { return nil }
-        let target: UUID? = {
-            if let machine, machine.state == .running, let id = machine.machineID { return id }
-            return USBHotPlugWatcher.shared.vmID
-        }()
+        leftWindowsAt[key] = nil
+        leftWindowsMachine[key] = nil
         guard let target else { return nil }
         if let stale, portByDevice[stale] != nil {
             Task { @MainActor in
@@ -334,6 +351,13 @@ final class USBRedirectController: ObservableObject {
     /// if nil.
     @discardableResult
     func attach(_ device: AVMUSBDeviceIdentity, to machine: VMManager? = nil, quiet: Bool = false) async -> Bool {
+        // Not into a machine being saved (2026-10-29, sixth audit): its save
+        // has listed the devices to give back already, and one sent now went
+        // into a saved state that couldn't carry on.
+        if let saving = machine ?? VMManager.shared, saving.isSaving {
+            say("\(saving.machineName) is being saved, so \(device.displayName) stays on the Mac.", tone: .info, quiet: quiet)
+            return false
+        }
         guard let manager = machine ?? VMManager.shared, case .running = manager.state else {
             say("The virtual machine is not running. Start it, then attach \(device.displayName).", tone: .failure, quiet: quiet)
             return false

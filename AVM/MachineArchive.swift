@@ -132,6 +132,11 @@ enum MachineArchive {
         // Not the Remote Desktop password's mark (2026-10-28, fifth audit):
         // a fast hash of the password, in a package handed to other people.
         config.remoteDesktopPasswordMark = nil
+        // Nor the account's name, reach or port (2026-10-29, sixth audit):
+        // import clears them anyway, and the name is the user's own.
+        config.remoteDesktopUser = nil
+        config.remoteDesktopReach = nil
+        config.remoteDesktopPort = nil
         let manifest = Manifest(format: formatVersion, exportedAt: date, appVersion: appVersion, configuration: config)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -204,14 +209,23 @@ enum MachineArchive {
                 do {
                     try fm.trashItem(at: packageURL, resultingItemURL: nil)
                 } catch {
+                    // A hidden name of its own (2026-10-29, sixth audit): a
+                    // package of the user's called "<name> (previous)" was
+                    // deleted to make room for the old one.
                     let aside = packageURL.deletingLastPathComponent()
-                        .appendingPathComponent(packageURL.deletingPathExtension().lastPathComponent + " (previous).avmvm")
-                    try? fm.removeItem(at: aside)
+                        .appendingPathComponent(".\(packageURL.lastPathComponent)-replacing-\(UUID().uuidString.prefix(8))")
                     try fm.moveItem(at: packageURL, to: aside)
                     oldAside = aside
                 }
             }
-            try fm.moveItem(at: partial, to: packageURL)
+            do {
+                try fm.moveItem(at: partial, to: packageURL)
+            } catch {
+                // The old package goes back where it was, as the message
+                // promises (sixth audit).
+                if let oldAside { try? fm.moveItem(at: oldAside, to: packageURL) }
+                throw error
+            }
             if let oldAside { try? fm.removeItem(at: oldAside) }
         } catch {
             try? fm.removeItem(at: partial)
@@ -277,7 +291,52 @@ enum MachineArchive {
     /// transient that found its way in.
     static func importPlan(package: URL) throws -> MachineFileCopier.Plan {
         try MachineFileCopier.plan(source: package) { relative in
+            // Nothing in a package carries on or attaches by itself
+            // (2026-10-29, sixth audit): a saved state's hint or a restore
+            // note made the first Start load the package's memory image,
+            // and a probe disk from the package was attached as it was.
+            // "virtio-probe.qcow2" is VMManager.probeFile, named here so this
+            // file builds in the logic package without VMManager.
             importSkips(relative)
+                || [QEMUSavedState.hintFile, QEMUSavedState.resumeFile, "virtio-probe.qcow2"]
+                    .contains((relative as NSString).lastPathComponent)
+        }
+    }
+
+    /// Why the package's QEMU disk can't be imported, or nil when it can
+    /// (2026-10-29, sixth audit). A qcow2 disk can name another file in its
+    /// header, a backing file or an external data file, and QEMU opens it
+    /// with AVM's rights: a package from someone else could then read, or
+    /// write, any file on this Mac from inside its machine. qemu-img info
+    /// with -U opens neither (QEMU's own advice for an untrusted image).
+    static func diskProblem(package: URL, config: VMConfiguration) async -> String? {
+        guard config.guestOS != .macOS else { return nil }
+        let shown = package.lastPathComponent
+        let disk = package.appendingPathComponent(diskFileName(for: config))
+        guard let output = try? await RestorePoints.qemuImg(["info", "--output=json", "-U", "-f", "qcow2", disk.path]),
+              let json = try? JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any] else {
+            return "\(shown)'s disk isn't one AVM can read, so nothing was imported. It may be damaged. Next: export the machine again."
+        }
+        let data = (json["format-specific"] as? [String: Any])?["data"] as? [String: Any]
+        if json["backing-filename"] != nil || json["full-backing-filename"] != nil || data?["data-file"] != nil {
+            return "\(shown)'s disk depends on a file outside the package, which a machine AVM exported never does, so nothing was imported. If someone sent you this package, don't use it."
+        }
+        return nil
+    }
+
+    /// A copy's disk keeps no saved state (2026-10-29, sixth audit): with
+    /// one, the first Start loaded the package's memory image. Deleted; if
+    /// it can't be, the loaded marker makes that Start delete it instead.
+    static func dropSavedState(in folder: URL, config: VMConfiguration) async {
+        guard config.guestOS != .macOS else { return }
+        let disk = folder.appendingPathComponent(diskFileName(for: config))
+        guard await QEMUSavedState.snapshotTags(disk: disk)?.contains(QEMUSavedState.tag) != false else { return }
+        _ = try? await RestorePoints.qemuImg(["snapshot", "-d", QEMUSavedState.tag, disk.path])
+        if await QEMUSavedState.snapshotTags(disk: disk)?.contains(QEMUSavedState.tag) != false {
+            FileManager.default.createFile(atPath: folder.appendingPathComponent(QEMUSavedState.loadedMarker).path, contents: nil)
+            AVMLog.write("AVM: Import — the package's saved state couldn't be deleted; marked so it's never loaded.")
+        } else {
+            AVMLog.write("AVM: Import — deleted a saved state that came in the package.")
         }
     }
 
@@ -326,10 +385,18 @@ enum MachineArchive {
         // This Mac's limits, as the wizard's (2026-10-28, fourth audit): a
         // machine made on a 16 GB Mac kept 8 GB, all of an 8 GB Mac's.
         let info = ProcessInfo.processInfo
-        config.ramSizeGB = min(config.ramSizeGB, max(4, Int(info.physicalMemory >> 30) / 2))
-        config.cpuCount = min(config.cpuCount, max(2, info.processorCount / 2))
+        // A floor too (2026-10-29, sixth audit): a package's numbers are
+        // anyone's, and a negative memory size crashed AVM at a macOS
+        // machine's Start, without a word.
+        config.ramSizeGB = min(max(config.ramSizeGB, 1), max(4, Int(info.physicalMemory >> 30) / 2))
+        config.cpuCount = min(max(config.cpuCount, 1), max(2, info.processorCount / 2))
+        config.diskSizeGB = min(max(config.diskSizeGB, 1), 65_536)
         config.diskImagePath = folder.appendingPathComponent(diskFileName(for: original)).path
-        config.name = uniqueName(original.name, existing: existingNames)
+        // A name to say (sixth audit): no control characters, and not
+        // without end.
+        let cleanName = String(original.name.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+            .trimmingCharacters(in: .whitespacesAndNewlines).prefix(100)
+        config.name = uniqueName(cleanName.isEmpty ? "Imported machine" : String(cleanName), existing: existingNames)
         // Nothing of the other Mac's (2026-10-28, security review): a
         // package from someone else carried a shared folder, which its
         // disk's software would have read and written on this Mac, and the
@@ -412,7 +479,7 @@ enum MachineArchive {
         return "less than one megabyte"
     }
 
-    private static func spokenList(_ items: [String]) -> String {
+    static func spokenList(_ items: [String]) -> String {
         switch items.count {
         case 0: return ""
         case 1: return items[0]

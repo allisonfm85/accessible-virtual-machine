@@ -402,6 +402,8 @@ struct MacSettingsView: View {
     }
 
     private func takePoint() {
+        // Not while its files are being copied (2026-10-29, sixth audit).
+        if MachineArchiveController.shared.refusesWhileBusy(configuration) { return }
         guard let files, !refusedWhileRunningOrSaved() else { return }
         let trimmed = newPointName.trimmingCharacters(in: .whitespaces)
         let name = trimmed.isEmpty ? "Restore point" : trimmed
@@ -416,13 +418,16 @@ struct MacSettingsView: View {
     }
 
     private func restore(_ point: MacRestorePoint) {
+        if MachineArchiveController.shared.refusesWhileBusy(configuration) { return }
         guard let files, !refusedWhileRunningOrSaved() else { return }
         let alert = NSAlert()
         alert.messageText = "Put \(configuration.name) back to \(point.name)?"
         alert.informativeText = "Everything done in \(configuration.name) since then is lost, unless you take a restore point of it first. The restore point itself is kept."
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Restore")
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        // Checked again after the question (2026-10-29, sixth audit): a
+        // machine can be started by avmctl while it's open.
+        guard alert.runModal() == .alertSecondButtonReturn, !refusedWhileRunningOrSaved() else { return }
         do {
             try MacRestorePoints.restore(point, into: files)
             say("\(configuration.name) is back to \(point.name).", .success)
@@ -432,6 +437,7 @@ struct MacSettingsView: View {
     }
 
     private func delete(_ point: MacRestorePoint) {
+        if MachineArchiveController.shared.refusesWhileBusy(configuration) { return }
         let alert = NSAlert()
         alert.messageText = "Delete the restore point \(point.name)?"
         alert.informativeText = "\(configuration.name) itself isn't changed; you just can't go back to this point afterwards."
@@ -470,6 +476,13 @@ struct MacSettingsView: View {
         }
         if vmStore.configurations.contains(where: { $0.id != configuration.id && $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
             Announcer.shared.announce("Another virtual machine is already called \(trimmed). Choose a different name, then save again.", tone: .failure)
+            return
+        }
+        // Not a template while saved (2026-10-29, sixth audit): a template
+        // can't start, and a saved machine can't be copied until it has,
+        // so New Machine from Template sent the user round in a circle.
+        if isTemplate, !configuration.isATemplate, saved {
+            Announcer.shared.announce("\(configuration.name) is saved with its apps open, so it can't be a template yet. Next: start it, shut it down, then make it a template.", tone: .failure)
             return
         }
         // A saved machine resumes only on the configuration it was saved

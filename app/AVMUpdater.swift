@@ -111,7 +111,7 @@ final class UpdateAnnouncer: NSObject, SPUUpdaterDelegate {
             AVMLog.write("AVM: Updates — found version \(version).")
             Announcer.shared.announce(
                 inGuest
-                    ? "AVM \(version) is available. Leave Windows to read the update window."
+                    ? "AVM \(version) is available. Leave \(FocusLockManager.shared?.guestName ?? "the machine") to read the update window."
                     : "AVM \(version) is available. The update window is open.",
                 tone: .info
             )

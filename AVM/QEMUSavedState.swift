@@ -26,6 +26,9 @@ import Foundation
 nonisolated enum QEMUSavedState {
     static let tag = "saved-state"
     static let loadedMarker = "saved-state.loaded"
+    /// Written into the marker once the guest has run (2026-10-29, sixth
+    /// audit): the state was carried on, and only its delete is owed.
+    static let carriedOnWord = "carried on"
     static let hintFile = "saved-state.txt"
     /// A restore point with memory, put back while the machine was
     /// stopped: its tag, for the next Start to load (RestorePoints.restore).
@@ -81,6 +84,10 @@ nonisolated enum QEMUSavedState {
             // fifth audit): booted fresh, the next Start loaded the old
             // state over that session's work.
             if fm.fileExists(atPath: hint(in: runtimeDir).path) { throw Unreadable() }
+            // A restore point waiting to carry on too (2026-10-29, sixth
+            // audit): booted fresh with its note kept, the next Start loaded
+            // the point over that whole session.
+            if fm.fileExists(atPath: runtimeDir.appendingPathComponent(resumeFile).path) { throw Unreadable() }
             return nil
         }
         let resume = runtimeDir.appendingPathComponent(resumeFile)
@@ -89,9 +96,13 @@ nonisolated enum QEMUSavedState {
                 AVMLog.write("AVM: SavedState — a saved state already carried on once is still on the disk; deleting it, not loading it.")
                 // Said (2026-10-28, fifth audit): after QEMU died during the
                 // load, the list still said Saved, and this Start dropped the
-                // session without a word.
-                await MainActor.run {
-                    Announcer.shared.announce("\(configuration.name)'s saved session couldn't be carried on last time, so it starts fresh. Anything that wasn't saved in its apps then is lost.", tone: .info)
+                // session without a word. Not when it did carry on and only
+                // its delete was cut short (2026-10-29, sixth audit).
+                let carriedOn = (try? String(contentsOf: marker, encoding: .utf8)) == carriedOnWord
+                if !carriedOn {
+                    await MainActor.run {
+                        Announcer.shared.announce("\(configuration.name)'s saved session couldn't be carried on last time, so it starts fresh. Anything that wasn't saved in its apps then is lost.", tone: .info)
+                    }
                 }
                 _ = try? await RestorePoints.qemuImg(["snapshot", "-d", tag, disk.path])
                 // The marker goes only once the saved state has (2026-10-28,

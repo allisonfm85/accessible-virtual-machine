@@ -93,6 +93,13 @@ final class VMSession: ObservableObject {
                 self.qemuVersion = newVersion
             }
             .store(in: &cancellables)
+
+        // A save starting or ending redraws the row (2026-10-29, sixth
+        // audit): isSaving is read from the manager, and Shut Down, Save
+        // and Pause stayed offered for the whole save.
+        manager.$savingTask
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
     }
 
     // MARK: - Session Control
@@ -120,6 +127,18 @@ final class VMSession: ObservableObject {
     /// only reaches a running guest. Wording approved by Allison 2026-09-27.
     func stopGracefully() async throws {
         forceStopRequested = false
+        // A save under way finishes first (2026-10-29, sixth audit): a paused
+        // machine was resumed in the middle of its own save, "Shutting down"
+        // was said, and then the shut down was refused. The save stops it.
+        if let saving = manager.savingTask {
+            AVMLog.write("VMSession: stopGracefully: a save is under way; waiting for it")
+            Announcer.shared.announce("\(configuration.name) is being saved, and stops when that's done.", tone: .info)
+            _ = await saving.value
+            switch manager.state {
+            case .running, .paused: break   // the save failed: shut down as asked
+            default: return
+            }
+        }
         if case .paused = manager.state {
             AVMLog.write("VMSession: stopGracefully: VM is paused; resuming before shutdown")
             try await manager.resumeVM()
@@ -146,6 +165,9 @@ final class VMSession: ObservableObject {
         var reminded = false
         var askedAgent = false
         var warnedAboutAgent = false
+        // When the agent is asked: 15 seconds after the warning that says
+        // so, however long the warning's own question took (sixth audit).
+        var agentAt = agentAfter
         while true {
             switch manager.state {
             case .stopped:
@@ -171,14 +193,20 @@ final class VMSession: ObservableObject {
                 // Only a promise AVM can keep (2026-10-28, fifth audit): with
                 // no agent answering, nothing happened at 60 seconds, and
                 // the user waited for a shut down that never came.
-                if await manager.guestAgentAnswers() {
+                let answers = await manager.guestAgentAnswers()
+                // Not once it has stopped (2026-10-29, sixth audit): the ping
+                // can take seconds, and "still shutting down" came right
+                // before "has shut down".
+                guard case .stopping = manager.state else { continue }
+                if answers {
+                    agentAt = Date().timeIntervalSince(started) + 15
                     Announcer.shared.announce("\(configuration.name) is still shutting down. It may be asking whether to save your work; enter it to answer. In 15 seconds AVM makes it shut down, closing its apps without saving.", tone: .info)
                 } else {
                     askedAgent = true
                     Announcer.shared.announce("\(configuration.name) is still shutting down. It may be asking whether to save your work; enter it to answer. AVM can't hurry it, as its agent isn't answering; if it doesn't finish, Force Stop ends it.", tone: .info)
                 }
             }
-            if !askedAgent, Date().timeIntervalSince(started) >= agentAfter {
+            if !askedAgent, Date().timeIntervalSince(started) >= agentAt {
                 askedAgent = true
                 if await manager.askGuestToShutDown() {
                     AVMLog.write("VMSession: stopGracefully: no shutdown after \(Int(agentAfter)) seconds; asked the guest agent")

@@ -527,6 +527,16 @@ final class VMManager: ObservableObject {
     /// The install media build of this start (2026-10-28, fifth audit):
     /// cancelled by Force Stop. Its bookkeeping is runMediaBuild.
     var mediaBuildTask: Task<Void, Error>?
+    /// The install-media job's build (2026-10-29, sixth audit): its manager
+    /// never starts a machine, so "still starting" can't be the test of
+    /// whether the build is still wanted, and every failure read as a
+    /// Force Stop.
+    var headlessBuild = false
+    /// The build goes on: the machine is still starting, or the job runs.
+    var buildIsWanted: Bool { headlessBuild || state == .starting }
+    /// A restore point with memory is being taken (2026-10-29, sixth
+    /// audit): devices aren't sent meanwhile, as during a save.
+    var takingRestorePoint = false
 
     // MARK: - Binary Discovery
 
@@ -838,9 +848,13 @@ final class VMManager: ObservableObject {
             guard state == .running || state == .paused else { return }
             let report = mtools(["mtype", "-i", "IMG", "::AVMSTATUS.TXT"], runtimeDir: runtimeDir)?.output ?? ""
             if report.contains("first-sign-in-done") {
+                // JAWS too (2026-10-29, sixth audit): with JAWS talking, the
+                // user was told to turn on Narrator over it.
                 let talking = report.contains("nvda-installed")
                     ? " NVDA is talking in it."
-                    : " Enter Windows and press Control Command Return to turn on Narrator."
+                    : report.contains("jaws-installed")
+                        ? " JAWS is talking in it."
+                        : " Enter Windows and press Control Command Return to turn on Narrator."
                 Announcer.shared.announce("Windows is installed and signed in.\(talking)", tone: .success)
                 return
             }
@@ -938,7 +952,7 @@ final class VMManager: ObservableObject {
             avmLog("ensureInstallMedia: an earlier Start is still building this machine's install media; waiting for it")
             Announcer.shared.announce("\(configuration.name)'s install media is still being built from its last Start. AVM waits for that to finish.", tone: .info)
             _ = try? await earlier.value
-            guard case .starting = state else { throw CancellationError() }
+            guard buildIsWanted else { throw CancellationError() }
         }
 
         let fm = FileManager.default
@@ -973,7 +987,7 @@ final class VMManager: ObservableObject {
         pipeline.onProgress = { [weak self] progress in
             // Delivered ON the main actor by the pipeline's emit(). Not after
             // a Force Stop (2026-10-28, fifth audit).
-            guard let self, case .starting = self.state else { return }
+            guard let self, self.buildIsWanted else { return }
             self.installProgress = progress.spoken
             self.appendConsole("AVM: \(progress.visible)\n")
             // Said (2026-10-28, fourth audit): only Speak Status read it, and
@@ -999,21 +1013,51 @@ final class VMManager: ObservableObject {
             )
         }
 
+        // Room for the build (2026-10-28, fifth audit): about twice the
+        // installer's size in scratch under Application Support, plus the
+        // screen readers; said plainly instead of a failed Step 1 or 5.
+        // Before the downloads (2026-10-29, sixth audit: up to 1.5 GB came
+        // down first), so a reader not downloaded yet counts twice, for its
+        // download and its copy on the media.
+        let readerCache = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent(AVMPaths.supportFolderName, isDirectory: true)
+            .appendingPathComponent("screen-readers", isDirectory: true)
+        let isoBytes = ((try? FileManager.default.attributesOfItem(atPath: iso))?[.size] as? Int64) ?? 0
+        let readerBytes = configuration.windowsScreenReaders.reduce(Int64(0)) { total, reader in
+            total + (readerCache.flatMap { ScreenReaderInstallers.cachedBytes(of: reader, in: $0) } ?? 2 * reader.typicalBytes)
+        }
+        let needed = isoBytes * 22 / 10 + readerBytes + (Int64(1) << 30)
+        if let support = try? AVMPaths.supportDirectory(),
+           let free = (try? support.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage,
+           free < needed {
+            let message = "\(configuration.name) can't build its install media: it needs about \(needed >> 30) gigabytes free on this Mac's disk while it builds, and \(free >> 30) are free. Free some space, then start it again."
+            Announcer.shared.announce(message, tone: .failure)
+            throw AVMError.refused(message)
+        }
+
         // Screen readers first (2026-10-26), so Windows talks from its first
         // sign-in. A failed download is spoken and skipped: Narrator is
         // still there, and the install shouldn't wait on a vendor's server.
+        // As part of the build task (2026-10-29, sixth audit): a Force Stop
+        // during a download was ignored; it went on talking, and the whole
+        // build then ran hidden for the stopped machine, beside the next
+        // Start's own build in the same scratch folder.
         var readerFiles: [String: URL] = [:]
-        if !configuration.windowsScreenReaders.isEmpty,
-           let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            let cache = support
-                .appendingPathComponent(AVMPaths.supportFolderName, isDirectory: true)
-                .appendingPathComponent("screen-readers", isDirectory: true)
-            let got = await ScreenReaderInstallers.fetchAll(configuration.windowsScreenReaders, into: cache) { [weak self] message, isProblem in
-                await MainActor.run {
-                    self?.installProgress = message
-                    self?.appendConsole("AVM: \(message)\n")
-                    Announcer.shared.announce(message, tone: isProblem ? .failure : .info)
+        if !configuration.windowsScreenReaders.isEmpty, let cache = readerCache {
+            let readers = configuration.windowsScreenReaders
+            let got = try await runMediaBuild(for: configuration) {
+                await ScreenReaderInstallers.fetchAll(readers, into: cache) { [weak self] message, isProblem in
+                    await MainActor.run {
+                        guard let self, self.buildIsWanted else { return }
+                        self.installProgress = message
+                        self.appendConsole("AVM: \(message)\n")
+                        Announcer.shared.announce(message, tone: isProblem ? .failure : .info)
+                    }
                 }
+            }
+            guard buildIsWanted else {
+                avmLog("ensureInstallMedia: stopped during the screen reader downloads")
+                throw CancellationError()
             }
             for (reader, file) in got {
                 readerFiles[reader.mediaFileName] = file
@@ -1041,27 +1085,13 @@ final class VMManager: ObservableObject {
         input.answers = answers
         avmLog("ensureInstallMedia: setup answers — locale \(answers.locale ?? "asked"), keyboard \(answers.inputLocale ?? "asked"), time zone \(answers.timeZone ?? "asked"), computer name \(answers.computerName == nil ? "Windows' own" : "set"), \(answers.localAccount == nil ? "Microsoft account" : "local account"), privacy \(answers.privacy.rawValue)")
 
-        // Room for the build (2026-10-28, fifth audit): about twice the
-        // installer's size in scratch under Application Support, plus the
-        // screen readers; said plainly instead of a failed Step 1 or 5.
-        let isoBytes = ((try? FileManager.default.attributesOfItem(atPath: iso))?[.size] as? Int64) ?? 0
-        let readerBytes = readerFiles.values.reduce(Int64(0)) { $0 + (((try? FileManager.default.attributesOfItem(atPath: $1.path))?[.size] as? Int64) ?? 0) }
-        let needed = isoBytes * 22 / 10 + readerBytes + (Int64(1) << 30)
-        if let support = try? AVMPaths.supportDirectory(),
-           let free = (try? support.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage,
-           free < needed {
-            let message = "\(configuration.name) can't build its install media: it needs about \(needed >> 30) gigabytes free on this Mac's disk while it builds, and \(free >> 30) are free. Free some space, then start it again."
-            Announcer.shared.announce(message, tone: .failure)
-            throw AVMError.refused(message)
-        }
-
         do {
             let output = try await runMediaBuild(for: configuration) { try await pipeline.run(input) }
             avmLog("ensureInstallMedia: pipeline complete — \(output.rebuiltISOPath)")
             WindowsSetupAnswers.forgetPassword(inVMDirectory: runtimeDir)
             // Not after a Force Stop during the build (2026-10-28, code
             // review): the next check ends the start.
-            guard case .starting = state else { return }
+            guard buildIsWanted else { return }
             appendConsole("AVM: Install media ready.\n")
             installProgress = "Install media ready."
             // What to expect, said before the silence starts (2026-10-27,
@@ -1074,7 +1104,7 @@ final class VMManager: ObservableObject {
             installProgress = ""
             // Ended by Force Stop (2026-10-28, fifth audit): not a failure
             // to announce for a machine the user turned off.
-            guard case .starting = state else {
+            guard buildIsWanted else {
                 avmLog("ensureInstallMedia: the build ended after the machine was stopped")
                 throw CancellationError()
             }
@@ -1118,7 +1148,7 @@ final class VMManager: ObservableObject {
         let pipeline = UbuntuInstallPipeline()
         pipeline.onProgress = { [weak self] spoken, visible in
             // Not after a Force Stop (2026-10-28, fifth audit).
-            guard let self, case .starting = self.state else { return }
+            guard let self, self.buildIsWanted else { return }
             self.installProgress = spoken
             self.appendConsole("AVM: \(visible)\n")
             Announcer.shared.announce(spoken, tone: .info)
@@ -1134,7 +1164,7 @@ final class VMManager: ObservableObject {
             try await runMediaBuild(for: configuration) { try await pipeline.run(ubuntuInput) }
             // Not after a Force Stop during the build (2026-10-28, code
             // review): the next check ends the start.
-            guard case .starting = state else { return }
+            guard buildIsWanted else { return }
             appendConsole("AVM: Install media ready.\n")
             installProgress = "Install media ready."
             Announcer.shared.announce(
@@ -1143,7 +1173,7 @@ final class VMManager: ObservableObject {
             )
         } catch {
             installProgress = ""
-            guard case .starting = state else {
+            guard buildIsWanted else {
                 avmLog("ensureUbuntuInstallMedia: the build ended after the machine was stopped")
                 throw CancellationError()
             }
@@ -1167,6 +1197,9 @@ final class VMManager: ObservableObject {
     /// UI via installWarningHandler if one is set; otherwise notes the warning in
     /// the console and proceeds (the pipeline's own headless default).
     private func handleInstallWarning(_ reason: String) async -> Bool {
+        // Not for a machine stopped meanwhile (2026-10-29, sixth audit): a
+        // Force Stop during the ISO check said the image might be corrupted.
+        guard buildIsWanted else { return false }
         if let handler = installWarningHandler {
             return await handler(reason)
         }
@@ -1317,7 +1350,13 @@ final class VMManager: ObservableObject {
                 // Start ran it to the end in silence, with no progress, no
                 // "signed in", and nothing about a Microsoft account's
                 // sign-in pages.
-                if !resuming, !signedIn, setupStillRunning(runtimeDir: runtimeDir) {
+                // Once per machine (2026-10-29, sixth audit): a first sign-in
+                // cut short never writes its last line, and a Windows in daily
+                // use heard this, and an hour's warning, at every Start.
+                let carryOnSaid = runtimeDir.appendingPathComponent("setup-carry-on-said")
+                if !resuming, !signedIn, !FileManager.default.fileExists(atPath: carryOnSaid.path),
+                   setupStillRunning(runtimeDir: runtimeDir) {
+                    FileManager.default.createFile(atPath: carryOnSaid.path, contents: nil)
                     Announcer.shared.announce("Windows Setup is carrying on in \(configuration.name) from where it was stopped. AVM says how it's going every 10 minutes, and when Windows is signed in.", tone: .info)
                     stopInstallWatchdog()
                     installWatchdogTask = Task { [weak self] in
@@ -1536,10 +1575,17 @@ final class VMManager: ObservableObject {
         cleanUp()
         if case .starting = state {
             let reason = error.localizedDescription
-            Announcer.shared.announce(
-                "\(configuration.name) could not start. Reason: \(reason) Next: try Start again. If it fails again, save the diagnostic log and report the problem.",
-                tone: .failure
-            )
+            if case AVMError.refused(let message) = error {
+                // Said as it is (2026-10-29, sixth audit): a refusal is a
+                // whole sentence with its own "Next:", and the wrapping
+                // below gave it two.
+                Announcer.shared.announce(message, tone: .failure)
+            } else {
+                Announcer.shared.announce(
+                    "\(configuration.name) could not start. Reason: \(reason) Next: try Start again. If it fails again, save the diagnostic log and report the problem.",
+                    tone: .failure
+                )
+            }
             state = .error(reason)
         }
     }
@@ -1842,9 +1888,15 @@ final class VMManager: ObservableObject {
                     avmLog("installWatchdog: install-complete marker PRESENT — standing down; announcing Setup-underway milestone")
                     await MainActor.run {
                         self.setupUnderwaySince = Date()
-                        self.appendConsole("AVM: Windows Setup is underway and will restart the virtual machine a few times. This takes a while. Windows will not speak on its own — when Setup is done, enter Windows and press Control Command Return to turn on Narrator.\n")
+                        // Narrator only for a machine with no screen reader
+                        // of its own coming (2026-10-29, sixth audit).
+                        let readers = configuration.windowsScreenReaders.map(\.displayName)
+                        let afterSetup = readers.isEmpty
+                            ? "Windows will not speak on its own. When Setup is done, enter Windows and press Control Command Return to turn on Narrator."
+                            : "Windows doesn't speak while it installs; \(readers.joined(separator: " or ")) talks once Windows signs in. If nothing talks then, enter Windows and press Control Command Return to turn on Narrator."
+                        self.appendConsole("AVM: Windows Setup is underway and will restart the virtual machine a few times. This takes a while. \(afterSetup)\n")
                         Announcer.shared.announce(
-                            "Windows Setup is underway and will restart the virtual machine a few times. This takes a while. Windows will not speak on its own. When Setup is done, enter Windows and press Control Command Return to turn on Narrator.",
+                            "Windows Setup is underway and will restart the virtual machine a few times. This takes a while. \(afterSetup)",
                             tone: .success
                         )
                     }
@@ -2794,6 +2846,14 @@ final class VMManager: ObservableObject {
                 "\(machineName) stopped unexpectedly.",
                 tone: .failure
             )
+        } else if userStopped {
+            // A crash while shutting down (2026-10-29, sixth audit) was said
+            // as "has shut down", with the success sound.
+            let msg = "QEMU exited with code \(exitCode) while shutting down. Details are in AVM's diagnostic log."
+            state = .error(msg)
+            avmLog("handleQEMUProcessExit: nonzero exit while shutting down — state -> error, announcing")
+            appendConsole("AVM: \(msg)\n")
+            Announcer.shared.announce("\(machineName) stopped unexpectedly while it was shutting down.", tone: .failure)
         } else {
             state = .stopped
             avmLog("handleQEMUProcessExit: nonzero exit while not running — state -> stopped, no announcement")
@@ -4026,6 +4086,7 @@ enum AVMError: LocalizedError {
 extension VMManager {
     /// The first start's media build, into a folder of the caller's.
     func buildInstallMedia(configuration: VMConfiguration, into folder: URL) async throws {
+        headlessBuild = true
         try await ensureInstallMedia(configuration: configuration, runtimeDir: folder)
     }
 }
@@ -4056,7 +4117,7 @@ extension VMManager {
     /// True when the running machine can be saved: an installed machine
     /// on the virtio disk, not drawing in 3D (QEMU can't save virgl).
     /// A save under way (2026-10-28, fifth audit): Shut Down waits for it.
-    var isSaving: Bool { savingTask != nil }
+    var isSaving: Bool { savingTask != nil || takingRestorePoint }
 
     /// The install media build of this start as a task of its own, so Force
     /// Stop can cancel it; and every machine's running build, so a second
@@ -4087,7 +4148,7 @@ extension VMManager {
         // switch's "firstBoot" store flipped activeConfiguration to virtio
         // while QEMU still ran on NVMe, and Save was offered, gave the USB
         // devices back, then failed.
-        guard state == .running || state == .paused, savingTask == nil,
+        guard state == .running || state == .paused, savingTask == nil, !takingRestorePoint,
               let configuration = activeConfiguration,
               startedOnVirtioDisk, configuration.usesVirtioDisk, installCompleteAtStart,
               !(configuration.uses3D && Self.supports3D) else { return false }
@@ -4151,9 +4212,14 @@ extension VMManager {
     /// and all: restoring it carries on from this moment, open apps too.
     /// The machine pauses while it's written (about a second, measured).
     func createRunningRestorePoint(label: String) async throws -> RestorePoint {
+        // Its own words (2026-10-29, sixth audit): "QMP command failed" was
+        // said, during a save as at any other time.
+        if isSaving { throw AVMError.refused("\(machineName) is being saved, so it can't take a restore point now.") }
         guard canSaveState, let configuration = activeConfiguration, let runtimeDir = vmRuntimeDir else {
-            throw AVMError.qmpCommandFailed("this machine can't take a restore point while it runs")
+            throw AVMError.refused("\(machineName) can't take a restore point while it runs.")
         }
+        takingRestorePoint = true
+        defer { takingRestorePoint = false }
         // Devices passed through go back to the Mac first, as for Save
         // (2026-10-28, fourth audit): they were added after the start, so
         // their sections in the point had no device to load into in a
@@ -4167,6 +4233,7 @@ extension VMManager {
             await BluetoothDevices.shared.detachAll(from: self)
         }
         await WindowsKeyboard.shared.releaseHeldKeys(before: self)
+        await detachDevicesSentMeanwhile()
         let tag = RestorePoints.newTag()
         try RestorePoints.writeFolder(vmDirectory: runtimeDir, tag: tag, label: label, secureBoot: configuration.usesSecureBoot, diskBus: configuration.diskBus ?? "nvme")
         do {
@@ -4179,6 +4246,21 @@ extension VMManager {
         }
         avmLog("createRunningRestorePoint: \(tag) taken with memory")
         return RestorePoint(tag: tag, label: label, date: Date(), secureBoot: configuration.usesSecureBoot, withMemory: true)
+    }
+
+    /// A device that reached the machine while the others went back
+    /// (2026-10-29, sixth audit): a send already under way, or a plug-in
+    /// in the seconds the detaches took. In the snapshot, it made the
+    /// saved state impossible to load.
+    private func detachDevicesSentMeanwhile() async {
+        let late = USBRedirectController.shared.devices(for: self)
+        for device in late {
+            await USBRedirectController.shared.detach(device)
+        }
+        if BluetoothDevices.shared.hasDevices(in: self) {
+            await BluetoothDevices.shared.detachAll(from: self)
+        }
+        if !late.isEmpty { avmLog("save: \(late.count) USB device(s) sent during the detaches went back too") }
     }
 
     /// Saves the machine as it is and stops it; its next Start carries on
@@ -4207,6 +4289,7 @@ extension VMManager {
         await WindowsKeyboard.shared.releaseHeldKeys(before: self)
         Announcer.shared.announce("Saving \(guest).", tone: .info)
         avmLog("saveStateAndStop: saving \(configuration.name)")
+        await detachDevicesSentMeanwhile()
         let started = Date()
         do {
             let node = try await diskNodeName()
@@ -4262,13 +4345,27 @@ extension VMManager {
         // with no marker, and the Start after next loaded it over days of
         // newer work.
         if plan.isSavedState { fm.createFile(atPath: marker.path, contents: nil) }
+        // A restore point's note is set aside while it loads (2026-10-29,
+        // sixth audit): a point whose load killed QEMU was loaded again at
+        // every Start, and the machine could never start.
+        let note = runtimeDir.appendingPathComponent(QEMUSavedState.resumeFile)
+        let noteAside = runtimeDir.appendingPathComponent(QEMUSavedState.resumeFile + ".loading")
+        if !plan.isSavedState {
+            try? fm.removeItem(at: noteAside)
+            try? fm.moveItem(at: note, to: noteAside)
+        }
+        var carriedOn = false
         do {
             node = try await diskNodeName()
             try await runQMPJob("snapshot-load", id: "avm-load",
                                 arguments: ["tag": plan.tag, "vmstate": node, "devices": [node]])
             _ = try await sendQMPCommand("cont", arguments: nil)
             avmLog("resumeSavedState: carried on in \(String(format: "%.1f", Date().timeIntervalSince(started))) s")
-            Announcer.shared.announce("\(guest) is running again.", tone: .success)
+            carriedOn = true
+            // Carried on (sixth audit): a Quit before the delete below left
+            // the marker, and the next Start said the session "couldn't be
+            // carried on last time". Now it deletes the state quietly.
+            if plan.isSavedState { try? QEMUSavedState.carriedOnWord.write(to: marker, atomically: true, encoding: .utf8) }
         } catch {
             // Cut short before the guest ran (2026-10-28, fourth audit):
             // Quit Now or a Force Stop while the state was loading. Nothing
@@ -4283,6 +4380,11 @@ extension VMManager {
                     try? fm.removeItem(at: marker)
                     avmLog("resumeSavedState: the saved state is kept for the next Start")
                 }
+                // Quit or Force Stop: the point waits for the next Start.
+                // QEMU dying (.error): it doesn't (sixth audit).
+                if !plan.isSavedState, state == .stopped || state == .stopping {
+                    try? fm.moveItem(at: noteAside, to: note)
+                }
                 return
             }
             avmLog("resumeSavedState: load failed: \(error.localizedDescription); starting from the disk")
@@ -4291,7 +4393,8 @@ extension VMManager {
             Announcer.shared.announce("\(guest) couldn't carry on from where it was saved, so it's starting fresh. Anything that wasn't saved inside \(guest) is lost. Reason: \(error.localizedDescription)", tone: .failure)
         }
         // A restore point stays a restore point; its note is spent.
-        try? fm.removeItem(at: runtimeDir.appendingPathComponent(QEMUSavedState.resumeFile))
+        try? fm.removeItem(at: note)
+        try? fm.removeItem(at: noteAside)
         // A saved state is spent either way: deleted now, so it's never
         // carried on twice.
         if plan.isSavedState, !node.isEmpty {
@@ -4304,9 +4407,17 @@ extension VMManager {
             }
         }
         try? fm.removeItem(at: QEMUSavedState.hint(in: runtimeDir))
+        // Said once it's true (2026-10-29, sixth audit): "running again"
+        // came seconds before the machine was, while the delete above and
+        // the clock below were still to do, and keys typed then went to
+        // the Mac. The clock is set after, without holding up the start.
+        if carriedOn { Announcer.shared.announce("\(guest) is running again.", tone: .success) }
         // The guest's clock stopped while it was saved.
-        try? await Task.sleep(for: .seconds(2))
-        await setGuestClock()
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, self.state == .running || self.state == .starting else { return }
+            await self.setGuestClock()
+        }
     }
 }
 
@@ -4579,7 +4690,7 @@ extension VMManager {
             while try await guestFileExists(target, windows: windows) {
                 // Bounded (2026-10-28, fifth audit): a name the guest treats
                 // as a device "exists" under every number.
-                guard n < 200 else { throw AVMError.refused("\(machine) already has \(n - 2) files named like \(guestName)") }
+                guard n < 200 else { throw AVMError.refused("\(machine) already has \(n - 1) files named like \(guestName) in Downloads. Next: move some of them, then send it again.") }
                 target = folder + separator + stem + " \(n)" + (ext.isEmpty ? "" : ".\(ext)")
                 n += 1
             }
@@ -4616,7 +4727,12 @@ extension VMManager {
             return true
         } catch {
             avmLog("sendFile: failed: \(error.localizedDescription)")
-            Announcer.shared.announce("\(name) wasn't sent to \(machine). Reason: \(error.localizedDescription) Next: check \(machine) has finished starting, then try again.", tone: .failure)
+            // A refusal is said as it is, with its own Next (sixth audit).
+            if case AVMError.refused(let message) = error {
+                Announcer.shared.announce("\(name) wasn't sent to \(machine). \(message)", tone: .failure)
+            } else {
+                Announcer.shared.announce("\(name) wasn't sent to \(machine). Reason: \(error.localizedDescription) Next: check \(machine) has finished starting, then try again.", tone: .failure)
+            }
             return false
         }
     }
@@ -4625,10 +4741,17 @@ extension VMManager {
     /// The same in every guest, with no shell quoting to get wrong
     /// (2026-10-27: cmd.exe's "if exist" lost the quotes in a path with
     /// spaces, and the second file overwrote the first).
+    /// Only the agent's own "couldn't open it" means it isn't there
+    /// (2026-10-29, sixth audit): a timeout or a refused connection read as
+    /// "not there", and the file already in Downloads was written over.
     private func guestFileExists(_ path: String, windows: Bool) async throws -> Bool {
-        guard let handle = try? await agentCall(["execute": "guest-file-open", "arguments": ["path": path, "mode": "r"]]) as? Int else {
+        let opened: Any?
+        do {
+            opened = try await agentCall(["execute": "guest-file-open", "arguments": ["path": path, "mode": "r"]])
+        } catch AVMError.qmpCommandFailed(_) {
             return false
         }
+        guard let handle = opened as? Int else { return false }
         _ = try? await agentCall(["execute": "guest-file-close", "arguments": ["handle": handle]])
         return true
     }
@@ -4643,6 +4766,7 @@ extension VMManager {
     func startDiskWatch(configuration: VMConfiguration, runtimeDir: URL, installed: Bool) {
         diskWatchTask?.cancel()
         let machine = configuration.name
+        let drive = configuration.storageDriveName
         diskWatchTask = Task { [weak self] in
             var hostSpoken: Int64?
             var guestSpoken: Set<String> = []
@@ -4653,22 +4777,27 @@ extension VMManager {
                 guard self.state == .running || self.state == .paused else { continue }
                 minute += 1
 
-                let free = (try? runtimeDir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
-                    .volumeAvailableCapacityForImportantUsage ?? Int64.max
+                // The plain figure when the other has none (2026-10-29,
+                // sixth audit): exFAT drives give no "important usage"
+                // figure, and the warning never came.
+                let values = try? runtimeDir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
+                let free = values?.volumeAvailableCapacityForImportantUsage
+                    ?? values?.volumeAvailableCapacity.map { Int64($0) } ?? Int64.max
                 let host = DiskWatch.hostWarning(free: free, lastSpoken: hostSpoken)
                 hostSpoken = host.lastSpoken
                 if host.speak != nil {
-                    avmLog("diskWatch: the Mac has \(free / DiskWatch.gigabyte) GB free")
-                    Announcer.shared.announce(DiskWatch.hostWords(machine: machine, free: free), tone: .info)
+                    avmLog("diskWatch: \(drive == nil ? "the Mac" : "the machine's drive") has \(free / DiskWatch.gigabyte) GB free")
+                    Announcer.shared.announce(DiskWatch.hostWords(machine: machine, free: free, drive: drive), tone: .info)
                 }
 
                 // QEMU stops a machine whose disk write found no space.
                 if self.state == .running,
                    let status = try? await self.sendQMPCommand("query-status", arguments: nil) as? [String: Any],
                    status["status"] as? String == "io-error" {
-                    avmLog("diskWatch: QEMU paused the machine with an I/O error (the Mac's disk is full)")
+                    avmLog("diskWatch: QEMU paused the machine with an I/O error (its disk's volume is full)")
                     self.state = .paused
-                    Announcer.shared.announce("\(machine) has paused: your Mac's disk is full. Next: free some space on your Mac, then choose Resume in \(machine)'s row.", tone: .failure)
+                    Announcer.shared.announce(drive.map { "\(machine) has paused: the drive \($0) is full. Next: free some space on \($0), then choose Resume in \(machine)'s row." }
+                        ?? "\(machine) has paused: your Mac's disk is full. Next: free some space on your Mac, then choose Resume in \(machine)'s row.", tone: .failure)
                 }
 
                 if installed, minute % 5 == 0, self.state == .running, let path = self.guestAgentSocketPath,

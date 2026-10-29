@@ -109,6 +109,12 @@ final class MachineArchiveController: ObservableObject {
             AVMLog.write("AVM: Export — save panel cancelled for '\(name)'.")
             return
         }
+        // Started under the panel (2026-10-29, sixth audit): avmctl can start
+        // it meanwhile, and a running machine's disk was copied mid-change.
+        if Self.isRunningNow(config) {
+            refuse("\(name) started while you chose where to save it, so it wasn't exported. Next: shut it down, then export it.", log: "'\(name)' started under the save panel")
+            return
+        }
         if package.pathExtension.lowercased() != MachineArchive.packageExtension {
             package.appendPathExtension(MachineArchive.packageExtension)
             // The panel asked about replacing the name as typed, not this one.
@@ -219,14 +225,22 @@ final class MachineArchiveController: ObservableObject {
             let typed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             newName = MachineArchive.uniqueName(typed.isEmpty ? suggested : typed, existing: store.configurations.map(\.name))
         }
+        // Started under the question (2026-10-29, sixth audit).
+        if Self.isRunningNow(config) {
+            refuse("\(name) started while you were asked, so it wasn't duplicated. Next: shut it down, then duplicate it.", log: "'\(name)' started under the question")
+            return
+        }
 
         let plan: MachineFileCopier.Plan
         let container: URL
         do {
             plan = try MachineFileCopier.plan(source: dir) { relative in
                 let file = (relative as NSString).lastPathComponent
+                // The loaded marker travels (2026-10-29, sixth audit): left
+                // out, a saved state whose delete had failed was loaded by
+                // the copy's first Start, over the copy's disk.
                 return MachineArchive.importSkips(relative)
-                    || [QEMUSavedState.hintFile, QEMUSavedState.loadedMarker, QEMUSavedState.resumeFile, VMManager.probeFile].contains(file)
+                    || [QEMUSavedState.hintFile, QEMUSavedState.resumeFile, VMManager.probeFile].contains(file)
             }
             container = try VMConfiguration.defaultVMsContainer()
         } catch {
@@ -254,7 +268,9 @@ final class MachineArchiveController: ObservableObject {
             switch result {
             case .success(let folder):
                 var copy = MachineArchive.importedConfiguration(config, id: id, folder: folder, existingNames: store.configurations.map(\.name), fromThisMac: true)
-                copy.name = newName
+                // Still unique once the copy is done (2026-10-29, sixth audit):
+                // a machine given that name during the copy made two of one name.
+                copy.name = MachineArchive.uniqueName(newName, existing: store.configurations.map(\.name))
                 copy.isTemplate = nil
                 if copy.guestOS == .macOS {
                     // Its own Mac to macOS: a new identifier and address.
@@ -317,21 +333,29 @@ final class MachineArchiveController: ObservableObject {
 
         let id = UUID()
         begin("importing \(name)", id: id)
-        AVMLog.write("AVM: Import — '\(name)' (\(original.guestOS.displayName)) from \(place), \(plan.entries.count) items, \(needed) bytes needed.")
-        Announcer.shared.announce("Importing \(name) from \(place): \(MachineArchive.spokenSize(plan.allocatedBytes)). \(plan.allocatedBytes >= Self.speakProgressFrom ? "AVM will say how it's going. " : "")\(place == "your Mac" ? "" : "Don't disconnect the drive until it's done.")", tone: .info)
-
-        let ticker = ProgressTicker(verb: "Importing", name: name, speaks: plan.allocatedBytes >= Self.speakProgressFrom)
         Task { @MainActor in
+            // The disk names no file outside the package (2026-10-29,
+            // sixth audit), checked before anything is copied.
+            if let problem = await MachineArchive.diskProblem(package: package, config: original) {
+                self.end()
+                self.refuse(problem, log: "package disk refused")
+                return
+            }
+            AVMLog.write("AVM: Import — '\(name)' (\(original.guestOS.displayName)) from \(place), \(plan.entries.count) items, \(needed) bytes needed.")
+            Announcer.shared.announce("Importing \(name) from \(place): \(MachineArchive.spokenSize(plan.allocatedBytes)). \(plan.allocatedBytes >= Self.speakProgressFrom ? "AVM will say how it's going. " : "")\(place == "your Mac" ? "" : "Don't disconnect the drive until it's done.")", tone: .info)
+            let ticker = ProgressTicker(verb: "Importing", name: name, speaks: plan.allocatedBytes >= Self.speakProgressFrom)
             let result = await Task.detached(priority: .userInitiated) { () throws -> URL in
                 try MachineArchive.copyIn(plan: plan, from: package, container: container, id: id) { done, total in
                     ticker.report(done, of: total)
                 }
             }.result
-            self.end()
             switch result {
             case .success(let folder):
+                await MachineArchive.dropSavedState(in: folder, config: original)
+                self.end()
                 self.finishImport(original, id: id, folder: folder, into: store)
             case .failure(let error):
+                self.end()
                 AVMLog.write("AVM: Import — FAILED for '\(name)': \(error.localizedDescription)")
                 Announcer.shared.announce("Importing \(name) failed. Nothing was added, and nothing was left behind on your Mac. Reason: \(error.localizedDescription) Next: check the drive is connected, then import again.", tone: .failure)
             }
@@ -351,6 +375,17 @@ final class MachineArchiveController: ObservableObject {
         // a saved machine's memory then couldn't load.
         if config.ramSizeGB < original.ramSizeGB || config.cpuCount < original.cpuCount {
             words += " It was made with \(original.ramSizeGB) gigabytes of memory and \(original.cpuCount) processor cores; on this Mac it gets \(config.ramSizeGB) gigabytes and \(config.cpuCount) cores."
+        }
+        // What was turned off, said (2026-10-29, sixth audit): it was done
+        // without a word, and a shared folder or the camera seemed broken.
+        var turnedOff: [String] = []
+        if original.sharedFolderPath != nil { turnedOff.append("the shared folder") }
+        if original.sharesMicrophone { turnedOff.append("the microphone") }
+        if original.sharesCamera { turnedOff.append("the camera") }
+        if original.sharesPrinters { turnedOff.append("printers") }
+        if original.windowsKeyboardID != nil { turnedOff.append("the keyboard for Windows") }
+        if !turnedOff.isEmpty {
+            words += " AVM turned off \(MachineArchive.spokenList(turnedOff)), which came from the other Mac; turn on what you want in Settings."
         }
         // The same Mac to macOS (2026-10-26): its MachineIdentifier is kept,
         // so copies must not run together.
@@ -375,6 +410,12 @@ final class MachineArchiveController: ObservableObject {
     private func end() {
         activity = nil
         busyMachineID = nil
+    }
+
+    /// Running now, whatever the caller saw before its question.
+    private static func isRunningNow(_ config: VMConfiguration) -> Bool {
+        if config.guestOS == .macOS { return MacGuestRunner.shared.runningID == config.id }
+        return MachineSessions.shared.session(for: config.id).map { $0.vmState != .stopped } ?? false
     }
 
     private func refuse(_ words: String, log: String) {

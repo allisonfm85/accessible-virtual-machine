@@ -438,7 +438,13 @@ private struct DashboardContent: View {
                             if config.guestOS == .macOS {
                                 macRowControls(config)
                             } else if let session = machines.session(for: config.id) {
-                                QEMUMachineRow(session: session, errorMessage: $errorMessage)
+                                // The saved name and a Settings button
+                                // (2026-10-29, sixth audit): a machine renamed
+                                // while running kept its old name on its row,
+                                // and a running machine that wasn't the
+                                // current one had no way to its Settings.
+                                QEMUMachineRow(session: session, errorMessage: $errorMessage, savedName: config.name,
+                                               openSettings: { openSettings(config) })
                             } else {
                                 // Saved (2026-10-27): its Start carries on.
                                 if QEMUSavedState.looksSaved(config) {
@@ -661,6 +667,12 @@ private struct DashboardContent: View {
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Delete")
         if alert.runModal() == .alertSecondButtonReturn {
+            // Started under the question (2026-10-29, sixth audit): avmctl can
+            // start it while the alert is open.
+            if machines.session(for: config.id).map({ $0.vmState != .stopped }) ?? false || macGuest.runningID == config.id {
+                Announcer.shared.announce("\(config.name) started while you were asked, so it was not deleted. Shut it down first.", tone: .failure)
+                return
+            }
             AVMLog.write("AVM: Delete confirmed for '\(config.name)'.")
             do {
                 let freed = try vmStore.deleteMovingFilesToTrash(config)
@@ -730,10 +742,13 @@ private struct DashboardContent: View {
             if config.isATemplate {
                 templateButton(config)
             } else {
+                // Not dimmed with no reason (2026-10-29, sixth audit): with
+                // another macOS machine running, Start says why it can't.
                 Button("Start") { startVM(config: config) }
                     .accessibilityLabel("Start \(config.name)")
-                    .accessibilityHint("Starts this macOS virtual machine in its own window")
-                    .disabled(macGuest.runningID != nil)
+                    .accessibilityHint(macGuest.runningID != nil
+                        ? "Another macOS machine is running; one macOS machine runs at a time"
+                        : "Starts this macOS virtual machine in its own window")
                 autoStartToggle(config)
             }
             Button("Settings") { openSettings(config) }
@@ -830,10 +845,12 @@ private struct DashboardContent: View {
 private struct QEMUMachineRow: View {
     @ObservedObject var session: VMSession
     @Binding var errorMessage: String?
+    let savedName: String
+    let openSettings: () -> Void
     @EnvironmentObject var focusLock: FocusLockManager
     @ObservedObject private var machines = MachineSessions.shared
 
-    private var name: String { session.configuration.name }
+    private var name: String { savedName }
 
     private var status: String {
         switch session.vmState {
@@ -874,6 +891,9 @@ private struct QEMUMachineRow: View {
             }
             .accessibilityLabel("Bluetooth devices for \(name)")
             .accessibilityHint("Sends a Bluetooth braille display, game controller or other device to \(name). Command Shift B.")
+        }
+        // Not during a save (sixth audit): pausing in the middle of one.
+        if session.vmState == .running, !session.isSaving {
             Button("Pause") {
                 Task {
                     // Said either way (2026-10-28, fourth audit): the button
@@ -902,6 +922,19 @@ private struct QEMUMachineRow: View {
                 }
             }
             .accessibilityLabel("Resume \(name)")
+            // A paused machine's devices too (sixth audit): its window
+            // opens for them, but the row had no way to it.
+            Button("Bluetooth Devices…") {
+                MachineSessions.shared.makeCurrent(session.configuration.id)
+                NotificationCenter.default.post(name: .avmBluetoothDevices, object: nil)
+            }
+            .accessibilityLabel("Bluetooth devices for \(name)")
+            .accessibilityHint("Lists the Bluetooth devices sent to \(name). Command Shift B.")
+        }
+        if session.vmState == .running || session.vmState == .paused {
+            Button("Settings") { openSettings() }
+                .accessibilityLabel("Settings for \(name)")
+                .accessibilityHint("Opens settings for this virtual machine. Some settings change only while it's shut down.")
         }
         if session.canSave {
             Button("Save") { Task { await session.saveAndStop() } }
@@ -934,6 +967,17 @@ private struct QEMUMachineRow: View {
                         Announcer.shared.announce("\(name) finished starting while you were asked. It's running; use Force Stop again if you still want to turn it off.", tone: .info)
                         return
                     }
+                    // Stopped, or started again, under the question (sixth
+                    // audit): the old machine's clean-up then removed the new
+                    // session's sockets.
+                    let stoppedMeanwhile: Bool = {
+                        if case .error = session.vmState { return true }
+                        return session.vmState == .stopped
+                    }()
+                    if stoppedMeanwhile || MachineSessions.shared.session(for: session.configuration.id) !== session {
+                        Announcer.shared.announce("\(name) stopped while you were asked, so there was nothing to turn off.", tone: .info)
+                        return
+                    }
                     session.forceStop()
                     Announcer.shared.announce("\(name) was turned off.", tone: .info)
                 }
@@ -953,7 +997,7 @@ private struct QEMUMachineRow: View {
             } catch {
                 errorMessage = error.localizedDescription
                 Announcer.shared.announce(
-                    "\(name) could not be shut down. Reason: \(error.localizedDescription). Next: try Shut Down again, or use Force Stop.",
+                    "\(name) could not be shut down. Reason: \(error.localizedDescription.hasSuffix(".") ? String(error.localizedDescription.dropLast()) : error.localizedDescription). Next: try Shut Down again, or use Force Stop.",
                     tone: .failure
                 )
             }
@@ -1089,7 +1133,11 @@ enum DashboardStatus {
             case 0:
                 return "No virtual machine is set up yet. Use the Setup Wizard first."
             case 1:
-                return "No virtual machine is running. \(vmStore.configurations[0].name) is ready to start."
+                // A template isn't started (2026-10-29, sixth audit).
+                let only = vmStore.configurations[0]
+                return only.isATemplate
+                    ? "No virtual machine is running. \(only.name) is a template; use New Machine from Template to make one from it."
+                    : "No virtual machine is running. \(only.name) is ready to start."
             case let n:
                 return "No virtual machine is running. \(n) virtual machines are set up."
             }

@@ -289,7 +289,12 @@ final class VMStore: ObservableObject {
         var machines: [VMConfiguration] = []
         var kept: [Any] = []
         for entry in entries {
-            if let one = try? JSONSerialization.data(withJSONObject: entry),
+            // Only an object is handed to JSONSerialization (2026-10-29,
+            // sixth audit): a number, string or null in the list made
+            // data(withJSONObject:) raise an exception that try? can't
+            // catch, and AVM crashed at every launch. Kept as it was.
+            if entry is [String: Any],
+               let one = try? JSONSerialization.data(withJSONObject: entry),
                let machine = try? JSONDecoder().decode(VMConfiguration.self, from: one) {
                 machines.append(machine)
             } else {
@@ -541,7 +546,7 @@ nonisolated enum RestorePoints {
         }
         let snapshots = json["snapshots"] as? [[String: Any]] ?? []
         return snapshots.compactMap { snap -> RestorePoint? in
-            guard let tag = snap["name"] as? String, tag.hasPrefix("avm-") else { return nil }
+            guard let tag = snap["name"] as? String, isOwnTag(tag) else { return nil }
             let seconds = snap["date-sec"] as? Double ?? 0
             let folder = dir.appendingPathComponent(folderName).appendingPathComponent(tag)
             let label = (try? String(contentsOf: folder.appendingPathComponent("label.txt"), encoding: .utf8))?
@@ -573,10 +578,21 @@ nonisolated enum RestorePoints {
 
     static func newTag() -> String { "avm-\(Int(Date().timeIntervalSince1970 * 1000))" }
 
+    /// A tag AVM made: "avm-" and the milliseconds (2026-10-29, sixth
+    /// audit). A snapshot's name is any bytes, and one with "/" or ".." in a
+    /// disk someone else made named a folder outside restore-points, which
+    /// Delete then removed for good.
+    static func isOwnTag(_ tag: String) -> Bool {
+        guard tag.hasPrefix("avm-") else { return false }
+        let digits = tag.dropFirst(4)
+        return !digits.isEmpty && digits.count <= 20 && digits.allSatisfy { $0.isASCII && $0.isNumber }
+    }
+
     /// The restore point's folder: copies of the firmware settings and the
     /// TPM, its label, and whether Secure Boot was on. A folder that
     /// couldn't be finished is removed, and that's thrown.
     static func writeFolder(vmDirectory dir: URL, tag: String, label: String, secureBoot: Bool, diskBus: String? = nil) throws {
+        guard isOwnTag(tag) else { throw RestorePointError.tool("The restore point's name isn't one AVM made.") }
         let fm = FileManager.default
         let folder = dir.appendingPathComponent(folderName).appendingPathComponent(tag)
         do {
@@ -603,13 +619,18 @@ nonisolated enum RestorePoints {
     }
 
     static func removeFolder(vmDirectory dir: URL, tag: String) {
+        guard isOwnTag(tag) else { return }
         try? FileManager.default.removeItem(at: dir.appendingPathComponent(folderName).appendingPathComponent(tag))
     }
 
     /// Puts the disk, firmware settings and TPM back as they were. The
     /// current firmware settings and TPM state are kept beside the restore
     /// point's copies until the restore has worked, then replaced.
-    static func restore(_ point: RestorePoint, vmDirectory dir: URL, currentSecureBoot: Bool) async throws {
+    /// `beforeRollback` runs once nothing can refuse any more, just before
+    /// the disk goes back (2026-10-29, sixth audit): Settings lets go of a
+    /// saved session there, not before checks that could still say no.
+    static func restore(_ point: RestorePoint, vmDirectory dir: URL, currentSecureBoot: Bool,
+                        beforeRollback: () async -> Void = {}) async throws {
         guard point.secureBoot == currentSecureBoot else {
             throw RestorePointError.secureBootMismatch(madeWithSecureBoot: point.secureBoot)
         }
@@ -637,6 +658,7 @@ nonisolated enum RestorePoints {
             for item in staged { try? fm.removeItem(at: item.fresh) }
             throw RestorePointError.tool("The restore point's firmware settings couldn't be copied, so nothing was changed: \(error.localizedDescription)")
         }
+        await beforeRollback()
         _ = try await qemuImg(["snapshot", "-a", point.tag, disk(dir).path])
         // With memory (2026-10-27): the next Start loads it and carries on
         // from that moment (QEMUSavedState.resumeTag). Without, any note
@@ -667,6 +689,7 @@ nonisolated enum RestorePoints {
     }
 
     static func delete(_ point: RestorePoint, vmDirectory dir: URL) async throws {
+        guard isOwnTag(point.tag) else { throw RestorePointError.tool("The restore point's name isn't one AVM made, so it wasn't deleted.") }
         _ = try await qemuImg(["snapshot", "-d", point.tag, disk(dir).path])
         try? FileManager.default.removeItem(at: dir.appendingPathComponent(folderName).appendingPathComponent(point.tag))
         AVMLog.write("AVM: RestorePoints — deleted \(point.tag).")

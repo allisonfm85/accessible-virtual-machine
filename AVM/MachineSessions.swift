@@ -166,6 +166,12 @@ final class MachineSessions: ObservableObject {
         windows[id]?.show()
         if let view = windows[id]?.captureView {
             FocusLockManager.shared?.registerCaptureView(view)
+        } else {
+            // Its screen isn't made yet (2026-10-29, sixth audit): the lock
+            // below would defend the last machine's screen, left open behind
+            // the list, and this one's own registration was then refused.
+            // It registers when it lands in its window.
+            FocusLockManager.shared?.forgetCaptureView()
         }
         // Once AVM is active (2026-10-28, code review): from the menu bar
         // item, activate() hasn't landed yet, and lock() refused with
@@ -376,7 +382,7 @@ final class MachineWindow: NSObject, NSWindowDelegate {
             let name = session.configuration.name
             Announcer.shared.announce(latestConfiguration.windowsKeyboardID != nil
                 ? "\(name) is running. Your keyboard stays on the Mac; its own keyboard types into it. Enter \(name) from AVM's list to use this keyboard there too."
-                : "\(name) is running. Your keyboard stays on the Mac. Enter \(name) from AVM's list, or press Command Shift E, to use it there.", tone: .info)
+                : "\(name) is running. Your keyboard stays on the Mac. To use it there, switch to AVM and enter \(name) from its list, or press Command Shift E.", tone: .info)
         } else {
             show()
         }

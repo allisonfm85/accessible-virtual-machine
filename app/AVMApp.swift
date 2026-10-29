@@ -393,7 +393,12 @@ struct AVMApp: App {
 
                 Button("Send Ctrl-Alt-Delete") {
                     Task { @MainActor in
-                        await VMManager.shared?.sendCtrlAltDel()
+                        // A failure said (2026-10-29, sixth audit): it went
+                        // only to a console no view shows.
+                        guard let manager = VMManager.shared else { return }
+                        if await !manager.sendCtrlAltDel() {
+                            Announcer.shared.announce("Ctrl Alt Delete didn't reach \(manager.machineName). Next: try again in a moment.", tone: .failure)
+                        }
                     }
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
@@ -449,7 +454,13 @@ struct AVMApp: App {
                         alert.addButton(withTitle: "Cancel")
                         alert.addButton(withTitle: "Reset")
                         if alert.runModal() == .alertSecondButtonReturn {
-                            await manager.resetVM()
+                            // Said either way (2026-10-29, sixth audit): the
+                            // machine went quiet for its restart with no word.
+                            if await manager.resetVM() {
+                                Announcer.shared.announce("Resetting \(manager.machineName). It restarts now.", tone: .info)
+                            } else {
+                                Announcer.shared.announce("\(manager.machineName) couldn't be reset. Next: try again in a moment, or use Shut Down.", tone: .failure)
+                            }
                         }
                     }
                 }
@@ -582,10 +593,17 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSLog("AVM: AppDelegate — applicationDidFinishLaunching; running Caps Lock recovery check.")
         MainActor.assumeIsolated {
-            CapsLockRemapper.shared.recoverAtLaunch()
-            // The Mac's VoiceOver back on if AVM ended while it was off for a
-            // macOS machine (2026-10-26).
-            MacVoiceOver.recoverAtLaunch()
+            // Not in a test run (2026-10-29, sixth audit): it shares the
+            // user's AVM settings, and restored Caps Lock under the user's
+            // own AVM while its keyboard was in Windows, or turned VoiceOver
+            // back on while the user was in a macOS machine.
+            let testRun = CommandLine.arguments.contains { $0.hasPrefix("--test-") }
+            if !testRun {
+                CapsLockRemapper.shared.recoverAtLaunch()
+                // The Mac's VoiceOver back on if AVM ended while it was off for a
+                // macOS machine (2026-10-26).
+                MacVoiceOver.recoverAtLaunch()
+            }
             // Pause a running VM before the Mac sleeps (2026-10-26).
             SleepCoordinator.shared.start()
             ControlServer.shared.start()
@@ -658,7 +676,24 @@ enum DashboardCommand {
     private static let patience: TimeInterval = 30
 
     static func post(_ name: Notification.Name, object: Any? = nil) {
+        // A window already open on the list (2026-10-29, sixth audit): the
+        // next one waited, out of sight and unsaid, until it was closed.
+        let opensWindow: Set<Notification.Name> = [.avmAttachUSBFromMenu, .avmDetachUSBFromMenu, .avmBluetoothDevices,
+                                                   .avmReclaimFromMenu, .avmBackgroundSettings]
+        if opensWindow.contains(name), MainWindowCloseGuard.hasOpenSheet {
+            Announcer.shared.announce("A window is open in AVM's list. Close it, then choose the command again.", tone: .info)
+            MainWindowCloseGuard.bringMainWindowForward()
+            return
+        }
         if MainWindowCloseGuard.hasMainWindow {
+            // The list comes forward first (2026-10-29, sixth audit): a
+            // command whose window opens on the list (Attach USB Device,
+            // Bluetooth Devices, Reclaim) opened it behind a machine's
+            // window, or on a minimized list, out of sight and unsaid.
+            if name != .avmSpeakStatusFromMenu {
+                NSApp.activate(ignoringOtherApps: true)
+                MainWindowCloseGuard.bringMainWindowForward()
+            }
             NotificationCenter.default.post(name: name, object: object)
             return
         }
@@ -685,6 +720,11 @@ enum DashboardCommand {
     static func deliverPending() {
         guard !pending.isEmpty else { return }
         let waiting = pending.filter { Date().timeIntervalSince($0.asked) < patience }
+        // Dropped ones are logged and said (sixth audit): they vanished.
+        if waiting.count < pending.count {
+            AVMLog.write("AVM: \(pending.count - waiting.count) menu command(s) waited too long for the dashboard and were dropped")
+            Announcer.shared.announce("The list of virtual machines took too long to open, so the command you chose wasn't carried out. Choose it again.", tone: .info)
+        }
         pending = []
         // A turn later, once the dashboard's listeners are in place.
         DispatchQueue.main.async {
@@ -712,11 +752,14 @@ final class MainWindowCloseGuard: NSObject, NSWindowDelegate {
     /// own window, Control-Command-Escape lands here.
     static func bringMainWindowForward() {
         guard let window = shared.mainWindow else { return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
     }
 
     /// False when AVM has no main window (macOS restored none at launch).
     static var hasMainWindow: Bool { shared.mainWindow != nil }
+    /// A sheet (Settings, the Setup Wizard, a picker) is open on the list.
+    static var hasOpenSheet: Bool { shared.mainWindow?.attachedSheet != nil }
     /// SwiftUI's opener for the list window, kept by ContentView once it has
     /// appeared (2026-10-28): a reopen event makes no window while a
     /// machine's window is up.
@@ -813,19 +856,51 @@ enum QuitCoordinator {
         // and the Mac's own shut-down question went unheard; with
         // VoiceOver on it reads the alert once AVM is in front, and saying
         // it as well was heard twice.
+        // With its answers (2026-10-29, sixth audit): the question alone
+        // left the user to guess what Return did and how to reach the rest.
+        let titles = alert.buttons.map(\.title)
+        let choices = titles.count > 1
+            ? " The choices are \(titles.joined(separator: ", ")). Return chooses \(titles[0]); to hear and choose the others, turn VoiceOver on with Command F5."
+            : ""
+        var timer: Timer?
         if !NSWorkspace.shared.isVoiceOverEnabled || FocusLockManager.shared?.isLocked == true {
-            Announcer.shared.announce(alert.messageText, tone: .info)
+            Announcer.shared.announce(alert.messageText + choices, tone: .info)
+        } else {
+            // Said after all if AVM wasn't let in front (sixth audit): macOS
+            // can refuse an activation, and VoiceOver doesn't read an alert
+            // that isn't focused, so the Mac's restart waited on silence.
+            let check = Timer(timeInterval: 1.5, repeats: false) { _ in
+                MainActor.assumeIsolated {
+                    if !NSApp.isActive || !alert.window.isKeyWindow {
+                        Announcer.shared.announce(alert.messageText, tone: .info)
+                    }
+                }
+            }
+            RunLoop.main.add(check, forMode: .modalPanel)
+            timer = check
         }
-        return alert.runModal()
+        let response = alert.runModal()
+        timer?.invalidate()
+        return response
     }
 
     /// True when this quit is the Mac shutting down, restarting or logging
     /// out, not the user quitting AVM.
-    private static var macIsShuttingDown: Bool {
+    private static var macIsShuttingDown: Bool { macStop != nil }
+
+    /// What the Mac is doing, and the menu item that does it again
+    /// (2026-10-29, sixth audit: a log out was told "choose Shut Down or
+    /// Restart again"). Read only inside applicationShouldTerminate: the
+    /// Apple event is gone once it returns.
+    private static var macStop: (word: String, item: String)? {
         guard let reason = NSAppleEventManager.shared().currentAppleEvent?
-                .attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason))?.enumCodeValue else { return false }
-        return [kAEShutDown, kAERestart, kAELogOut, kAEReallyLogOut, kAEShowRestartDialog, kAEShowShutdownDialog]
-            .map { OSType($0) }.contains(reason)
+                .attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason))?.enumCodeValue else { return nil }
+        switch reason {
+        case OSType(kAERestart), OSType(kAEShowRestartDialog): return ("restart", "Restart")
+        case OSType(kAEShutDown), OSType(kAEShowShutdownDialog): return ("shut down", "Shut Down")
+        case OSType(kAELogOut), OSType(kAEReallyLogOut): return ("log out", "Log Out")
+        default: return nil
+        }
     }
 
     static func shouldTerminate() -> NSApplication.TerminateReply {
@@ -887,9 +962,17 @@ enum QuitCoordinator {
                 if !otherActive { return .terminateNow }
                 MacGuestRunner.shared.forceStop()
             case .alertThirdButtonReturn where saveable:
+                // Stopped while the question was up (2026-10-29, sixth
+                // audit): nothing is left to save, so AVM just quits.
+                guard MacGuestRunner.shared.runningID != nil, MacGuestRunner.shared.canSave else {
+                    return otherActive ? .terminateCancel : .terminateNow
+                }
                 if !otherActive {
+                    // The reply comes a turn later at the soonest (sixth
+                    // audit): a save that ends at once replied inside this
+                    // call, before .terminateLater was returned.
                     MacGuestRunner.shared.saveAndStop { saved in
-                        NSApp.reply(toApplicationShouldTerminate: saved)
+                        DispatchQueue.main.async { NSApp.reply(toApplicationShouldTerminate: saved) }
                     }
                     return .terminateLater
                 }
@@ -951,6 +1034,9 @@ enum QuitCoordinator {
                     : " Save \(guest) and Quit keeps \(guest) as it is, open apps and all, and its next Start carries on from there in seconds."
             }
             let choice = ask(alert)
+            // Kept now (sixth audit): the Save and Quit task below runs after
+            // this returns, when the Mac's Apple event can't be read.
+            let stop = macStop
             let shutDown = !starting && choice == .alertSecondButtonReturn
             let quitNow = starting ? choice == .alertSecondButtonReturn : choice == .alertThirdButtonReturn
             let saveAndQuit = saveable && choice.rawValue == NSApplication.ModalResponse.alertThirdButtonReturn.rawValue + 1
@@ -964,13 +1050,26 @@ enum QuitCoordinator {
                     }
                     // Starting and shutting-down machines too (2026-10-28,
                     // fifth audit): left out, AVM quit with their QEMU still
-                    // running, headless, holding the disk.
-                    let others = active.filter { ([.running, .paused, .starting, .stopping] as [VMRuntimeState]).contains($0.vmState) }
+                    // running, headless, holding the disk. Read now, not
+                    // from before the question (sixth audit): a machine
+                    // avmctl started meanwhile was left running headless.
+                    let others = MachineSessions.shared.sessions.values.filter { ([.running, .paused, .starting, .stopping] as [VMRuntimeState]).contains($0.vmState) }
                     if allDone && !others.isEmpty {
-                        // Machines that can't be saved are shut down first.
+                        // Machines that can't be saved are shut down first,
+                        // named as themselves, not with the saved ones.
+                        let names = others.map(\.configuration.name).sorted()
+                        let left = names.count == 1 ? names[0] : ListFormatter.localizedString(byJoining: names)
                         NSApp.reply(toApplicationShouldTerminate: false)
-                        beginShutDownThenQuit(guest: guest)
+                        // The Mac's restart is cancelled by that reply, and
+                        // said (sixth audit), as Shut Down and Cancel say it.
+                        if let stop {
+                            Announcer.shared.announce("The Mac's \(stop.word) is stopped while \(left) \(names.count > 1 ? "shut" : "shuts") down. When AVM has quit, choose \(stop.item) again.", tone: .info)
+                        }
+                        beginShutDownThenQuit(guest: left)
                         return
+                    }
+                    if !allDone, let stop {
+                        Announcer.shared.announce("The Mac's \(stop.word) is stopped. Choose \(stop.item) again when you're ready.", tone: .info)
                     }
                     NSApp.reply(toApplicationShouldTerminate: allDone)
                 }
@@ -981,8 +1080,8 @@ enum QuitCoordinator {
                 // Said (2026-10-28, fourth audit): answering this cancels the
                 // Mac's own shut down, restart or log out, and the Mac stayed
                 // on with nothing said.
-                if macIsShuttingDown {
-                    Announcer.shared.announce("The Mac's shut down is stopped while \(guest) shuts down. When AVM has quit, choose Shut Down or Restart again.", tone: .info)
+                if let stop {
+                    Announcer.shared.announce("The Mac's \(stop.word) is stopped while \(guest) \(several ? "shut" : "shuts") down. When AVM has quit, choose \(stop.item) again.", tone: .info)
                 }
                 beginShutDownThenQuit(guest: guest)
                 return .terminateCancel
@@ -992,8 +1091,8 @@ enum QuitCoordinator {
                 AVMLog.write("AVM: Quit — cancelled with \(active.count) machine(s) active.")
                 // Said (2026-10-28, fifth audit): Cancel here cancels the
                 // Mac's own shut down, and nothing told the user.
-                if macIsShuttingDown {
-                    Announcer.shared.announce("The Mac's shut down is stopped; \(guest) \(several ? "keep" : "keeps") running. Shut \(several ? "them" : "it") down, then choose Shut Down or Restart again.", tone: .info)
+                if let stop {
+                    Announcer.shared.announce("The Mac's \(stop.word) is stopped; \(guest) \(several ? "keep" : "keeps") running. Shut \(several ? "them" : "it") down, then choose \(stop.item) again.", tone: .info)
                 }
                 return .terminateCancel
             }

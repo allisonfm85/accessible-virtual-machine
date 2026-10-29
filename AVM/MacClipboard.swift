@@ -124,6 +124,11 @@ final class MacClipboard {
     #!/bin/bash
     # AVM clipboard sharing: keeps this machine's clipboard and the Mac's in
     # step through the shared AVM Clipboard folder. Text only.
+    # UTF-8, as the Mac side reads and writes it (2026-10-29, sixth audit):
+    # launchd gives no locale, and pbcopy and pbpaste then fall back to a
+    # one-byte encoding, so accents and curly quotes came out garbled, or
+    # a copy in this machine never reached the Mac.
+    export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
     SHARE="/Volumes/My Shared Files/AVM Clipboard"
     last_mine=""
     last_theirs=""

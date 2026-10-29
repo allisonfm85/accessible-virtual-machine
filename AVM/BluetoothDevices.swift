@@ -49,6 +49,13 @@ final class BluetoothDevices: ObservableObject {
 
     @discardableResult
     func attach(_ device: BluetoothDeviceInfo, to machine: VMManager) async -> Bool {
+        // Not into a machine being saved (2026-10-29, sixth audit): its save
+        // gives its devices back first, and one sent meanwhile went into a
+        // saved state that couldn't carry on.
+        if machine.isSaving {
+            say("\(machine.machineName) is being saved, so \(device.name) stays on the Mac.", tone: .info)
+            return false
+        }
         guard case .running = machine.state else {
             if case .paused = machine.state {
                 say("\(machine.machineName) is paused. Resume it, then send \(device.name).", tone: .failure)
@@ -97,10 +104,12 @@ final class BluetoothDevices: ObservableObject {
         if case .failure(.notEnabled(.requiresApproval)) = held {
             approvalAsked = true
             say("\(device.name) goes to \(machine.machineName) once AVM's helper is allowed in Login Items.", tone: .info)
-            let approved = await USBHelperClient.shared.waitForApproval(while: { if case .running = machine.state { return true } else { return false } })
+            // Nor one being saved meanwhile (2026-10-29, sixth audit): this
+            // send's bridge is in QEMU already, and would be in the save.
+            let approved = await USBHelperClient.shared.waitForApproval(while: { if case .running = machine.state, !machine.isSaving { return true } else { return false } })
             // Only for a machine still running (2026-10-28): one that
             // stopped during the wait has no socket to hold against.
-            if approved, case .running = machine.state {
+            if approved, case .running = machine.state, !machine.isSaving {
                 held = await USBHelperClient.shared.holdBluetooth(device.id, socketPath: socket, peerPID: machine.qemuPID)
             }
         }
@@ -117,10 +126,17 @@ final class BluetoothDevices: ObservableObject {
             // Said here too when the approval wait ended without a send
             // (2026-10-28, fourth audit): the promise above was the last word.
             if case .notEnabled = error {
-                if approvalAsked { say("\(device.name) stayed on the Mac: AVM's helper wasn't allowed in time, or \(machine.machineName) stopped. Send it again from Bluetooth Devices.", tone: .info) }
+                if machine.isSaving {
+                    say("\(machine.machineName) is being saved, so \(device.name) stays on the Mac.", tone: .info)
+                } else if approvalAsked {
+                    say("\(device.name) stayed on the Mac: AVM's helper wasn't allowed in time, or \(machine.machineName) stopped. Send it again from Bluetooth Devices.", tone: .info)
+                }
                 return false
             }
-            say("\(device.name) stayed on the Mac. Reason: \(Self.reason(error))", tone: .failure)
+            // Not "stayed on the Mac" for a machine's keyboard for Windows,
+            // which the helper has already (2026-10-29, sixth audit).
+            let reason = Self.reason(error)
+            say(reason.contains("keyboard for Windows") ? "\(device.name) wasn't sent. \(reason)" : "\(device.name) stayed on the Mac. Reason: \(reason)", tone: .failure)
             return false
         }
     }

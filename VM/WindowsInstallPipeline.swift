@@ -560,10 +560,13 @@ nonisolated final class WindowsInstallPipeline {
     /// (Process reports terminationStatus 6 = the signal number). Proven by test.
     /// `extraEnvironment` merges per-call variables (e.g. MTOOLS_SKIP_CHECK).
     @discardableResult
-    private func runTool(_ executable: URL, _ arguments: [String], extraEnvironment: [String: String] = [:]) async -> (code: Int32, output: String) {
+    private func runTool(_ executable: URL, _ arguments: [String], extraEnvironment: [String: String] = [:],
+                         cancellable: Bool = true) async -> (code: Int32, output: String) {
         // Ended when the build is cancelled (2026-10-28, fifth audit: Force
         // Stop during a build left the tool running, and the next Start's
-        // build was deleted from under it).
+        // build was deleted from under it). Not a clean-up step, such as
+        // detaching the ISO (2026-10-29, sixth audit): in a cancelled task
+        // it never ran, and the installer stayed mounted.
         nonisolated(unsafe) let process = Process()
         nonisolated(unsafe) var cancelled = false
         return await withTaskCancellationHandler {
@@ -595,6 +598,9 @@ nonisolated final class WindowsInstallPipeline {
                     continuation.resume(returning: (-1, "Failed to launch \(executable.lastPathComponent): \(error.localizedDescription)"))
                     return
                 }
+                // A cancel that came between the check above and the launch
+                // found nothing running to end (sixth audit).
+                if cancelled { process.terminate() }
 
                 // A time limit (2026-10-26, code audit): an ISO on a drive
                 // unplugged mid-copy left hdiutil or ditto waiting for good,
@@ -613,6 +619,7 @@ nonisolated final class WindowsInstallPipeline {
             }
           }
         } onCancel: {
+            guard cancellable else { return }
             cancelled = true
             if process.isRunning { process.terminate() }
         }
@@ -653,21 +660,29 @@ nonisolated final class WindowsInstallPipeline {
         if let device = result.output.split(separator: "\n").first?
             .split(separator: "\t").first.map({ String($0).trimmingCharacters(in: .whitespaces) }),
            device.hasPrefix("/dev/") {
-            _ = await runTool(hdiutil, ["detach", device, "-force"])
+            _ = await runTool(hdiutil, ["detach", device, "-force"], cancellable: false)
             pipelineLog("mountISO: no volume mounted; detached \(device)")
         }
         throw PipelineError.isoMountFailed(reason: "It mounted but exposed no readable volume.")
     }
 
-    /// Detach a previously mounted ISO. Best-effort; tries a force detach on a
-    /// first-attempt failure (a tool may still hold a handle for a moment).
+    /// Detach a previously mounted ISO. Best-effort; tried again a few times
+    /// (a tool may still hold a handle for a moment), never forced
+    /// (2026-10-29, sixth audit): hdiutil gives a second build of the same
+    /// ISO, or the user's own Finder mount, the same mount, and a forced
+    /// detach pulled it out from under the other copy, which then failed.
+    /// One still busy is left for whoever is using it.
     private func detachISO(_ mountPoint: URL) async {
         let hdiutil = URL(fileURLWithPath: "/usr/bin/hdiutil")
-        let r = await runTool(hdiutil, ["detach", mountPoint.path])
-        if r.code != 0 {
-            _ = await runTool(hdiutil, ["detach", mountPoint.path, "-force"])
+        for attempt in 1...4 {
+            let r = await runTool(hdiutil, ["detach", mountPoint.path], cancellable: false)
+            if r.code == 0 {
+                pipelineLog("detachISO: \(mountPoint.path)")
+                return
+            }
+            if attempt < 4 { try? await Task.sleep(for: .milliseconds(1500)) }
         }
-        pipelineLog("detachISO: \(mountPoint.path)")
+        pipelineLog("detachISO: \(mountPoint.path) is still in use; left mounted for whoever uses it")
     }
 
     // MARK: - WIM Info Parsing
@@ -918,7 +933,7 @@ nonisolated final class WindowsInstallPipeline {
         if !info.architecture.isEmpty {
             let arch = info.architecture.uppercased()
             if arch != "ARM64" {
-                return .hardStop(reason: "This is a \(info.architecture) version of Windows, which can't run on this Mac's virtual machine. You need a Windows 11 ARM64 ISO.")
+                return .hardStop(reason: "This installer is for \(info.architecture) PCs, so its Windows can't run on this Mac's virtual machine. You need a Windows 11 ARM64 ISO.")
             }
         } else {
             // Couldn't read architecture — unsure, not certain. Warn.
@@ -1670,14 +1685,16 @@ nonisolated final class WindowsInstallPipeline {
     private func stagePromote(input: PipelineInput, scratch: URL) async throws {
         let fm = FileManager.default
 
-        // Ensure the runtime dir exists (it normally does — VMManager creates
-        // it — but the pipeline shouldn't assume).
-        do {
-            try fm.createDirectory(at: input.runtimeDir, withIntermediateDirectories: true)
-        } catch {
+        // The machine's folder must still be there (2026-10-29, sixth audit):
+        // made again here, a machine deleted during its build got its folder
+        // back, holding the install media and the answer file's password,
+        // with no machine in the list to delete it from. VMManager (and the
+        // install-media job) make the folder before the build starts.
+        var isFolder: ObjCBool = false
+        guard fm.fileExists(atPath: input.runtimeDir.path, isDirectory: &isFolder), isFolder.boolValue else {
             throw PipelineError.stageFailed(
                 stage: .promote,
-                reason: "Couldn't access the virtual machine's folder. (\(error.localizedDescription))"
+                reason: "The virtual machine's folder is gone, so the install media wasn't kept."
             )
         }
 

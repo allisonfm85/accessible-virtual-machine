@@ -184,6 +184,8 @@ nonisolated enum ScreenReaderInstallers {
         try? FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
         var got: [ScreenReader: URL] = [:]
         for reader in readers {
+            // A Force Stop ends the downloads (2026-10-29, sixth audit).
+            if Task.isCancelled { break }
             let installer = await latest(reader)
             let file = cache.appendingPathComponent("\(reader.rawValue)-\(installer.version).exe")
             if (try? matches(file, installer.checksum)) == true {
@@ -198,6 +200,7 @@ nonisolated enum ScreenReaderInstallers {
             var lastError: Error?
             var resumeData: Data?
             for attempt in 1...downloadAttempts {
+                if Task.isCancelled { break }
                 do {
                     try await download(installer, to: file, resumeData: resumeData, say: say)
                     guard try matches(file, installer.checksum) else {
@@ -217,13 +220,14 @@ nonisolated enum ScreenReaderInstallers {
                     let ns = error as NSError
                     AVMLog.write("AVM: ScreenReaders — \(reader.displayName) try \(attempt) of \(downloadAttempts) failed from \(installer.url.host ?? "?"): \(error.localizedDescription) [\(ns.domain) \(ns.code)]\(resumeData != nil ? "; the next try carries on where it stopped" : "")")
                     try? FileManager.default.removeItem(at: file.appendingPathExtension("part"))
+                    if Task.isCancelled { break }
                     if attempt < downloadAttempts {
                         await say("\(reader.displayName)'s download stopped. Trying again.", false)
                         try? await Task.sleep(for: .seconds(5 * attempt))
                     }
                 }
             }
-            if let lastError {
+            if let lastError, !Task.isCancelled {
                 await say("\(reader.displayName) couldn't be downloaded after \(downloadAttempts) tries, so it won't be installed this time. Reason: \(lastError.localizedDescription) Windows still has Narrator: in Windows, press Control Command Return to turn it on, then install \(reader.displayName) from its maker's website there.", true)
             }
         }
@@ -242,6 +246,17 @@ nonisolated enum ScreenReaderInstallers {
                Date().timeIntervalSince(changed) < 86_400 { continue }
             try? fm.removeItem(at: url)
         }
+    }
+
+    /// The size of the newest copy of this reader's installer in `cache`,
+    /// or nil when there is none (2026-10-29, sixth audit: the room check
+    /// runs before the downloads now).
+    static func cachedBytes(of reader: ScreenReader, in cache: URL) -> Int64? {
+        let fm = FileManager.default
+        let sizes = ((try? fm.contentsOfDirectory(atPath: cache.path)) ?? [])
+            .filter { $0.hasPrefix("\(reader.rawValue)-") && $0.hasSuffix(".exe") }
+            .compactMap { (try? fm.attributesOfItem(atPath: cache.appendingPathComponent($0).path))?[.size] as? Int64 }
+        return sizes.max()
     }
 
     /// Tries per installer before giving up on it.
@@ -297,6 +312,9 @@ nonisolated enum ScreenReaderInstallers {
             }
         }
         defer { progress.cancel() }
+        // Cancelled with its task (2026-10-29, sixth audit): a Force Stop
+        // left a 1.5 GB download running, and talking, for minutes.
+        try await withTaskCancellationHandler {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let done: @Sendable (URL?, URLResponse?, Error?) -> Void = { location, response, error in
                 if let error { continuation.resume(throwing: error); return }
@@ -316,16 +334,37 @@ nonisolated enum ScreenReaderInstallers {
             }
             let task = resumeData.map { downloads.downloadTask(withResumeData: $0, completionHandler: done) }
                 ?? downloads.downloadTask(with: installer.url, completionHandler: done)
-            box.task = task
+            box.set(task)
             task.resume()
+        }
+        } onCancel: {
+            box.cancel()
         }
         try? FileManager.default.removeItem(at: file)
         try FileManager.default.moveItem(at: part, to: file)
     }
 
-    /// The running download task, for the progress poll.
+    /// The running download task, for the progress poll and a cancel. A
+    /// cancel that comes before the task exists cancels it as it's set.
     private final class TaskBox: @unchecked Sendable {
-        var task: URLSessionDownloadTask?
+        private let lock = NSLock()
+        private var _task: URLSessionDownloadTask?
+        private var cancelled = false
+        var task: URLSessionDownloadTask? { lock.withLock { _task } }
+        func set(_ task: URLSessionDownloadTask) {
+            let stop = lock.withLock { () -> Bool in
+                _task = task
+                return cancelled
+            }
+            if stop { task.cancel() }
+        }
+        func cancel() {
+            let task = lock.withLock { () -> URLSessionDownloadTask? in
+                cancelled = true
+                return _task
+            }
+            task?.cancel()
+        }
     }
 
     static func matches(_ file: URL, _ checksum: Checksum) throws -> Bool {

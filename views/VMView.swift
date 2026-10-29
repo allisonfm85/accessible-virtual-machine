@@ -2219,7 +2219,10 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
 
     func spiceInputAvailable(_ connection: CSConnection, input: CSInput) {
         NSLog("AVM: SPICE input channel available.")
-        self.input = input
+        // Set on the main thread, where keys read it (2026-10-29, sixth
+        // audit): written from SPICE's thread, a key typed as QEMU went away
+        // could read a reference being freed.
+        DispatchQueue.main.async { [weak self] in self?.input = input }
         input.requestMouseMode(false)
         // PUBLIC (issue #4): a configuration choice, announced. false =
         // request ABSOLUTE (client-mode) positioning — the mode the fork's
@@ -2237,7 +2240,8 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
 
     func spiceInputUnavailable(_ connection: CSConnection, input: CSInput) {
         NSLog("AVM: SPICE input channel unavailable.")
-        if self.input === input {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.input === input else { return }
             self.input = nil
         }
     }
@@ -2422,18 +2426,24 @@ extension SPICECoordinator {
         case kVK_ANSI_KeypadEquals: return 0x59
         case kVK_F13: return 0x100 | 0x37
         case kVK_F14: return 0x46
-        // F15 to F20 of an extended Apple keyboard (2026-10-28, fifth
+        // F16 to F20 of an extended Apple keyboard (2026-10-28, fifth
         // audit: unmapped), as QEMU numbers them; F19 is the Caps Lock
-        // courier above.
-        case kVK_F15: return 0x5F
+        // courier above. F15 is Pause (2026-10-29, sixth audit), as F13 is
+        // PrtSc and F14 Scroll Lock: macOS reports a PC keyboard's Pause as
+        // F15, and it reached Windows as F15, never as Pause.
+        case kVK_F15: return 0x100 | 0x46
         case kVK_F16: return 0x55
         case kVK_F17: return 0x100 | 0x03
         case kVK_F18: return 0x100 | 0x77
         case kVK_F20: return 0x5A
         case kVK_JIS_Yen: return 0x7D
         case kVK_JIS_Underscore: return 0x73
-        case kVK_JIS_Kana: return 0x70
-        case kVK_JIS_Eisu: return 0x7B
+        // As the keyboard for Windows sends them (2026-10-29, sixth audit):
+        // an Apple JIS keyboard's Kana and Eisu are LANG1 and LANG2, the
+        // input method on and off; through this path they were Katakana-
+        // Hiragana and Muhenkan.
+        case kVK_JIS_Kana: return 0x72
+        case kVK_JIS_Eisu: return 0x71
         case kVK_LeftArrow:     return 0x100 | 0x4B
         case kVK_RightArrow:    return 0x100 | 0x4D
         case kVK_UpArrow:       return 0x100 | 0x48

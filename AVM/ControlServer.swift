@@ -156,7 +156,11 @@ final class ControlServer {
                 mac.start(config, takesKeyboard: false)
                 return ["ok": true, "message": "Starting \(name). Your keyboard stays on the Mac until you enter it."]
             }
-            if session != nil { return fail("\(name) is already running.") }
+            if let session {
+                // Its real state (2026-10-29, sixth audit): one shutting down
+                // was "already running".
+                return fail(session.vmState == .stopping ? "\(name) is shutting down. Start it again once it has." : "\(name) is already running.")
+            }
             let windowless = request["noWindow"] as? Bool == true || config.startsWithoutWindow
             MachineSessions.shared.start(config, vmStore: store, focusLock: FocusLockManager.shared, windowless: windowless, takesKeyboard: false)
             return ["ok": true, "message": "Starting \(name)\(windowless ? " without a window" : ""). Your keyboard stays on the Mac until you enter it."]
@@ -167,7 +171,15 @@ final class ControlServer {
                 mac.shutDown()
                 return ["ok": true, "message": "Asked \(name) to shut down."]
             }
-            guard let session, session.vmState == .running || session.vmState == .paused else { return fail("\(name) isn't running.") }
+            guard let session else { return fail("\(name) isn't running.") }
+            // Its real state (sixth audit): starting or already shutting
+            // down was "isn't running".
+            switch session.vmState {
+            case .running, .paused: break
+            case .starting: return fail("\(name) is still starting. Try again once it's running.")
+            case .stopping: return fail("\(name) is already shutting down.")
+            default: return fail("\(name) isn't running.")
+            }
             // A failure is said (2026-10-28, fourth audit): "Asked X to shut
             // down" was the last word, though X kept running.
             Task {
@@ -224,7 +236,13 @@ final class ControlServer {
     private func describe(_ config: VMConfiguration) -> [String: Any] {
         var state = "shut down"
         if config.guestOS == .macOS {
-            if MacGuestRunner.shared.runningID == config.id { state = "running" }
+            if MacGuestRunner.shared.runningID == config.id {
+                state = "running"
+            } else if let folder = try? config.directoryURL(),
+                      FileManager.default.fileExists(atPath: MacGuestFiles(folder: folder).savedState.path) {
+                // Saved too (sixth audit): it was "shut down".
+                state = "saved"
+            }
         } else if let session = MachineSessions.shared.session(for: config.id) {
             switch session.vmState {
             case .starting: state = "starting"

@@ -103,10 +103,21 @@ nonisolated struct WindowsSetupAnswers: Codable, Equatable, Sendable {
         "administrator", "guest", "defaultaccount", "wdagutilityaccount", "system",
         "localsystem", "networkservice", "localservice", "user", "users", "admin",
         "administrators", "everyone", "none",
+        // Windows' own local groups (2026-10-29, sixth audit): an account
+        // can't share a group's name, and Setup stopped on an error page
+        // nobody heard.
+        "guests", "replicator", "iis_iusrs", "power users", "backup operators",
+        "remote desktop users", "network configuration operators",
+        "performance monitor users", "performance log users", "distributed com users",
+        "cryptographic operators", "event log readers", "hyper-v administrators",
+        "access control assistance operators", "remote management users",
+        "device owners", "system managed accounts group", "openssh users",
     ]
 
     static func problem(withUserName name: String, computerName: String?) -> String? {
-        if name.isEmpty || name.count > 20 {
+        // Counted as Windows counts (sixth audit): UTF-16 units, so a name
+        // with emoji or accents made of two marks can't pass at 20 letters.
+        if name.isEmpty || name.utf16.count > 20 {
             return "The Windows user name must be 1 to 20 characters."
         }
         if name.rangeOfCharacter(from: CharacterSet(charactersIn: "\"/\\[]:;|=,+*?<>@")) != nil {
