@@ -39,6 +39,15 @@ struct USBDevicePickerView: View {
             }
         }
 
+        /// The device list's name, spoken by VoiceOver (2026-10-26,
+        /// accessibility audit: "Device, radio group" didn't say what for).
+        var listLabel: String {
+            switch self {
+            case .attach: return "Device to attach"
+            case .detach: return "Device to return to the Mac"
+            }
+        }
+
         var actionTitle: String {
             switch self {
             case .attach: return "Attach"
@@ -53,6 +62,13 @@ struct USBDevicePickerView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selected: AVMUSBDeviceIdentity?
 
+    /// A device's name in the list, with its ID, bus and address when
+    /// another device has the same name.
+    private func menuName(_ device: AVMUSBDeviceIdentity) -> String {
+        guard devices.filter({ $0.displayName == device.displayName }).count > 1 else { return device.displayName }
+        return "\(device.displayName), ID \(device.vidPidString), bus \(device.busNumber), address \(device.deviceAddress)"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
 
@@ -65,15 +81,16 @@ struct USBDevicePickerView: View {
                 .font(.body)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Picker("Device", selection: $selected) {
+            // A pop-up (2026-10-27, ChoiceGroup.swift). A menu item can't
+            // carry a hint, so two devices with the same name say their ID,
+            // bus and address in it, to tell them apart.
+            Picker(mode.listLabel, selection: $selected) {
+                Text("Choose a device").tag(nil as AVMUSBDeviceIdentity?)
                 ForEach(devices, id: \.description) { device in
-                    Text(device.displayName)
-                        .accessibilityHint("ID \(device.vidPidString), bus \(device.busNumber), address \(device.deviceAddress).")
-                        .tag(device as AVMUSBDeviceIdentity?)
+                    Text(menuName(device)).tag(device as AVMUSBDeviceIdentity?)
                 }
             }
-            .pickerStyle(.radioGroup)
-            .labelsHidden()
+            .choicePopUp("Opens the list of \(devices.count == 1 ? "one device" : "\(devices.count) devices"). Choose one, then \(mode.actionTitle).")
 
             HStack {
                 Spacer()
@@ -101,8 +118,11 @@ struct USBDevicePickerView: View {
         }
         .padding(24)
         .frame(minWidth: 460)
+        // Nothing chosen until the user chooses (2026-10-26, code audit):
+        // with the first device preselected, Return could send the Mac's
+        // own USB keyboard to the machine.
         .onAppear {
-            selected = devices.first
+            selected = devices.count == 1 && mode == .detach ? devices.first : nil
         }
     }
 }
