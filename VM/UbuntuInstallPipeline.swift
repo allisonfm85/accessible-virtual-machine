@@ -738,6 +738,11 @@ nonisolated final class UbuntuInstallPipeline {
           packages:
             - spice-vdagent
             - spice-webdavd
+            # The guest agent (2026-10-30): Debian's and Fedora's installs
+            # had it, Ubuntu's didn't, so an installed Ubuntu never answered
+            # AVM through it (Shut Down's second ask, Send File; the install
+            # test: "didn't answer through the guest agent in 10 minutes").
+            - qemu-guest-agent
           late-commands:
             - bash /cdrom/nocloud/setup.sh
           error-commands:

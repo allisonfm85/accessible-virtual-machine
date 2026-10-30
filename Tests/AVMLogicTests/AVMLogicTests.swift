@@ -1255,6 +1255,15 @@ final class FedoraInstallTests: XCTestCase {
                      "no label to find the kickstart by")
     }
 
+    /// Ubuntu's autoinstall installs the guest agent (2026-10-30): it
+    /// didn't, so an installed Ubuntu never answered AVM through it.
+    func testUbuntuInstallsTheGuestAgent() {
+        let data = UbuntuInstallPipeline.userData(account: account, hostName: "h", timeZone: "UTC")
+        for package in ["- spice-vdagent\n", "- spice-webdavd\n", "- qemu-guest-agent\n"] {
+            XCTAssertTrue(data.contains(package), package)
+        }
+    }
+
     func testKickstartAnswersEverything() {
         let ks = UbuntuInstallPipeline.fedoraKickstart(account: account, hostName: "amenas-fedora",
                                                        timeZone: "America/Chicago", version: "44")
