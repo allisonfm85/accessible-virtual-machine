@@ -49,10 +49,18 @@ static void fill(char *buf, size_t len, const char *text)
 static void *event_thread_main(void *arg)
 {
     (void)arg;
+    /* An error from one pass used to end this thread for good, while
+     * g_started stayed 1 (2026-10-25, code audit): every stream then held
+     * its device with no transfers completing, a keyboard or braille display
+     * gone from the Mac and dead in the guest. Errors are logged and the
+     * loop carries on after a short pause; only g_event_run ends it. */
     while (g_event_run) {
         int r = libusb_handle_events(g_ctx);
-        if (r != 0 && r != LIBUSB_ERROR_INTERRUPTED)
-            break;
+        if (r != 0 && r != LIBUSB_ERROR_INTERRUPTED) {
+            fprintf(stderr, "usbstream: libusb_handle_events: %s; continuing\n",
+                    libusb_error_name(r));
+            usleep(100000);
+        }
     }
     return NULL;
 }
@@ -273,9 +281,13 @@ static libusb_device_handle *open_at(uint16_t vid, uint16_t pid,
     return h;
 }
 
-static int connect_unix(const char *path, char *step, size_t step_len,
+static int connect_unix(const char *path, uid_t owner, pid_t peer_pid, char *step, size_t step_len,
                         char *detail, size_t detail_len)
 {
+    uid_t peer_uid;
+    gid_t peer_gid;
+    pid_t got_pid = 0;
+    socklen_t pid_len = sizeof(got_pid);
     struct sockaddr_un sa;
     int fd, one = 1, fl;
     char text[512];
@@ -304,6 +316,28 @@ static int connect_unix(const char *path, char *step, size_t step_len,
         close(fd);
         return -1;
     }
+    /* WHO IS AT THE OTHER END (2026-10-26, security audit): the path was
+     * checked before (StreamSocketCheck.swift), but connect() follows a
+     * symlink swapped in since, by anything running as that user. The
+     * listening process must run as the user who asked, never root or
+     * another account, or this root process says nothing to it. */
+    if (getpeereid(fd, &peer_uid, &peer_gid) != 0 || peer_uid != owner) {
+        fill(step, step_len, "connect");
+        fill(detail, detail_len, "the stream socket isn't QEMU's: it belongs to another user");
+        close(fd);
+        return -1;
+    }
+    /* And QEMU itself (2026-10-28, security review): the same user's
+     * other processes could put a listener at that path and be handed
+     * the seized device by this root process. AVM says which pid
+     * listens; 0 means it couldn't (then only the user is checked). */
+    if (peer_pid > 0 && (getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &got_pid, &pid_len) != 0
+                         || got_pid != peer_pid)) {
+        fill(step, step_len, "connect");
+        fill(detail, detail_len, "the stream socket isn't QEMU's: another process is listening on it");
+        close(fd);
+        return -1;
+    }
     fl = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, fl | O_NONBLOCK);
     return fd;
@@ -314,6 +348,8 @@ avm_usb_stream *avm_usb_stream_attach(uint16_t vendor_id,
                                       uint8_t bus_number,
                                       uint8_t device_address,
                                       const char *socket_path,
+                                      uid_t socket_owner,
+                                      pid_t socket_peer_pid,
                                       int verbose,
                                       avm_usb_event_fn callback,
                                       void *context,
@@ -354,7 +390,7 @@ avm_usb_stream *avm_usb_stream_attach(uint16_t vendor_id,
         return NULL;
     }
 
-    s->fd = connect_unix(socket_path, step, step_len, detail, detail_len);
+    s->fd = connect_unix(socket_path, socket_owner, socket_peer_pid, step, step_len, detail, detail_len);
     if (s->fd < 0) {
         libusb_close(h);
         free(s);
