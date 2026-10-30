@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		06AC03CC0000000000000001 /* AVMWindowsApp in Embed Windows App stub */ = {isa = PBXBuildFile; fileRef = 06AC03CC0000000000000004 /* AVMWindowsApp */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		06AC03CC000000000000000E /* AVMWindowsApps.cs in Resources */ = {isa = PBXBuildFile; fileRef = 06AC03CC000000000000000D /* AVMWindowsApps.cs */; };
 		061611A83016C59500ED7E16 /* CapsLockRemapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 061611A73016C27100ED7E16 /* CapsLockRemapper.swift */; };
 		062C1F9D300348D40086E56B /* Announcer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 062C1F9C300348D40086E56B /* Announcer.swift */; };
 		063A4A113024CEC600C47BD8 /* DiagnosticLogExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 063A4A103024CEC600C47BD8 /* DiagnosticLogExporter.swift */; };
@@ -36,6 +38,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		06AC03CC0000000000000002 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 068FB6E92FD4D73200BF254D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 06AC03CC0000000000000008;
+			remoteInfo = AVMWindowsApp;
+		};
 		06AB01AA0000000000000004 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 068FB6E92FD4D73200BF254D /* Project object */;
@@ -46,6 +55,17 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
+		06AC03CC0000000000000003 /* Embed Windows App stub */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				06AC03CC0000000000000001 /* AVMWindowsApp in Embed Windows App stub */,
+			);
+			name = "Embed Windows App stub";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		06AB01AA0000000000000006 /* Embed USB Helper */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -71,6 +91,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		06AC03CC0000000000000004 /* AVMWindowsApp */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = AVMWindowsApp; sourceTree = BUILT_PRODUCTS_DIR; };
+		06AC03CC000000000000000D /* AVMWindowsApps.cs */ = {isa = PBXFileReference; lastKnownFileType = text; name = AVMWindowsApps.cs; path = "Resources/windows-apps/AVMWindowsApps.cs"; sourceTree = "<group>"; };
 		061611A73016C27100ED7E16 /* CapsLockRemapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapsLockRemapper.swift; sourceTree = "<group>"; };
 		0627886E2FE3AFCB00536554 /* AVM-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "AVM-Bridging-Header.h"; sourceTree = "<group>"; };
 		062C1F9C300348D40086E56B /* Announcer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Announcer.swift; sourceTree = "<group>"; };
@@ -110,6 +132,11 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		06AC03CC0000000000000005 /* AVMWindowsApp */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = AVMWindowsApp;
+			sourceTree = "<group>";
+		};
 		068FB6F32FD4D73200BF254D /* AVM */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = AVM;
@@ -126,6 +153,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		06AC03CC0000000000000006 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		068FB6EE2FD4D73200BF254D /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -213,6 +247,7 @@
 				062C1F9C300348D40086E56B /* Announcer.swift */,
 				06BD45372FF36CBC00A48AD1 /* autounattend.xml */,
 				06AB01AA0000000000000003 /* com.alllisonmeloy.AVM.usbhelper.plist */,
+				06AC03CC000000000000000D /* AVMWindowsApps.cs */,
 				063B17292FD4F1AA0009496A /* app */,
 				0679D7B62FD4F11A0058D960 /* views */,
 				0679D7B42FD4F0BD0058D960 /* focus */,
@@ -220,6 +255,7 @@
 				0679D7B22FD4EFD10058D960 /* VM */,
 				068FB6F32FD4D73200BF254D /* AVM */,
 				06F4CAF6304F3A3F0033A29C /* AVMUSBHelper */,
+				06AC03CC0000000000000005 /* AVMWindowsApp */,
 				06600AF62FDF515400266F23 /* Frameworks */,
 				068FB6F22FD4D73200BF254D /* Products */,
 				0627886E2FE3AFCB00536554 /* AVM-Bridging-Header.h */,
@@ -231,6 +267,7 @@
 			children = (
 				068FB6F12FD4D73200BF254D /* AVM.app */,
 				06F4CAF5304F3A3F0033A29C /* AVMUSBHelper */,
+				06AC03CC0000000000000004 /* AVMWindowsApp */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -238,6 +275,27 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		06AC03CC0000000000000008 /* AVMWindowsApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 06AC03CC000000000000000C /* Build configuration list for PBXNativeTarget "AVMWindowsApp" */;
+			buildPhases = (
+				06AC03CC0000000000000007 /* Sources */,
+				06AC03CC0000000000000006 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				06AC03CC0000000000000005 /* AVMWindowsApp */,
+			);
+			name = AVMWindowsApp;
+			packageProductDependencies = (
+			);
+			productName = AVMWindowsApp;
+			productReference = 06AC03CC0000000000000004 /* AVMWindowsApp */;
+			productType = "com.apple.product-type.tool";
+		};
 		068FB6F02FD4D73200BF254D /* AVM */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 068FB6FC2FD4D73300BF254D /* Build configuration list for PBXNativeTarget "AVM" */;
@@ -247,12 +305,14 @@
 				068FB6EF2FD4D73200BF254D /* Resources */,
 				06AB01AA0000000000000006 /* Embed USB Helper */,
 				06AB01AA0000000000000007 /* Embed USB Helper launchd plist */,
+				06AC03CC0000000000000003 /* Embed Windows App stub */,
 				06D1147C2FE0D50300AC265D /* ShellScript */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				06AB01AA0000000000000005 /* PBXTargetDependency */,
+				06AC03CC0000000000000009 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				068FB6F32FD4D73200BF254D /* AVM */,
@@ -305,6 +365,9 @@
 					06F4CAF4304F3A3F0033A29C = {
 						CreatedOnToolsVersion = 26.6;
 					};
+					06AC03CC0000000000000008 = {
+						CreatedOnToolsVersion = 26.6;
+					};
 				};
 			};
 			buildConfigurationList = 068FB6EC2FD4D73200BF254D /* Build configuration list for PBXProject "AVM" */;
@@ -327,6 +390,7 @@
 			targets = (
 				068FB6F02FD4D73200BF254D /* AVM */,
 				06F4CAF4304F3A3F0033A29C /* AVMUSBHelper */,
+				06AC03CC0000000000000008 /* AVMWindowsApp */,
 			);
 		};
 /* End PBXProject section */
@@ -337,6 +401,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				06BD45382FF36CBC00A48AD1 /* autounattend.xml in Resources */,
+				06AC03CC000000000000000E /* AVMWindowsApps.cs in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -383,6 +448,13 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		06AC03CC0000000000000007 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		068FB6ED2FD4D73200BF254D /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -421,6 +493,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		06AC03CC0000000000000009 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 06AC03CC0000000000000008 /* AVMWindowsApp */;
+			targetProxy = 06AC03CC0000000000000002 /* PBXContainerItemProxy */;
+		};
 		06AB01AA0000000000000005 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 06F4CAF4304F3A3F0033A29C /* AVMUSBHelper */;
@@ -429,6 +506,38 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		06AC03CC000000000000000A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4NZJSBJ32X;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.alllisonmeloy.AVM.windowsapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		06AC03CC000000000000000B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4NZJSBJ32X;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.alllisonmeloy.AVM.windowsapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 		068FB6FA2FD4D73300BF254D /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -873,6 +982,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		06AC03CC000000000000000C /* Build configuration list for PBXNativeTarget "AVMWindowsApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				06AC03CC000000000000000A /* Debug */,
+				06AC03CC000000000000000B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		068FB6EC2FD4D73200BF254D /* Build configuration list for PBXProject "AVM" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

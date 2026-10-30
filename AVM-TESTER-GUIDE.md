@@ -642,6 +642,19 @@ dashboard's Start buttons work too.
   Monitoring, then turn on AVM in System Settings, under Privacy &
   Security, then Input Monitoring. If macOS then offers to quit and
   reopen AVM, choose Later.
+- **Windows apps in Command-Tab.** While Windows runs, each app open in
+  it is in your Mac's Command-Tab list (and the Dock), named for the app
+  and the machine. Command-Tab to one, press Command-Shift-E, and it comes
+  forward in Windows with your keyboard in it, for NVDA, JAWS or
+  Narrator. Control-Command-Escape comes back. The first time, AVM puts a
+  small helper in Windows for this, which takes a few seconds. It's on
+  unless you turn it off in the machine's Settings.
+- **Keep a Windows app in the Dock and Applications.** Command-Tab to
+  one, then choose Keep in Dock and Applications (in its window, or its
+  menu named for the machine). It's in the Dock and in Applications
+  (Command-Shift-A), in AVM Windows Apps. Quit AVM, open it from there,
+  and check that AVM opens, the machine starts, and after you sign in the
+  app opens with your keyboard in Windows. Try two at once, too.
 - **AVM in the background, and at login.** Background and Startup, on
   the dashboard and in the AVM menu, has three choices, all off until
   you turn them on. *Open AVM when you log in.* *Run in the background

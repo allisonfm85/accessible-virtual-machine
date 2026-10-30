@@ -192,6 +192,33 @@ time AVM says so and macOS asks: turn on AVM in System Settings, under
 Privacy & Security, then Input Monitoring. If macOS then offers to quit
 and reopen AVM, choose Later; the keyboard goes to Windows without it.
 
+## Windows apps in Command-Tab
+
+While a Windows machine runs, every app with a window open in it is in
+your Mac's Command-Tab list as an app of its own, such as "Microsoft Word
+(Amena-PC)", added when it opens and gone when it closes. Command-Tab to
+one and VoiceOver reads its window; press **Command-Shift-E** and the app
+comes forward in Windows and your keyboard goes into the machine, where
+NVDA, JAWS or Narrator read it as usual. Control-Command-Escape brings
+you back to the Mac, where Command-Tab takes you to the next one. While
+your keyboard is in Windows, Command-Tab stays off, as it always has.
+
+macOS puts these apps in the Dock too; it has no way to list an app in
+Command-Tab without it. For this, AVM puts a small helper in Windows
+(`C:\ProgramData\AVM`, started at sign-in by the scheduled task
+`\AVM\Windows Apps`), which lists the apps open and brings one forward;
+it shows no window. Turn the list off
+in the machine's Settings, under Windows Apps on the Mac.
+
+To keep one, Command-Tab to it and choose **Keep in Dock and
+Applications** (a button in its window, and in its menu named for the
+machine). It goes in the Dock and in Applications, in the AVM Windows
+Apps folder. Open it from there, the Dock, Launchpad or Spotlight even
+when AVM or the machine isn't running: AVM opens, the machine starts, and
+once you're signed in to Windows the app opens there with your keyboard
+in it. **Remove from Dock and Applications** undoes it, moving it to the
+Trash.
+
 ## macOS virtual machines
 
 **New macOS Virtual Machine…** on the dashboard makes a macOS machine:

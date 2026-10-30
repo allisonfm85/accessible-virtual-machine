@@ -46,9 +46,17 @@ final class MachineArchiveController: ObservableObject {
 
     /// True, after saying why, when `config` is being copied right now.
     func refusesWhileBusy(_ config: VMConfiguration) -> Bool {
-        guard busyMachineID == config.id, let activity else { return false }
-        Announcer.shared.announce("AVM is \(activity). Wait until it's done, then try again.", tone: .failure)
+        guard let message = busyMessage(for: config) else { return false }
+        Announcer.shared.announce(message, tone: .failure)
         return true
+    }
+
+    /// Why `config` can't be used right now, while it's being copied; for
+    /// callers that answer instead of speaking (avmctl, a Windows app's
+    /// Mac app).
+    func busyMessage(for config: VMConfiguration) -> String? {
+        guard busyMachineID == config.id, let activity else { return nil }
+        return "AVM is \(activity). Wait until it's done, then try again."
     }
 
     // MARK: - Export

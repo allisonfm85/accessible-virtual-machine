@@ -626,6 +626,9 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
             // Pause a running VM before the Mac sleeps (2026-10-26).
             SleepCoordinator.shared.start()
             ControlServer.shared.start()
+            // Windows apps in Command-Tab (2026-10-29, WindowsApps.swift);
+            // not for a test run, whose machines aren't the user's.
+            if !testRun { WindowsApps.shared.start() }
             // Run in the background and the second display (2026-10-28).
             BackgroundMode.shared.start()
         }
@@ -651,6 +654,8 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
         NSLog("AVM: AppDelegate — applicationWillTerminate; restoring Caps Lock if applied.")
         MainActor.assumeIsolated {
             CapsLockRemapper.shared.restoreForTermination()
+            // The Windows apps' Mac apps go with AVM (2026-10-29).
+            WindowsApps.shared.quitAll()
             // The Mac's VoiceOver back on if AVM turned it off for a macOS
             // machine (2026-10-26, MacVoiceOver in MacGuest.swift).
             MacVoiceOver.restoreAfterGuest(beforeQuitting: true)

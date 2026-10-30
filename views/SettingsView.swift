@@ -388,6 +388,11 @@ struct SettingsView: View {
                 sharedFolderSection
             }
 
+            // Windows apps in Command-Tab (2026-10-29, WindowsApps.swift)
+            if configuration.guestOS == .windows {
+                windowsAppsSection
+            }
+
             // Keyboard for Windows (2026-10-26)
             if configuration.guestOS == .windows {
                 windowsKeyboardSection
@@ -632,6 +637,24 @@ struct SettingsView: View {
     @State private var windowsKeyboardID: String?
     @State private var windowsKeyboardName: String?
     @State private var windowsKeyboardAppleISO = false
+    @State private var windowsAppsInCommandTab = true
+
+    // MARK: - Windows apps on the Mac (2026-10-29)
+
+    private var windowsAppsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Windows Apps on the Mac")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Toggle("Windows apps in Command-Tab", isOn: $windowsAppsInCommandTab)
+                .accessibilityHint("Each app open in \(guest) is in your Mac's Command-Tab list. Switch to one, then press Command-Shift-E to type in it.")
+            Text("Each app open in \(guest) is an app in Command-Tab, and in the Dock, while it's open. Switch to one and press Command-Shift-E: it comes forward and your keyboard goes into \(guest). AVM puts a small helper in \(guest) for this.")
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal)
+    }
+
     @State private var connectedKeyboards: [(id: String, name: String)] = []
     @State private var keyboardsMessage: String?
 
@@ -1169,6 +1192,7 @@ struct SettingsView: View {
         windowsKeyboardID = saved.windowsKeyboardID
         windowsKeyboardName = saved.windowsKeyboardName
         windowsKeyboardAppleISO = saved.windowsKeyboardAppleISO == true
+        windowsAppsInCommandTab = saved.windowsAppsInCommandTab != false
         displayID = saved.displayID
         displayName = saved.displayName
         remoteDesktopOn = saved.remoteDesktopOn
@@ -1378,6 +1402,7 @@ struct SettingsView: View {
             updated.windowsKeyboardID = windowsKeyboardID
             updated.windowsKeyboardName = windowsKeyboardID == nil ? nil : windowsKeyboardName
             updated.windowsKeyboardAppleISO = windowsKeyboardID != nil && windowsKeyboardAppleISO ? true : nil
+            updated.windowsAppsInCommandTab = windowsAppsInCommandTab ? nil : false
             updated.displayID = displayID
             updated.displayName = displayID == nil ? nil : displayName
             let remoteDesktopWasOn = saved.remoteDesktopOn

@@ -170,6 +170,9 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// true: an Apple ISO keyboard, whose § and ` keys AVM swaps back
     /// (HIDKeyMap.isoSwapped). nil: a PC or ANSI keyboard, as it is.
     var windowsKeyboardAppleISO: Bool?
+    /// Windows apps in the Mac's Command-Tab list (WindowsApps.swift,
+    /// 2026-10-29); nil: on.
+    var windowsAppsInCommandTab: Bool?
 
     // MARK: - Display (2026-10-28)
 
