@@ -75,7 +75,8 @@ GLib 2.83.0 (libglib, libgio, libgobject, libgmodule, libgthread,
   libgirepository). LGPL version 2.1 or later. Compiled into libglib:
   PCRE2 10.44 (BSD 3-clause), from GLib's own subproject.
 usbredir 0.14.0 (libusbredirhost, libusbredirparser). LGPL version 2.1
-  or later.
+  or later. Modified since AVM 0.4.6: AVM's interrupt OUT patch to
+  libusbredirhost in Tools/sysroot-patches.
 libusb 1.0.25. LGPL version 2.1 or later.
 libslirp 4.9.1, UTM's mirror. BSD 3-clause.
 gettext 0.22.5. libintl and libasprintf: LGPL version 2.1 or later.
