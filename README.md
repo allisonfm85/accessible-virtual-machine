@@ -318,12 +318,14 @@ QEMU, SPICE, GStreamer, the OpenGL stack (ANGLE, libepoxy and
 virglrenderer, for Linux machines' 3D acceleration) and related
 frameworks, plus EFI firmware images. These are staged at build time
 from the sysroot that `Tools/build-sysroot.sh` builds from source with
-UTM's dependency build, with eight patches from `Tools/sysroot-patches`:
+UTM's dependency build, with nine patches from `Tools/sysroot-patches`:
 five to QEMU (CoreAudio output and the microphone, a Metal build fix,
 the Mac's camera as a USB webcam, the Bluetooth HID bridge, and the
 USB keyboard's F13 to F24 and keypad keys), one to GStreamer (an
-osxaudio deadlock fix, backported from upstream), and two to the
-clones of ANGLE and libepoxy. The staging steps live in the Run Script
+osxaudio deadlock fix, backported from upstream), one to usbredir (the
+USB helper sending a device's output reports longer than one USB
+packet, which a USB braille display needs), and two to the clones of
+ANGLE and libepoxy. The staging steps live in the Run Script
 build phase inside `AVM.xcodeproj/project.pbxproj`, which also stages
 every package's license text as `Resources/Licenses`. The SPICE display
 layer comes from a

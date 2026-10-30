@@ -25,8 +25,10 @@
 #          own patch for the same package: the GStreamer osxaudio
 #          deadlock fix, a QEMU build fix so UTM's Metal display code
 #          is compiled only when OpenGL is, QEMU's coreaudio playback and
-#          microphone, usb-camera (the Mac's camera as a USB webcam), and
-#          usb-hid-bridge (Bluetooth HID devices, relayed by AVM's helper).
+#          microphone, usb-camera (the Mac's camera as a USB webcam),
+#          usb-hid-bridge (Bluetooth HID devices, relayed by AVM's helper),
+#          and usbredirhost sending interrupt OUT transfers longer than one
+#          packet (a USB braille display's output, for NVDA and JAWS).
 #          Each patch's header says what it does and where it comes from.
 #          Patches for git clones, which UTM's build doesn't patch, are in
 #          Tools/sysroot-patches/clones, applied just before their build:
@@ -549,15 +551,23 @@ script.write_text(s)
 
 # AVM's patches go after UTM's own patch for the same package, so they
 # apply to the tree UTM's patch leaves. Each is named
-# <UTM patch name>+<what it does>.patch.
+# <UTM patch name>+<what it does>.patch. A package UTM doesn't patch
+# (usbredir, 2026-10-29) gets the file of its own that UTM's download()
+# applies, named for a tarball UTM's sources list, so a misnamed patch
+# still stops the build rather than going unapplied.
+sources = (utm / "patches/sources").read_text()
 for p in sorted(patches.glob("*.patch")):
     package = p.name.split("+")[0]
     target = utm / "patches" / f"{package}.patch"
-    if not target.exists():
-        sys.exit(f"{p.name} is for {package}, but UTM has no patches/{package}.patch to add it to.")
-    with target.open("a") as f:
-        f.write("\n" + p.read_text())
-    print(f"   Added {p.name} after UTM's patches/{target.name}")
+    if target.exists():
+        with target.open("a") as f:
+            f.write("\n" + p.read_text())
+        print(f"   Added {p.name} after UTM's patches/{target.name}")
+    elif f"/{package}.tar." in sources:
+        target.write_text(p.read_text())
+        print(f"   Added {p.name} as patches/{target.name}; UTM has no patch of its own for {package}")
+    else:
+        sys.exit(f"{p.name} is for {package}, but UTM neither patches nor downloads {package}.")
 PY
     info "GPU stack: OpenGL only (ANGLE, epoxy, virglrenderer); Vulkan, Mesa, MoltenVK, LLVM and D3D left out"
 
@@ -818,6 +828,13 @@ grep -q '"usb-hid-bridge"' <<<"$devices" \
     || problem "QEMU has no usb-hid-bridge device (Tools/sysroot-patches/qemu-10.0.12-utm+usb-hid-bridge.patch)"
 grep -q '"virtio-gpu-gl-pci"' <<<"$devices" \
     || problem "QEMU has no virtio-gpu-gl-pci: it was built without OpenGL or virglrenderer"
+# The helper's usbredirhost sends long interrupt OUT transfers (2026-10-29):
+# without the patch, a USB braille display types in Windows and NVDA and
+# JAWS never find it. Read whole first, as above.
+redirhost=$(strings "$OUT/lib/libusbredirhost.1.dylib" 2>/dev/null || true)
+if [[ -z "$redirhost" || "$redirhost" == *"interrupt out packet is larger than wMaxPacketSize"* ]]; then
+    problem "usbredirhost still refuses long interrupt OUT transfers (Tools/sysroot-patches/usbredir-0.14.0+interrupt-out-transfers.patch)"
+fi
 for lib in libEGL.dylib libGLESv2.dylib libepoxy.0.dylib libvirglrenderer.1.dylib; do
     [ -f "$OUT/lib/$lib" ] || problem "$lib is missing: Linux 3D acceleration needs it"
 done

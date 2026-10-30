@@ -35,7 +35,9 @@ nonisolated public enum AVMUSBHelperNames {
     /// every change to the helper or its protocol: after an update, the
     /// helper from before keeps running for its idle grace period, and
     /// AVM asks one that answers with another version to exit first.
-    public static let helperBuildVersion = "0.4.6"
+    /// Its libraries count too (0.4.7, 2026-10-29: usbredirhost sending
+    /// long interrupt OUT transfers, Tools/sysroot-patches).
+    public static let helperBuildVersion = "0.4.7"
 
     /// The bundle identifier of the app that is allowed to talk to the helper.
     public static let clientBundleIdentifier = "com.alllisonmeloy.AVM"
