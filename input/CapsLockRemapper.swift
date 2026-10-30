@@ -176,6 +176,8 @@ final class CapsLockRemapper {
     ///
     /// Log lines here are file-log (Stage C tier 1): apply runs only at lock
     /// time, never at quit, so the async file logger is a safe sink.
+    private var toldAboutUserMapping = false
+
     func applyForLock() {
         guard isEnabled else {
             AVMLog.write("AVM: CapsLockRemapper — disabled by setting; not applying.")
@@ -191,6 +193,33 @@ final class CapsLockRemapper {
             return
         }
 
+        // The user's own Caps Lock mapping stays (2026-10-28, fourth
+        // audit): one mapped to Escape, common on Touch Bar Macs with no
+        // Escape key, was silently replaced, so Windows had no Escape and
+        // Control-Command-Escape no longer got the user out. Said once a
+        // run: in Windows, Caps Lock then isn't the screen reader key.
+        if let theirs = existing.first(where: { $0.src == Self.capsLockUsage && $0.dst != Self.f19Usage }) {
+            AVMLog.write("AVM: CapsLockRemapper — Caps Lock is already mapped (to \(String(theirs.dst, radix: 16))); leaving the user's mapping alone.")
+            if !toldAboutUserMapping {
+                toldAboutUserMapping = true
+                // No "use Insert" (2026-10-28, fifth audit): the Touch Bar
+                // Macs this is for have none.
+                Announcer.shared.announce("Your Mac already maps Caps Lock to another key, so AVM leaves it as it is. In the virtual machine, Caps Lock does what your mapping says, so it isn't the screen reader's key there. If this keyboard has no Insert key, set the screen reader's modifier to another key in Windows, or remove the Caps Lock mapping in System Settings, Keyboard, Modifier Keys.", tone: .info)
+            }
+            return
+        }
+
+        // Caps Lock to F19 already, and not AVM's (2026-10-29, sixth audit):
+        // the user's own mapping, a Hyper key say. It's what AVM needs, so
+        // nothing is applied, and nothing is restored: restoring wrote the
+        // Mac's mapping back without it, and the user's F19 shortcuts were
+        // gone after the first Return to Mac.
+        if existing.contains(where: { $0.src == Self.capsLockUsage && $0.dst == Self.f19Usage }),
+           !UserDefaults.standard.bool(forKey: Self.activeKey) {
+            AVMLog.write("AVM: CapsLockRemapper — Caps Lock is already mapped to F19 by the user; nothing to apply or restore.")
+            return
+        }
+
         // Merge: keep everything that is not a Caps Lock source, add ours.
         let preserved = existing.filter { $0.src != Self.capsLockUsage }
         let merged = preserved + [KeyMapping(src: Self.capsLockUsage, dst: Self.f19Usage)]
@@ -201,7 +230,20 @@ final class CapsLockRemapper {
         // the apply is exactly what the saved copy is for. There is no window
         // in which we have changed the system without having recorded how to
         // put it back.
-        if let encoded = try? JSONEncoder().encode(existing),
+        //
+        // NEVER SAVE AVM'S OWN REMAP AS THE ORIGINAL (2026-10-25, code audit):
+        // if an earlier restore failed, the system still carries Caps Lock to
+        // F19 and the flag is still set. Saving that as the "original" meant
+        // the next successful restore wrote the remap back and cleared the
+        // flag, leaving Caps Lock dead with nothing left to recover it. So
+        // AVM's own entry is filtered out, and an original saved earlier and
+        // not yet restored is kept as it is.
+        let original = existing.filter { !($0.src == Self.capsLockUsage && $0.dst == Self.f19Usage) }
+        let unrestored = UserDefaults.standard.bool(forKey: Self.activeKey)
+            && UserDefaults.standard.string(forKey: Self.savedMappingKey) != nil
+        if unrestored {
+            AVMLog.write("AVM: CapsLockRemapper — an earlier original is still saved (not yet restored); keeping it.")
+        } else if let encoded = try? JSONEncoder().encode(original),
            let json = String(data: encoded, encoding: .utf8) {
             UserDefaults.standard.set(json, forKey: Self.savedMappingKey)
         } else {
@@ -217,13 +259,20 @@ final class CapsLockRemapper {
         if writeMapping(merged) {
             AVMLog.write("AVM: CapsLockRemapper — APPLIED (preserved \(preserved.count) existing entr\(preserved.count == 1 ? "y" : "ies")). Success is silent by design.")
         } else {
-            // The write failed, so the system is unchanged. Clear the flag so
-            // launch recovery does not later "restore" over a system we never
-            // touched.
-            UserDefaults.standard.set(false, forKey: Self.activeKey)
-            UserDefaults.standard.removeObject(forKey: Self.savedMappingKey)
-            UserDefaults.standard.synchronize()
-            AVMLog.write("AVM: CapsLockRemapper — apply FAILED; flag cleared.")
+            // The write failed, so the system is unchanged by THIS apply.
+            // Clear the flag so launch recovery does not later "restore" over
+            // a system we never touched, UNLESS an earlier restore failed
+            // (2026-10-26, keyboard audit): then the system still carries
+            // AVM's remap from before, and the flag and saved original are
+            // the only way back, so both stay.
+            if unrestored {
+                AVMLog.write("AVM: CapsLockRemapper — apply FAILED; an earlier remap is still in place, so the recovery record is kept.")
+            } else {
+                UserDefaults.standard.set(false, forKey: Self.activeKey)
+                UserDefaults.standard.removeObject(forKey: Self.savedMappingKey)
+                UserDefaults.standard.synchronize()
+                AVMLog.write("AVM: CapsLockRemapper — apply FAILED; flag cleared.")
+            }
             Announcer.shared.announce(
                 "Caps Lock setup failed. Screen reader commands may not work.",
                 tone: .failure)
@@ -413,7 +462,14 @@ final class CapsLockRemapper {
             }
             results.append(KeyMapping(src: src, dst: dst))
         }
-        return results
+        // One of each (2026-10-28, deep audit): `--get` prints a block per
+        // HID service, 241 of them on one Mac, every one holding the same
+        // mapping. Collected as they came, a user's own remap was saved 241
+        // times, restored 241 times, and the next read gave 241 squared,
+        // more than a command line can hold, so applying it failed for
+        // good. `--set` writes one list to every service anyway.
+        var seen = Set<String>()
+        return results.filter { seen.insert("\($0.src)>\($0.dst)").inserted }
     }
 
     nonisolated private static func field(_ name: String, in text: String) -> UInt64? {
@@ -471,8 +527,17 @@ final class CapsLockRemapper {
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
 
+        // Both pipes drained at once (2026-10-26, code audit): read one
+        // after the other, a full stderr pipe held hidutil until the
+        // watchdog fired, five seconds on the main thread.
+        nonisolated(unsafe) var errData = Data()
+        let errDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            errDone.signal()
+        }
         let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        errDone.wait()
         process.waitUntilExit()
         watchdog.cancel()
 
