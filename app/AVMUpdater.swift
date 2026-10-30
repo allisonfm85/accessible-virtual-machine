@@ -65,9 +65,11 @@ final class AVMUpdater: ObservableObject {
     /// Sparkle holds its delegate weakly, so the updater keeps it.
     private let announcer = UpdateAnnouncer()
 
-    init() {
+    /// `starting` false for the accessibility audit (2026-10-30), which
+    /// shows AVM's Settings without checking for updates or asking to.
+    init(starting: Bool = true) {
         controller = SPUStandardUpdaterController(
-            startingUpdater: true,
+            startingUpdater: starting,
             updaterDelegate: announcer,
             userDriverDelegate: nil
         )
@@ -82,6 +84,17 @@ final class AVMUpdater: ObservableObject {
     func checkForUpdates() {
         AVMLog.write("AVM: Check for Updates menu — invoking Sparkle user-initiated check.")
         controller.checkForUpdates(nil)
+    }
+
+    /// Sparkle's own daily check, for AVM's Settings (2026-10-30). Sparkle
+    /// keeps the choice in AVM's defaults.
+    var checksAutomatically: Bool {
+        get { controller.updater.automaticallyChecksForUpdates }
+        set {
+            objectWillChange.send()
+            controller.updater.automaticallyChecksForUpdates = newValue
+            AVMLog.write("AVM: Settings — check for updates automatically \(newValue ? "on" : "off")")
+        }
     }
 }
 

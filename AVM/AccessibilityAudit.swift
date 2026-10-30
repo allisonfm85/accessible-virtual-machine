@@ -359,7 +359,14 @@ private final class Auditor {
             Screen(name: "New macOS Virtual Machine", size: NSSize(width: 640, height: 900), headings: title("New macOS Virtual Machine")) {
                 host(MacSetupView())
             },
-        ] + SettingsCategory.allCases.map { category -> Screen in
+        ] + PreferencesCategory.allCases.map { [updater = AVMUpdater(starting: false)] category -> Screen in
+            // Every category of AVM's own Settings (2026-10-30).
+            let name = category == .general ? "" : ", \(category.title)"
+            return Screen(name: "AVM Settings\(name)", size: NSSize(width: 560, height: 580),
+                          headings: title("AVM Settings: \(category.title)")) {
+                host(AppPreferencesView(startCategory: category).environmentObject(updater))
+            }
+        } + SettingsCategory.allCases.map { category -> Screen in
             // Every category of a macOS machine's Settings too (2026-10-30).
             let name = category == .general ? "" : ", \(category.title)"
             return Screen(name: "macOS Settings\(name)", size: NSSize(width: 640, height: 900),
@@ -379,9 +386,6 @@ private final class Auditor {
             },
             Screen(name: "Attach USB Device", size: NSSize(width: 600, height: 500), headings: title("Attach USB Device")) {
                 host(USBDevicePickerView(mode: .attach, devices: s.usbDevices))
-            },
-            Screen(name: "Background and Startup", size: NSSize(width: 560, height: 700), headings: title("Background and Startup")) {
-                host(BackgroundSettingsView())
             },
             // What's New after an update (2026-10-30, AVMUpdater.swift).
             Screen(name: "What's New", size: WhatsNewView.size, headings: title("What's New in AVM")) {

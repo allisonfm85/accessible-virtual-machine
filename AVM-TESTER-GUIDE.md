@@ -687,9 +687,15 @@ dashboard's Start buttons work too.
   (Command-Shift-A), in AVM Windows Apps. Quit AVM, open it from there,
   and check that AVM opens, the machine starts, and after you sign in the
   app opens with your keyboard in Windows. Try two at once, too.
-- **AVM in the background, and at login.** Background and Startup, on
-  the dashboard and in the AVM menu, has three choices, all off until
-  you turn them on. *Open AVM when you log in.* *Run in the background
+- **AVM's own Settings.** Command-Comma from any AVM window, or AVM
+  Settings on the dashboard, opens them: General (updates, What's New),
+  Startup and Background, Keyboard (Caps Lock as the screen reader key)
+  and Devices (Restart USB Helper). The categories are a toolbar:
+  VO-Shift-Down into it, VO-Left and VO-Right through it, or Command-1 to
+  Command-4 from anywhere in Settings. A machine's own Settings are now
+  Command-Option-Comma on the dashboard.
+- **AVM in the background, and at login.** Startup and Background, in
+  AVM's Settings, has three choices, all off until you turn them on. *Open AVM when you log in.* *Run in the background
   with a keyboard for Windows*: while a machine with a keyboard for
   Windows runs, switching away from AVM takes it out of Command-Tab and
   the Dock and hides it. Windows keeps its keyboard. To bring AVM back,

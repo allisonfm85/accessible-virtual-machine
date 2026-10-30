@@ -344,8 +344,10 @@ struct BackgroundMenu: View {
 
 // MARK: - Background and Startup settings
 
-struct BackgroundSettingsView: View {
-    @Environment(\.dismiss) private var dismiss
+/// Startup and Background in AVM's Settings (AppPreferencesView). It was a
+/// sheet on the list, Background and Startup, until AVM's own Settings
+/// (2026-10-30).
+struct BackgroundSettingsControls: View {
     @ObservedObject private var background = BackgroundMode.shared
     @EnvironmentObject var vmStore: VMStore
 
@@ -355,11 +357,6 @@ struct BackgroundSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Background and Startup")
-                .font(.title2)
-                .accessibilityAddTraits(.isHeader)
-                .accessibilityHeading(.h1)
-
             Toggle("Open AVM when you log in", isOn: Binding(
                 get: { background.opensAtLogin },
                 set: { background.setOpensAtLogin($0) }))
@@ -385,15 +382,7 @@ struct BackgroundSettingsView: View {
             Text(autoStartName.map { "\($0) starts when AVM opens. To change it, use Start When AVM Opens in a machine's row." }
                  ?? "No machine starts when AVM opens. To choose one, use Start When AVM Opens in its row, while it's shut down.")
                 .fixedSize(horizontal: false, vertical: true)
-
-            HStack {
-                Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
-            }
         }
-        .padding(24)
-        .frame(width: 520)
         .onAppear { background.refreshLoginStatus() }
     }
 }

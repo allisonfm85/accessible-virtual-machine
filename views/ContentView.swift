@@ -31,8 +31,6 @@ extension Notification.Name {
     static let avmAttachUSBFromMenu = Notification.Name("avmAttachUSBFromMenu")
     /// Bluetooth Devices… (2026-10-27, BluetoothDevices.swift).
     static let avmBluetoothDevices = Notification.Name("avmBluetoothDevices")
-    /// Background and Startup… (2026-10-28, BackgroundMode.swift).
-    static let avmBackgroundSettings = Notification.Name("avmBackgroundSettings")
     /// Return Devices to Mac… (2026-10-29, MachineDevicesView.swift), in
     /// place of Detach USB Device….
     static let avmMachineDevices = Notification.Name("avmMachineDevices")
@@ -103,7 +101,6 @@ struct ContentView: View {
     @State private var usbPicker: USBPickerRequest? = nil
     @State private var bluetoothWindow: BluetoothWindowRequest? = nil
     @State private var devicesWindow: MachineDevicesRequest? = nil
-    @State private var showingBackgroundSettings = false
     @Environment(\.openWindow) private var openWindow
     @State private var errorMessage: String? = nil
 
@@ -287,13 +284,6 @@ struct ContentView: View {
         }
         .sheet(item: $bluetoothWindow) { request in
             BluetoothDevicesView(machine: request.machine)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .avmBackgroundSettings)) { _ in
-            showingBackgroundSettings = true
-        }
-        .sheet(isPresented: $showingBackgroundSettings) {
-            BackgroundSettingsView()
-                .environmentObject(vmStore)
         }
         // The machine chosen to start when AVM opens (2026-10-28), once.
         .onAppear {
@@ -495,11 +485,13 @@ private struct DashboardContent: View {
 
                 // Restart USB Helper (2026-10-27): for a USB device that stays
                 // on the Mac when it shouldn't.
-                // Background and Startup (2026-10-28, BackgroundMode.swift).
-                Button("Background and Startup…") {
-                    NotificationCenter.default.post(name: .avmBackgroundSettings, object: nil)
+                // AVM's own Settings (2026-10-30, AppPreferencesView.swift),
+                // where Background and Startup now is. Command-Comma is the
+                // AVM menu's Settings item.
+                Button("AVM Settings…") {
+                    AppPreferences.open()
                 }
-                .accessibilityHint("Open AVM at login, run it in the background with a keyboard for Windows, and use a second display")
+                .accessibilityHint("Updates, opening AVM at login, running in the background, the Caps Lock key and the USB helper. Command-Comma.")
 
                 Button("Restart USB Helper") {
                     Task { await USBRedirectController.shared.restartHelper() }
@@ -519,8 +511,10 @@ private struct DashboardContent: View {
                     Button("Settings for \(vmStore.configurations.first { $0.id == current.configuration.id }?.name ?? current.configuration.name)") {
                         settingsTarget = current.configuration
                     }
-                    .accessibilityHint("Opens this virtual machine's settings")
-                    .keyboardShortcut(",", modifiers: .command)
+                    .accessibilityHint("Opens this virtual machine's settings. Command-Option-Comma.")
+                    // Command-Option-Comma (2026-10-30): Command-Comma is
+                    // AVM's own Settings now, as in every Mac app.
+                    .keyboardShortcut(",", modifiers: [.command, .option])
                 }
             }
 
@@ -950,7 +944,7 @@ private struct DashboardContent: View {
         .lineLimit(1)
         .fixedSize()
         .accessibilityLabel("Start \(config.name) when AVM opens")
-        .accessibilityHint("One machine at most. With Open AVM When You Log In, in Background and Startup, it starts when you log in.")
+        .accessibilityHint("One machine at most. With Open AVM When You Log In, in AVM Settings, it starts when you log in.")
     }
 
     // MARK: Export (2026-10-26)

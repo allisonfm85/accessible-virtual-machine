@@ -1569,7 +1569,14 @@ struct SettingsView: View {
 
 /// A machine's settings in five categories, the user's request: one page
 /// of 22 sections was long to move through with VoiceOver.
-enum SettingsCategory: String, CaseIterable, Identifiable {
+/// A category a SettingsCategoryBar shows: a machine's Settings
+/// (SettingsCategory) or AVM's own (PreferencesCategory, 2026-10-30).
+protocol SettingsCategoryItem: Hashable {
+    var title: String { get }
+    var symbol: String { get }
+}
+
+enum SettingsCategory: String, CaseIterable, Identifiable, SettingsCategoryItem {
     case general, sharing, devices, displayAndSound, startupAndRecovery
 
     var id: Self { self }
@@ -1598,10 +1605,10 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
 /// The categories as a toolbar VoiceOver reads as one: "Categories,
 /// toolbar". VO-Shift-Down goes into it, VO-Left and VO-Right go through
 /// its buttons, and VO-Space chooses one; the one showing is "selected".
-/// Command-1 to Command-5 choose them from anywhere in Settings.
-struct SettingsCategoryBar: View {
-    @Binding var selection: SettingsCategory
-    let categories: [SettingsCategory]
+/// Command-1, Command-2 and on choose them from anywhere in Settings.
+struct SettingsCategoryBar<Category: SettingsCategoryItem>: View {
+    @Binding var selection: Category
+    let categories: [Category]
 
     var body: some View {
         AccessibilityToolbar(label: "Categories") {

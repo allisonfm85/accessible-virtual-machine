@@ -36,7 +36,15 @@ A machine's Settings come in five categories: **General**, **Sharing**,
 **Devices**, **Display and Sound** and **Startup and Recovery**. Choose
 one in the toolbar at the top ("Categories": interact with it, then
 VO-Right and VO-Space), or with Command-1 to Command-5. Save Settings
-keeps the changes made in every category.
+keeps the changes made in every category. On the dashboard, a selected
+machine's Settings are Command-Option-Comma.
+
+AVM's own Settings are Command-Comma from any AVM window, or **AVM
+Settings…** on the dashboard, in four categories in the same kind of
+toolbar: **General** (checking for updates, What's New), **Startup and
+Background** (opening AVM at login, running in the background with a
+keyboard for Windows, the second monitor), **Keyboard** (Caps Lock as
+the screen reader key in Windows) and **Devices** (Restart USB Helper).
 
 The setup wizard downloads installers too: **Download Windows 11 for
 ARM…** gets Windows straight from Microsoft's servers, the way

@@ -91,6 +91,8 @@ struct AVMApp: App {
         }
         .windowStyle(.automatic)
         .commands {
+            // AVM's own Settings, Command-Comma (2026-10-30), from the
+            // Settings scene below; Background and Startup moved into it.
             // Remove the default New Window menu item — AVM is single-window.
             CommandGroup(replacing: .newItem) { }
             // A way to the list from any window (2026-10-28, fifth audit):
@@ -116,10 +118,6 @@ struct AVMApp: App {
                     updater.checkForUpdates()
                 }
                 .disabled(!updater.canCheckForUpdates)
-                // Background and Startup… (2026-10-28, BackgroundMode.swift).
-                Button("Background and Startup…") {
-                    DashboardCommand.post(.avmBackgroundSettings, object: nil)
-                }
             }
 
             // Save Diagnostic Log… (File menu) — STAGE D (2026-08-06). The
@@ -561,6 +559,14 @@ struct AVMApp: App {
             set: { _ in })) {
             BackgroundMenu()
         }
+
+        // AVM's own Settings (2026-10-30, AppPreferencesView.swift): the
+        // AVM menu's Settings item, Command-Comma from any AVM window.
+        Settings {
+            AppPreferencesView()
+                .environmentObject(vmStore)
+                .environmentObject(updater)
+        }
     }
 }
 
@@ -710,7 +716,7 @@ enum DashboardCommand {
         // next one waited, out of sight and unsaid, until it was closed.
         // Only the commands that always open one (seventh audit): Detach
         // with one device and Reclaim with nothing to reclaim just speak.
-        let opensWindow: Set<Notification.Name> = [.avmAttachUSBFromMenu, .avmBluetoothDevices, .avmMachineDevices, .avmBackgroundSettings]
+        let opensWindow: Set<Notification.Name> = [.avmAttachUSBFromMenu, .avmBluetoothDevices, .avmMachineDevices]
         if opensWindow.contains(name), MainWindowCloseGuard.hasOpenSheet {
             Announcer.shared.announce("A window is open in AVM's list. Close it, then choose the command again.", tone: .info)
             MainWindowCloseGuard.bringMainWindowForward()
