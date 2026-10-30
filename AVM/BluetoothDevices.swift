@@ -12,11 +12,14 @@
 //
 // A Bluetooth device shares root ports 5 to 8 with USB devices. It goes
 // back to the Mac when the user asks, when the machine is saved or stops,
-// when the device disconnects, and when the helper restarts.
+// when the device disconnects, and when the helper restarts. One that
+// disconnected goes back to the machine by itself when it reconnects, in
+// the same run of the machine (2026-10-29).
 
 import SwiftUI
 import Combine
 import AppKit
+import IOKit
 
 @MainActor
 final class BluetoothDevices: ObservableObject {
@@ -102,6 +105,8 @@ final class BluetoothDevices: ObservableObject {
         }
         sending.insert(device.id)
         defer { sending.remove(device.id) }
+        // Sent now, by hand or on its return: nothing left to wait for.
+        awaitingReturn[device.id] = nil
         // Input Monitoring first, for a device with keys (2026-10-29, the
         // user's Mantis): macOS lets the helper open one only when AVM is
         // allowed there (InputMonitoring.swift). Asked for, and waited on,
@@ -371,7 +376,78 @@ final class BluetoothDevices: ObservableObject {
             await machine.detachHIDBridge(port: entry.port)
             USBRedirectController.shared.releaseReservedPort(portKey(id), port: entry.port)
         }
+        // Disconnected, it comes back by itself (2026-10-29): see below.
+        if detail == "it disconnected", case .running = machine.state, !machine.isSaving {
+            awaitingReturn[id] = AwaitingReturn(machine: machine, run: machine.qemuPID, name: entry.name)
+            watchForReturns()
+            AVMLog.write("Bluetooth: \(entry.name) disconnected; it goes back to \(machine.machineName) when it reconnects", category: "Bluetooth")
+            say("\(entry.name) disconnected, so it's on the Mac for now. It goes back to \(machine.machineName) when it reconnects.", tone: .info)
+            return
+        }
         say("\(entry.name) went back to the Mac\(detail.map { ": \($0)" } ?? ""). Send it again from Bluetooth Devices when it's back.", tone: .info)
+    }
+
+    // MARK: Coming back after a disconnect (2026-10-29)
+
+    /// Devices that disconnected while in a machine, by the helper's id: a
+    /// braille display asleep, out of range or flat. Each goes back to its
+    /// machine when macOS sees it again, in the same run of that machine
+    /// (its QEMU process), while it's running. A USB device already follows
+    /// the user's choice back (USBPlugPrompt); a Bluetooth one had to be
+    /// sent again by hand every time it slept, and braille displays sleep.
+    private struct AwaitingReturn {
+        weak var machine: VMManager?
+        let run: Int
+        let name: String
+    }
+    private var awaitingReturn: [String: AwaitingReturn] = [:]
+    private var arrivals: BluetoothArrivals?
+    private var checkingReturns = false
+    private var checkAgain = false
+
+    private func watchForReturns() {
+        if arrivals == nil {
+            arrivals = BluetoothArrivals { [weak self] in self?.checkForReturns() }
+            if arrivals == nil {
+                AVMLog.write("Bluetooth: couldn't watch for devices reconnecting; a disconnected device is sent again by hand", category: "Bluetooth")
+            }
+        }
+        // Back already, before the watch began.
+        checkForReturns()
+    }
+
+    /// Still wanted: its machine is in the same run, running, not saving.
+    private func stillWanted(_ waiting: AwaitingReturn) -> VMManager? {
+        guard let machine = waiting.machine, machine.qemuPID == waiting.run, !machine.isSaving,
+              case .running = machine.state else { return nil }
+        return machine
+    }
+
+    /// Looks for the devices waiting to go back, a few times while a newly
+    /// connected one publishes itself, and sends each one found. One look
+    /// at a time; an arrival during it asks for another.
+    private func checkForReturns() {
+        guard !checkingReturns else { checkAgain = true; return }
+        checkingReturns = true
+        Task {
+            defer { checkingReturns = false }
+            repeat {
+                checkAgain = false
+                for delay in [2, 3, 5] {
+                    try? await Task.sleep(for: .seconds(delay))
+                    awaitingReturn = awaitingReturn.filter { stillWanted($0.value) != nil }
+                    guard !awaitingReturn.isEmpty else { return }
+                    guard case .success(let present) = await USBHelperClient.shared.listBluetoothDevices() else { break }
+                    for device in present {
+                        guard let waiting = awaitingReturn.removeValue(forKey: device.id),
+                              let machine = stillWanted(waiting) else { continue }
+                        AVMLog.write("Bluetooth: \(waiting.name) reconnected; sending it back to \(machine.machineName)", category: "Bluetooth")
+                        await attach(device, to: machine)
+                    }
+                    if awaitingReturn.isEmpty { return }
+                }
+            } while checkAgain
+        }
     }
 
     /// A machine whose bridge devices can be removed over QMP: running, or
@@ -419,6 +495,55 @@ final class BluetoothDevices: ObservableObject {
 
     private func say(_ message: String, tone: Announcer.Tone) {
         Announcer.shared.announce(message, tone: tone)
+    }
+}
+
+// MARK: - Bluetooth devices appearing (2026-10-29)
+
+/// Says when a Bluetooth HID device appears in macOS's registry, for a
+/// disconnected device to go back to its machine. Only the registry is
+/// watched, nothing is opened, so it needs no permission. As
+/// USBHotPlugWatcher: on the main run loop, the iterator drained to arm it,
+/// the devices there already passed over.
+final class BluetoothArrivals {
+    private let port: IONotificationPortRef
+    private var iterator: io_iterator_t = 0
+    private let arrived: () -> Void
+
+    init?(arrived: @escaping () -> Void) {
+        guard let port = IONotificationPortCreate(kIOMainPortDefault) else { return nil }
+        self.port = port
+        self.arrived = arrived
+        CFRunLoopAddSource(CFRunLoopGetMain(), IONotificationPortGetRunLoopSource(port).takeUnretainedValue(), .defaultMode)
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        let kr = IOServiceAddMatchingNotification(port, kIOFirstMatchNotification, IOServiceMatching("IOHIDDevice"), { refcon, iterator in
+            guard let refcon else { return }
+            let watch = Unmanaged<BluetoothArrivals>.fromOpaque(refcon).takeUnretainedValue()
+            MainActor.assumeIsolated { watch.drain(iterator, tell: true) }
+        }, refcon, &iterator)
+        guard kr == KERN_SUCCESS else {
+            IONotificationPortDestroy(port)
+            return nil
+        }
+        drain(iterator, tell: false)
+    }
+
+    deinit {
+        if iterator != 0 { IOObjectRelease(iterator) }
+        IONotificationPortDestroy(port)
+    }
+
+    private func drain(_ iterator: io_iterator_t, tell: Bool) {
+        var bluetooth = false
+        var service = IOIteratorNext(iterator)
+        while service != 0 {
+            let transport = IORegistryEntryCreateCFProperty(service, "Transport" as CFString, kCFAllocatorDefault, 0)?
+                .takeRetainedValue() as? String ?? ""
+            if transport.lowercased().contains("bluetooth") { bluetooth = true }
+            IOObjectRelease(service)
+            service = IOIteratorNext(iterator)
+        }
+        if tell, bluetooth { arrived() }
     }
 }
 

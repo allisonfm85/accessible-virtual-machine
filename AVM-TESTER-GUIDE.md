@@ -690,8 +690,11 @@ dashboard's Start buttons work too.
   same kind: a Bluetooth braille display shows up as a standard HID
   braille display, which NVDA and Narrator find by themselves. Your Mac
   doesn't use the device while it's there; **Return to Mac** gives it
-  back, and so do saving or stopping Windows. Wake a sleeping device by
-  pressing a key on it first. A braille display that uses Bluetooth serial
+  back, and so do saving or stopping Windows. If the device disconnects
+  while it's in Windows (a braille display going to sleep, say), it's on
+  the Mac until it reconnects, then goes back to Windows by itself, as
+  long as Windows is still running. Wake a sleeping device by pressing a
+  key on it first. A braille display that uses Bluetooth serial
   rather than HID won't show up. A keyboard is better chosen as Keyboard
   for Windows, in Settings. A device with keys, like a braille display
   whose keys type, needs AVM allowed under Input Monitoring: the first
