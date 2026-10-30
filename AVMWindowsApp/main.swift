@@ -32,88 +32,29 @@
 
 import AppKit
 
-final class WindowsAppEntry: NSObject, NSApplicationDelegate {
-    private let info = Bundle.main.infoDictionary ?? [:]
-    private var appName: String { info["AVMAppName"] as? String ?? "Windows app" }
-    private var machineName: String { info["AVMMachineName"] as? String ?? "Windows" }
-    private var pinned: Bool { info["AVMPinned"] as? Bool == true }
-    private var isMachine: Bool { info["AVMKind"] as? String == "machine" }
-    private var window: NSWindow?
-    private var status: NSTextField?
+/// What every stand-in has: its window, which VoiceOver reads, and its
+/// requests to AVM. Its kind decides the rest (2026-10-30 cleanup: one
+/// class with "if a machine" in each delegate method):
+/// WindowsAppStandIn and MachineStandIn.
+class StandIn: NSObject, NSApplicationDelegate {
+    let info = Bundle.main.infoDictionary ?? [:]
+    var appName: String { info["AVMAppName"] as? String ?? "Windows app" }
+    var machineName: String { info["AVMMachineName"] as? String ?? "Windows" }
+    /// Opened by the person, not by AVM, which passes --avm-opened.
+    var openedByPerson: Bool { !CommandLine.arguments.contains("--avm-opened") }
+    var window: NSWindow?
+    var status: NSTextField?
     private var asking = false
     private static let noAnswer = "AVM didn't answer. Open AVM, then try again."
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        if isMachine {
-            buildMachine()
-            return
-        }
-        buildMenu()
-        let text = NSTextField(wrappingLabelWithString: "\(appName) in \(machineName). Press Command-Shift-E to type in it. Control-Command-Escape brings you back to the Mac.")
-        text.setAccessibilityLabel(text.stringValue)
-        // A button too, for VoiceOver's VO-Space; Command-Shift-E is the key.
-        let enter = NSButton(title: "Type in \(appName)", target: self, action: #selector(enterApp(_:)))
-        let keep = NSButton(title: pinned ? "Remove from Dock and Applications" : "Keep in Dock and Applications",
-                            target: self, action: #selector(togglePinned(_:)))
-        makeWindow(title: "\(appName) in \(machineName)", text: text, buttons: [enter, keep])
-        if !NSApp.isHidden { window?.makeKeyAndOrderFront(nil) }
-        // Opened by the person, not by AVM: open the app.
-        if !CommandLine.arguments.contains("--avm-opened") { openApp() }
-    }
-
-    /// Back from Command-Tab: the window is what VoiceOver reads; for a
-    /// machine, straight into it.
-    func applicationDidBecomeActive(_ notification: Notification) {
-        if isMachine {
-            enterMachine()
-            return
-        }
-        window?.makeKeyAndOrderFront(nil)
-    }
-
-    /// A click on its Dock icon while it runs.
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if isMachine {
-            enterMachine()
-            return false
-        }
-        window?.makeKeyAndOrderFront(nil)
-        openApp()
-        return true
-    }
-
-    // MARK: A machine's own app (2026-10-30)
-
-    private func buildMachine() {
-        let main = NSMenu()
-        let appItem = NSMenuItem()
-        let appMenu = NSMenu()
-        let enter = NSMenuItem(title: "Enter \(machineName)", action: #selector(enterMachineChosen(_:)), keyEquivalent: "e")
-        enter.keyEquivalentModifierMask = [.command, .shift]
-        enter.target = self
-        appMenu.addItem(enter)
-        appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide \(machineName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        appItem.submenu = appMenu
-        main.addItem(appItem)
-        NSApp.mainMenu = main
-        // Shown only when AVM couldn't enter the machine, to say why.
-        let text = NSTextField(wrappingLabelWithString: "\(machineName): switching here puts your keyboard into it. Control-Command-Escape brings you back to the Mac.")
-        let enterButton = NSButton(title: "Enter \(machineName)", target: self, action: #selector(enterMachineChosen(_:)))
-        makeWindow(title: machineName, text: text, buttons: [enterButton])
-        if !CommandLine.arguments.contains("--avm-opened") { enterMachine() }
-    }
-
-    @objc func enterMachineChosen(_ sender: Any?) { enterMachine() }
-
-    /// AVM takes the front and enters the machine; only a refusal shows
-    /// the window, to say why.
-    private func enterMachine() { handOver("enter-machine", showingWindowIfRefused: true) }
+    func applicationDidFinishLaunching(_ notification: Notification) {}
+    func applicationDidBecomeActive(_ notification: Notification) {}
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { true }
 
     // MARK: The window, and asking AVM
 
     /// The one window, which VoiceOver reads: a line, then buttons.
-    private func makeWindow(title: String, text: NSTextField, buttons: [NSButton]) {
+    func makeWindow(title: String, text: NSTextField, buttons: [NSButton]) {
         let stack = NSStackView(views: [text] + buttons)
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -132,7 +73,7 @@ final class WindowsAppEntry: NSObject, NSApplicationDelegate {
     /// AVM takes the front next (macOS 14 lets an app activate only when
     /// the active one yields) and is asked to act; only a refusal is said
     /// here.
-    private func handOver(_ command: String, showingWindowIfRefused: Bool) {
+    func handOver(_ command: String, showingWindowIfRefused: Bool) {
         guard !asking else { return }
         asking = true
         if #available(macOS 14.0, *), let avm = info["AVMBundleID"] as? String {
@@ -146,48 +87,13 @@ final class WindowsAppEntry: NSObject, NSApplicationDelegate {
 
     /// True after saying why, when AVM said no or didn't answer.
     @discardableResult
-    private func sayIfRefused(_ reply: [String: Any]?) -> Bool {
+    func sayIfRefused(_ reply: [String: Any]?) -> Bool {
         guard reply?["ok"] as? Bool != true else { return false }
         say(reply?["message"] as? String ?? Self.noAnswer)
         return true
     }
 
-    private func buildMenu() {
-        let main = NSMenu()
-        let appItem = NSMenuItem()
-        let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "Hide \(appName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        appItem.submenu = appMenu
-        main.addItem(appItem)
-        let machineItem = NSMenuItem()
-        let machineMenu = NSMenu(title: machineName)
-        let enter = NSMenuItem(title: "Type in \(appName)", action: #selector(enterApp(_:)), keyEquivalent: "e")
-        enter.keyEquivalentModifierMask = [.command, .shift]
-        enter.target = self
-        machineMenu.addItem(enter)
-        let keep = NSMenuItem(title: pinned ? "Remove from Dock and Applications" : "Keep in Dock and Applications",
-                              action: #selector(togglePinned(_:)), keyEquivalent: "")
-        keep.target = self
-        machineMenu.addItem(keep)
-        machineItem.submenu = machineMenu
-        main.addItem(machineItem)
-        NSApp.mainMenu = main
-    }
-
-    @objc func enterApp(_ sender: Any?) { openApp() }
-
-    /// The app, opened or brought forward in Windows, with the machine
-    /// started and AVM opened as needed (WindowsApps.launch).
-    private func openApp() { handOver("launch-app", showingWindowIfRefused: false) }
-
-    @objc func togglePinned(_ sender: Any?) {
-        // AVM says what happened; only a refusal is said here.
-        ask(pinned ? "unpin-app" : "pin-app") { self.sayIfRefused($0) }
-    }
-
-    private func say(_ message: String) {
+    func say(_ message: String) {
         status?.stringValue = message
         NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
                              userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue])
@@ -195,7 +101,7 @@ final class WindowsAppEntry: NSObject, NSApplicationDelegate {
 
     /// One request to AVM; AVM opened first if it isn't answering, then
     /// asked again for up to a minute.
-    private func ask(_ command: String, then: @escaping ([String: Any]?) -> Void) {
+    func ask(_ command: String, then: @escaping ([String: Any]?) -> Void) {
         let request: [String: Any] = ["command": command,
                                       "machine": info["AVMMachineID"] as? String ?? "",
                                       "app": info["AVMAppKey"] as? String ?? "",
@@ -250,8 +156,110 @@ final class WindowsAppEntry: NSObject, NSApplicationDelegate {
     }
 }
 
+/// A Windows app's stand-in: its window says how to type in the app, and
+/// it can be kept in the Dock and Applications.
+final class WindowsAppStandIn: StandIn {
+    private var pinned: Bool { info["AVMPinned"] as? Bool == true }
+
+    override func applicationDidFinishLaunching(_ notification: Notification) {
+        buildMenu()
+        let text = NSTextField(wrappingLabelWithString: "\(appName) in \(machineName). Press Command-Shift-E to type in it. Control-Command-Escape brings you back to the Mac.")
+        text.setAccessibilityLabel(text.stringValue)
+        // A button too, for VoiceOver's VO-Space; Command-Shift-E is the key.
+        let enter = NSButton(title: "Type in \(appName)", target: self, action: #selector(enterApp(_:)))
+        let keep = NSButton(title: pinned ? "Remove from Dock and Applications" : "Keep in Dock and Applications",
+                            target: self, action: #selector(togglePinned(_:)))
+        makeWindow(title: "\(appName) in \(machineName)", text: text, buttons: [enter, keep])
+        if !NSApp.isHidden { window?.makeKeyAndOrderFront(nil) }
+        // Opened by the person, not by AVM: open the app.
+        if openedByPerson { openApp() }
+    }
+
+    /// Back from Command-Tab: the window is what VoiceOver reads.
+    override func applicationDidBecomeActive(_ notification: Notification) {
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// A click on its Dock icon while it runs.
+    override func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        window?.makeKeyAndOrderFront(nil)
+        openApp()
+        return true
+    }
+
+    private func buildMenu() {
+        let main = NSMenu()
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Hide \(appName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        main.addItem(appItem)
+        let machineItem = NSMenuItem()
+        let machineMenu = NSMenu(title: machineName)
+        let enter = NSMenuItem(title: "Type in \(appName)", action: #selector(enterApp(_:)), keyEquivalent: "e")
+        enter.keyEquivalentModifierMask = [.command, .shift]
+        enter.target = self
+        machineMenu.addItem(enter)
+        let keep = NSMenuItem(title: pinned ? "Remove from Dock and Applications" : "Keep in Dock and Applications",
+                              action: #selector(togglePinned(_:)), keyEquivalent: "")
+        keep.target = self
+        machineMenu.addItem(keep)
+        machineItem.submenu = machineMenu
+        main.addItem(machineItem)
+        NSApp.mainMenu = main
+    }
+
+    @objc func enterApp(_ sender: Any?) { openApp() }
+
+    /// The app, opened or brought forward in Windows, with the machine
+    /// started and AVM opened as needed (WindowsApps.launch).
+    private func openApp() { handOver("launch-app", showingWindowIfRefused: false) }
+
+    @objc func togglePinned(_ sender: Any?) {
+        // AVM says what happened; only a refusal is said here.
+        ask(pinned ? "unpin-app" : "pin-app") { self.sayIfRefused($0) }
+    }
+}
+
+/// A running machine's own app (AVMKind = machine, 2026-10-30): switched
+/// to, or clicked in the Dock, it goes straight into the machine. Its
+/// window shows only if AVM couldn't, to say why.
+final class MachineStandIn: StandIn {
+    override func applicationDidFinishLaunching(_ notification: Notification) {
+        let main = NSMenu()
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        let enter = NSMenuItem(title: "Enter \(machineName)", action: #selector(enterMachineChosen(_:)), keyEquivalent: "e")
+        enter.keyEquivalentModifierMask = [.command, .shift]
+        enter.target = self
+        appMenu.addItem(enter)
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Hide \(machineName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appItem.submenu = appMenu
+        main.addItem(appItem)
+        NSApp.mainMenu = main
+        let text = NSTextField(wrappingLabelWithString: "\(machineName): switching here puts your keyboard into it. Control-Command-Escape brings you back to the Mac.")
+        let enterButton = NSButton(title: "Enter \(machineName)", target: self, action: #selector(enterMachineChosen(_:)))
+        makeWindow(title: machineName, text: text, buttons: [enterButton])
+        if openedByPerson { enterMachine() }
+    }
+
+    override func applicationDidBecomeActive(_ notification: Notification) { enterMachine() }
+
+    override func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        enterMachine()
+        return false
+    }
+
+    @objc func enterMachineChosen(_ sender: Any?) { enterMachine() }
+
+    private func enterMachine() { handOver("enter-machine", showingWindowIfRefused: true) }
+}
+
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
-let delegate = WindowsAppEntry()
+let delegate: StandIn = Bundle.main.infoDictionary?["AVMKind"] as? String == "machine" ? MachineStandIn() : WindowsAppStandIn()
 app.delegate = delegate
 app.run()
