@@ -227,6 +227,10 @@ SETTINGS="$(xcodebuild -project AVM.xcodeproj -scheme AVM -configuration Release
 VERSION="$(echo "$SETTINGS" | sed -nE 's/^ *MARKETING_VERSION = (.*)$/\1/p' | sed -n 1p)"
 BUILD_NUMBER="$(echo "$SETTINGS" | sed -nE 's/^ *CURRENT_PROJECT_VERSION = (.*)$/\1/p' | sed -n 1p)"
 [ -n "$VERSION" ] || fail "Could not read MARKETING_VERSION from the project."
+# What's New (2026-10-30): every release says what changed, in the window
+# AVM shows after the update (ReleaseNotes in app/AVMUpdater.swift).
+grep -q "ReleaseNote(version: \"$VERSION\"" app/AVMUpdater.swift \
+    || fail "No release notes for $VERSION." "Add an entry for $VERSION at the top of ReleaseNotes.all in app/AVMUpdater.swift, a few plain lines, then build again."
 info "Version $VERSION, build $BUILD_NUMBER"
 
 # MARK: - 2. Archive

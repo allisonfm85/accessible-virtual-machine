@@ -118,3 +118,150 @@ final class UpdateAnnouncer: NSObject, SPUUpdaterDelegate {
         }
     }
 }
+
+// MARK: - What's New, after an update (2026-10-30)
+//
+// The user's request: easy-to-read release notes on the first launch after
+// an update. A small window, "What's New in AVM 0.1.4", a heading per
+// version and a few plain lines each, read by VoiceOver as it opens; OK (or
+// Return) closes it. It covers every version since the one last run, and
+// is in the Help menu too. Not while the keyboard is in a machine: it
+// waits until the user is back on the Mac.
+//
+// Every release adds its entry at the top of ReleaseNotes.all;
+// Tools/build-installer.sh refuses a version without one.
+
+import AppKit
+import SwiftUI
+
+struct ReleaseNote {
+    let version: String
+    let changes: [String]
+}
+
+@MainActor
+enum ReleaseNotes {
+    /// Newest first.
+    static let all: [ReleaseNote] = [
+        ReleaseNote(version: "0.1.4", changes: [
+            "The dashboard lists your virtual machines in a table: Name, Status, System, Cores, Memory, Disk and Drive. Choose one with the arrow keys. Return starts it, or enters it when it's running. VO-Shift-M opens its other actions, and its buttons are below the table.",
+            "Each running virtual machine is in Command-Tab under its own name. Switch to it and your keyboard goes straight in. Control-Command-Escape brings you back.",
+            "Each app open in Windows is in Command-Tab too. Switch to one and press Command-Shift-E to type in it. Keep in Dock and Applications keeps one there, and opening it starts AVM and Windows if needed.",
+            "Settings has Trackpad and Mouse: turn it off so a stray touch can't move or click in the machine.",
+            "With AVM opening at login and a machine starting with it, AVM comes to the front, so the machine gets your keyboard.",
+            "After an update, this window says what's new. It's in the Help menu too.",
+        ]),
+    ]
+
+    private static let seenKey = "AVMLastVersionSeen"
+    private static var window: NSWindow?
+
+    static var current: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+    }
+
+    /// The notes after `old` (all of them for nil), up to this version.
+    static func since(_ old: String?) -> [ReleaseNote] {
+        all.filter { note in
+            (old.map { note.version.compare($0, options: .numeric) == .orderedDescending } ?? true)
+                && note.version.compare(current, options: .numeric) != .orderedDescending
+        }
+    }
+
+    /// At launch: once after an update, the notes since the version last
+    /// run. Nothing after a first install. A copy updated from a version
+    /// before this window, which stored no version, gets this version's
+    /// notes when it has machines set up.
+    static func showIfUpdated() {
+        let defaults = UserDefaults.standard
+        let last = defaults.string(forKey: seenKey)
+        guard last != current else { return }
+        // A moment for the machine list to load.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            defaults.set(current, forKey: seenKey)
+            let notes: [ReleaseNote]
+            if let last {
+                notes = since(last)
+            } else if VMStore.shared?.configurations.isEmpty == false {
+                notes = all.filter { $0.version == current }
+            } else {
+                notes = []
+            }
+            guard !notes.isEmpty else { return }
+            AVMLog.write("AVM: updated from \(last ?? "an earlier version") to \(current); showing what's new")
+            showWhenOnTheMac(notes)
+        }
+    }
+
+    /// This version's notes and the two before, for the Help menu and the
+    /// accessibility audit.
+    static var recent: [ReleaseNote] { Array(since(nil).prefix(3)) }
+
+    static func showRecent() { show(recent) }
+
+    private static func showWhenOnTheMac(_ notes: [ReleaseNote]) {
+        guard FocusLockManager.shared?.isLocked != true else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showWhenOnTheMac(notes) }
+            return
+        }
+        show(notes)
+    }
+
+    static func show(_ notes: [ReleaseNote]) {
+        guard !notes.isEmpty else { return }
+        window?.close()
+        let title = notes.count == 1 ? "What's New in AVM \(notes[0].version)" : "What's New in AVM"
+        let panel = NSWindow(contentRect: NSRect(origin: .zero, size: WhatsNewView.size),
+                             styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        panel.title = title
+        panel.isReleasedWhenClosed = false
+        panel.contentView = NSHostingView(rootView: WhatsNewView(title: title, notes: notes) { window?.close() })
+        panel.center()
+        window = panel
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+    }
+}
+
+/// The notes: a heading per version, a line per change, and OK.
+struct WhatsNewView: View {
+    static let size = NSSize(width: 540, height: 460)
+    let title: String
+    let notes: [ReleaseNote]
+    let close: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(title)
+                .font(.title)
+                .accessibilityAddTraits(.isHeader)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    ForEach(notes, id: \.version) { note in
+                        VStack(alignment: .leading, spacing: 10) {
+                            if notes.count > 1 {
+                                Text("AVM \(note.version)")
+                                    .font(.title3.bold())
+                                    .accessibilityAddTraits(.isHeader)
+                            }
+                            ForEach(note.changes, id: \.self) { change in
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text("•").accessibilityHidden(true)
+                                    Text(change).fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack {
+                Spacer()
+                Button("OK", action: close)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: Self.size.width, height: Self.size.height)
+    }
+}

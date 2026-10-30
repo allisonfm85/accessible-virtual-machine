@@ -524,6 +524,10 @@ struct AVMApp: App {
             // never received it (tested 2026-10-24). The search field is the
             // system's and stays.
             CommandGroup(replacing: .help) {
+                // What's New in AVM (2026-10-30, AVMUpdater.swift).
+                Button("What's New in AVM") {
+                    ReleaseNotes.showRecent()
+                }
                 // Report a Problem… (2026-10-26, ProblemReporter.swift).
                 Button("Report a Problem…") {
                     ProblemReporter.reportAProblem()
@@ -629,6 +633,8 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
             // Windows apps in Command-Tab (2026-10-29, WindowsApps.swift);
             // not for a test run, whose machines aren't the user's.
             if !testRun { WindowsApps.shared.start() }
+            // What's New, once after an update (2026-10-30, AVMUpdater.swift).
+            if !testRun { ReleaseNotes.showIfUpdated() }
             // Run in the background and the second display (2026-10-28).
             BackgroundMode.shared.start()
         }

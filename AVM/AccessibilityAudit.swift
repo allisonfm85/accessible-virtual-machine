@@ -364,6 +364,10 @@ private final class Auditor {
             Screen(name: "Background and Startup", size: NSSize(width: 560, height: 700), headings: title("Background and Startup")) {
                 host(BackgroundSettingsView())
             },
+            // What's New after an update (2026-10-30, AVMUpdater.swift).
+            Screen(name: "What's New", size: WhatsNewView.size, headings: title("What's New in AVM")) {
+                host(WhatsNewView(title: "What's New in AVM", notes: ReleaseNotes.recent, close: {}))
+            },
         ]
     }
 
