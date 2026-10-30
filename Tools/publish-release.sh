@@ -113,8 +113,12 @@ if [ "$EXISTING" = "1" ]; then
 else
     # The built commit itself, not the branch (sixth audit): a push to the
     # branch while this waited for "yes" tagged a newer commit.
+    # What's new, as AVM's What's New window says it (2026-10-30,
+    # release-notes.md from build-installer.sh), then how to install.
+    NOTES="AVM $VERSION. Install from the DMG; existing installs update from inside AVM."
+    [ -s "$OUT_DIR/release-notes.md" ] && NOTES="$(cat "$OUT_DIR/release-notes.md")"$'\n\n'"$NOTES"
     gh release create "v$VERSION" "$DMG" "$ZIP" --repo "$REPO_SLUG" --target "$BUILT" \
-        --title "AVM $VERSION" --notes "AVM $VERSION. Install from the DMG; existing installs update from inside AVM." \
+        --title "AVM $VERSION" --notes "$NOTES" \
         ${DRAFT_FLAG[@]+"${DRAFT_FLAG[@]}"} || fail "gh could not create the release."
     echo "Created release v$VERSION."
 fi

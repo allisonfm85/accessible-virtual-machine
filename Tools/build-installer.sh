@@ -229,7 +229,7 @@ BUILD_NUMBER="$(echo "$SETTINGS" | sed -nE 's/^ *CURRENT_PROJECT_VERSION = (.*)$
 [ -n "$VERSION" ] || fail "Could not read MARKETING_VERSION from the project."
 # What's New (2026-10-30): every release says what changed, in the window
 # AVM shows after the update (ReleaseNotes in app/AVMUpdater.swift).
-grep -q "ReleaseNote(version: \"$VERSION\"" app/AVMUpdater.swift \
+"$REPO_ROOT/Tools/release-notes.py" "$VERSION" >/dev/null \
     || fail "No release notes for $VERSION." "Add an entry for $VERSION at the top of ReleaseNotes.all in app/AVMUpdater.swift, a few plain lines, then build again."
 info "Version $VERSION, build $BUILD_NUMBER"
 
@@ -537,11 +537,14 @@ cat > "$ITEM" <<ITEMXML
             <sparkle:version>$BUILD_NUMBER</sparkle:version>
             <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[$("$REPO_ROOT/Tools/release-notes.py" "$VERSION" --html)]]></description>
             <pubDate>$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")</pubDate>
             <enclosure url="https://github.com/$REPO_SLUG/releases/download/v$VERSION/AVM-$VERSION.zip" $SIGNATURE type="application/octet-stream" />
         </item>
 ITEMXML
 info "Update feed entry: $ITEM"
+# The same notes for the GitHub release page (2026-10-30, publish-release.sh).
+"$REPO_ROOT/Tools/release-notes.py" "$VERSION" > "$OUT_DIR/release-notes.md"
 # Which commit this is (2026-10-26, code audit): publish-release.sh
 # refuses to tag a different one with these files.
 echo "$BUILT_COMMIT" > "$OUT_DIR/built-commit.txt"
