@@ -246,7 +246,8 @@ final class MacInstaller: NSObject, URLSessionDownloadDelegate {
         }
     }
 
-    private func restoreImage(_ ipsw: URL?, diskGB: Int) async throws -> URL {
+    /// Also MacTestJob's --download-macos (2026-10-30).
+    func restoreImage(_ ipsw: URL?, diskGB: Int) async throws -> URL {
         if let ipsw { return ipsw }
         say("Asking Apple for the newest macOS this Mac can run.")
         let latest = try await VZMacOSRestoreImage.latestSupported

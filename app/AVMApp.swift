@@ -76,6 +76,8 @@ struct AVMApp: App {
         ControlClient.runIfAsked()
         AccessibilityAudit.runIfAsked()
         InstallMediaJob.runIfAsked()
+        WindowsDownloadJob.runIfAsked()
+        LinuxDownloadJob.runIfAsked()
         MacTestJob.runIfAsked()
         KeyboardTestJob.runIfAsked()
         KeyboardTestJob.playAudioIfAsked()

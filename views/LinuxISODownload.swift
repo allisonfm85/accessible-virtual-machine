@@ -420,3 +420,52 @@ struct LinuxDownloadView: View {
         }
     }
 }
+
+/// The download with no window (2026-10-30), for a full system test of a
+/// Linux install the way a user gets it:
+///
+///   AVM.app/Contents/MacOS/AVM --download-linux ubuntu|debian|fedora
+///
+/// It runs LinuxISODownloader exactly as the setup wizard's Download Linux
+/// does, printing each step, and exits 0 with the installer's path as its
+/// last line, or 1 with the reason.
+@MainActor
+enum LinuxDownloadJob {
+    static let flag = "--download-linux"
+
+    /// Called first thing at launch; returns only when not asked.
+    static func runIfAsked(arguments: [String] = CommandLine.arguments) {
+        guard let i = arguments.firstIndex(of: flag) else { return }
+        AVMLog.useTestLogFolder()
+        Announcer.isMuted = true
+        guard arguments.indices.contains(i + 1),
+              let distribution = LinuxISODownloader.Distribution(rawValue: arguments[i + 1]) else {
+            print("Usage: AVM \(flag) ubuntu|debian|fedora")
+            exit(64)
+        }
+        let downloader = LinuxISODownloader()
+        var said = ""
+        var tenth = -1
+        downloader.start(distribution)
+        while true {
+            RunLoop.main.run(until: Date().addingTimeInterval(1))
+            switch downloader.phase {
+            case .finished(let url):
+                print(url.path)
+                exit(0)
+            case .failed(let message):
+                print("FAILED: \(message)")
+                exit(1)
+            case .downloading where downloader.expected > 0:
+                let now = Int(Double(downloader.received) / Double(downloader.expected) * 10)
+                if now != tenth { tenth = now; print(downloader.spokenProgress) }
+            default:
+                if downloader.spokenProgress != said {
+                    said = downloader.spokenProgress
+                    print(said)
+                }
+            }
+            fflush(stdout)
+        }
+    }
+}

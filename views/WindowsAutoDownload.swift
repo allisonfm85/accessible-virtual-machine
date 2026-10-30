@@ -359,3 +359,47 @@ extension WindowsAutoDownloader: URLSessionDownloadDelegate {
         Task { @MainActor in self.downloaded(to: nil, error: message) }
     }
 }
+
+/// The download with no window (2026-10-30), for a full system test of the
+/// Windows install the way a user gets it:
+///
+///   AVM.app/Contents/MacOS/AVM --download-windows
+///
+/// It runs WindowsAutoDownloader exactly as the setup wizard's Download
+/// Windows 11 does, printing each step, and exits 0 with the ISO's path as
+/// its last line, or 1 with the reason.
+@MainActor
+enum WindowsDownloadJob {
+    static let flag = "--download-windows"
+
+    /// Called first thing at launch; returns only when not asked.
+    static func runIfAsked(arguments: [String] = CommandLine.arguments) {
+        guard arguments.contains(flag) else { return }
+        AVMLog.useTestLogFolder()
+        Announcer.isMuted = true
+        let downloader = WindowsAutoDownloader()
+        var said = ""
+        var tenth = -1
+        downloader.start()
+        while true {
+            RunLoop.main.run(until: Date().addingTimeInterval(1))
+            switch downloader.phase {
+            case .finished(let url):
+                print(url.path)
+                exit(0)
+            case .failed(let message):
+                print("FAILED: \(message)")
+                exit(1)
+            case .downloading where downloader.expected > 0:
+                let now = Int(Double(downloader.received) / Double(downloader.expected) * 10)
+                if now != tenth { tenth = now; print(downloader.spokenProgress) }
+            default:
+                if downloader.spokenProgress != said {
+                    said = downloader.spokenProgress
+                    print(said)
+                }
+            }
+            fflush(stdout)
+        }
+    }
+}
