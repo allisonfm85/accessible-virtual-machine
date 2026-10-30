@@ -58,6 +58,9 @@ enum USBPlugDecider {
     static func decide(mode: USBPlugMode,
                        remembered: Bool?,
                        protection: USBDeviceClassification.Protection) -> (decision: USBPlugDecision, why: String) {
+        if protection == .keepOnMac {
+            return (.keepOnMac, "rule 0: a USB hub stays on the Mac")
+        }
         if protection == .alwaysAsk {
             if remembered == false {
                 return (.keepOnMac, "rule 1: protected, but remembered keep on the Mac")
