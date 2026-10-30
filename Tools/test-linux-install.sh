@@ -277,6 +277,30 @@ echo "$DESKTOP" | sed 's/^/   /'
 # needs a SPICE client offering one. The agent running is the requirement.
 CLIPBOARD="no"
 echo "$DESKTOP" | grep -q "spice-vdagent running" && CLIPBOARD="yes"
+# And as QEMU sees it (2026-10-30): the guest's SPICE agent has its
+# channel open ("frontend-open" on the vdagent chardev). On Fedora,
+# SELinux keeps the guest agent from seeing the session's processes, so the
+# line above never found spice-vdagent there, though it ran (a diagnostic
+# boot's journal: "vdagent started", its daemon on the port). SPICE's
+# mouse mode doesn't show it: that changes only with a viewer connected.
+# Up to 30 seconds for it to open.
+if [ "$CLIPBOARD" = "no" ]; then
+    for _ in $(seq 1 15); do
+        OPEN=$(python3 -I - "$QMP" <<'PY' 2>/dev/null
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX); s.settimeout(10); s.connect(sys.argv[1]); f = s.makefile("rw")
+f.readline(); f.write('{"execute":"qmp_capabilities"}\n'); f.flush(); f.readline()
+f.write('{"execute":"query-chardev"}\n'); f.flush()
+while True:
+    reply = json.loads(f.readline())
+    if "return" in reply:
+        print(any(c["label"] == "vdagent" and c.get("frontend-open") for c in reply["return"])); break
+PY
+)
+        [ "$OPEN" = "True" ] && { CLIPBOARD="yes"; info "the SPICE agent has its channel open (QEMU's view)"; break; }
+        sleep 2
+    done
+fi
 info "the clipboard agent is running: $CLIPBOARD"
 # Fedora's SELinux policy keeps the guest agent from listing processes
 # (2026-10-26), so there it's reported, not required.
