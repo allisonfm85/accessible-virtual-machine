@@ -261,9 +261,17 @@ final class BackgroundMode: ObservableObject {
             return
         }
         guard !config.isATemplate, MachineSessions.shared.session(for: id) == nil else { return }
-        AVMLog.write("AVM: starting \(config.name), chosen to start when AVM opens (keyboard for Windows: \(config.windowsKeyboardName ?? "none"))")
+        AVMLog.write("AVM: starting \(config.name), chosen to start when AVM opens (keyboard for Windows: \(config.windowsKeyboardName ?? "none"); AVM active: \(NSApp.isActive), hidden: \(NSApp.isHidden), \(NSApp.activationPolicy() == .regular ? "in Command-Tab" : "not in Command-Tab"))")
         Announcer.shared.announce("Starting \(config.name).", tone: .info)
-        start(config, config.windowsKeyboardID == nil)
+        let takesKeyboard = config.windowsKeyboardID == nil
+        // In front when it takes the Mac's keyboard (2026-10-30, the user's
+        // report): opened at login, AVM wasn't the active app, so the
+        // machine couldn't take the keyboard ("AVM is not the active app;
+        // not locking"), and AVM, never brought forward, wasn't in
+        // Command-Tab. A machine with a keyboard for Windows of its own
+        // leaves the Mac's keyboard, and the front, alone.
+        if takesKeyboard { comeForward(openingDashboard: false) }
+        start(config, takesKeyboard)
         guard runInBackground, config.windowsKeyboardID != nil else { return }
         Task { @MainActor in
             // Up to ten minutes for a first boot or an update.
