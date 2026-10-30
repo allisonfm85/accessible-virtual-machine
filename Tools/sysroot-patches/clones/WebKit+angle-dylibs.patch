@@ -1,0 +1,31 @@
+AVM: ANGLE finds its own libraries beside itself on macOS
+
+ANGLE's libEGL opens libGLESv2 as GLESv2.framework/Versions/Current/GLESv2
+on macOS, a framework path relative to the current folder, which UTM's
+app makes work. AVM ships ANGLE as libEGL.dylib and libGLESv2.dylib, in
+the sysroot's lib folder and in AVM.app's Resources, so QEMU with 3D
+graphics stopped at start: "Error loading EGL entry points:
+dlopen(GLESv2.framework/Versions/Current/GLESv2) failed" (2026-10-27).
+This tries lib<name>.dylib in the loading library's own folder first,
+then the framework path as before.
+
+A git clone (UTM's WebKit, for ANGLE): UTM's build patches only
+downloaded sources, so Tools/build-sysroot.sh applies this just before
+ANGLE is built.
+
+--- a/Source/ThirdParty/ANGLE/src/common/system_utils.cpp
++++ b/Source/ThirdParty/ANGLE/src/common/system_utils.cpp
+@@ -219,6 +219,13 @@
+                                    std::string *errorOut)
+ {
+ #if defined(ANGLE_PLATFORM_MACOS)
++    // AVM: lib<name>.dylib beside this library first.
++    std::string besideName = std::string("lib") + libraryName + ".dylib";
++    if (void *beside = OpenSystemLibraryWithExtensionAndGetError(besideName.c_str(),
++                                                                 SearchType::ModuleDir, nullptr))
++    {
++        return beside;
++    }
+     std::string frameworkPath = std::string(libraryName) + ".framework/Versions/Current/" + std::string(libraryName);
+     return OpenSystemLibraryWithExtensionAndGetError(frameworkPath.c_str(), SearchType::SystemDir, errorOut);
+ #elif defined(ANGLE_PLATFORM_IOS_FAMILY)
