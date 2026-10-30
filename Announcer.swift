@@ -143,7 +143,8 @@ final class Announcer {
 
     private init() {}
 
-    /// Set only by the accessibility audit, before any screen opens.
+    /// Set by the jobs with no window, before they start: the
+    /// accessibility audit, and building install media (2026-10-30).
     nonisolated(unsafe) static var isMuted = false
 
     /// True while the system voice is speaking or has lines waiting, or
@@ -184,6 +185,10 @@ final class Announcer {
     /// Hands the line to VoiceOver. False when VoiceOver isn't on, or the
     /// line has to go to the system voice.
     private func speakWithVoiceOver(_ message: String) -> Bool {
+        // No app (2026-10-30): a command-line job, such as building install
+        // media, has none, and with VoiceOver on, NSApp.isActive below
+        // crashed it.
+        guard NSApp != nil else { return false }
         guard NSWorkspace.shared.isVoiceOverEnabled else {
             // VoiceOver just turned off with a scripted line still waiting
             // (2026-10-29, seventh audit): this one goes behind it, in order.

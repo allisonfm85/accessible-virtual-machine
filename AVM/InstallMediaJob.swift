@@ -31,6 +31,9 @@ enum InstallMediaJob {
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
         guard arguments.contains(flag) else { return }
         AVMLog.useTestLogFolder()
+        // Silent (2026-10-30): a job run by the install tests, with no
+        // window; with VoiceOver on, it crashed reaching for the app.
+        Announcer.isMuted = true
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
