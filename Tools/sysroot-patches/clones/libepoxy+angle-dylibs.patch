@@ -1,0 +1,30 @@
+AVM: libepoxy finds ANGLE's libraries beside itself on macOS
+
+UTM's libepoxy opens ANGLE as EGL.framework and GLESv2.framework, paths
+relative to the current folder, which UTM's app makes work. AVM ships
+ANGLE as libEGL.dylib and libGLESv2.dylib in the sysroot's lib folder
+and in AVM.app's Resources, both beside libepoxy itself, so QEMU with
+3D graphics stopped at start: "Couldn't open
+EGL.framework/Versions/Current/EGL" (2026-10-27). This opens them at
+@loader_path, libepoxy's own folder, which also needs no DYLD_
+variables (the hardened runtime ignores them).
+
+A git clone: UTM's build patches only downloaded sources, so
+Tools/build-sysroot.sh applies this just before libepoxy is built.
+
+--- a/src/dispatch_common.c
++++ b/src/dispatch_common.c
+@@ -177,10 +177,10 @@
+ #include <TargetConditionals.h>
+ #if TARGET_OS_OSX
+ #define GLX_LIB "/opt/X11/lib/libGL.1.dylib"
+-#define EGL_LIB "EGL.framework/Versions/Current/EGL"
++#define EGL_LIB "@loader_path/libEGL.dylib"
+ #define OPENGL_LIB "/System/Library/Frameworks/OpenGL.framework/Versions/Current/OpenGL"
+-#define GLES1_LIB "GLESv1_CM.framework/Versions/Current/GLESv1_CM"
+-#define GLES2_LIB "GLESv2.framework/Versions/Current/GLESv2"
++#define GLES1_LIB "@loader_path/libGLESv1_CM.dylib"
++#define GLES2_LIB "@loader_path/libGLESv2.dylib"
+ #elif TARGET_OS_IPHONE
+ #define GLX_LIB "/opt/X11/lib/libGL.1.dylib"
+ #define EGL_LIB "EGL.framework/EGL"
