@@ -32,6 +32,8 @@ final class WindowsKeyboard {
     /// Test jobs run machines with a made-up keyboard id: the helper isn't
     /// asked (2026-10-28).
     static var disabledForTests = false
+    /// Not Now to Input Monitoring in this run (2026-10-29).
+    private static var inputMonitoringNotNow = false
 
     /// Sends a scancode to the running guest, through QMP.
     var send: ((Int32, Bool) -> Void)? = { code, down in
@@ -129,6 +131,26 @@ final class WindowsKeyboard {
     /// stop or a newer start meanwhile makes the answer nobody's.
     private func askHelper(for keyboardID: String, generation: Int) {
         Task { @MainActor in
+            // Input Monitoring first (2026-10-29): macOS lets the helper take
+            // a keyboard only when AVM is allowed there, and refused it
+            // without a word (InputMonitoring.swift). Not asked again in this
+            // run after a Not Now, at every start and unlock; the helper's
+            // refusal then says what to do.
+            if !InputMonitoring.isAllowed, !Self.inputMonitoringNotNow {
+                let outcome = await InputMonitoring.ask(
+                    title: "AVM needs Input Monitoring for the keyboard for Windows",
+                    why: "macOS lets AVM's helper take a keyboard only when AVM is allowed under Input Monitoring.",
+                    then: "\(keyboardName) types only in Windows as soon as it's allowed.",
+                    while: { self.keyboardID == keyboardID && self.startGeneration == generation })
+                guard self.keyboardID == keyboardID, self.startGeneration == generation else { return }
+                if outcome == .notNow {
+                    Self.inputMonitoringNotNow = true
+                    AVMLog.write("AVM: WindowsKeyboard — Input Monitoring not allowed (Not Now); the keyboard stays with the Mac.")
+                    Announcer.shared.announce("\(keyboardName) types on the Mac for now. Once AVM is allowed under Input Monitoring, it goes to Windows the next time the machine starts.", tone: .info)
+                    self.keyboardID = nil
+                    return
+                }
+            }
             var result = await USBHelperClient.shared.holdKeyboard(keyboardID)
             // The helper is waiting for its approval in Login Items
             // (2026-10-28, code review): "USB helper approved, continuing"
@@ -317,10 +339,16 @@ final class WindowsKeyboard {
             releaseAllKeys()
             keyboardID = nil
             AVMLog.write("AVM: WindowsKeyboard — not held: \(detail ?? "no reason")")
-            // Not "on the Mac" when it's in a machine already, through
-            // Bluetooth Devices (2026-10-29, sixth audit).
-            let whereNow = detail?.contains("in a virtual machine already") == true ? "" : " It still types on the Mac."
-            Announcer.shared.announce("\(keyboardName) can't be used for Windows. Reason: \(detail ?? "unknown.")\(whereNow)", tone: .failure)
+            // Refused for want of Input Monitoring (2026-10-29): what to do,
+            // not the code. Allowed already, the code is said.
+            if let detail, InputMonitoring.refusedHelper(detail), !InputMonitoring.isAllowed {
+                Announcer.shared.announce("\(keyboardName) can't be used for Windows: macOS lets AVM's helper take a keyboard only when AVM is allowed under Input Monitoring. \(InputMonitoring.steps) Then it goes to Windows the next time the machine starts. It still types on the Mac.", tone: .failure)
+            } else {
+                // Not "on the Mac" when it's in a machine already, through
+                // Bluetooth Devices (2026-10-29, sixth audit).
+                let whereNow = detail?.contains("in a virtual machine already") == true ? "" : " It still types on the Mac."
+                Announcer.shared.announce("\(keyboardName) can't be used for Windows. Reason: \(detail ?? "unknown.")\(whereNow)", tone: .failure)
+            }
             Task { await USBHelperClient.shared.releaseKeyboard() }
         }
     }

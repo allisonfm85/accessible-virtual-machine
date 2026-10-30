@@ -636,7 +636,11 @@ dashboard's Start buttons work too.
   Return gives Delete, Page Up and Down, Home, End and keypad Enter, as on
   a Mac. For an Apple keyboard with a § key, turn on "It's an Apple
   keyboard with a § key (ISO)", so § and ` come out where they're
-  printed.
+  printed. The first time, AVM asks for Input Monitoring, since macOS
+  lets AVM's helper take a keyboard only then: choose Open Input
+  Monitoring, then turn on AVM in System Settings, under Privacy &
+  Security, then Input Monitoring. If macOS then offers to quit and
+  reopen AVM, choose Later.
 - **AVM in the background, and at login.** Background and Startup, on
   the dashboard and in the AVM menu, has three choices, all off until
   you turn them on. *Open AVM when you log in.* *Run in the background
@@ -689,7 +693,13 @@ dashboard's Start buttons work too.
   back, and so do saving or stopping Windows. Wake a sleeping device by
   pressing a key on it first. A braille display that uses Bluetooth serial
   rather than HID won't show up. A keyboard is better chosen as Keyboard
-  for Windows, in Settings.
+  for Windows, in Settings. A device with keys, like a braille display
+  whose keys type, needs AVM allowed under Input Monitoring: the first
+  time, AVM says why and macOS asks. Turn on AVM in System Settings,
+  under Privacy & Security, then Input Monitoring, and AVM sends the
+  device as soon as it's on. If macOS then offers to quit and reopen
+  AVM, choose Later. A braille display sent through its USB cable
+  doesn't need this.
 - **The first time a device goes to Windows, AVM sets up its USB helper.**
   macOS may ask you to allow it, or it may not. If it asks, the request
   reads fine with VoiceOver. If you aren't an administrator on your Mac,

@@ -67,6 +67,9 @@ final class BluetoothDevices: ObservableObject {
     private enum TakenBack { case save, restorePoint, helperRestart }
     /// Sends under way, by the helper's id.
     private var inFlight: [String: InFlight] = [:]
+    /// Devices macOS refused the helper for want of Input Monitoring though
+    /// their descriptor showed no keys (2026-10-29): asked for next time.
+    private var needsInputMonitoring: Set<String> = []
 
     @discardableResult
     func attach(_ device: BluetoothDeviceInfo, to machine: VMManager) async -> Bool {
@@ -99,6 +102,39 @@ final class BluetoothDevices: ObservableObject {
         }
         sending.insert(device.id)
         defer { sending.remove(device.id) }
+        // Input Monitoring first, for a device with keys (2026-10-29, the
+        // user's Mantis): macOS lets the helper open one only when AVM is
+        // allowed there (InputMonitoring.swift). Asked for, and waited on,
+        // before the bridge goes into QEMU, so nothing waits in the machine
+        // meanwhile. Once the wait is over the helper decides.
+        if HIDReportDescriptor.hasKeyboard(device.descriptor) || needsInputMonitoring.contains(device.id),
+           !InputMonitoring.isAllowed {
+            let outcome = await InputMonitoring.ask(
+                title: "AVM needs Input Monitoring to send \(device.name)",
+                why: "\(device.name) has keys, and macOS lets AVM's helper take a device with keys only when AVM is allowed under Input Monitoring.",
+                then: "AVM sends \(device.name) to \(machine.machineName) as soon as it's allowed.",
+                while: {
+                    if machine.isSaving { return false }
+                    if case .running = machine.state { return true }
+                    return false
+                })
+            if outcome == .notNow {
+                say("\(device.name) stayed on the Mac. Send it again when you're ready to allow AVM under Input Monitoring.", tone: .info)
+                return false
+            }
+            if machine.isSaving {
+                say("\(machine.machineName) is being saved, so \(device.name) stays on the Mac.", tone: .info)
+                return false
+            }
+            guard case .running = machine.state else {
+                if case .paused = machine.state {
+                    say("\(machine.machineName) is paused. Resume it, then send \(device.name) again from Bluetooth Devices.", tone: .info)
+                } else {
+                    say("\(device.name) stayed on the Mac: \(machine.machineName) stopped.", tone: .info)
+                }
+                return false
+            }
+        }
         guard let port = USBRedirectController.shared.reservePort(portKey(device.id), on: machine) else {
             say("All \(USBRedirectController.ports.count) slots for devices are in use. Next: return a USB or Bluetooth device to the Mac, then try again.", tone: .failure)
             return false
@@ -219,6 +255,17 @@ final class BluetoothDevices: ObservableObject {
             // The client has said the helper isn't starting, and what to do
             // (2026-10-29); a second line would cut that one off.
             if case .notStarting = error { return false }
+            // Refused for want of Input Monitoring (2026-10-29): keys the
+            // descriptor didn't show, or Input Monitoring turned off since.
+            // The next send asks for it. Allowed already, the code is said.
+            if case .helper(_, let detail) = error, InputMonitoring.refusedHelper(detail) {
+                if !InputMonitoring.isAllowed {
+                    needsInputMonitoring.insert(device.id)
+                    say("\(device.name) stayed on the Mac: macOS lets AVM's helper take it only when AVM is allowed under Input Monitoring. Send it again, and AVM asks for it.", tone: .failure)
+                    return false
+                }
+                AVMLog.write("Bluetooth: AVM is allowed under Input Monitoring, and macOS still refused the helper \(device.name)", category: "Bluetooth")
+            }
             // Not "stayed on the Mac" for a machine's keyboard for Windows,
             // which the helper has already (2026-10-29, sixth audit).
             let reason = Self.reason(error)

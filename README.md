@@ -186,7 +186,11 @@ privileged process take a keyboard over, so AVM's helper (the one that
 connects USB devices) holds it and passes its keys to AVM alone; it never
 takes the built-in keyboard or your only keyboard, gives it back when
 Windows stops or AVM quits, takes it again if it disconnects and comes
-back, and never records a key.
+back, and never records a key. macOS lets even the helper take a
+keyboard only when AVM is allowed under Input Monitoring, so the first
+time AVM says so and macOS asks: turn on AVM in System Settings, under
+Privacy & Security, then Input Monitoring. If macOS then offers to quit
+and reopen AVM, choose Later; the keyboard goes to Windows without it.
 
 ## macOS virtual machines
 
