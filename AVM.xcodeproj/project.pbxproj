@@ -35,6 +35,7 @@
 		0A1B2C3D2F60000100000101 /* SHA512Crypt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D2F60000100000001 /* SHA512Crypt.swift */; };
 		0A1B2C3D2F60000100000102 /* WindowsISODownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D2F60000100000002 /* WindowsISODownloader.swift */; };
 		0A1B2C3D2F60000100000103 /* ISODownloadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D2F60000100000003 /* ISODownloadView.swift */; };
+		0A1B2C3D2F60000100000104 /* LinuxISODownload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D2F60000100000004 /* LinuxISODownload.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -119,6 +120,7 @@
 		0A1B2C3D2F60000100000001 /* SHA512Crypt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SHA512Crypt.swift; sourceTree = "<group>"; };
 		0A1B2C3D2F60000100000002 /* WindowsISODownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowsISODownloader.swift; sourceTree = "<group>"; };
 		0A1B2C3D2F60000100000003 /* ISODownloadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ISODownloadView.swift; sourceTree = "<group>"; };
+		0A1B2C3D2F60000100000004 /* LinuxISODownload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxISODownload.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -235,6 +237,7 @@
 				06430F292FD5814B00F5FAEA /* VMView.swift */,
 				0682D889303135840028EE63 /* ReclaimView.swift */,
 				0A1B2C3D2F60000100000003 /* ISODownloadView.swift */,
+				0A1B2C3D2F60000100000004 /* LinuxISODownload.swift */,
 			);
 			path = views;
 			sourceTree = "<group>";
@@ -469,6 +472,7 @@
 				0A1B2C3D2F60000100000101 /* SHA512Crypt.swift in Sources */,
 				0A1B2C3D2F60000100000102 /* WindowsISODownloader.swift in Sources */,
 				0A1B2C3D2F60000100000103 /* ISODownloadView.swift in Sources */,
+				0A1B2C3D2F60000100000104 /* LinuxISODownload.swift in Sources */,
 				0A1B2C3D2F60000100000100 /* UbuntuInstallPipeline.swift in Sources */,
 				063A4A113024CEC600C47BD8 /* DiagnosticLogExporter.swift in Sources */,
 				06CFA2F92FD4F721004426E1 /* ContentView.swift in Sources */,

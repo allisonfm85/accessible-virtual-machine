@@ -333,6 +333,15 @@ The window reads top to bottom:
   checks the file and chooses it as the installer by itself. **Stop
   Watching** stops AVM telling you; your browser keeps downloading, and
   you choose the file with **Choose Installer Image** when it's done.
+- **Download Linux** opens a window where you choose Ubuntu Desktop,
+  Debian or Fedora (a radio group, "Distribution to download"), then
+  **Download** it (Command-Return). AVM downloads the current release from
+  the distribution's own server into Downloads, says how far along it is
+  every 10 percent (**Speak Progress**, Command-P, at any time), checks it
+  against the checksum the distribution publishes, and chooses it as the
+  installer. **Keep Downloading in Background** (Escape) closes the window
+  and lets it finish; **Cancel Download** stops it. One already in
+  Downloads that checks out is used without downloading again.
 - **Windows Edition** appears once you've chosen a Windows ISO: Pro, Home,
   or Home Single Language, in a pop-up button. VoiceOver says "Windows
   edition, Windows 11 Pro, pop-up button": press VoiceOver-Space to open

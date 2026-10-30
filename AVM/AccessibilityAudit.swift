@@ -370,6 +370,10 @@ private final class Auditor {
             Screen(name: "Download Windows 11 for ARM", size: NSSize(width: 600, height: 500), headings: title("Download Windows 11 for ARM")) {
                 host(ISODownloadView(assistant: WindowsISODownloader()) { _ in })
             },
+            // Download Linux (2026-10-30, LinuxISODownload.swift).
+            Screen(name: "Download Linux", size: NSSize(width: 600, height: 500), headings: title("Download Linux")) {
+                host(LinuxDownloadView(downloader: LinuxISODownloader()))
+            },
             Screen(name: "Reclaim Disk Space", size: NSSize(width: 600, height: 600), headings: title("Reclaim Disk Space")) {
                 host(ReclaimView())
             },

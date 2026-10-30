@@ -112,6 +112,9 @@ struct SetupView: View {
     /// The Windows download, watched for as long as the wizard is open,
     /// with or without its window (2026-10-27).
     @StateObject private var isoDownloader = WindowsISODownloader()
+    /// Linux, downloaded by AVM itself (2026-10-30, LinuxISODownload.swift).
+    @State private var showingLinuxDownload = false
+    @StateObject private var linuxDownloader = LinuxISODownloader()
 
     // MARK: - Ubuntu (2026-10-19)
     //
@@ -280,7 +283,7 @@ struct SetupView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Installer Image")
                         .font(.headline)
-                    Text("Required: an ISO file with the Windows 11 for ARM installer, Ubuntu Desktop for ARM, the Debian arm64 installer, or the Fedora Everything netinstall for aarch64.")
+                    Text("Required: an ISO file with the Windows 11 for ARM installer, Ubuntu Desktop for ARM, the Debian arm64 installer, or the Fedora Everything netinstall for aarch64. Download one here, or choose one you have.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -305,6 +308,12 @@ struct SetupView: View {
                             showingISODownload = true
                         }
                         .accessibilityHint("Opens Microsoft's download page, then tells you how the download is going and picks the file for you")
+
+                        // 2026-10-30: Ubuntu, Debian or Fedora, by AVM.
+                        Button("Download Linux…") {
+                            showingLinuxDownload = true
+                        }
+                        .accessibilityHint("Downloads Ubuntu, Debian or Fedora from its own server, checks it, and picks it for you")
                     }
                 }
 
@@ -368,6 +377,9 @@ struct SetupView: View {
                 isNameFieldFocused = true
             }
         }
+        .sheet(isPresented: $showingLinuxDownload) {
+            LinuxDownloadView(downloader: linuxDownloader)
+        }
         .sheet(isPresented: $showingISODownload) {
             ISODownloadView(assistant: isoDownloader) { url in
                 installerURL = url
@@ -380,8 +392,15 @@ struct SetupView: View {
                 installerURL = url
                 identifyInstaller(url)
             }
+            linuxDownloader.onReady = { url in
+                installerURL = url
+                identifyInstaller(url)
+            }
         }
-        .onDisappear { isoDownloader.stop() }
+        .onDisappear {
+            isoDownloader.stop()
+            linuxDownloader.cancel()
+        }
         .fileImporter(
             isPresented: $showingFilePicker,
             allowedContentTypes: allowedInstallerTypes,
