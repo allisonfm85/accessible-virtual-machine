@@ -48,6 +48,9 @@ struct SettingsView: View {
     }
     /// True only when this VM is the one currently running.
     let isRunning: Bool
+    /// The category it opens on (2026-10-30); the accessibility audit opens
+    /// each in turn.
+    var startCategory: SettingsCategory = .general
 
     // MARK: - Focus
 
@@ -166,270 +169,49 @@ struct SettingsView: View {
     // MARK: - Body
 
     var body: some View {
-        // Scrolls (2026-10-25): the window has grown past small screens.
-        ScrollView {
-        VStack(spacing: 24) {
-            Text("Settings")
-                .font(.largeTitle)
-                .accessibilityAddTraits(.isHeader)
+        VStack(spacing: 0) {
+            // The categories (2026-10-30, the user's request): one long page
+            // of 22 sections became five, chosen in a toolbar VoiceOver reads
+            // as one (SettingsCategoryBar).
+            SettingsCategoryBar(selection: Binding(get: { category }, set: { chosenCategory = $0 }),
+                                categories: SettingsCategory.allCases)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+            Divider()
+            // Scrolls (2026-10-25): the window has grown past small screens.
+            ScrollView {
+            VStack(spacing: 24) {
+                Text(category.title)
+                    .font(.largeTitle)
+                    .accessibilityLabel("Settings: \(category.title)")
+                    .accessibilityAddTraits(.isHeader)
 
-            VStack(alignment: .leading, spacing: 20) {
-
-                // VM Name
-                VStack(alignment: .leading, spacing: 6) {
-                    // The shown words, hidden from VoiceOver (2026-10-27, tester
-                    // feedback): the field just after has the same name, and
-                    // VoiceOver read the two as plain text and a field it
-                    // didn't clearly call a text field. Its hint says to type.
-                    Text("Virtual Machine Name")
-                        .font(.headline)
-                        .accessibilityHidden(true)
-                    TextField("Virtual machine name", text: $vmName)
-                        .textFieldStyle(.roundedBorder)
-                        .accessibilityLabel("Virtual machine name")
-                        .accessibilityHint("Type a new name for this virtual machine, then choose Save Settings.")
-                        .accessibilityFocused($isFirstFieldFocused)
-                }
-
-                // CPU Count
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("CPU Cores: \(cpuCount)")
-                        .font(.headline)
-                        .accessibilityLabel("CPU cores: \(cpuCount)")
-                    // Labelled once (2026-10-26, accessibility audit): SwiftUI
-                    // speaks a stepper's hidden title and then its
-                    // accessibilityLabel, which made "CPU Cores, CPU cores";
-                    // the label is now the title. accessibilityValue went:
-                    // SwiftUI on macOS doesn't pass it on for a stepper, which
-                    // VoiceOver reads as its number, so the unit is in the label.
-                    Stepper(value: $cpuCount, in: 2...maxCPUCount) { Text("CPU cores") }
-                        .labelsHidden()
-                        .disabled(isRunning)
-                        .accessibilityHint(isRunning ? timingSentence : "Adjust with arrow keys. Minimum 2, maximum \(maxCPUCount). \(timingSentence)")
-                }
-
-                // Memory
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Memory: \(ramSizeGB) GB")
-                        .font(.headline)
-                        .accessibilityLabel("Memory: \(ramSizeGB) gigabytes")
-                    Stepper(value: $ramSizeGB, in: 4...maxMemoryInGB, step: 2) { Text("Memory in gigabytes") }
-                        .labelsHidden()
-                        .disabled(isRunning)
-                        .accessibilityHint(isRunning ? timingSentence : "Adjust with arrow keys. Minimum 4 GB, maximum \(maxMemoryInGB) GB. \(timingSentence)")
-                }
-
-                // Disk Size: grow only, stopped VMs only.
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Disk Size: \(diskSizeGB) GB")
-                        .font(.headline)
-                        .accessibilityLabel("Disk size: \(diskSizeGB) gigabytes")
-                    if isRunning {
-                        Text("Stop \(guest) to make the disk larger.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if diskGrowthCeilingGB <= currentDiskGB {
-                        Text("There isn't enough free space on your Mac to make the disk larger.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Stepper(value: $diskSizeGB, in: currentDiskGB...diskGrowthCeilingGB, step: 10) { Text("Disk size in gigabytes") }
-                            .labelsHidden()
-                            .accessibilityHint("Adjust with arrow keys. The disk can grow but never shrink. Minimum \(currentDiskGB) GB, maximum \(diskGrowthCeilingGB) GB. \(diskGrowthFollowUp)")
-                    }
-                }
-
+                // Whatever category is showing: a refusal or a save's answer
+                // may be about another one.
                 if let saveMessage {
                     Text(saveMessage)
                         .foregroundStyle(.green)
                         .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal)
                 }
-            }
-            .padding(.horizontal)
-
-            if !validationErrors.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(validationErrors, id: \.self) { error in
-                        Text(error)
-                            .foregroundStyle(.red)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .accessibilityLabel("Error: \(error)")
+                if !validationErrors.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(validationErrors, id: \.self) { error in
+                            Text(error)
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityLabel("Error: \(error)")
+                        }
                     }
+                    .accessibilityElement(children: .combine)
+                    .padding(.horizontal)
                 }
-                .accessibilityElement(children: .combine)
-                .padding(.horizontal)
+
+                categoryContent
             }
-
-            // Printers (2026-10-27)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Printers")
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-                Toggle("Add my Mac's printers to \(guest)", isOn: $sharePrinters)
-                    .accessibilityHint("When on, each Start adds your Mac's network printers in \(guest)")
-                Text("Network printers your Mac uses appear in \(guest) with (Mac) after their names, ready to print with no driver to install. A printer plugged into your Mac by USB isn't included; attach it to \(guest) with Attach USB Device.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            .padding(32)
             }
-            .padding(.horizontal)
-
-            // Without a window (2026-10-27)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Window")
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-                Toggle("Start without a window", isOn: $noWindow)
-                    .accessibilityHint("When on, \(guest) runs in the background after Start; Enter in its row opens its window")
-                Text("For a machine you reach over the network or with avmctl, or one that just needs to run. Its sound still plays. The clipboard, shared folder and keyboard for Windows join it once its window opens.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.horizontal)
-
-            // Template (2026-10-27)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Template")
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-                Toggle("Use as a template", isOn: $isTemplate)
-                    .accessibilityHint("When on, this machine stays as it is, and its row makes new machines from it instead of starting it")
-                Text("Set up a machine the way you like, with your screen reader and apps, then make it a template: each new machine from it starts out just like it.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.horizontal)
-
-            // Sound (2026-10-28, SoundSmoothness)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Sound")
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-                Picker("Sound", selection: $soundSmoothness) {
-                    ForEach(SoundSmoothness.allCases) { choice in
-                        Text(choice.title).tag(choice)
-                    }
-                }
-                .choicePopUp("Chooses between hearing speech from \(guest) sooner and sound that doesn't crackle when your Mac is busy")
-                Text("If sound or speech from \(guest) crackles, choose Smoothest. Fastest gets speech to you about 40 milliseconds sooner, but can crackle while your Mac is busy. Takes effect at the next Start.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.horizontal)
-
-            // Remote Desktop (2026-10-28, RemoteDesktop.swift)
-            remoteDesktopSection
-
-            // Microphone (2026-10-27)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Microphone")
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-                Toggle("Let \(guest) use your Mac's microphone", isOn: $shareMicrophone)
-                    .disabled(isRunning)
-                    .accessibilityHint(isRunning ? timingSentence : "When on, \(guest) hears your Mac's microphone while an app in it records")
-                Text("For dictation, calls and recordings in \(guest). The microphone is only open while something in \(guest) records, and macOS asks once for permission. Takes effect at the next Start.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.horizontal)
-
-            // Camera (2026-10-27)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Camera")
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-                Toggle("Let \(guest) use your Mac's camera", isOn: $shareCamera)
-                    .disabled(isRunning)
-                    .accessibilityHint(isRunning ? timingSentence : "When on, \(guest) has a camera that shows what your Mac's camera sees, while an app in it uses it")
-                Text("For video calls and apps that read with the camera in \(guest), where it's called Mac Camera. Your Mac's camera is only on while an app in \(guest) uses it, and AVM says when it turns on and off. macOS asks once for permission. Takes effect at the next Start.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.horizontal)
-
-            // 3D graphics (2026-10-27), Linux only
-            if configuration.guestOS.isLinux && VMManager.supports3D {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("3D Graphics")
-                        .font(.headline)
-                        .accessibilityAddTraits(.isHeader)
-                    Toggle("Draw \(guest) with your Mac's graphics chip", isOn: $gpu3D)
-                        .disabled(isRunning)
-                        .accessibilityHint(isRunning ? timingSentence : "When on, \(guest)'s desktop and 3D apps use your Mac's GPU")
-                    Text("Makes \(guest)'s desktop smoother and lets apps that need 3D run. While it's on, \(guest) can't be saved with its apps open, and restore points are taken with \(guest) stopped: QEMU can't save 3D graphics yet. Takes effect at the next Start.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.horizontal)
-            }
-
-            // Clipboard (2026-10-25)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Clipboard")
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-                Toggle("Share the clipboard with \(guest)", isOn: $shareClipboard)
-                    .accessibilityHint("When on, text and images you copy on the Mac can be pasted in \(guest), and the other way round")
-                Text("Copy on the Mac, enter \(guest), and paste. What you copy in \(guest) is ready to paste on the Mac straight away. AVM never records what's copied.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal)
-
-            // Shared folder (Windows 2026-10-26, Linux 2026-10-27)
-            if configuration.guestOS != .macOS {
-                sharedFolderSection
-            }
-
-            // In Command-Tab (2026-10-30), every kind of machine.
-            commandTabSection
-
-            // The trackpad and mouse (2026-10-30); a macOS machine has its own.
-            if configuration.guestOS != .macOS {
-                trackpadSection
-            }
-
-            // Windows apps in Command-Tab (2026-10-29, WindowsApps.swift)
-            if configuration.guestOS == .windows {
-                windowsAppsSection
-            }
-
-            // Keyboard for Windows (2026-10-26)
-            if configuration.guestOS == .windows {
-                windowsKeyboardSection
-            }
-
-            // Display (2026-10-28, MachineDisplays.swift)
-            displaySection
-
-            // Secure Boot (Windows only)
-            if configuration.guestOS == .windows {
-                secureBootSection
-            }
-
-            // USB Devices
-            usbSection
-
-            // Restore Points (2026-10-25)
-            restorePointsSection
-
-            // Save with open apps (2026-10-27)
-            if configuration.guestOS != .macOS {
-                saveWithAppsSection
-            }
-
-            // Reinstall Windows (2026-10-26)
-            if configuration.guestOS == .windows {
-                reinstallSection
-            }
-
+            Divider()
             // Actions
             HStack(spacing: 16) {
                 Button("Close") {
@@ -446,16 +228,271 @@ struct SettingsView: View {
                 .accessibilityHint("Saves your changes.")
                 .keyboardShortcut(.return, modifiers: .command)
             }
+            .padding(.vertical, 14)
         }
-        .padding(32)
-        }
-        .frame(minWidth: 480, minHeight: 600)
+        .frame(minWidth: 520, minHeight: 600)
         .onAppear {
             loadCurrentSettings()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 isFirstFieldFocused = true
             }
         }
+    }
+
+    // MARK: - Categories (2026-10-30)
+
+    @State private var chosenCategory: SettingsCategory?
+    private var category: SettingsCategory { chosenCategory ?? startCategory }
+
+    /// Each category's sections, in the order they were on the one page.
+    @ViewBuilder
+    private var categoryContent: some View {
+        switch category {
+        case .general:
+            basicsSection
+            templateSection
+            windowSection
+            commandTabSection
+            if configuration.guestOS == .windows { windowsAppsSection }
+        case .sharing:
+            clipboardSection
+            if configuration.guestOS != .macOS { sharedFolderSection }
+            printersSection
+            remoteDesktopSection
+        case .devices:
+            microphoneSection
+            cameraSection
+            if configuration.guestOS == .windows { windowsKeyboardSection }
+            if configuration.guestOS != .macOS { trackpadSection }
+            usbSection
+        case .displayAndSound:
+            displaySection
+            gpuSection
+            soundSection
+        case .startupAndRecovery:
+            if configuration.guestOS == .windows { secureBootSection }
+            if configuration.guestOS != .macOS { saveWithAppsSection }
+            restorePointsSection
+            if configuration.guestOS == .windows { reinstallSection }
+        }
+    }
+
+    // MARK: - Sections, by category (2026-10-30)
+
+    /// Name, cores, memory and disk.
+    @ViewBuilder
+    private var basicsSection: some View {
+        VStack(alignment: .leading, spacing: 20) {
+
+            // VM Name
+            VStack(alignment: .leading, spacing: 6) {
+                // The shown words, hidden from VoiceOver (2026-10-27, tester
+                // feedback): the field just after has the same name, and
+                // VoiceOver read the two as plain text and a field it
+                // didn't clearly call a text field. Its hint says to type.
+                Text("Virtual Machine Name")
+                    .font(.headline)
+                    .accessibilityHidden(true)
+                TextField("Virtual machine name", text: $vmName)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Virtual machine name")
+                    .accessibilityHint("Type a new name for this virtual machine, then choose Save Settings.")
+                    .accessibilityFocused($isFirstFieldFocused)
+            }
+
+            // CPU Count
+            VStack(alignment: .leading, spacing: 6) {
+                Text("CPU Cores: \(cpuCount)")
+                    .font(.headline)
+                    .accessibilityLabel("CPU cores: \(cpuCount)")
+                // Labelled once (2026-10-26, accessibility audit): SwiftUI
+                // speaks a stepper's hidden title and then its
+                // accessibilityLabel, which made "CPU Cores, CPU cores";
+                // the label is now the title. accessibilityValue went:
+                // SwiftUI on macOS doesn't pass it on for a stepper, which
+                // VoiceOver reads as its number, so the unit is in the label.
+                Stepper(value: $cpuCount, in: 2...maxCPUCount) { Text("CPU cores") }
+                    .labelsHidden()
+                    .disabled(isRunning)
+                    .accessibilityHint(isRunning ? timingSentence : "Adjust with arrow keys. Minimum 2, maximum \(maxCPUCount). \(timingSentence)")
+            }
+
+            // Memory
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Memory: \(ramSizeGB) GB")
+                    .font(.headline)
+                    .accessibilityLabel("Memory: \(ramSizeGB) gigabytes")
+                Stepper(value: $ramSizeGB, in: 4...maxMemoryInGB, step: 2) { Text("Memory in gigabytes") }
+                    .labelsHidden()
+                    .disabled(isRunning)
+                    .accessibilityHint(isRunning ? timingSentence : "Adjust with arrow keys. Minimum 4 GB, maximum \(maxMemoryInGB) GB. \(timingSentence)")
+            }
+
+            // Disk Size: grow only, stopped VMs only.
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Disk Size: \(diskSizeGB) GB")
+                    .font(.headline)
+                    .accessibilityLabel("Disk size: \(diskSizeGB) gigabytes")
+                if isRunning {
+                    Text("Stop \(guest) to make the disk larger.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if diskGrowthCeilingGB <= currentDiskGB {
+                    Text("There isn't enough free space on your Mac to make the disk larger.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Stepper(value: $diskSizeGB, in: currentDiskGB...diskGrowthCeilingGB, step: 10) { Text("Disk size in gigabytes") }
+                        .labelsHidden()
+                        .accessibilityHint("Adjust with arrow keys. The disk can grow but never shrink. Minimum \(currentDiskGB) GB, maximum \(diskGrowthCeilingGB) GB. \(diskGrowthFollowUp)")
+                }
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    /// Printers (2026-10-27).
+    @ViewBuilder
+    private var printersSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Printers")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Toggle("Add my Mac's printers to \(guest)", isOn: $sharePrinters)
+                .accessibilityHint("When on, each Start adds your Mac's network printers in \(guest)")
+            Text("Network printers your Mac uses appear in \(guest) with (Mac) after their names, ready to print with no driver to install. A printer plugged into your Mac by USB isn't included; attach it to \(guest) with Attach USB Device.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal)
+    }
+
+    /// Without a window (2026-10-27).
+    @ViewBuilder
+    private var windowSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Window")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Toggle("Start without a window", isOn: $noWindow)
+                .accessibilityHint("When on, \(guest) runs in the background after Start; Enter in its row opens its window")
+            Text("For a machine you reach over the network or with avmctl, or one that just needs to run. Its sound still plays. The clipboard, shared folder and keyboard for Windows join it once its window opens.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal)
+    }
+
+    /// Template (2026-10-27).
+    @ViewBuilder
+    private var templateSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Template")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Toggle("Use as a template", isOn: $isTemplate)
+                .accessibilityHint("When on, this machine stays as it is, and its row makes new machines from it instead of starting it")
+            Text("Set up a machine the way you like, with your screen reader and apps, then make it a template: each new machine from it starts out just like it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal)
+    }
+
+    /// Sound (2026-10-28, SoundSmoothness).
+    @ViewBuilder
+    private var soundSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Sound")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Picker("Sound", selection: $soundSmoothness) {
+                ForEach(SoundSmoothness.allCases) { choice in
+                    Text(choice.title).tag(choice)
+                }
+            }
+            .choicePopUp("Chooses between hearing speech from \(guest) sooner and sound that doesn't crackle when your Mac is busy")
+            Text("If sound or speech from \(guest) crackles, choose Smoothest. Fastest gets speech to you about 40 milliseconds sooner, but can crackle while your Mac is busy. Takes effect at the next Start.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal)
+    }
+
+    /// Microphone (2026-10-27).
+    @ViewBuilder
+    private var microphoneSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Microphone")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Toggle("Let \(guest) use your Mac's microphone", isOn: $shareMicrophone)
+                .disabled(isRunning)
+                .accessibilityHint(isRunning ? timingSentence : "When on, \(guest) hears your Mac's microphone while an app in it records")
+            Text("For dictation, calls and recordings in \(guest). The microphone is only open while something in \(guest) records, and macOS asks once for permission. Takes effect at the next Start.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal)
+    }
+
+    /// Camera (2026-10-27).
+    @ViewBuilder
+    private var cameraSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Camera")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Toggle("Let \(guest) use your Mac's camera", isOn: $shareCamera)
+                .disabled(isRunning)
+                .accessibilityHint(isRunning ? timingSentence : "When on, \(guest) has a camera that shows what your Mac's camera sees, while an app in it uses it")
+            Text("For video calls and apps that read with the camera in \(guest), where it's called Mac Camera. Your Mac's camera is only on while an app in \(guest) uses it, and AVM says when it turns on and off. macOS asks once for permission. Takes effect at the next Start.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal)
+    }
+
+    /// 3D graphics (2026-10-27), Linux only.
+    @ViewBuilder
+    private var gpuSection: some View {
+        if configuration.guestOS.isLinux && VMManager.supports3D {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("3D Graphics")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                Toggle("Draw \(guest) with your Mac's graphics chip", isOn: $gpu3D)
+                    .disabled(isRunning)
+                    .accessibilityHint(isRunning ? timingSentence : "When on, \(guest)'s desktop and 3D apps use your Mac's GPU")
+                Text("Makes \(guest)'s desktop smoother and lets apps that need 3D run. While it's on, \(guest) can't be saved with its apps open, and restore points are taken with \(guest) stopped: QEMU can't save 3D graphics yet. Takes effect at the next Start.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal)
+        }
+    }
+
+    /// Clipboard (2026-10-25).
+    @ViewBuilder
+    private var clipboardSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Clipboard")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Toggle("Share the clipboard with \(guest)", isOn: $shareClipboard)
+                .accessibilityHint("When on, text and images you copy on the Mac can be pasted in \(guest), and the other way round")
+            Text("Copy on the Mac, enter \(guest), and paste. What you copy in \(guest) is ready to paste on the Mac straight away. AVM never records what's copied.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal)
     }
 
     // MARK: - Restore Points Section (2026-10-25)
@@ -1526,4 +1563,102 @@ struct SettingsView: View {
             dismiss()
         }
     }
+}
+
+// MARK: - Settings categories (2026-10-30)
+
+/// A machine's settings in five categories, the user's request: one page
+/// of 22 sections was long to move through with VoiceOver.
+enum SettingsCategory: String, CaseIterable, Identifiable {
+    case general, sharing, devices, displayAndSound, startupAndRecovery
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .sharing: return "Sharing"
+        case .devices: return "Devices"
+        case .displayAndSound: return "Display and Sound"
+        case .startupAndRecovery: return "Startup and Recovery"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .general: return "gearshape"
+        case .sharing: return "square.and.arrow.up.on.square"
+        case .devices: return "keyboard"
+        case .displayAndSound: return "display"
+        case .startupAndRecovery: return "arrow.counterclockwise"
+        }
+    }
+}
+
+/// The categories as a toolbar VoiceOver reads as one: "Categories,
+/// toolbar". VO-Shift-Down goes into it, VO-Left and VO-Right go through
+/// its buttons, and VO-Space chooses one; the one showing is "selected".
+/// Command-1 to Command-5 choose them from anywhere in Settings.
+struct SettingsCategoryBar: View {
+    @Binding var selection: SettingsCategory
+    let categories: [SettingsCategory]
+
+    var body: some View {
+        AccessibilityToolbar(label: "Categories") {
+            HStack(spacing: 4) {
+                ForEach(Array(categories.enumerated()), id: \.element) { index, category in
+                    Button { selection = category } label: {
+                        VStack(spacing: 3) {
+                            Image(systemName: category.symbol)
+                                .font(.title2)
+                                .accessibilityHidden(true)
+                            Text(category.title)
+                                .font(.caption)
+                        }
+                        .frame(minWidth: 84)
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 4)
+                        .background(selection == category ? Color.accentColor.opacity(0.18) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 6))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(category.title)
+                    .accessibilityAddTraits(selection == category ? .isSelected : [])
+                    // Said, too: "General, selected, button".
+                    .accessibilityValue(selection == category ? "selected" : "")
+                    .accessibilityHint("Shows the \(category.title) settings. Command-\(index + 1).")
+                    .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
+                }
+            }
+        }
+        .fixedSize()
+    }
+}
+
+/// SwiftUI content VoiceOver meets as a toolbar, with its own name.
+/// SwiftUI has no toolbar role for a view, and a sheet has no window
+/// toolbar, so the hosting view says it.
+struct AccessibilityToolbar<Content: View>: NSViewRepresentable {
+    let label: String
+    @ViewBuilder let content: () -> Content
+
+    func makeNSView(context: Context) -> ToolbarHostingView<Content> {
+        let view = ToolbarHostingView(rootView: content())
+        view.toolbarLabel = label
+        return view
+    }
+
+    func updateNSView(_ view: ToolbarHostingView<Content>, context: Context) {
+        view.rootView = content()
+    }
+}
+
+final class ToolbarHostingView<Content: View>: NSHostingView<Content> {
+    var toolbarLabel = ""
+    override func isAccessibilityElement() -> Bool { true }
+    /// Not "dimmed": a hosting view reads as disabled otherwise.
+    override func isAccessibilityEnabled() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .toolbar }
+    override func accessibilityLabel() -> String? { toolbarLabel }
 }

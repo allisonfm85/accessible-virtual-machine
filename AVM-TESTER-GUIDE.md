@@ -228,6 +228,15 @@ The dashboard also has a **Setup Wizard** button. That is how you create a
 new virtual machine. See section 6. If you have no machines yet, the list is
 empty and that button is your first stop.
 
+**Settings come in categories.** A machine's Settings open on **General**.
+At the top is a toolbar, "Categories": interact with it (VO-Shift-Down),
+move with VO-Right and VO-Left, and press VO-Space to show **General**,
+**Sharing**, **Devices**, **Display and Sound** or **Startup and
+Recovery**; the one showing says "selected". Command-1 to Command-5 do
+the same from anywhere in Settings. The category's name is the heading
+below the toolbar, and Close and Save Settings are always at the bottom;
+Save keeps the changes made in every category.
+
 **Delete asks first.** Deleting a virtual machine moves its disk — and
 everything on it — to the Trash, so AVM puts up a confirmation. Cancel is
 the default button, so pressing Return backs out safely. You have to

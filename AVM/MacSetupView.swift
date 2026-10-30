@@ -192,6 +192,9 @@ struct MacSettingsView: View {
     @Environment(\.dismiss) var dismiss
     let configuration: VMConfiguration
     let isRunning: Bool
+    /// The category it opens on (2026-10-30); the accessibility audit opens
+    /// each in turn.
+    var startCategory: SettingsCategory = .general
 
     @State private var name = ""
     @State private var cpuCount = 4
@@ -238,110 +241,46 @@ struct MacSettingsView: View {
     private let maxMemoryGB = max(4, Int(ProcessInfo.processInfo.physicalMemory >> 30) / 2)
 
     var body: some View {
-        // Scrolls (2026-10-28, fourth audit): about 950 points tall, its
-        // Save button was off the bottom of a laptop's screen.
-        ScrollView {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Settings for \(configuration.name)")
-                .font(.title2)
-                .accessibilityAddTraits(.isHeader)
-            if isRunning || MacGuestRunner.shared.runningID == configuration.id {
-                Text("Shut \(configuration.name) down to change its settings.")
-                    .foregroundStyle(.secondary)
-            }
-            TextField("Name", text: $name)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityLabel("Virtual machine name")
-                .accessibilityHint("Type a new name for this virtual machine.")
-            // Named once, as in New macOS Virtual Machine (2026-10-26).
-            Stepper(value: $cpuCount, in: 2...maxCores) { Text("Cores: \(cpuCount)") }
-                .accessibilityLabel("Cores")
-            Stepper(value: $ramSizeGB, in: 4...maxMemoryGB, step: 2) {
-                Text("Memory: \(ramSizeGB) GB").accessibilityLabel("Memory: \(ramSizeGB) gigabytes")
-            }
-            .accessibilityLabel("Memory in gigabytes")
-
-            Text("Shared Folder")
-                .font(.headline)
-                .accessibilityAddTraits(.isHeader)
-            Text(sharedFolderPath.map { "Sharing: \(($0 as NSString).abbreviatingWithTildeInPath)" } ?? "No folder is shared.")
-            HStack {
-                Button(sharedFolderPath == nil ? "Choose Folder to Share…" : "Choose a Different Folder…") { chooseFolder() }
-                if sharedFolderPath != nil {
-                    Button("Stop Sharing") { sharedFolderPath = nil }
+        VStack(spacing: 0) {
+            // The categories (2026-10-30), as a Windows or Linux machine's
+            // Settings have them, in the same toolbar (SettingsCategoryBar).
+            SettingsCategoryBar(selection: Binding(get: { category }, set: { chosenCategory = $0 }),
+                                categories: SettingsCategory.allCases)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+            Divider()
+            // Scrolls (2026-10-28, fourth audit): about 950 points tall, its
+            // Save button was off the bottom of a laptop's screen.
+            ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(category.title)
+                    .font(.title2)
+                    .accessibilityLabel("Settings for \(configuration.name): \(category.title)")
+                    .accessibilityAddTraits(.isHeader)
+                if isRunning || MacGuestRunner.shared.runningID == configuration.id {
+                    Text("Shut \(configuration.name) down to change its settings.")
+                        .foregroundStyle(.secondary)
+                }
+                switch category {
+                case .general:
+                    machineSection
+                    templateSection
+                    commandTabSection
+                case .sharing:
+                    sharedFolderSection
+                    clipboardSection
+                case .devices:
+                    microphoneSection
+                case .displayAndSound:
+                    monitorSection
+                case .startupAndRecovery:
+                    restorePointsSection
                 }
             }
-            if sharedFolderPath != nil {
-                Toggle("macOS in the machine can only read it", isOn: $sharedFolderReadOnly)
+            .padding(28)
+            .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Text(shareClipboard
-                 ? "It appears in the machine's Finder in Locations, My Shared Files, under its own name."
-                 : "It appears in the machine's Finder as My Shared Files, in Locations.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Text("Template")
-                .font(.headline)
-                .accessibilityAddTraits(.isHeader)
-            Toggle("Use as a template", isOn: $isTemplate)
-            Text("When on, \(configuration.name) stays as it is, and its row makes new machines from it instead of starting it.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Text("Microphone")
-                .font(.headline)
-                .accessibilityAddTraits(.isHeader)
-            Toggle("Let \(configuration.name) use your Mac's microphone", isOn: $shareMicrophone)
-            Text("For dictation, calls and recordings in macOS. macOS asks once for permission. Takes effect at the next Start.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Text("Clipboard")
-                .font(.headline)
-                .accessibilityAddTraits(.isHeader)
-            Toggle("Share the clipboard with \(configuration.name)", isOn: $shareClipboard)
-            Text("Text copied on the Mac can be pasted in macOS, and the other way round. Once, in macOS: open Finder, Locations, My Shared Files, AVM Clipboard, and open Install Clipboard Sharing. Takes effect at the next Start.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            // In Command-Tab (2026-10-30, WindowsApps.syncMachines).
-            Text("Command-Tab")
-                .font(.headline)
-                .accessibilityAddTraits(.isHeader)
-            Toggle("This machine in Command-Tab", isOn: $inCommandTab)
-                .accessibilityHint("While it runs, it's in your Mac's Command-Tab list under its own name. Switching to it puts your keyboard in it.")
-            Text("While it runs, the machine is an app in Command-Tab, and in the Dock, named for it. Switch to it and your keyboard goes straight in.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            // Display (2026-10-28, MachineDisplays.swift)
-            Text("Monitor")
-                .font(.headline)
-                .accessibilityAddTraits(.isHeader)
-            Picker("Monitor", selection: $displayID) {
-                Text("Wherever AVM puts it").tag(String?.none)
-                ForEach(connectedDisplays) { display in
-                    Text(display.choiceName).tag(Optional(display.id))
-                }
-                if let id = displayID, !connectedDisplays.contains(where: { $0.id == id }) {
-                    Text("\(displayName ?? "Monitor") (not connected now)").tag(Optional(id))
-                }
-            }
-            .choicePopUp("Opens the list of monitors connected to your Mac. The macOS window always opens on the one you choose.")
-            .onChange(of: displayID) { id in
-                if let id, let display = connectedDisplays.first(where: { $0.id == id }) {
-                    displayName = display.name
-                }
-            }
-            Text("The monitor the macOS window always opens on, filling it. If it isn't connected, the window opens on another one. Takes effect at the next Start.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            restorePointsSection
-
+            Divider()
             HStack {
                 Button("Close") { dismiss() }
                     .keyboardShortcut(.escape, modifiers: [])
@@ -349,10 +288,9 @@ struct MacSettingsView: View {
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(isRunning || MacGuestRunner.shared.runningID == configuration.id)
             }
+            .padding(.vertical, 14)
         }
-        .padding(28)
-        }
-        .frame(minWidth: 460, minHeight: 420)
+        .frame(minWidth: 520, minHeight: 420)
         .onAppear {
             name = configuration.name
             cpuCount = configuration.cpuCount
@@ -368,6 +306,130 @@ struct MacSettingsView: View {
             connectedDisplays = MachineDisplays.connected
             reloadPoints()
         }
+    }
+
+    // MARK: Categories (2026-10-30)
+
+    @State private var chosenCategory: SettingsCategory?
+    private var category: SettingsCategory { chosenCategory ?? startCategory }
+
+    /// Name, cores and memory.
+    @ViewBuilder
+    private var machineSection: some View {
+        TextField("Name", text: $name)
+            .textFieldStyle(.roundedBorder)
+            .accessibilityLabel("Virtual machine name")
+            .accessibilityHint("Type a new name for this virtual machine.")
+        // Named once, as in New macOS Virtual Machine (2026-10-26).
+        Stepper(value: $cpuCount, in: 2...maxCores) { Text("Cores: \(cpuCount)") }
+            .accessibilityLabel("Cores")
+        Stepper(value: $ramSizeGB, in: 4...maxMemoryGB, step: 2) {
+            Text("Memory: \(ramSizeGB) GB").accessibilityLabel("Memory: \(ramSizeGB) gigabytes")
+        }
+        .accessibilityLabel("Memory in gigabytes")
+    }
+
+    /// The shared folder.
+    @ViewBuilder
+    private var sharedFolderSection: some View {
+        Text("Shared Folder")
+            .font(.headline)
+            .accessibilityAddTraits(.isHeader)
+        Text(sharedFolderPath.map { "Sharing: \(($0 as NSString).abbreviatingWithTildeInPath)" } ?? "No folder is shared.")
+        HStack {
+            Button(sharedFolderPath == nil ? "Choose Folder to Share…" : "Choose a Different Folder…") { chooseFolder() }
+            if sharedFolderPath != nil {
+                Button("Stop Sharing") { sharedFolderPath = nil }
+            }
+        }
+        if sharedFolderPath != nil {
+            Toggle("macOS in the machine can only read it", isOn: $sharedFolderReadOnly)
+        }
+        Text(shareClipboard
+             ? "It appears in the machine's Finder in Locations, My Shared Files, under its own name."
+             : "It appears in the machine's Finder as My Shared Files, in Locations.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    /// Template.
+    @ViewBuilder
+    private var templateSection: some View {
+        Text("Template")
+            .font(.headline)
+            .accessibilityAddTraits(.isHeader)
+        Toggle("Use as a template", isOn: $isTemplate)
+        Text("When on, \(configuration.name) stays as it is, and its row makes new machines from it instead of starting it.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    /// Microphone.
+    @ViewBuilder
+    private var microphoneSection: some View {
+        Text("Microphone")
+            .font(.headline)
+            .accessibilityAddTraits(.isHeader)
+        Toggle("Let \(configuration.name) use your Mac's microphone", isOn: $shareMicrophone)
+        Text("For dictation, calls and recordings in macOS. macOS asks once for permission. Takes effect at the next Start.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    /// Clipboard.
+    @ViewBuilder
+    private var clipboardSection: some View {
+        Text("Clipboard")
+            .font(.headline)
+            .accessibilityAddTraits(.isHeader)
+        Toggle("Share the clipboard with \(configuration.name)", isOn: $shareClipboard)
+        Text("Text copied on the Mac can be pasted in macOS, and the other way round. Once, in macOS: open Finder, Locations, My Shared Files, AVM Clipboard, and open Install Clipboard Sharing. Takes effect at the next Start.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// In Command-Tab (2026-10-30).
+    @ViewBuilder
+    private var commandTabSection: some View {
+        // In Command-Tab (2026-10-30, WindowsApps.syncMachines).
+        Text("Command-Tab")
+            .font(.headline)
+            .accessibilityAddTraits(.isHeader)
+        Toggle("This machine in Command-Tab", isOn: $inCommandTab)
+            .accessibilityHint("While it runs, it's in your Mac's Command-Tab list under its own name. Switching to it puts your keyboard in it.")
+        Text("While it runs, the machine is an app in Command-Tab, and in the Dock, named for it. Switch to it and your keyboard goes straight in.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// The monitor (2026-10-28, MachineDisplays.swift).
+    @ViewBuilder
+    private var monitorSection: some View {
+        // Display (2026-10-28, MachineDisplays.swift)
+        Text("Monitor")
+            .font(.headline)
+            .accessibilityAddTraits(.isHeader)
+        Picker("Monitor", selection: $displayID) {
+            Text("Wherever AVM puts it").tag(String?.none)
+            ForEach(connectedDisplays) { display in
+                Text(display.choiceName).tag(Optional(display.id))
+            }
+            if let id = displayID, !connectedDisplays.contains(where: { $0.id == id }) {
+                Text("\(displayName ?? "Monitor") (not connected now)").tag(Optional(id))
+            }
+        }
+        .choicePopUp("Opens the list of monitors connected to your Mac. The macOS window always opens on the one you choose.")
+        .onChange(of: displayID) { id in
+            if let id, let display = connectedDisplays.first(where: { $0.id == id }) {
+                displayName = display.name
+            }
+        }
+        Text("The monitor the macOS window always opens on, filling it. If it isn't connected, the window opens on another one. Takes effect at the next Start.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: Restore points (2026-10-26)

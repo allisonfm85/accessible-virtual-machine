@@ -340,21 +340,33 @@ private final class Auditor {
             Screen(name: "Setup Wizard, Ubuntu ISO chosen", size: NSSize(width: 760, height: 1500), headings: wizard) {
                 host(SetupView(auditInstaller: .ubuntu))
             },
-            Screen(name: "Windows Settings", size: NSSize(width: 760, height: 2400), headings: title("Settings")) {
-                host(SettingsView(configuration: s.windows, isRunning: false))
-            },
-            Screen(name: "Ubuntu Settings", size: NSSize(width: 760, height: 2000), headings: title("Settings")) {
-                host(SettingsView(configuration: s.ubuntu, isRunning: false))
-            },
-            Screen(name: "Windows Settings, running", size: NSSize(width: 760, height: 2400), headings: title("Settings")) {
+        ] + SettingsCategory.allCases.flatMap { category -> [Screen] in
+            // Every category of Settings (2026-10-30), Windows's and Ubuntu's,
+            // each a screen of its own: only the one showing is there to read.
+            let name = category == .general ? "" : ", \(category.title)"
+            return [
+                Screen(name: "Windows Settings\(name)", size: NSSize(width: 760, height: 1400), headings: title("Settings: \(category.title)")) {
+                    host(SettingsView(configuration: s.windows, isRunning: false, startCategory: category))
+                },
+                Screen(name: "Ubuntu Settings\(name)", size: NSSize(width: 760, height: 1400), headings: title("Settings: \(category.title)")) {
+                    host(SettingsView(configuration: s.ubuntu, isRunning: false, startCategory: category))
+                },
+            ]
+        } + [
+            Screen(name: "Windows Settings, running", size: NSSize(width: 760, height: 1400), headings: title("Settings: General")) {
                 host(SettingsView(configuration: s.windows, isRunning: true))
             },
             Screen(name: "New macOS Virtual Machine", size: NSSize(width: 640, height: 900), headings: title("New macOS Virtual Machine")) {
                 host(MacSetupView())
             },
-            Screen(name: "macOS Settings", size: NSSize(width: 640, height: 1300), headings: title("Settings for \(s.mac.name)")) {
-                host(MacSettingsView(configuration: s.mac, isRunning: false))
-            },
+        ] + SettingsCategory.allCases.map { category -> Screen in
+            // Every category of a macOS machine's Settings too (2026-10-30).
+            let name = category == .general ? "" : ", \(category.title)"
+            return Screen(name: "macOS Settings\(name)", size: NSSize(width: 640, height: 900),
+                          headings: title("Settings for \(s.mac.name): \(category.title)")) {
+                host(MacSettingsView(configuration: s.mac, isRunning: false, startCategory: category))
+            }
+        } + [
             Screen(name: "Download Windows 11 for ARM", size: NSSize(width: 600, height: 500), headings: title("Download Windows 11 for ARM")) {
                 host(ISODownloadView(assistant: WindowsISODownloader()) { _ in })
             },
