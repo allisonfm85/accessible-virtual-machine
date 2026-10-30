@@ -177,6 +177,9 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// is in it (VMView's SPICECoordinator, 2026-10-30); nil: they work.
     /// Not for a macOS machine, which has its own view.
     var trackpadAndMouseOff: Bool?
+    /// The machine's own app in the Mac's Command-Tab list while it runs
+    /// (WindowsApps.syncMachines, 2026-10-30); nil: on.
+    var inCommandTab: Bool?
 
     // MARK: - Display (2026-10-28)
 

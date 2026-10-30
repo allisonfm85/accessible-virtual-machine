@@ -199,6 +199,7 @@ struct MacSettingsView: View {
     @State private var sharedFolderPath: String?
     @State private var sharedFolderReadOnly = false
     @State private var shareClipboard = true
+    @State private var inCommandTab = true
     @State private var shareMicrophone = false
     @State private var isTemplate = false
     @State private var displayID: String?
@@ -304,6 +305,17 @@ struct MacSettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            // In Command-Tab (2026-10-30, WindowsApps.syncMachines).
+            Text("Command-Tab")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Toggle("This machine in Command-Tab", isOn: $inCommandTab)
+                .accessibilityHint("While it runs, it's in your Mac's Command-Tab list under its own name. Switching to it puts your keyboard in it.")
+            Text("While it runs, the machine is an app in Command-Tab, and in the Dock, named for it. Switch to it and your keyboard goes straight in.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             // Display (2026-10-28, MachineDisplays.swift)
             Text("Monitor")
                 .font(.headline)
@@ -348,6 +360,7 @@ struct MacSettingsView: View {
             sharedFolderPath = configuration.sharedFolderPath
             sharedFolderReadOnly = configuration.sharedFolderIsReadOnly
             shareClipboard = configuration.sharesClipboard
+            inCommandTab = configuration.inCommandTab != false
             shareMicrophone = configuration.sharesMicrophone
             isTemplate = configuration.isATemplate
             displayID = configuration.displayID
@@ -526,6 +539,7 @@ struct MacSettingsView: View {
         updated.sharedFolderPath = sharedFolderPath
         updated.sharedFolderReadOnly = sharedFolderReadOnly ? true : nil
         updated.shareClipboard = shareClipboard ? nil : false
+        updated.inCommandTab = inCommandTab ? nil : false
         updated.shareMicrophone = shareMicrophone ? true : nil
         updated.isTemplate = isTemplate ? true : nil
         updated.displayID = displayID

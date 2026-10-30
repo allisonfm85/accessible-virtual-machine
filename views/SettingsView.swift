@@ -388,6 +388,9 @@ struct SettingsView: View {
                 sharedFolderSection
             }
 
+            // In Command-Tab (2026-10-30), every kind of machine.
+            commandTabSection
+
             // The trackpad and mouse (2026-10-30); a macOS machine has its own.
             if configuration.guestOS != .macOS {
                 trackpadSection
@@ -644,6 +647,23 @@ struct SettingsView: View {
     @State private var windowsKeyboardAppleISO = false
     @State private var windowsAppsInCommandTab = true
     @State private var trackpadAndMouseOn = true
+    @State private var inCommandTab = true
+
+    // MARK: - Command-Tab (2026-10-30)
+
+    private var commandTabSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Command-Tab")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Toggle("This machine in Command-Tab", isOn: $inCommandTab)
+                .accessibilityHint("While it runs, it's in your Mac's Command-Tab list under its own name. Switching to it puts your keyboard in it.")
+            Text("While it runs, the machine is an app in Command-Tab, and in the Dock, named for it. Switch to it and your keyboard goes straight in. Changes take effect at once.")
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal)
+    }
 
     // MARK: - Trackpad and mouse (2026-10-30)
 
@@ -1216,6 +1236,7 @@ struct SettingsView: View {
         windowsKeyboardAppleISO = saved.windowsKeyboardAppleISO == true
         windowsAppsInCommandTab = saved.windowsAppsInCommandTab != false
         trackpadAndMouseOn = saved.trackpadAndMouseOff != true
+        inCommandTab = saved.inCommandTab != false
         displayID = saved.displayID
         displayName = saved.displayName
         remoteDesktopOn = saved.remoteDesktopOn
@@ -1427,6 +1448,7 @@ struct SettingsView: View {
             updated.windowsKeyboardAppleISO = windowsKeyboardID != nil && windowsKeyboardAppleISO ? true : nil
             updated.windowsAppsInCommandTab = windowsAppsInCommandTab ? nil : false
             updated.trackpadAndMouseOff = trackpadAndMouseOn ? nil : true
+            updated.inCommandTab = inCommandTab ? nil : false
             updated.displayID = displayID
             updated.displayName = displayID == nil ? nil : displayName
             let remoteDesktopWasOn = saved.remoteDesktopOn

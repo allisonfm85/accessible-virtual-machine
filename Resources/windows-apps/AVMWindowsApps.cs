@@ -12,16 +12,15 @@
 //     apps that set one), else its program's path.
 //   - request-ID.txt, written by AVM (as SYSTEM, through the agent), one
 //     file per request (2026-10-30 audit: one shared request.txt let a
-//     second request overwrite the first): id TAB focus TAB key. The
-//     app's front window is restored and brought forward; reply-ID.txt
-//     gets id TAB ok or failed TAB what happened.
-//   - id TAB launch TAB key TAB unix time (2026-10-30, apps pinned in the
-//     Mac's Dock): the same, and the app started first when no window of
-//     it is open, then waited for, up to 90 seconds, while other requests
-//     go on. Written while Windows is still at its sign-in screen, it
-//     waits here for this helper, which starts at sign-in; one older than
-//     ten minutes is dropped, so an app never opens at some later sign-in
-//     nobody asked for.
+//     second request overwrite the first): id TAB launch TAB key TAB unix
+//     time. The app's front window is restored and brought forward, the
+//     app started first when no window of it is open, then waited for, up
+//     to 90 seconds, while other requests go on; reply-ID.txt gets id TAB
+//     ok or failed TAB what happened. Written while Windows is still at
+//     its sign-in screen, a request waits here for this helper, which
+//     starts at sign-in; one older than ten minutes is dropped, so an app
+//     never opens at some later sign-in nobody asked for. (A focus
+//     request, without the start, went with AVM's enter-app.)
 //   - Replies older than fifteen minutes are deleted; AVM has its answer.
 //
 // It never shows a window, so it takes no focus and no screen reader
@@ -94,11 +93,10 @@ static class AVMWindowsApps
         File.Delete(file);
         string id = IdOf(file);
         string[] parts = request.Trim().Split('\t');
-        if (parts.Length < 3 || (parts[1] != "focus" && parts[1] != "launch")) { Reply(id, "failed\tnot understood"); return; }
+        if (parts.Length < 3 || parts[1] != "launch") { Reply(id, "failed\tnot understood"); return; }
         string key = parts[2];
-        IntPtr window = WindowOf(key);
+        IntPtr window = WindowOf(key, AppWindows(false));
         if (window != IntPtr.Zero) { Forward(id, window); return; }
-        if (parts[1] != "launch") { Reply(id, "failed\tno window is open for it"); return; }
         long asked;
         long now = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
         if (parts.Length < 4 || !long.TryParse(parts[3], out asked) || now - asked > 600) { Reply(id, "failed\tthe request was too old"); return; }
@@ -110,10 +108,14 @@ static class AVMWindowsApps
 
     static void CheckWaiting()
     {
+        if (Waiting.Count == 0) return;
+        // One look at the windows for every app waited for, without their
+        // names, which read each program's file.
+        var windows = AppWindows(false);
         for (int i = Waiting.Count - 1; i >= 0; i--)
         {
             var p = Waiting[i];
-            IntPtr window = WindowOf(p.Key);
+            IntPtr window = WindowOf(p.Key, windows);
             if (window != IntPtr.Zero) { Waiting.RemoveAt(i); Forward(p.Id, window); }
             else if (DateTime.UtcNow > p.Until) { Waiting.RemoveAt(i); Reply(p.Id, "failed\tit didn't open a window within 90 seconds"); }
         }
@@ -145,9 +147,9 @@ static class AVMWindowsApps
             if (DateTime.UtcNow - File.GetLastWriteTimeUtc(file) > TimeSpan.FromMinutes(15)) File.Delete(file);
     }
 
-    static IntPtr WindowOf(string key)
+    static IntPtr WindowOf(string key, List<AppWindow> windows)
     {
-        foreach (var w in AppWindows()) if (w.Key == key) return w.Handle;
+        foreach (var w in windows) if (w.Key == key) return w.Handle;
         return IntPtr.Zero;
     }
 
@@ -206,8 +208,9 @@ static class AVMWindowsApps
         "LockApp", "SystemSettingsAdminFlows",
     };
 
-    /// Top-level windows a person switches to, front first.
-    static List<AppWindow> AppWindows()
+    /// Top-level windows a person switches to, front first; their apps'
+    /// names only when asked, as finding one reads the program's file.
+    static List<AppWindow> AppWindows(bool named = true)
     {
         var found = new List<AppWindow>();
         EnumWindows((h, _) =>
@@ -230,7 +233,7 @@ static class AVMWindowsApps
             if (aumid == null && cls.ToString() == "ApplicationFrameWindow") aumid = FrameChildAppID(h);
             string key = aumid ?? (program ?? "").ToLowerInvariant();
             if (key.Length == 0) return true;
-            found.Add(new AppWindow { Handle = h, Key = key, Name = AppName(aumid, program, title) });
+            found.Add(new AppWindow { Handle = h, Key = key, Name = named ? AppName(aumid, program, title) : null });
             return true;
         }, IntPtr.Zero);
         return found;

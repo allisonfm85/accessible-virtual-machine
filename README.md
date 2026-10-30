@@ -199,7 +199,8 @@ of its own, named for it, such as "Amena-PC", and in the Dock while it
 runs. Command-Tab to one and you're in it: its window comes forward with
 your keyboard in the machine. Control-Command-Escape brings you back to
 the Mac, where Command-Tab takes you to another. It leaves the list when
-the machine shuts down.
+the machine shuts down. To leave a machine out, turn off **This machine in
+Command-Tab** in its Settings, under Command-Tab.
 
 ## Windows apps in Command-Tab
 

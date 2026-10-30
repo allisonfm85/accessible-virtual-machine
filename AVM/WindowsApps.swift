@@ -44,8 +44,10 @@ final class WindowsApps {
 
     /// Bumped with every change to AVMWindowsApps.cs or the install script
     /// (3: launch, for pinned apps; 5: a file per request, launches waited
-    /// for apart, the task started safely before sign-in, 2026-10-30).
-    static let helperVersion = "5"
+    /// for apart, the task started safely before sign-in; 6: launch
+    /// requests only, one look at the windows a pass, the old helper gone
+    /// before the new one is compiled, 2026-10-30).
+    static let helperVersion = "6"
     static let guestFolder = #"C:\ProgramData\AVM"#
 
     /// What a Mac app stands for: an app open in Windows, one kept in the
@@ -83,8 +85,8 @@ final class WindowsApps {
     private var launching: Set<String> = []
     /// Pinned ones looked over this run (refreshPinned).
     private var pinnedRefreshed = false
-    /// Each running machine's own app, by machine (syncMachines).
-    private var machineEntries: [UUID: Entry] = [:]
+    /// Each running machine's own app, by machine ID (syncMachines).
+    private var machineEntries: [String: Entry] = [:]
 
     private var bundlePrefix: String { (Bundle.main.bundleIdentifier ?? "com.alllisonmeloy.AVM") + ".windowsapp." }
 
@@ -152,26 +154,43 @@ final class WindowsApps {
             guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { continue }
             open[parts[0]] = parts[1]
         }
-        // Made again just below.
+        // Kept apps looked at once for all the new ones, not once an app.
+        var pinned: [(url: URL, info: NSDictionary)]?
         let runningIDs = Self.runningBundleIDs()
-        for (key, entry) in entries[machine] ?? [:] where open[key] != nil && entry.wasQuit(running: runningIDs) {
-            entries[machine]?[key] = nil
-            AVMLog.write("Windows apps: \(entry.name) was quit on the Mac; opening it again", category: "WindowsApps")
+        await reconcile(current: { self.entries[machine] ?? [:] }, set: { self.entries[machine, default: [:]][$0] = $1 },
+                        want: open, place: " in \(machineName)", running: runningIDs) { key, name in
+            if pinned == nil { pinned = self.pinnedBundles() }
+            return await self.launchEntry(machine: machine, machineName: machineName, key: key, name: name,
+                                          pinned: pinned ?? [], running: runningIDs)
         }
-        for (key, entry) in entries[machine] ?? [:] where open[key] == nil {
-            quit(entry.bundleID)
-            entries[machine]?[key] = nil
-            AVMLog.write("Windows apps: \(entry.name) closed in \(machineName); out of Command-Tab", category: "WindowsApps")
+    }
+
+    /// One set of Mac apps brought in line with what they stand for, by
+    /// key (2026-10-30 cleanup: the Windows apps and the machines each had
+    /// a copy, and they'd drifted). One no longer wanted is quit. One quit
+    /// on the Mac, or crashed, while still wanted, or whose name changed,
+    /// is made again; so is one newly wanted, by `make`. Each change is
+    /// made as it happens, through `set`, as pin and unpin change them too.
+    private func reconcile(current: () -> [String: Entry], set: (String, Entry?) -> Void,
+                           want: [String: String], place: String, running: Set<String>,
+                           make: (_ key: String, _ name: String) async -> Entry?) async {
+        for (key, entry) in current() {
+            let quitOnTheMac = entry.wasQuit(running: running)
+            guard let name = want[key], name == entry.name, !quitOnTheMac else {
+                quit(entry.bundleID)
+                set(key, nil)
+                if want[key] == nil {
+                    AVMLog.write("Windows apps: \(entry.name)\(place) is out of Command-Tab", category: "WindowsApps")
+                } else if quitOnTheMac {
+                    AVMLog.write("Windows apps: \(entry.name) was quit on the Mac; opening it again", category: "WindowsApps")
+                }
+                continue
+            }
         }
-        let new = open.filter { entries[machine]?[$0.key] == nil }
-        guard !new.isEmpty else { return }
-        // Looked at once for them all, not once an app.
-        let pinned = pinnedBundles()
-        for (key, name) in new {
-            guard let entry = await launchEntry(machine: machine, machineName: machineName, key: key, name: name,
-                                                pinned: pinned, running: runningIDs) else { continue }
-            entries[machine, default: [:]][key] = entry
-            AVMLog.write("Windows apps: \(name) open in \(machineName); in Command-Tab", category: "WindowsApps")
+        for (key, name) in want where current()[key] == nil {
+            guard let entry = await make(key, name) else { continue }
+            set(key, entry)
+            AVMLog.write("Windows apps: \(name)\(place) is in Command-Tab", category: "WindowsApps")
         }
     }
 
@@ -197,10 +216,8 @@ final class WindowsApps {
         let bundleID = bundleID(machine: machine, key: key, kind: .app)
         do {
             let url = try bundleURL(machine: machine, key: key, title: title)
-            if !built.contains(bundleID) {
-                try await build(url, bundleID: bundleID, title: title, name: name, key: key, machine: machine, machineName: machineName)
-                built.insert(bundleID)
-            }
+            try await buildIfNeeded(url, bundleID: bundleID, title: title, name: name, key: key,
+                                    machine: machine, machineName: machineName, kind: .app)
             openHidden(url, title: title)
             return Entry(bundleID: bundleID, name: name)
         } catch {
@@ -252,6 +269,15 @@ final class WindowsApps {
             }
             number += 1
         }
+    }
+
+    /// Made once a run, or again when its bundle is gone (a rename moves
+    /// it to a new name).
+    private func buildIfNeeded(_ url: URL, bundleID: String, title: String, name: String, key: String,
+                               machine: UUID, machineName: String, kind: Kind) async throws {
+        guard !built.contains(bundleID) || !FileManager.default.fileExists(atPath: url.path) else { return }
+        try await build(url, bundleID: bundleID, title: title, name: name, key: key, machine: machine, machineName: machineName, kind: kind)
+        built.insert(bundleID)
     }
 
     private func build(_ url: URL, bundleID: String, title: String, name: String, key: String,
@@ -325,33 +351,31 @@ final class WindowsApps {
     /// Every running machine has its app, named for it; one quit by the
     /// person, or renamed, is made again, and a stopped one's goes.
     private func syncMachines() async {
-        var running: [UUID: String] = [:]
-        func name(_ id: UUID, _ fallback: String) -> String {
-            VMStore.shared?.configurations.first { $0.id == id }?.name ?? fallback
+        var want: [String: String] = [:]
+        // By its saved settings: its name, and whether it's wanted there
+        // (Settings, Command-Tab; on unless turned off).
+        func add(_ id: UUID, _ fallback: String) {
+            let saved = VMStore.shared?.configurations.first { $0.id == id }
+            guard saved?.inCommandTab != false else { return }
+            want[id.uuidString] = saved?.name ?? fallback
         }
         for session in MachineSessions.shared.sessions.values where session.isRunningOrPaused {
-            running[session.configuration.id] = name(session.configuration.id, session.configuration.name)
+            add(session.configuration.id, session.configuration.name)
         }
-        if let id = MacGuestRunner.shared.runningID { running[id] = name(id, "macOS") }
-        let runningIDs = Self.runningBundleIDs()
-        for (id, entry) in machineEntries where running[id] != entry.name || entry.wasQuit(running: runningIDs) {
-            quit(entry.bundleID)
-            machineEntries[id] = nil
-        }
-        for (id, machineName) in running where machineEntries[id] == nil {
-            let bundleID = bundleID(machine: id, key: "", kind: .machine)
+        if let id = MacGuestRunner.shared.runningID { add(id, "macOS") }
+        await reconcile(current: { self.machineEntries }, set: { self.machineEntries[$0] = $1 },
+                        want: want, place: "", running: Self.runningBundleIDs()) { key, machineName in
+            guard let id = UUID(uuidString: key) else { return nil }
+            let bundleID = self.bundleID(machine: id, key: "", kind: .machine)
             do {
-                let url = try bundleURL(machine: id, key: "", title: machineName)
-                if !built.contains(bundleID) || !FileManager.default.fileExists(atPath: url.path) {
-                    try await build(url, bundleID: bundleID, title: machineName, name: machineName, key: "",
-                                    machine: id, machineName: machineName, kind: .machine)
-                    built.insert(bundleID)
-                }
-                openHidden(url, title: machineName)
-                machineEntries[id] = Entry(bundleID: bundleID, name: machineName)
-                AVMLog.write("Windows apps: \(machineName) is in Command-Tab", category: "WindowsApps")
+                let url = try self.bundleURL(machine: id, key: "", title: machineName)
+                try await self.buildIfNeeded(url, bundleID: bundleID, title: machineName, name: machineName, key: "",
+                                             machine: id, machineName: machineName, kind: .machine)
+                self.openHidden(url, title: machineName)
+                return Entry(bundleID: bundleID, name: machineName)
             } catch {
                 AVMLog.write("Windows apps: couldn't put \(machineName) in Command-Tab: \(error.localizedDescription)", category: "WindowsApps")
+                return nil
             }
         }
     }
@@ -689,8 +713,12 @@ final class WindowsApps {
         $ErrorActionPreference = 'Stop'
         New-Item -ItemType Directory -Force 'C:\ProgramData\AVM\bin','C:\ProgramData\AVM\apps' | Out-Null
         icacls 'C:\ProgramData\AVM\apps' /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Null
-        Get-Process AVMWindowsApps -ErrorAction SilentlyContinue | Stop-Process -Force
-        Start-Sleep -Milliseconds 300
+        $old = Get-Process AVMWindowsApps -ErrorAction SilentlyContinue
+        $old | Stop-Process -Force
+        # Gone before its file is written over (2026-10-30: the first try
+        # after an update found it still held, "could not write to output
+        # file", and only the next try, a few seconds on, worked).
+        $old | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
         """#
 
     /// Compiled with Windows' own .NET Framework compiler (Arm64 where

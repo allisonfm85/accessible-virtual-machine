@@ -651,7 +651,8 @@ dashboard's Start buttons work too.
 - **Virtual machines in Command-Tab.** Start two machines. Each is in
   Command-Tab under its own name. Control-Command-Escape to the Mac, then
   Command-Tab to one: its window comes forward with your keyboard in it.
-  Shut one down and it leaves the list.
+  Shut one down and it leaves the list. Turn off This machine in
+  Command-Tab in one's Settings: it leaves the list at once.
 - **Windows apps in Command-Tab.** While Windows runs, each app open in
   it is in your Mac's Command-Tab list (and the Dock), named for the app
   and the machine. Command-Tab to one, press Command-Shift-E, and it comes
