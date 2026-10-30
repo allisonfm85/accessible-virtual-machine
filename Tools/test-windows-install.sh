@@ -75,6 +75,11 @@ fi
 [ -n "$ISO" ] && [ -f "$ISO" ] || fail "No Windows 11 ARM64 ISO found." "Pass one with --iso, or download one with AVM's Download Windows 11 for ARM."
 R="$APP/Contents/Resources"
 [ -x "$APP/Contents/MacOS/AVM" ] && [ -x "$R/qemu-system-aarch64" ] || fail "No AVM build at $APP." "Build AVM first, or pass --app."
+# Not cut off while AVM is open (2026-10-30, avm-own-copy.sh): building
+# the install media takes longer than loginwindow allows a second AVM.
+. "$(dirname "$0")/avm-own-copy.sh"
+avm_own_copy "$APP" test || fail "Couldn't make a copy of AVM for the test." "Check that $APP is a complete AVM build."
+APP="$AVM_COPY"
 for f in qemu-img swtpm mtools edk2-aarch64-secure-code.fd edk2-arm-secure-vars.fd; do
     [ -e "$R/$f" ] || fail "$f is missing from $APP."
 done
@@ -131,6 +136,7 @@ status() {
 }
 
 cleanup() {
+    [ -z "${AVM_COPY_DIR:-}" ] || rm -rf "$AVM_COPY_DIR"
     # A machine that's kept is shut down properly first (2026-10-26: two
     # power cuts in a row left one that Windows couldn't repair).
     if [ "$KEEP" = "1" ] || [ "$RESULT" != "0" ]; then

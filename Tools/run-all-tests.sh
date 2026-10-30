@@ -67,8 +67,16 @@ second_newest() { ls -d "$CACHE"/$1 2>/dev/null | sort | tail -2 | head -1; }
 [ -n "$OUT" ] || OUT="$(mktemp -d "${TMPDIR:-/tmp}/avm-tests-XXXXXX")"
 mkdir -p "$OUT"
 
+[ -x "$APP/Contents/MacOS/AVM" ] || { echo "No AVM at $APP. Build it first, or pass --app."; exit 1; }
+# Not cut off while AVM is open (2026-10-30, avm-own-copy.sh).
+. "$(dirname "$0")/avm-own-copy.sh"
+avm_own_copy "$APP" test || { echo "Couldn't make a copy of AVM for the tests."; exit 1; }
+trap '[ -z "$AVM_COPY_DIR" ] || rm -rf "$AVM_COPY_DIR"' EXIT
+if [ "$AVM_COPY" != "$APP" ]; then
+    echo "AVM is open, so the tests run from a copy of it with its own identifier. The camera and microphone tests need AVM's own signature: quit AVM for those."
+    APP="$AVM_COPY"
+fi
 BIN="$APP/Contents/MacOS/AVM"
-[ -x "$BIN" ] || { echo "No AVM at $APP. Build it first, or pass --app."; exit 1; }
 
 # The tests: name | what it needs | the AVM arguments.
 # Needs: none, windows, debian, debian2 (both Debian machines), fedora, downloads.

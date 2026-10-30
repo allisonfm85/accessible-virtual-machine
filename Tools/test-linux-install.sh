@@ -58,6 +58,11 @@ case "$GUEST" in ubuntu|debian|fedora) ;; *) fail "--guest must be ubuntu, debia
 [ -n "$ISO" ] && [ -f "$ISO" ] || fail "No installer ISO given." "Pass one with --iso."
 R="$APP/Contents/Resources"
 [ -x "$APP/Contents/MacOS/AVM" ] && [ -x "$R/qemu-system-aarch64" ] || fail "No AVM build at $APP." "Build AVM first, or pass --app."
+# Not cut off while AVM is open (2026-10-30, avm-own-copy.sh): building
+# the install media takes longer than loginwindow allows a second AVM.
+. "$(dirname "$0")/avm-own-copy.sh"
+avm_own_copy "$APP" test || fail "Couldn't make a copy of AVM for the test." "Check that $APP is a complete AVM build."
+APP="$AVM_COPY"
 
 WORK="$HOME/Library/Caches/AVM-build/$GUEST-test-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$WORK"
@@ -89,6 +94,7 @@ markers() {
 }
 
 cleanup() {
+    [ -z "${AVM_COPY_DIR:-}" ] || rm -rf "$AVM_COPY_DIR"
     # A kept machine is shut down properly first (2026-10-26): a power cut
     # right after the first sign-in left Orca's new settings file empty,
     # and Orca crashed on it at every later start.
