@@ -71,6 +71,17 @@ final class MachineSessions: ObservableObject {
             return sessions[config.id]!
         }
         lastError = nil
+        // AVM in front when the machine is to take the keyboard (2026-10-30,
+        // from "start when AVM opens", where AVM opened at login wasn't the
+        // active app, the lock stood down, and AVM wasn't in Command-Tab):
+        // here, so every start that takes it gets it, a kept Windows app's
+        // too (avmctl's start never takes it). Not with no window to take it
+        // in, nor for a test job, which opens AVM with options of its own
+        // and mustn't take the screen.
+        if takesKeyboard, vmStore != nil, !windowless,
+           !CommandLine.arguments.dropFirst().contains(where: { $0.hasPrefix("--") }) {
+            BackgroundMode.shared.comeForward(openingDashboard: false)
+        }
         let session = VMSession(configuration: config)
         session.entersOnFirstShow = takesKeyboard
         sessions[config.id] = session
