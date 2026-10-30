@@ -19,7 +19,7 @@
 #                      only disk info runs there: its agent can't run programs (SELinux)
 #   --only WORDS       run only the tests whose names contain one of the words
 #   --skip WORDS       skip the tests whose names contain one of the words
-#   --with-downloads   include the screen-reader download test (1.5 GB)
+#   --with-downloads   include the screen-reader download test (NVDA, about 70 MB)
 #   --out FOLDER       keep every test's output there (default: a temporary folder)
 #   --list             print the tests that would run, and stop
 #

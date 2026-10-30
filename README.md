@@ -22,6 +22,25 @@ puts a report on the clipboard (versions and the end of the diagnostic
 log, without your user name) and opens a new issue for you to paste it
 into.
 
+## The dashboard and Settings
+
+The dashboard lists your virtual machines in a table, "Virtual
+machines": Name, Status, System, Cores, Memory, Disk and Drive.
+VoiceOver reads it as a table, and each machine's name is a heading, so
+VO-Command-H goes from machine to machine. Return, or a double-click,
+starts the chosen machine or enters it when it's running; VO-Shift-M
+opens its other actions, and all its buttons are below the table, under
+"Controls for" its name.
+
+A machine's Settings come in five categories: **General**, **Sharing**,
+**Devices**, **Display and Sound** and **Startup and Recovery**. Choose
+one in the toolbar at the top ("Categories": interact with it, then
+VO-Right and VO-Space), or with Command-1 to Command-5. Save Settings
+keeps the changes made in every category.
+
+After an update, **What's New in AVM** says what changed; it's in the
+Help menu too.
+
 ## Making a virtual machine's disk larger
 
 A virtual machine's disk only takes up as much space on your Mac as
