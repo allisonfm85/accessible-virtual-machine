@@ -71,7 +71,7 @@ final class WindowsKeyboard {
     /// The machine it types into (2026-10-27, several machines at once):
     /// the one whose screen started it.
     private(set) weak var target: VMManager?
-    private var keyboardName = "The keyboard for Windows"
+    private(set) var keyboardName = "The keyboard for Windows"
     private var announcedHeld = false
 
     private init() {}

@@ -572,7 +572,8 @@ of this is AVM.
 Commands that can't do anything right now are dimmed in the Virtual
 Machine menu, and VoiceOver reads them as "dimmed": Enter Windows when
 nothing is running, Send Ctrl-Alt-Delete, Send File and Reset when
-Windows isn't running, Detach USB Device when nothing is attached.
+Windows isn't running, Return Devices to Mac when nothing is in a
+machine.
 Pressing a dimmed command's keys only beeps. Speak Status is never
 dimmed, so it can always
 tell you why. While Windows is installing, Speak Status also says how
@@ -683,6 +684,12 @@ dashboard's Start buttons work too.
   Device…** (Command-Shift-U) on the dashboard or in the Virtual Machine
   menu. If one still won't go across, **Restart USB Helper** returns every
   device to the Mac and starts AVM's helper again.
+- **Getting devices back.** **Return Devices to Mac…** (Command-Shift-M),
+  on the dashboard or in the Virtual Machine menu, lists every USB and
+  Bluetooth device in Windows, each with a **Return to Mac** button, and
+  **Return All to Mac** gives them all back. A Bluetooth device waiting to
+  reconnect is listed too, with **Keep on Mac** if you'd rather it stayed.
+  The keyboard for Windows is shown with where to change it in Settings.
 - **Bluetooth devices can go to Windows too, with no USB port.** Choose
   **Bluetooth Devices…** (Command-Shift-B) on the dashboard or in the
   Virtual Machine menu, then **Send to Windows** beside a braille display,

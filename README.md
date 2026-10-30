@@ -71,7 +71,7 @@ There are three choices. From left to right, they are:
 
 When AVM asks, you can check "Remember my choice for this device" so it won't ask about that device again.
 
-You can also attach or detach a device yourself at any time. In the Virtual Machine menu, choose Attach USB Device or Detach USB Device. A device you detach goes back to the Mac.
+You can also attach or detach a device yourself at any time. In the Virtual Machine menu, choose Attach USB Device, or Return Devices to Mac (Command-Shift-M). Return Devices to Mac lists every USB and Bluetooth device in the machine, each with a Return to Mac button, and Return All to Mac gives them all back. It also lists a Bluetooth device waiting to reconnect, with Keep on Mac to stop it going back.
 
 ### What to expect
 

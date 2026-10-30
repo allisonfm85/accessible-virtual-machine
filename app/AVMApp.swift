@@ -50,6 +50,7 @@ struct AVMApp: App {
     /// menu redraw when they change.
     @ObservedObject private var activity = VMActivity.shared
     @ObservedObject private var usbRedirect = USBRedirectController.shared
+    @ObservedObject private var bluetooth = BluetoothDevices.shared
     /// A running macOS machine (MacGuest.swift): Enter goes to it when no
     /// QEMU machine is running.
     @ObservedObject private var macGuest = MacGuestRunner.shared
@@ -236,7 +237,8 @@ struct AVMApp: App {
             // only beeps. Start and the Start submenu dim while a machine
             // is starting, running, paused or stopping; Enter dims unless
             // running or paused; Send Ctrl-Alt-Delete, Reset and Attach USB
-            // dim unless running; Detach USB dims with nothing attached.
+            // dim unless running; Return Devices to Mac dims with nothing
+            // in a machine.
             // Start Virtual Machine stays enabled with zero or several
             // machines set up, because it explains what to do instead.
             // Speak Status, Reclaim and Save Diagnostic Log never dim:
@@ -258,6 +260,8 @@ struct AVMApp: App {
             // lines name AVM menu commands and VM state only, never guest
             // keystrokes, so the key-naming prohibition does not apply.
             // 6. Attach USB Device… / Detach USB Device… (no key combos) —
+            //    Detach became Return Devices to Mac… (2026-10-29,
+            //    Command-Shift-M), with Bluetooth devices too.
             //    ADDED 2026-09-12 (USB increment 2a). Post notifications;
             //    ContentView owns the picker sheet for the same reason as
             //    Reclaim (sheet presentation needs the view tree). Empty
@@ -422,11 +426,14 @@ struct AVMApp: App {
                 // the Mac, without unplugging it, is the common case.
                 .keyboardShortcut("u", modifiers: [.command, .shift])
                 .disabled(!activity.isRunning)
-                Button("Detach USB Device…") {
-                    AVMLog.write("AVM: Detach USB Device menu — posting request to ContentView.", category: "USBHelper")
-                    DashboardCommand.post(.avmDetachUSBFromMenu, object: nil)
+                // Return Devices to Mac (2026-10-29), in place of Detach USB
+                // Device: USB and Bluetooth devices, and the ones waiting to
+                // reconnect, in one window (MachineDevicesView.swift).
+                Button("Return Devices to Mac…") {
+                    DashboardCommand.post(.avmMachineDevices, object: nil)
                 }
-                .disabled(usbRedirect.portByDevice.isEmpty)
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+                .disabled(usbRedirect.portByDevice.isEmpty && bluetooth.attached.isEmpty && bluetooth.awaitingReturn.isEmpty)
                 Button("Bluetooth Devices…") {
                     DashboardCommand.post(.avmBluetoothDevices, object: nil)
                 }
@@ -692,7 +699,7 @@ enum DashboardCommand {
         // next one waited, out of sight and unsaid, until it was closed.
         // Only the commands that always open one (seventh audit): Detach
         // with one device and Reclaim with nothing to reclaim just speak.
-        let opensWindow: Set<Notification.Name> = [.avmAttachUSBFromMenu, .avmBluetoothDevices, .avmBackgroundSettings]
+        let opensWindow: Set<Notification.Name> = [.avmAttachUSBFromMenu, .avmBluetoothDevices, .avmMachineDevices, .avmBackgroundSettings]
         if opensWindow.contains(name), MainWindowCloseGuard.hasOpenSheet {
             Announcer.shared.announce("A window is open in AVM's list. Close it, then choose the command again.", tone: .info)
             MainWindowCloseGuard.bringMainWindowForward()

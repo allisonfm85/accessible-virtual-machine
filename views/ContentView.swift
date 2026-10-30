@@ -32,7 +32,9 @@ extension Notification.Name {
     static let avmBluetoothDevices = Notification.Name("avmBluetoothDevices")
     /// Background and Startup… (2026-10-28, BackgroundMode.swift).
     static let avmBackgroundSettings = Notification.Name("avmBackgroundSettings")
-    static let avmDetachUSBFromMenu = Notification.Name("avmDetachUSBFromMenu")
+    /// Return Devices to Mac… (2026-10-29, MachineDevicesView.swift), in
+    /// place of Detach USB Device….
+    static let avmMachineDevices = Notification.Name("avmMachineDevices")
 
     /// Posted by the Virtual Machine menu's "Speak Status" item
     /// (Cmd-Shift-I, 2026-10-25). ContentView answers because the active
@@ -51,6 +53,12 @@ extension Notification.Name {
 /// is per request so the sheet reloads if a new request arrives.
 /// The machine the Bluetooth Devices window is for.
 struct BluetoothWindowRequest: Identifiable {
+    let id = UUID()
+    let machine: VMManager
+}
+
+/// The machine the Return Devices to Mac window is for.
+struct MachineDevicesRequest: Identifiable {
     let id = UUID()
     let machine: VMManager
 }
@@ -93,6 +101,7 @@ struct ContentView: View {
     @State private var showingReclaim = false
     @State private var usbPicker: USBPickerRequest? = nil
     @State private var bluetoothWindow: BluetoothWindowRequest? = nil
+    @State private var devicesWindow: MachineDevicesRequest? = nil
     @State private var showingBackgroundSettings = false
     @Environment(\.openWindow) private var openWindow
     @State private var errorMessage: String? = nil
@@ -246,21 +255,21 @@ struct ContentView: View {
             AVMLog.write("AVM: Attach-USB-from-menu — \(devices.count) device(s); opening picker.", category: "USBHelper")
             usbPicker = USBPickerRequest(mode: .attach, devices: devices, machine: VMManager.shared)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .avmDetachUSBFromMenu)) { _ in
-            let devices = USBRedirectController.shared.redirectedDevices
-            switch devices.count {
-            case 0:
-                AVMLog.write("AVM: Detach-USB-from-menu — nothing attached; announcing.", category: "USBHelper")
-                Announcer.shared.announce("No USB device is attached to the virtual machine.", tone: .info)
-            case 1:
-                AVMLog.write("AVM: Detach-USB-from-menu — one device; detaching directly.", category: "USBHelper")
-                Task { @MainActor in
-                    await USBRedirectController.shared.detach(devices[0])
-                }
-            default:
-                AVMLog.write("AVM: Detach-USB-from-menu — \(devices.count) devices; opening picker.", category: "USBHelper")
-                usbPicker = USBPickerRequest(mode: .detach, devices: devices)
+        .onReceive(NotificationCenter.default.publisher(for: .avmMachineDevices)) { _ in
+            // Paused too, as Bluetooth Devices: QEMU lets devices go with the
+            // vCPUs stopped.
+            guard let manager = VMManager.shared, manager.state == .running || manager.state == .paused else {
+                Announcer.shared.announce("The virtual machine is not running, so it has no devices from the Mac.", tone: .info)
+                return
             }
+            guard MachineDevicesView.hasDevices(manager) else {
+                Announcer.shared.announce("No devices are in \(manager.machineName).", tone: .info)
+                return
+            }
+            devicesWindow = MachineDevicesRequest(machine: manager)
+        }
+        .sheet(item: $devicesWindow) { request in
+            MachineDevicesView(machine: request.machine)
         }
         .sheet(item: $usbPicker) { request in
             USBDevicePickerView(mode: request.mode, devices: request.devices, machine: request.machine)
@@ -894,6 +903,12 @@ private struct QEMUMachineRow: View {
             }
             .accessibilityLabel("Bluetooth devices for \(name)")
             .accessibilityHint("Sends a Bluetooth braille display, game controller or other device to \(name). Command Shift B.")
+            Button("Return Devices to Mac…") {
+                MachineSessions.shared.makeCurrent(session.configuration.id)
+                NotificationCenter.default.post(name: .avmMachineDevices, object: nil)
+            }
+            .accessibilityLabel("Return devices in \(name) to the Mac")
+            .accessibilityHint("Lists the USB and Bluetooth devices in \(name), each with a button to give it back. Command Shift M.")
         }
         // Not during a save (sixth audit): pausing in the middle of one.
         if session.vmState == .running, !session.isSaving {
@@ -933,6 +948,12 @@ private struct QEMUMachineRow: View {
             }
             .accessibilityLabel("Bluetooth devices for \(name)")
             .accessibilityHint("Lists the Bluetooth devices sent to \(name). Command Shift B.")
+            Button("Return Devices to Mac…") {
+                MachineSessions.shared.makeCurrent(session.configuration.id)
+                NotificationCenter.default.post(name: .avmMachineDevices, object: nil)
+            }
+            .accessibilityLabel("Return devices in \(name) to the Mac")
+            .accessibilityHint("Lists the USB and Bluetooth devices in \(name), each with a button to give it back. Command Shift M.")
         }
         if session.vmState == .running || session.vmState == .paused {
             Button("Settings") { openSettings() }

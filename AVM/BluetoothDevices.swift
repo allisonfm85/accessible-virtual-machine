@@ -395,12 +395,27 @@ final class BluetoothDevices: ObservableObject {
     /// (its QEMU process), while it's running. A USB device already follows
     /// the user's choice back (USBPlugPrompt); a Bluetooth one had to be
     /// sent again by hand every time it slept, and braille displays sleep.
-    private struct AwaitingReturn {
+    struct AwaitingReturn {
         weak var machine: VMManager?
         let run: Int
         let name: String
     }
-    private var awaitingReturn: [String: AwaitingReturn] = [:]
+    /// Shown in Return Devices to Mac, where Keep on Mac ends the wait.
+    @Published private(set) var awaitingReturn: [String: AwaitingReturn] = [:]
+
+    /// The devices waiting to go back to `machine`, by name.
+    func waiting(for machine: VMManager) -> [(id: String, name: String)] {
+        awaitingReturn.filter { $0.value.machine === machine && stillWanted($0.value) != nil }
+            .map { (id: $0.key, name: $0.value.name) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// Stays on the Mac when it reconnects.
+    func keepOnMac(_ id: String) {
+        guard let waiting = awaitingReturn.removeValue(forKey: id) else { return }
+        AVMLog.write("Bluetooth: \(waiting.name) stays on the Mac when it reconnects (Keep on Mac)", category: "Bluetooth")
+        say("\(waiting.name) stays on the Mac when it reconnects.", tone: .info)
+    }
     private var arrivals: BluetoothArrivals?
     private var checkingReturns = false
     private var checkAgain = false
