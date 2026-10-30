@@ -162,6 +162,11 @@ final class WindowsAutoDownloader: NSObject, ObservableObject {
         }
         offer = chosen
         AVMLog.write("Windows download: \(chosen.fileName), \(chosen.language), from \(chosen.url.absoluteString)")
+        // Plain http, as the catalog gives it (2026-10-30, the full
+        // system test): Microsoft's download host has no certificate of its
+        // own over https, so Info.plist lets this one host through App
+        // Transport Security. The SHA-1 from the catalog, which comes over
+        // https, checks what arrives.
         let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
         self.session = session
         let task = session.downloadTask(with: chosen.url)
