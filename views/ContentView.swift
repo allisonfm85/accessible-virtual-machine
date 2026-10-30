@@ -2,6 +2,7 @@
 // AVM — Accessible Virtual Machine
 
 import SwiftUI
+import Combine
 import AppKit
 
 // MARK: - Menu-to-dashboard requests
@@ -390,6 +391,12 @@ struct ContentView: View {
 ///   buttons; Delete requires CONFIRMATION (Cancel is the default button —
 ///   same rationale as Reset: a blind user must never be one ambiguous
 ///   activation away from an irreversible action).
+///   THE TABLE (2026-10-30, the user's request): the machines are now one
+///   real table (MachineTableView, an NSTableView), a row each with Name,
+///   Status, System, Cores, Memory, Disk and Drive, which VoiceOver reads
+///   as a table. The chosen
+///   machine's name is the h2, above its buttons, below the table; the
+///   per-machine headings are gone with the per-machine rows.
 ///   The Enter Windows button carries NO keyboard shortcut — Cmd-Shift-E in
 ///   the Virtual Machine menu is the single documented chord for it
 ///   (previously the button also had plain Cmd-E; one chord, one action).
@@ -407,6 +414,10 @@ private struct DashboardContent: View {
     @Binding var errorMessage: String?
     @Binding var showingSetup: Bool
     @Binding var settingsTarget: VMConfiguration?
+    /// The machine chosen in the table, whose buttons are below it.
+    @State private var selectedID: VMConfiguration.ID?
+    /// Counts running machines' changes, so the table redraws for them.
+    @State private var sessionChanges = 0
 
     var body: some View {
         VStack(spacing: 24) {
@@ -424,77 +435,29 @@ private struct DashboardContent: View {
                     Text("Your Virtual Machines")
                         .font(.headline)
 
-                    // Two lines a row (2026-10-28, sighted use): the name and
-                    // what it has, then its state and buttons, none of them
-                    // wrapped or cut short.
-                    ForEach(vmStore.configurations) { config in
+                    machineTable
+
+                    // The chosen machine's buttons, below the table.
+                    if let config = selectedConfiguration {
                         VStack(alignment: .leading, spacing: 6) {
-                            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                                Text(config.name)
-                                    .font(.body)
-                                    .accessibilityAddTraits(.isHeader)
-                                    .accessibilityHeading(.h2)
-                                Text("\(config.cpuCount) cores · \(config.ramSizeGB) GB RAM · \(config.diskSizeGB) GB disk\(storageNote(config).map { " · \($0)" } ?? "")")
-                                    .font(.caption)
-                                    .foregroundStyle(config.storageIsMissing ? Color.red : Color.secondary)
-                                    .accessibilityLabel("\(config.cpuCount) cores, \(config.ramSizeGB) gigabytes RAM, \(config.diskSizeGB) gigabytes disk\(storageNote(config).map { ", \($0)" } ?? "")")
-                            }
-
+                            Text(config.name)
+                                .font(.body)
+                                .accessibilityAddTraits(.isHeader)
+                                .accessibilityHeading(.h2)
+                            Text(specLine(config))
+                                .font(.caption)
+                                .foregroundStyle(config.storageIsMissing ? Color.red : Color.secondary)
+                                .accessibilityLabel(spokenSpecs(config))
                             FlowLayout(spacing: 8, lineSpacing: 6) {
-                            // macOS machines run beside QEMU, in their own
-                            // window (2026-10-26): their row says how they
-                            // are and runs them.
-                            if config.guestOS == .macOS {
-                                macRowControls(config)
-                            } else if let session = machines.session(for: config.id) {
-                                // The saved name and a Settings button
-                                // (2026-10-29, sixth audit): a machine renamed
-                                // while running kept its old name on its row,
-                                // and a running machine that wasn't the
-                                // current one had no way to its Settings.
-                                QEMUMachineRow(session: session, errorMessage: $errorMessage, savedName: config.name,
-                                               isTemplate: config.isATemplate, openSettings: { openSettings(config) })
-                            } else {
-                                // Saved (2026-10-27): its Start carries on.
-                                if QEMUSavedState.looksSaved(config) {
-                                    Text("Saved: Start carries on where you left it")
-                                        .font(.caption)
-                                        .accessibilityLabel("\(config.name): Saved. Start carries on where you left it")
-                                }
-                                if config.isATemplate {
-                                    templateButton(config)
-                                } else {
-                                    Button("Start") {
-                                        startVM(config: config)
-                                    }
-                                    .accessibilityLabel("Start \(config.name)")
-                                    .accessibilityHint(QEMUSavedState.looksSaved(config) ? "Carries on from where it was saved" : "Starts this virtual machine")
-                                }
-
-                                Button("Settings") {
-                                    openSettings(config)
-                                }
-                                .accessibilityLabel("Settings for \(config.name)")
-                                .accessibilityHint("Opens settings for this virtual machine")
-
-                                if !config.isATemplate {
-                                    autoStartToggle(config)
-                                }
-                                exportButton(config)
-                                duplicateButton(config)
-
-                                Button("Delete") {
-                                    confirmDelete(config: config)
-                                }
-                                .accessibilityLabel("Delete \(config.name)")
-                                .accessibilityHint("Moves this virtual machine and all of its files to the Trash. Asks for confirmation first.")
-                            }
+                                machineControls(config)
                             }
                         }
                         .padding(.vertical, 6)
                     }
                 }
                 .padding(.horizontal)
+                .onAppear { keepSelection() }
+                .onChange(of: vmStore.configurations.map(\.id)) { _ in keepSelection() }
             }
 
             // Status (after the VM list in the reading/heading order)
@@ -568,6 +531,184 @@ private struct DashboardContent: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+        }
+    }
+
+    // MARK: - The table of machines (2026-10-30)
+
+    /// Every machine, a row each, in a real table (the user's request):
+    /// MachineTableView, which VoiceOver reads as one, "Virtual machines,
+    /// table", each cell with its column's name. Return or a double-click
+    /// starts the chosen machine, or enters it when it's running; its other
+    /// actions are in its context menu (VO-Shift-M), and all of them are
+    /// buttons below the table.
+    private var machineTable: some View {
+        _ = sessionChanges   // redrawn as running machines change
+        let rows = vmStore.configurations.map(tableRow)
+        return MachineTableView(rows: rows, selection: $selectedID,
+                                primaryAction: { id in configuration(id).map(primaryAction) },
+                                menuItems: { id in configuration(id).map(tableMenu) ?? [] })
+            // Tall enough for every row, up to ten; more scroll in the table.
+            .frame(height: CGFloat(min(max(rows.count, 1), 10)) * MachineTableView.rowHeight + 32)
+            // A running machine's state redraws the table (its row's Status),
+            // as the rows below observe theirs. Its state only (2026-10-30
+            // cleanup): every change to a session, its console text
+            // included, redrew the dashboard and read each machine's files.
+            .onReceive(Publishers.MergeMany(machines.sessions.values.map { $0.$vmState.removeDuplicates().dropFirst() })
+                .receive(on: RunLoop.main)) { _ in
+                sessionChanges &+= 1
+            }
+    }
+
+    private func configuration(_ id: UUID) -> VMConfiguration? {
+        vmStore.configurations.first { $0.id == id }
+    }
+
+    private func tableRow(_ config: VMConfiguration) -> MachineTableRow {
+        let status: String
+        if config.guestOS == .macOS {
+            status = macStatus(config)
+        } else if let session = machines.session(for: config.id) {
+            status = QEMUMachineRow.status(of: session, name: config.name,
+                                           keyboardIn: focusLock.isLocked && machines.currentID == config.id)
+        } else {
+            status = stoppedStatus(config)
+        }
+        let drive = storageNote(config) ?? "This Mac"
+        return MachineTableRow(
+            id: config.id,
+            // "GB", not "gigabytes": seven columns share the dashboard's
+            // width, and VoiceOver reads a cell's text as shown.
+            cells: [config.name, status, config.guestOS.displayName, "\(config.cpuCount)",
+                    "\(config.ramSizeGB) GB", "\(config.diskSizeGB) GB", drive],
+            warning: config.storageIsMissing)
+    }
+
+    private var selectedConfiguration: VMConfiguration? {
+        vmStore.configurations.first { $0.id == selectedID }
+    }
+
+    /// One always chosen, so the buttons below are never empty: the first
+    /// machine at first, and again when the chosen one is deleted.
+    private func keepSelection() {
+        if selectedID == nil || !vmStore.configurations.contains(where: { $0.id == selectedID }) {
+            selectedID = vmStore.configurations.first?.id
+        }
+    }
+
+    private func stoppedStatus(_ config: VMConfiguration) -> String {
+        if config.isATemplate { return "Template" }
+        if QEMUSavedState.looksSaved(config) { return "Saved" }
+        return "Shut down"
+    }
+
+    private func specLine(_ config: VMConfiguration) -> String {
+        "\(config.guestOS.displayName) · \(config.cpuCount) cores · \(config.ramSizeGB) GB RAM · \(config.diskSizeGB) GB disk\(storageNote(config).map { " · \($0)" } ?? "")"
+    }
+
+    private func spokenSpecs(_ config: VMConfiguration) -> String {
+        "\(config.guestOS.displayName), \(config.cpuCount) cores, \(config.ramSizeGB) gigabytes RAM, \(config.diskSizeGB) gigabytes disk\(storageNote(config).map { ", \($0)" } ?? "")"
+    }
+
+    /// Return or a double-click in the table: Enter when it's running,
+    /// Start when it's shut down; nothing while it starts or stops, or for
+    /// a template, which says what to do instead.
+    private func primaryAction(_ config: VMConfiguration) {
+        if config.guestOS == .macOS {
+            if macGuest.runningID == config.id { macGuest.enter() } else { startVM(config: config) }
+            return
+        }
+        if let session = machines.session(for: config.id) {
+            if session.isRunningOrPaused {
+                MachineSessions.shared.enter(config.id)
+            } else {
+                Announcer.shared.announce("\(config.name) is \(session.vmState == .starting ? "starting" : "shutting down").", tone: .info)
+            }
+            return
+        }
+        startVM(config: config)
+    }
+
+    /// The row's context menu: the common actions; every one is a button
+    /// below the table too. A nil title is a separator.
+    private func tableMenu(_ config: VMConfiguration) -> [MachineMenuItem] {
+        var items: [MachineMenuItem] = []
+        let session = config.guestOS == .macOS ? nil : machines.session(for: config.id)
+        let running = config.guestOS == .macOS ? macGuest.runningID == config.id
+            : session?.isRunningOrPaused ?? false
+        if running {
+            items.append(MachineMenuItem("Enter \(config.name)") { primaryAction(config) })
+        } else if session == nil, !config.isATemplate {
+            items.append(MachineMenuItem("Start \(config.name)") { primaryAction(config) })
+        }
+        items.append(MachineMenuItem("Settings for \(config.name)") { openSettings(config) })
+        if running, config.guestOS == .macOS {
+            items.append(MachineMenuItem("Shut Down \(config.name)") { macGuest.shutDown() })
+        } else if running, let session, !session.isSaving {
+            items.append(MachineMenuItem("Shut Down \(config.name)") {
+                QEMUMachineRow.shutDown(session, name: config.name) { errorMessage = $0 }
+            })
+        }
+        if !running, session == nil {
+            items.append(.separator)
+            items.append(MachineMenuItem(config.isATemplate ? "New Machine from \(config.name)…" : "Duplicate \(config.name)…") {
+                MachineArchiveController.shared.duplicate(config, isRunning: false, into: vmStore)
+            })
+            items.append(MachineMenuItem("Export \(config.name)…") { MachineArchiveController.shared.export(config, isRunning: false) })
+            items.append(.separator)
+            items.append(MachineMenuItem("Delete \(config.name)…") { confirmDelete(config: config) })
+        }
+        return items
+    }
+
+    /// The chosen machine's buttons, as its row had them before the table.
+    @ViewBuilder
+    private func machineControls(_ config: VMConfiguration) -> some View {
+        // macOS machines run beside QEMU, in their own window (2026-10-26):
+        // their row says how they are and runs them.
+        if config.guestOS == .macOS {
+            macRowControls(config)
+        } else if let session = machines.session(for: config.id) {
+            // The saved name and a Settings button (2026-10-29, sixth audit):
+            // a machine renamed while running kept its old name on its row,
+            // and a running machine that wasn't the current one had no way to
+            // its Settings.
+            QEMUMachineRow(session: session, errorMessage: $errorMessage, savedName: config.name,
+                           isTemplate: config.isATemplate, openSettings: { openSettings(config) })
+        } else {
+            // Saved (2026-10-27): its Start carries on.
+            if QEMUSavedState.looksSaved(config) {
+                Text("Saved: Start carries on where you left it")
+                    .font(.caption)
+                    .accessibilityLabel("\(config.name): Saved. Start carries on where you left it")
+            }
+            if config.isATemplate {
+                templateButton(config)
+            } else {
+                Button("Start") {
+                    startVM(config: config)
+                }
+                .accessibilityLabel("Start \(config.name)")
+                .accessibilityHint(QEMUSavedState.looksSaved(config) ? "Carries on from where it was saved" : "Starts this virtual machine")
+            }
+
+            Button("Settings") {
+                openSettings(config)
+            }
+            .accessibilityLabel("Settings for \(config.name)")
+            .accessibilityHint("Opens settings for this virtual machine")
+
+            if !config.isATemplate {
+                autoStartToggle(config)
+            }
+            exportButton(config)
+            duplicateButton(config)
+
+            Button("Delete") {
+                confirmDelete(config: config)
+            }
+            .accessibilityLabel("Delete \(config.name)")
+            .accessibilityHint("Moves this virtual machine and all of its files to the Trash. Asks for confirmation first.")
         }
     }
 
@@ -865,10 +1006,14 @@ private struct QEMUMachineRow: View {
     private var name: String { savedName }
 
     private var status: String {
+        Self.status(of: session, name: name, keyboardIn: focusLock.isLocked && machines.currentID == session.configuration.id)
+    }
+
+    /// Also the table's Status column.
+    static func status(of session: VMSession, name: String, keyboardIn: Bool) -> String {
         switch session.vmState {
         case .starting: return "Starting"
-        case .running:
-            return focusLock.isLocked && machines.currentID == session.configuration.id ? "Running, keyboard in \(name)" : "Running"
+        case .running: return keyboardIn ? "Running, keyboard in \(name)" : "Running"
         case .paused: return "Paused"
         case .stopping: return "Shutting down"
         case .stopped: return "Shut down"
@@ -1012,6 +1157,11 @@ private struct QEMUMachineRow: View {
     }
 
     private func shutDown() {
+        Self.shutDown(session, name: name) { errorMessage = $0 }
+    }
+
+    /// Also the table's menu (2026-10-30 cleanup: its own copy had drifted).
+    static func shutDown(_ session: VMSession, name: String, failed: @escaping (String) -> Void) {
         Task {
             // stopGracefully waits until the machine has shut down, so its
             // session stays alive the whole time (fixed 2026-09-27); the
@@ -1019,13 +1169,205 @@ private struct QEMUMachineRow: View {
             do {
                 try await session.stopGracefully()
             } catch {
-                errorMessage = error.localizedDescription
+                failed(error.localizedDescription)
                 Announcer.shared.announce(
                     "\(name) could not be shut down. Reason: \(error.localizedDescription.hasSuffix(".") ? String(error.localizedDescription.dropLast()) : error.localizedDescription). Next: try Shut Down again, or use Force Stop.",
                     tone: .failure
                 )
             }
         }
+    }
+}
+
+// MARK: - The dashboard's table (2026-10-30)
+
+/// One machine's row: what each column shows, which VoiceOver reads.
+struct MachineTableRow: Equatable {
+    let id: UUID
+    let cells: [String]
+    /// Its drive isn't connected: the Drive cell is red.
+    let warning: Bool
+}
+
+/// An item in a row's context menu; a separator has no title.
+struct MachineMenuItem {
+    let title: String?
+    let action: () -> Void
+    init(_ title: String, action: @escaping () -> Void) { self.title = title; self.action = action }
+    private init() { title = nil; action = {} }
+    static let separator = MachineMenuItem()
+}
+
+/// The dashboard's machines in an NSTableView (2026-10-30, the user's
+/// request for a real table). SwiftUI's Table was tried first: VoiceOver
+/// met it as an outline, with every cell "dimmed". This one is a table,
+/// "Virtual machines, table", with a header VoiceOver reads for each cell,
+/// rows by VO-Up and VO-Down and cells by VO-Left and VO-Right. Return or a
+/// double-click is the row's main action; its menu (VO-Shift-M, or a
+/// right-click) has the rest.
+struct MachineTableView: NSViewRepresentable {
+    static let columns = ["Name", "Status", "System", "Cores", "Memory", "Disk", "Drive"]
+    /// Each column's share of the table's width (FittingScrollView).
+    static let widths: [CGFloat] = [150, 140, 90, 50, 70, 75, 95]
+    static let rowHeight: CGFloat = 24
+
+    var rows: [MachineTableRow]
+    @Binding var selection: UUID?
+    var primaryAction: (UUID) -> Void
+    var menuItems: (UUID) -> [MachineMenuItem]
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let table = ReturnKeyTableView()
+        for (index, title) in Self.columns.enumerated() {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("column\(index)"))
+            column.title = title
+            column.width = Self.widths[index]
+            column.minWidth = 50
+            table.addTableColumn(column)
+        }
+        table.rowHeight = Self.rowHeight
+        table.usesAlternatingRowBackgroundColors = true
+        table.allowsMultipleSelection = false
+        table.allowsColumnReordering = false
+        table.columnAutoresizingStyle = .noColumnAutoresizing
+        table.style = .fullWidth
+        table.dataSource = context.coordinator
+        table.delegate = context.coordinator
+        table.target = context.coordinator
+        table.doubleAction = #selector(Coordinator.doubleClicked(_:))
+        table.onReturn = { [weak coordinator = context.coordinator] in coordinator?.activateSelected() }
+        context.coordinator.table = table
+        let menu = NSMenu()
+        menu.delegate = context.coordinator
+        table.menu = menu
+        table.setAccessibilityLabel("Virtual machines")
+        let scroll = FittingScrollView()
+        scroll.shares = Self.widths
+        scroll.documentView = table
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.parent = self
+        guard let table = scroll.documentView as? NSTableView else { return }
+        if coordinator.rows != rows {
+            coordinator.rows = rows
+            table.reloadData()
+        }
+        if let index = rows.firstIndex(where: { $0.id == selection }), table.selectedRow != index {
+            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        }
+    }
+
+    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
+        var parent: MachineTableView
+        var rows: [MachineTableRow] = []
+        weak var table: NSTableView?
+
+        init(_ parent: MachineTableView) { self.parent = parent }
+
+        func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+
+        func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+            guard let tableColumn, let column = tableView.tableColumns.firstIndex(of: tableColumn), row < rows.count else { return nil }
+            let cell: NSTableCellView
+            if let reused = tableView.makeView(withIdentifier: tableColumn.identifier, owner: self) as? NSTableCellView {
+                cell = reused
+            } else {
+                cell = NSTableCellView()
+                cell.identifier = tableColumn.identifier
+                let field = NSTextField(labelWithString: "")
+                field.lineBreakMode = .byTruncatingTail
+                field.translatesAutoresizingMaskIntoConstraints = false
+                cell.addSubview(field)
+                cell.textField = field
+                NSLayoutConstraint.activate([
+                    field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+                    field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+                    field.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                ])
+            }
+            let item = rows[row]
+            cell.textField?.stringValue = item.cells[column]
+            cell.textField?.textColor = item.warning && column == MachineTableView.columns.count - 1 ? .systemRed : .labelColor
+            return cell
+        }
+
+        func tableViewSelectionDidChange(_ notification: Notification) {
+            guard let table = notification.object as? NSTableView, table.selectedRow >= 0, table.selectedRow < rows.count else { return }
+            let id = rows[table.selectedRow].id
+            // Not during SwiftUI's own update of the view.
+            DispatchQueue.main.async { if self.parent.selection != id { self.parent.selection = id } }
+        }
+
+        @objc func doubleClicked(_ sender: NSTableView) {
+            guard sender.clickedRow >= 0, sender.clickedRow < rows.count else { return }
+            parent.primaryAction(rows[sender.clickedRow].id)
+        }
+
+        func activateSelected() {
+            guard let table, table.selectedRow >= 0, table.selectedRow < rows.count else { return }
+            parent.primaryAction(rows[table.selectedRow].id)
+        }
+
+        /// Built as it opens, for the row clicked, or the chosen one when
+        /// VoiceOver opened it from the keyboard.
+        func menuNeedsUpdate(_ menu: NSMenu) {
+            menu.removeAllItems()
+            guard let table else { return }
+            let row = table.clickedRow >= 0 ? table.clickedRow : table.selectedRow
+            guard row >= 0, row < rows.count else { return }
+            for item in parent.menuItems(rows[row].id) {
+                guard let title = item.title else { menu.addItem(.separator()); continue }
+                let menuItem = NSMenuItem(title: title, action: #selector(run(_:)), keyEquivalent: "")
+                menuItem.target = self
+                menuItem.representedObject = ActionBox(item.action)
+                menu.addItem(menuItem)
+            }
+        }
+
+        @objc func run(_ sender: NSMenuItem) { (sender.representedObject as? ActionBox)?.action() }
+    }
+
+    final class ActionBox: NSObject {
+        let action: () -> Void
+        init(_ action: @escaping () -> Void) { self.action = action }
+    }
+}
+
+/// Fits the table's columns to its width, in their shares, whenever it's
+/// laid out, so no column runs off the edge or is cut to a letter.
+final class FittingScrollView: NSScrollView {
+    /// Each column's share of the width, in the table's column order.
+    var shares: [CGFloat] = []
+
+    override func tile() {
+        super.tile()
+        guard let table = documentView as? NSTableView, !shares.isEmpty else { return }
+        let width = contentSize.width - table.intercellSpacing.width * CGFloat(table.tableColumns.count)
+        let total = shares.reduce(0, +)
+        guard width > 0, total > 0 else { return }
+        for (column, share) in zip(table.tableColumns, shares) {
+            let fitted = max((width * share / total).rounded(.down), column.minWidth)
+            if abs(column.width - fitted) >= 1 { column.width = fitted }
+        }
+    }
+}
+
+/// Return is the row's main action, as a double-click is.
+final class ReturnKeyTableView: NSTableView {
+    var onReturn: (() -> Void)?
+    override func keyDown(with event: NSEvent) {
+        if (event.keyCode == 36 || event.keyCode == 76), selectedRow >= 0 {
+            onReturn?()
+            return
+        }
+        super.keyDown(with: event)
     }
 }
 

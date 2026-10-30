@@ -204,14 +204,20 @@ The first thing you meet is the dashboard. With VoiceOver's heading
 navigation it reads in this order:
 
 - **Accessible Virtual Machine** is the app title, a level-one heading.
-- **Each virtual machine's name** is a level-two heading. Under each name is
-  a plain line of specifications (cores, memory, disk size) and its
-  buttons, each labeled with that machine's name: Start, Settings, Export
-  and Delete while it's shut down. While it runs, the row says how it is
-  ("Running", "Running, keyboard in Windows", "Paused", "Shutting down")
-  and has **Enter** and **Shut Down** instead. macOS machines' rows also
-  say **"Saved"** when the machine was saved with Save and Quit (section
-  17).
+- **Virtual machines** is a table, one row a machine, with the columns
+  Name, Status, System, Cores, Memory, Disk and Drive. VoiceOver reads it
+  as a table: VO-Up and VO-Down go by row, VO-Left and VO-Right by cell,
+  each read with its column. Status says how the machine is: "Shut down",
+  "Saved", "Template", "Running", "Running, keyboard in Windows",
+  "Paused", "Starting" or "Shutting down". **Return**, or a double-click,
+  starts the chosen machine, or enters it when it's running. **VO-Shift-M**
+  (or a right-click) opens its menu: Start or Enter, Settings, Shut Down,
+  Duplicate, Export and Delete, as they apply.
+- **The chosen machine's name** is a level-two heading, below the table,
+  with a line of what it has and all its buttons, each labeled with its
+  name: Start, Settings, Export, Duplicate and Delete while it's shut
+  down; Enter, Shut Down and the rest while it runs. Choose another row
+  and they're that machine's.
 - **Status** is a level-three heading, below the machine list. It describes
   what AVM is currently doing.
 

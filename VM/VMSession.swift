@@ -322,6 +322,9 @@ final class VMSession: ObservableObject {
     var isRunning: Bool { vmState == .running }
     var isPaused:  Bool { vmState == .paused  }
     var isStopped: Bool { vmState == .stopped  }
+    /// Up, whether running or paused (2026-10-30), as the dashboard and
+    /// Command-Tab count it.
+    var isRunningOrPaused: Bool { vmState == .running || vmState == .paused }
 
     var spiceSocketPath: String { manager.spiceSocketPath }
 }
