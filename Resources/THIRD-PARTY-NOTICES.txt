@@ -1,0 +1,202 @@
+AVM, Accessible Virtual Machine: third-party notices
+====================================================
+
+AVM is free software under the GNU General Public License, version 2
+(the LICENSE file at the root of its repository,
+https://github.com/allisonfm85/accessible-virtual-machine). So that
+it runs with nothing else installed, it bundles the programs, libraries,
+drivers and installers below, built or copied from the sources named
+here. Each keeps its own licence. The licence texts are in this folder,
+Resources/Licenses inside the app, one folder per package, and
+INDEX.txt there lists what was collected and from which version. In AVM,
+Help > Open Source Licenses opens the folder.
+
+Written 2026-10-29 (seventh audit). Tools/build-sysroot.sh collects the
+texts; keep this file in step with it and with Resources/virtio and
+Resources/vdagent.
+
+
+Source code: the offer
+----------------------
+
+Every component below under the GNU General Public License or the GNU
+Lesser General Public License, in any version, comes with this offer.
+The complete corresponding source is the pinned source tarball named in
+Tools/build-sysroot.sh (and checked against Tools/sysroot-sources.sha256
+when it is downloaded), or the git commit named there or below, plus
+the patches in Tools/sysroot-patches, which are the only changes AVM
+makes. For the Windows installers it is the upstream release named
+beside each. The project will provide any of it to anyone who asks at
+the repository above (open an issue, or write to the maintainer named
+in its README), for three years from each AVM release, for no more
+than the cost of the copy. Tools/build-sysroot.sh in the repository
+builds every binary from those sources, the way the releases are built.
+
+
+Built from source into the app (the sysroot)
+--------------------------------------------
+
+Tools/build-sysroot.sh runs UTM's dependency build (Turing Software,
+https://github.com/utmapp/UTM, Apache License 2.0) at a pinned commit.
+It downloads the tarballs below, applies UTM's patches and then AVM's,
+and builds them. The Xcode project's Run Script phase stages the result
+into the app: every library in the sysroot's lib folder goes into
+Contents/Resources, and every framework but QEMU's into
+Contents/Frameworks, so a few libraries AVM itself never calls are in
+the app too. They are listed with the rest. UTM's patches to the GPL and
+LGPL packages are under those packages' licences.
+
+QEMU 10.0.12-utm (qemu-system-aarch64, qemu-img, libqemu-aarch64-softmmu
+  and libqemu-img), UTM's fork of QEMU. GNU General Public License
+  version 2; parts under the LGPL version 2.1 and BSD licences, as its
+  LICENSE file says. Modified: UTM's patch (qemu/qemu-10.0.12-utm.patch
+  in this folder) and AVM's five patches in Tools/sysroot-patches
+  (CoreAudio output and the microphone, metal-needs-opengl, usb-camera,
+  usb-hid-bridge, usb-kbd-qnum-keys). Compiled into it: libucontext,
+  UTM's fork at commit 9b1d8f01a6e99166f9808c79966abe10786de8b6 (ISC
+  licence); libfdt from the Device Tree Compiler (BSD 2-clause, or the
+  GPL version 2); and Berkeley SoftFloat 3 (BSD 3-clause). From QEMU's
+  firmware set, staged beside it: efi-virtio.rom, built from iPXE (GPL
+  version 2, with its UBDL exception), and vgabios-ramfb.bin, built from
+  SeaBIOS (LGPL version 3).
+EDK2 UEFI firmware, UTM's build (edk2-aarch64-code.fd, edk2-arm-vars.fd,
+  edk2-aarch64-secure-code.fd, edk2-arm-secure-vars.fd). BSD 2-clause
+  with a patent grant, and the other licences of its parts, all in
+  edk2-licenses.txt, which ships beside the firmware in
+  Contents/Resources.
+SPICE server 0.14.3 (libspice-server). LGPL version 2.1 or later.
+spice-gtk 0.42 (libspice-client-glib). LGPL version 2.1 or later.
+spice-protocol 0.14.4 (headers compiled into both). BSD 3-clause.
+GStreamer 1.19.1, gst-plugins-base 1.19.1 and gst-plugins-good 1.19.1
+  (libgstreamer, libgstapp, libgstaudio and the other gst libraries, with
+  the plugins built into them). LGPL version 2 or later (gst-plugins-good:
+  2.1 or later). Modified: AVM's osxaudio patch in Tools/sysroot-patches.
+GLib 2.83.0 (libglib, libgio, libgobject, libgmodule, libgthread,
+  libgirepository). LGPL version 2.1 or later. Compiled into libglib:
+  PCRE2 10.44 (BSD 3-clause), from GLib's own subproject.
+usbredir 0.14.0 (libusbredirhost, libusbredirparser). LGPL version 2.1
+  or later. Modified since AVM 0.4.6: AVM's interrupt OUT patch to
+  libusbredirhost in Tools/sysroot-patches.
+libusb 1.0.25. LGPL version 2.1 or later.
+libslirp 4.9.1, UTM's mirror. BSD 3-clause.
+gettext 0.22.5. libintl and libasprintf: LGPL version 2.1 or later.
+  libgettextlib, libgettextsrc, libgettextpo and libtextstyle: GPL
+  version 3 or later; they are in the app because the whole lib folder is
+  staged, and AVM uses none of the four.
+libiconv 1.16 (libiconv, libcharset). LGPL version 2 or later.
+libgcrypt 1.8.4. LGPL version 2.1 or later.
+libgpg-error 1.38. LGPL version 2.1 or later.
+libsoup 3.6.0. LGPL version 2 or later.
+json-glib 1.10.0. LGPL version 2.1 or later.
+phodav 3.0 (libphodav). LGPL version 2.1 or later. Compiled into it:
+  libxml2 2.9.12 (MIT licence).
+libpng 1.6.48 (libpng16). PNG Reference Library License version 2.
+libjpeg-turbo 1.5.3 (libjpeg, libturbojpeg). The IJG, Modified BSD and
+  zlib licences, as its LICENSE.md says.
+Opus 1.3 (libopus). BSD 3-clause.
+pixman 0.38.0. MIT licence.
+libffi 3.5.0. MIT licence.
+Zstandard 1.5.2 (libzstd). BSD 3-clause; also offered under the GPL
+  version 2.
+OpenSSL 1.1.1b (libssl, libcrypto). The OpenSSL License and the original
+  SSLeay License, both in openssl/LICENSE. As they require: This product
+  includes software developed by the OpenSSL Project for use in the
+  OpenSSL Toolkit (http://www.openssl.org/). This product includes
+  cryptographic software written by Eric Young (eay@cryptsoft.com). This
+  product includes software written by Tim Hudson (tjh@cryptsoft.com).
+libtpms 0.9.6 (compiled into libswtpm_libtpms). BSD 3-clause, IBM.
+swtpm 0.8.99, UTM's release, which reports itself as 0.9.0 (swtpm,
+  libswtpm_libtpms, libswtpm). BSD 3-clause, IBM.
+libtasn1 4.20.0. LGPL version 2.1 or later. Built only because swtpm's
+  configure insists on it; nothing from it is in the app.
+ANGLE (libEGL, libGLESv2), from UTM's WebKit fork at commit
+  ed78ab6e1a37f4f11583a0bd038f22ec91f3ff10. BSD 3-clause, Google.
+  Modified: AVM's patch in Tools/sysroot-patches/clones.
+libepoxy, UTM's fork at commit bf98587477fe68d07b93319ece7b40a7d0e2eabe.
+  MIT licence. Modified: AVM's patch in Tools/sysroot-patches/clones.
+virglrenderer, UTM's fork at commit
+  451505ad0aa449290f2c0672da6877d57ee770e5. MIT licence.
+xorriso 1.5.8.pl02 (GNU xorriso). GPL version 3 or later.
+mtools 4.0.49 (mtools, with mformat, mcopy and mdir as links to it).
+  GPL version 3 or later.
+wimlib 1.14.5. wimlib-imagex: GPL version 3 or later. libwim: LGPL
+  version 3 or later.
+
+
+Copied into Windows during its setup
+------------------------------------
+
+These are in the repository, in Resources/virtio and Resources/vdagent,
+and AVM puts them on the install media it builds. They are copied
+unchanged and never signed again.
+
+Windows virtio drivers 0.1.285 for ARM64 (NetKVM, Balloon, vioserial,
+  viostor), from the Fedora virtio-win project,
+  https://github.com/virtio-win/kvm-guest-drivers-windows, as signed by
+  Microsoft. Copyright (c) 2008-2021 Red Hat Inc. The 3-clause BSD
+  licence, which asks that binary copies carry this notice:
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+    1. Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
+    2. Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in
+       the documentation and/or other materials provided with the
+       distribution.
+    3. Neither the names of the copyright holders nor the names of their
+       contributors may be used to endorse or promote products derived
+       from this software without specific prior written permission.
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+    FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+    COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+    INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+    BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+    OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+    AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+    LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+    ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
+
+spice-vdagent for Windows 0.10.0 (spice-vdagent-x64-0.10.0.msi), the
+  SPICE project's guest agent, https://gitlab.freedesktop.org/spice/
+  win32/vd_agent. GPL version 2 or later; the text is qemu/COPYING. The
+  source is the vd_agent 0.10.0 release, which the offer above covers.
+QEMU guest agent (qemu-ga-x86_64.msi), the virtio-win project's build of
+  QEMU's own guest agent. GPL version 2; the text is qemu/COPYING, and
+  the source is QEMU's, covered by the offer above.
+spice-webdavd 2.4 (spice-webdavd-x64-2.4.msi), the shared-folder service
+  from phodav 2.4, https://gitlab.gnome.org/GNOME/phodav. LGPL version
+  2.1 or later; the text is phodav/COPYING, and the source is the phodav
+  2.4 release, covered by the offer above.
+
+
+Swift packages linked into AVM
+------------------------------
+
+Sparkle 2.9.5 (the updater: Sparkle.framework with its Autoupdate,
+  Updater and XPC services). MIT licence, with the notices for the parts
+  it includes, all in Sparkle/LICENSE.
+CocoaSpice, the SPICE display layer, this project's fork at commit
+  8b41a9af91eef3bd5dbc14b85a34470ad3903541 of
+  https://github.com/allisonfm85/CocoaSpice. Apache License 2.0,
+  in CocoaSpice/LICENSE.
+
+
+In AVM's own code
+-----------------
+
+The table of USB braille displays in AVM/USBBrailleDeviceTable.swift is
+made from BRLTTY's brltty.usermap (The BRLTTY Developers, GPL version 2
+or later, https://brltty.app), under the same licence as AVM.
+
+
+Not shipped
+-----------
+
+NVDA, JAWS for ARM, the SPICE guest agent for Linux, xrdp, macOS
+installers and every operating system come from their makers when AVM
+installs them; nothing of them is in AVM.
