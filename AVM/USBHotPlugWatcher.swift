@@ -64,7 +64,11 @@ final class USBHotPlugWatcher {
 
     // MARK: Start and stop
 
-    func start(vmID: UUID) {
+    /// `alreadyRunning`: the watch moves to a machine that has been running
+    /// a while (2026-10-28, fourth audit). The devices on the Mac are only
+    /// recorded: the start rule sent "use in Windows" devices, such as a
+    /// braille display the user was using on the Mac, into it minutes later.
+    func start(vmID: UUID, alreadyRunning: Bool = false) {
         if self.vmID == vmID { return }
         if self.vmID != nil { stop(reason: "switching to another VM") }
 
@@ -109,14 +113,22 @@ final class USBHotPlugWatcher {
         known = [:]
         // Draining both iterators arms them. Devices already present
         // go through the start rule once their class codes are read.
-        let present = handleArrivals(arrivedIterator, atStart: true)
+        let present = handleArrivals(arrivedIterator, atStart: true, recordOnly: alreadyRunning)
         forEach(removedIterator) { _ in }
-        log("start: watching USB for VM \(vmID.uuidString); \(present) \(present == 1 ? "device" : "devices") already present, each checked against the start rule")
+        log("start: watching USB for VM \(vmID.uuidString); \(present) \(present == 1 ? "device" : "devices") already present, \(alreadyRunning ? "recorded only (the machine was already running)" : "each checked against the start rule")")
     }
 
     func stop(reason: String) {
         guard vmID != nil || notifyPort != nil else { return }
-        USBPlugPrompt.shared.vmStopped()
+        // Only the stopping machine's send gates and follow-through records
+        // (2026-10-29, seventh audit): VMManager stops the watch for the
+        // machine it watches, and the watch moves ("switching to another
+        // VM") only once that machine's session is gone (MachineSessions.
+        // watchUSB), so the machine watched is the one stopping. Every
+        // machine's went before, and a device owed a send back into another
+        // machine stayed on the Mac without a word. nil means all.
+        USBPlugPrompt.shared.vmStopped(machine: vmID)
+        USBRedirectController.shared.clearAllFollowThrough(for: vmID)
         if arrivedIterator != 0 { IOObjectRelease(arrivedIterator); arrivedIterator = 0 }
         if removedIterator != 0 { IOObjectRelease(removedIterator); removedIterator = 0 }
         if let port = notifyPort { IONotificationPortDestroy(port); notifyPort = nil }
@@ -131,7 +143,7 @@ final class USBHotPlugWatcher {
     /// to do with it. atStart is true for devices already plugged in
     /// when watching began. Returns how many devices were recorded.
     @discardableResult
-    private func handleArrivals(_ iterator: io_iterator_t, atStart: Bool = false) -> Int {
+    private func handleArrivals(_ iterator: io_iterator_t, atStart: Bool = false, recordOnly: Bool = false) -> Int {
         let label = atStart ? "present at start" : "arrived"
         var count = 0
         forEach(iterator) { service in
@@ -145,6 +157,7 @@ final class USBHotPlugWatcher {
             }
             known[entryID] = identity
             count += 1
+            if recordOnly { return }
             IOObjectRetain(service)
             let vmAtArrival = vmID
             Task { @MainActor in
@@ -152,6 +165,13 @@ final class USBHotPlugWatcher {
                 defer { IOObjectRelease(service) }
                 guard vmAtArrival != nil, self.vmID == vmAtArrival else {
                     self.log("\(label): \(identity), but watching stopped before its class codes were read")
+                    return
+                }
+                // Gone again within the delay (2026-10-29, sixth audit): a
+                // device pulled straight back out of the wrong port got an
+                // alert later, for a device that wasn't there.
+                guard self.known[entryID] != nil else {
+                    self.log("\(label): \(identity), but it left again before its class codes were read; nothing to decide")
                     return
                 }
                 self.logArrival(identity, entryID: entryID, service: service, atStart: atStart)
@@ -246,11 +266,46 @@ final class USBHotPlugWatcher {
         // so it follows the user's choice back. Never for always-ask
         // devices, and never at start, since nothing has just left
         // Windows. The check also clears the vanished copy quietly.
+        // It also respects Keep on the Mac and a remembered "keep on Mac"
+        // (2026-10-25, code audit): before, a braille display unplugged to
+        // take it back, then plugged in again within the minute, went
+        // straight back to Windows whatever the settings said.
+        var keepsOnMac = false
+        if case .keepOnMac = decision { keepsOnMac = true }
+        // By the settings of the machine it would follow into (2026-10-29,
+        // sixth audit), which can be another machine than the watched one:
+        // its Keep on the Mac mode, a "keep" remembered there and its braille
+        // setting were read from the watched machine's settings instead.
+        // Never while a send gate sends another device with the same key
+        // (2026-10-29, sixth audit): the gate declined this one, so it's a
+        // second unit, and a record left by the gate's own bounce would send
+        // it without a question.
+        let anotherBeingSent = USBHelperClient.shared.isQuiet(identity)
+        let followVM = (atStart || anotherBeingSent ? nil : USBRedirectController.shared.followThroughTarget(identity)) ?? vmID
+        if followVM != vmID {
+            let there = decide(for: identity, classification: classification, atStart: false, machine: followVM)
+            keepsOnMac = there.decision == .keepOnMac
+            log("\(label): \(identity) would follow back into VM \(followVM.uuidString); decision there: \(there.text)")
+        }
+        // A braille display follows only if that VM's setting says so
+        // (2026-10-26): Settings, "When a braille display comes back".
+        let brailleAsks = classification.protection == .brailleDisplay
+            && VMStore.shared?.configurations.first(where: { $0.id == followVM })?.brailleFollowsBack == false
+        if brailleAsks {
+            log("arrived: \(identity) is a braille display and \(followVM == vmID ? "this VM" : "the VM it left") asks about one coming back; not following through")
+        }
         if !atStart,
+           !anotherBeingSent,
+           !keepsOnMac,
+           !brailleAsks,
            classification.protection != .alwaysAsk,
-           USBRedirectController.shared.takeFollowThrough(identity) {
-            log("arrived: \(identity) left Windows moments ago; following the user's choice back to Windows")
-            USBPlugPrompt.shared.send(question, because: "came back within \(Int(USBRedirectController.followWindow)) seconds of leaving Windows")
+           let target = USBRedirectController.shared.takeFollowThrough(identity) {
+            log("arrived: \(identity) left Windows moments ago; following the user's choice back into \(target.uuidString)")
+            // Into the machine it left, which may not be the watched one
+            // (2026-10-28, fifth audit).
+            let back = USBPlugQuestion(entryID: entryID, vmID: target, identity: identity, vendorName: question.vendorName,
+                                       kind: question.kind, rememberOffered: question.rememberOffered)
+            USBPlugPrompt.shared.send(back, because: "came back within \(Int(USBRedirectController.followWindow)) seconds of leaving Windows")
             return
         }
         // At start, sends and the one alert wait until Windows has booted
@@ -284,10 +339,14 @@ final class USBHotPlugWatcher {
     /// When the settings can't be read, the answer is ask, the safe one,
     /// with no Remember option, since there is nowhere to save it. At
     /// start it's a quiet keep instead, since nothing is remembered.
+    /// `machine`: whose settings to read; the watched machine's if nil. A
+    /// device following back into another machine goes by that machine's
+    /// (2026-10-29, sixth audit).
     private func decide(for identity: AVMUSBDeviceIdentity,
                         classification: USBDeviceClassification,
-                        atStart: Bool) -> (decision: USBPlugDecision?, text: String) {
-        guard let vmID else { return (nil, "none (not watching)") }
+                        atStart: Bool,
+                        machine: UUID? = nil) -> (decision: USBPlugDecision?, text: String) {
+        guard let vmID = machine ?? self.vmID else { return (nil, "none (not watching)") }
         guard let store = VMStore.shared,
               let config = store.configurations.first(where: { $0.id == vmID }) else {
             if atStart {
@@ -320,6 +379,19 @@ final class USBHotPlugWatcher {
     func isPresent(_ device: AVMUSBDeviceIdentity) -> Bool {
         let key = USBRedirectController.followKey(device)
         return known.values.contains { USBRedirectController.followKey($0) == key }
+    }
+
+    /// True when the Mac sees a device at exactly this address.
+    func isPresentAtThisAddress(_ device: AVMUSBDeviceIdentity) -> Bool {
+        known.values.contains(device)
+    }
+
+    /// How many devices the Mac sees with this one's followKey
+    /// (2026-10-29, seventh audit): more than one means a second unit is
+    /// plugged in, which the send gate mustn't retry with.
+    func presentCount(like device: AVMUSBDeviceIdentity) -> Int {
+        let key = USBRedirectController.followKey(device)
+        return known.values.filter { USBRedirectController.followKey($0) == key }.count
     }
 
     // MARK: Helpers
