@@ -192,6 +192,15 @@ time AVM says so and macOS asks: turn on AVM in System Settings, under
 Privacy & Security, then Input Monitoring. If macOS then offers to quit
 and reopen AVM, choose Later; the keyboard goes to Windows without it.
 
+## Virtual machines in Command-Tab
+
+Each running virtual machine is in your Mac's Command-Tab list as an app
+of its own, named for it, such as "Amena-PC", and in the Dock while it
+runs. Command-Tab to one and you're in it: its window comes forward with
+your keyboard in the machine. Control-Command-Escape brings you back to
+the Mac, where Command-Tab takes you to another. It leaves the list when
+the machine shuts down.
+
 ## Windows apps in Command-Tab
 
 While a Windows machine runs, every app with a window open in it is in

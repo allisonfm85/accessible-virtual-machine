@@ -648,6 +648,10 @@ dashboard's Start buttons work too.
   Monitoring, then turn on AVM in System Settings, under Privacy &
   Security, then Input Monitoring. If macOS then offers to quit and
   reopen AVM, choose Later.
+- **Virtual machines in Command-Tab.** Start two machines. Each is in
+  Command-Tab under its own name. Control-Command-Escape to the Mac, then
+  Command-Tab to one: its window comes forward with your keyboard in it.
+  Shut one down and it leaves the list.
 - **Windows apps in Command-Tab.** While Windows runs, each app open in
   it is in your Mac's Command-Tab list (and the Dock), named for the app
   and the machine. Command-Tab to one, press Command-Shift-E, and it comes
