@@ -311,13 +311,16 @@ private final class Auditor {
         func host<V: View>(_ view: V) -> AnyView {
             AnyView(view.environmentObject(store).environmentObject(focus))
         }
-        // Section 5 of AVM-TESTER-GUIDE.md: the app title at level one, the
-        // chosen machine's name (the first, at first) at level two, above
-        // its buttons and below the table of machines (2026-10-30), Status
-        // at level three.
+        // Section 5 of AVM-TESTER-GUIDE.md: the app title at level one, each
+        // machine's name a heading in the table of machines, the chosen one's
+        // controls (the first, at first) below it (2026-10-30), Status at
+        // level three.
         var dashboard = [ExpectedHeading(text: "Accessible Virtual Machine", level: 1, source: "guide section 5: the app title, a level-one heading")]
+        for config in store.configurations {
+            dashboard.append(ExpectedHeading(text: config.name, level: 0, source: "guide section 5: each machine's name, a heading in the table"))
+        }
         if let first = store.configurations.first {
-            dashboard.append(ExpectedHeading(text: first.name, level: 2, source: "guide section 5: the chosen machine's name, a level-two heading"))
+            dashboard.append(ExpectedHeading(text: "Controls for \(first.name)", level: 3, source: "guide section 5: the chosen machine's controls, a level-three heading"))
         }
         dashboard.append(ExpectedHeading(text: "Status", level: 3, source: "guide section 5: Status, a level-three heading"))
         // Section 6: the Setup Wizard's title and Where to Store It.

@@ -440,10 +440,13 @@ private struct DashboardContent: View {
                     // The chosen machine's buttons, below the table.
                     if let config = selectedConfiguration {
                         VStack(alignment: .leading, spacing: 6) {
+                            // Not the name again (2026-10-30): the table's
+                            // names are the machines' headings now.
                             Text(config.name)
                                 .font(.body)
+                                .accessibilityLabel("Controls for \(config.name)")
                                 .accessibilityAddTraits(.isHeader)
-                                .accessibilityHeading(.h2)
+                                .accessibilityHeading(.h3)
                             Text(specLine(config))
                                 .font(.caption)
                                 .foregroundStyle(config.storageIsMissing ? Color.red : Color.secondary)
@@ -577,10 +580,12 @@ private struct DashboardContent: View {
         let drive = storageNote(config) ?? "This Mac"
         return MachineTableRow(
             id: config.id,
-            // "GB", not "gigabytes": seven columns share the dashboard's
-            // width, and VoiceOver reads a cell's text as shown.
+            // "GB" shown, as seven columns share the dashboard's width;
+            // "gigabytes" said (2026-10-30, TableLabelCell), as VoiceOver
+            // reads "GB" unreliably.
             cells: [config.name, status, config.guestOS.displayName, "\(config.cpuCount)",
                     "\(config.ramSizeGB) GB", "\(config.diskSizeGB) GB", drive],
+            spoken: [4: "\(config.ramSizeGB) gigabytes", 5: "\(config.diskSizeGB) gigabytes"],
             warning: config.storageIsMissing)
     }
 
@@ -1181,10 +1186,12 @@ private struct QEMUMachineRow: View {
 
 // MARK: - The dashboard's table (2026-10-30)
 
-/// One machine's row: what each column shows, which VoiceOver reads.
+/// One machine's row: what each column shows, which VoiceOver reads, and
+/// by column what it says instead where the two differ.
 struct MachineTableRow: Equatable {
     let id: UUID
     let cells: [String]
+    var spoken: [Int: String] = [:]
     /// Its drive isn't connected: the Drive cell is red.
     let warning: Bool
 }
@@ -1284,6 +1291,17 @@ struct MachineTableView: NSViewRepresentable {
                 let field = NSTextField(labelWithString: "")
                 field.lineBreakMode = .byTruncatingTail
                 field.translatesAutoresizingMaskIntoConstraints = false
+                // Each machine's name a heading (2026-10-30, a tester: with
+                // headings there, a VoiceOver user goes by them first), so
+                // VO-Command-H goes machine to machine in the table too;
+                // VO-Space on one chooses it.
+                // Set on its cell: a label's accessibility is its cell's, and
+                // a role or value set on the field itself didn't reach VoiceOver.
+                let label = TableLabelCell(textCell: "")
+                label.isEditable = false
+                label.isSelectable = false
+                label.isHeading = column == 0
+                field.cell = label
                 cell.addSubview(field)
                 cell.textField = field
                 NSLayoutConstraint.activate([
@@ -1294,6 +1312,7 @@ struct MachineTableView: NSViewRepresentable {
             }
             let item = rows[row]
             cell.textField?.stringValue = item.cells[column]
+            (cell.textField?.cell as? TableLabelCell)?.spoken = item.spoken[column]
             cell.textField?.textColor = item.warning && column == MachineTableView.columns.count - 1 ? .systemRed : .labelColor
             return cell
         }
@@ -1357,6 +1376,20 @@ final class FittingScrollView: NSScrollView {
             if abs(column.width - fitted) >= 1 { column.width = fitted }
         }
     }
+}
+
+/// A table label as VoiceOver should meet it: a heading for a machine's
+/// name, and the words to say where they differ from those shown.
+final class TableLabelCell: NSTextFieldCell {
+    var isHeading = false
+    var spoken: String?
+
+    override func accessibilityRole() -> NSAccessibility.Role? {
+        isHeading ? NSAccessibility.Role(rawValue: "AXHeading") : super.accessibilityRole()
+    }
+    /// A heading's words are its label; a label's text was its value.
+    override func accessibilityLabel() -> String? { isHeading ? stringValue : super.accessibilityLabel() }
+    override func accessibilityValue() -> Any? { spoken ?? super.accessibilityValue() }
 }
 
 /// Return is the row's main action, as a double-click is.

@@ -213,9 +213,12 @@ navigation it reads in this order:
   starts the chosen machine, or enters it when it's running. **VO-Shift-M**
   (or a right-click) opens its menu: Start or Enter, Settings, Shut Down,
   Duplicate, Export and Delete, as they apply.
-- **The chosen machine's name** is a level-two heading, below the table,
-  with a line of what it has and all its buttons, each labeled with its
-  name: Start, Settings, Export, Duplicate and Delete while it's shut
+- **Each machine's name is a heading**, in the table's Name column, so
+  VO-Command-H goes from machine to machine; VO-Space on a name chooses
+  that machine.
+- **"Controls for" the chosen machine** is a level-three heading, below the
+  table, with a line of what it has and all its buttons, each labeled with
+  its name: Start, Settings, Export, Duplicate and Delete while it's shut
   down; Enter, Shut Down and the rest while it runs. Choose another row
   and they're that machine's.
 - **Status** is a level-three heading, below the machine list. It describes
