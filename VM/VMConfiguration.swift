@@ -173,6 +173,10 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// Windows apps in the Mac's Command-Tab list (WindowsApps.swift,
     /// 2026-10-29); nil: on.
     var windowsAppsInCommandTab: Bool?
+    /// The trackpad and mouse do nothing in the machine while the keyboard
+    /// is in it (VMView's SPICECoordinator, 2026-10-30); nil: they work.
+    /// Not for a macOS machine, which has its own view.
+    var trackpadAndMouseOff: Bool?
 
     // MARK: - Display (2026-10-28)
 

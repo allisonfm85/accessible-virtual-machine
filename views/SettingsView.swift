@@ -388,6 +388,11 @@ struct SettingsView: View {
                 sharedFolderSection
             }
 
+            // The trackpad and mouse (2026-10-30); a macOS machine has its own.
+            if configuration.guestOS != .macOS {
+                trackpadSection
+            }
+
             // Windows apps in Command-Tab (2026-10-29, WindowsApps.swift)
             if configuration.guestOS == .windows {
                 windowsAppsSection
@@ -638,6 +643,23 @@ struct SettingsView: View {
     @State private var windowsKeyboardName: String?
     @State private var windowsKeyboardAppleISO = false
     @State private var windowsAppsInCommandTab = true
+    @State private var trackpadAndMouseOn = true
+
+    // MARK: - Trackpad and mouse (2026-10-30)
+
+    private var trackpadSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Trackpad and Mouse")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Toggle("Trackpad and mouse work in \(guest)", isOn: $trackpadAndMouseOn)
+                .accessibilityHint("Turn off so a stray touch can't move or click in \(guest). They still work on your Mac.")
+            Text("Off: while your keyboard is in \(guest), the trackpad and mouse do nothing, so a stray touch can't move the pointer or click there. They work on your Mac as always. Changes take effect at once.")
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal)
+    }
 
     // MARK: - Windows apps on the Mac (2026-10-29)
 
@@ -1193,6 +1215,7 @@ struct SettingsView: View {
         windowsKeyboardName = saved.windowsKeyboardName
         windowsKeyboardAppleISO = saved.windowsKeyboardAppleISO == true
         windowsAppsInCommandTab = saved.windowsAppsInCommandTab != false
+        trackpadAndMouseOn = saved.trackpadAndMouseOff != true
         displayID = saved.displayID
         displayName = saved.displayName
         remoteDesktopOn = saved.remoteDesktopOn
@@ -1403,6 +1426,7 @@ struct SettingsView: View {
             updated.windowsKeyboardName = windowsKeyboardID == nil ? nil : windowsKeyboardName
             updated.windowsKeyboardAppleISO = windowsKeyboardID != nil && windowsKeyboardAppleISO ? true : nil
             updated.windowsAppsInCommandTab = windowsAppsInCommandTab ? nil : false
+            updated.trackpadAndMouseOff = trackpadAndMouseOn ? nil : true
             updated.displayID = displayID
             updated.displayName = displayID == nil ? nil : displayName
             let remoteDesktopWasOn = saved.remoteDesktopOn
