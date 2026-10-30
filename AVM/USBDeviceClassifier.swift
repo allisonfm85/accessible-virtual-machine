@@ -31,6 +31,7 @@
 import Foundation
 import IOKit
 import CoreAudio
+import AppKit
 
 struct USBDeviceClassification {
     enum Protection: String {
@@ -40,6 +41,9 @@ struct USBDeviceClassification {
         case brailleDisplay = "braille display"
         /// Always ask, with no Remember option.
         case alwaysAsk = "always ask"
+        /// Stays on the Mac without a word: a USB hub (2026-10-28), which
+        /// Windows can't take and Always mode used to try.
+        case keepOnMac = "stays on the Mac"
     }
 
     let protection: Protection
@@ -88,11 +92,22 @@ enum USBDeviceClassifier {
             case (0x41, _): braille.append("HID braille")
             case (0x01, 0x06), (0x01, 0x07): inputParts.append("keyboard")
             case (0x01, 0x01), (0x01, 0x02): inputParts.append("mouse")
+            // Digitizers (2026-10-28, deep audit): a pen tablet, touch screen
+            // or touchpad is a pointing device too.
+            case (0x0D, 0x01), (0x0D, 0x02), (0x0D, 0x04), (0x0D, 0x05): inputParts.append("mouse")
             default: break
             }
         }
         if hid.unreadInterfaces > 0 {
             inputParts.append("HID kind not readable yet")
+        }
+        // NO INTERFACES YET (2026-10-25, code audit): a device whose
+        // interfaces macOS hasn't published within the read delay (slow
+        // composite keyboards, devices behind a hub) used to read as
+        // ordinary, and Always mode sent it to Windows unasked. Nothing is
+        // known about it yet, so it counts as possible input and asks.
+        if USBDeviceEnumerator.classCodes(for: service).interfaces.isEmpty {
+            inputParts.append("interfaces not published yet")
         }
 
         // 2. BRLTTY's table, for displays that don't speak HID braille.
@@ -107,14 +122,43 @@ enum USBDeviceClassifier {
 
         // 3. The Mac's current audio output or alert output.
         let output = currentUSBOutput()
-        if let location = intProperty(service, "locationID"), output.locations.contains(location) {
+        let usageText = hid.usages.map { String(format: "%02x/%02x", $0.page, $0.usage) }
+        // By location, or by serial number (2026-10-28, deep audit): Core
+        // Audio's id for a USB device puts its serial number where a device
+        // without one has its location, and a headset with a serial was
+        // never matched, so Always mode could send VoiceOver's own output.
+        let codes = USBDeviceEnumerator.classCodes(for: service)
+        let location = intProperty(service, "locationID").map { String($0, radix: 16).lowercased() }
+        let serial = stringProperty(service, "USB Serial Number")?.trimmingCharacters(in: .whitespaces).lowercased()
+        let isCurrentOutput = (location.map { output.keys.contains($0) } ?? false)
+            || (serial.map { !$0.isEmpty && output.keys.contains($0) } ?? false)
+        if isCurrentOutput {
             audio.append("the Mac's current audio output")
-        } else if output.unreadable,
-                  USBDeviceEnumerator.classCodes(for: service).interfaces.contains(0x01) {
+        } else if output.unreadable, codes.interfaces.contains(0x01) {
             audio.append("may be the Mac's current audio output")
         }
+        // While VoiceOver is on, every USB sound output asks (2026-10-29,
+        // seventh audit). VoiceOver can speak through an output that isn't
+        // the Mac's default (VoiceOver Utility, Sound: speech in a USB
+        // earpiece, music through the speakers), and AVM can't read which
+        // output VoiceOver uses, so Always mode sent that earpiece without a
+        // question. One question, as Ask mode costs. A device Core Audio
+        // doesn't list yet is taken by its audio interface.
+        if audio.isEmpty, NSWorkspace.shared.isVoiceOverEnabled {
+            let listed = usbAudioDevices()
+            let byLocation = location.flatMap { listed[$0] }
+            let bySerial = serial.flatMap { $0.isEmpty ? nil : listed[$0] }
+            if byLocation == true || bySerial == true {
+                audio.append("a USB sound output while VoiceOver is on")
+            } else if byLocation == nil, bySerial == nil, codes.interfaces.contains(0x01) {
+                audio.append("may be a USB sound output while VoiceOver is on")
+            }
+        }
+        // A hub (2026-10-28): nothing to send; quietly the Mac's.
+        if codes.device == 0x09 || (codes.interfaces.contains(0x09) && hid.usages.isEmpty && !codes.interfaces.contains(0x01)) {
+            return USBDeviceClassification(protection: .keepOnMac, reasons: ["USB hub"], hidUsages: usageText, kind: .ordinary)
+        }
 
-        let usageText = hid.usages.map { String(format: "%02x/%02x", $0.page, $0.usage) }
         if !audio.isEmpty {
             return USBDeviceClassification(protection: .alwaysAsk, reasons: unique(audio + braille + inputParts), hidUsages: usageText, kind: .soundOutput)
         }
@@ -219,8 +263,11 @@ enum USBDeviceClassifier {
     /// Location IDs of USB devices the Mac is playing sound or alerts
     /// through right now. unreadable is true when an output is a USB
     /// device but its location can't be read from Core Audio.
-    static func currentUSBOutput() -> (locations: Set<Int>, unreadable: Bool) {
-        var locations = Set<Int>()
+    /// The Mac's current USB sound outputs, by the field of Core Audio's
+    /// device id that names the device: its serial number when it has one,
+    /// else its location id in hex (2026-10-28). Lowercased.
+    static func currentUSBOutput() -> (keys: Set<String>, unreadable: Bool) {
+        var keys = Set<String>()
         var unreadable = false
         let selectors = [kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDefaultSystemOutputDevice]
         for selector in selectors {
@@ -231,29 +278,61 @@ enum USBDeviceClassifier {
             var size = UInt32(MemoryLayout<AudioObjectID>.size)
             guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr,
                   device != 0 else { continue }
-
-            address.mSelector = kAudioDevicePropertyTransportType
-            var transport = UInt32(0)
-            size = UInt32(MemoryLayout<UInt32>.size)
-            guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &transport) == noErr,
-                  transport == kAudioDeviceTransportTypeUSB else { continue }
-
-            address.mSelector = kAudioDevicePropertyDeviceUID
-            var uid: Unmanaged<CFString>?
-            size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-            guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &uid) == noErr, let uid else {
-                unreadable = true
-                continue
-            }
-            // Read from the end: a product name can contain a colon.
-            let fields = (uid.takeRetainedValue() as String).split(separator: ":", omittingEmptySubsequences: false)
-            if fields.count >= 3, let location = Int(fields[fields.count - 2], radix: 16) {
-                locations.insert(location)
-            } else {
-                unreadable = true
+            switch usbKey(of: device) {
+            case .notUSB: continue
+            case .unreadable: unreadable = true
+            case .key(let key): keys.insert(key)
             }
         }
-        return (locations, unreadable)
+        return (keys, unreadable)
+    }
+
+    /// Every USB audio device Core Audio lists, by the same key, and
+    /// whether it can play sound: it has an output stream. For the
+    /// VoiceOver rule in classify (2026-10-29, seventh audit).
+    static func usbAudioDevices() -> [String: Bool] {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var size = UInt32(0)
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size) == noErr,
+              size > 0 else { return [:] }
+        var devices = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &devices) == noErr else { return [:] }
+        var found: [String: Bool] = [:]
+        for device in devices {
+            guard case .key(let key) = usbKey(of: device) else { continue }
+            var streams = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams,
+                                                     mScope: kAudioObjectPropertyScopeOutput,
+                                                     mElement: kAudioObjectPropertyElementMain)
+            var streamsSize = UInt32(0)
+            let playsSound = AudioObjectGetPropertyDataSize(device, &streams, 0, nil, &streamsSize) == noErr && streamsSize > 0
+            found[key] = (found[key] ?? false) || playsSound
+        }
+        return found
+    }
+
+    private enum USBAudioKey { case notUSB, unreadable, key(String) }
+
+    /// The field of a USB audio device's Core Audio id that names the
+    /// device (see currentUSBOutput), or why there is none.
+    private static func usbKey(of device: AudioObjectID) -> USBAudioKey {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var transport = UInt32(0)
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &transport) == noErr,
+              transport == kAudioDeviceTransportTypeUSB else { return .notUSB }
+
+        address.mSelector = kAudioDevicePropertyDeviceUID
+        var uid: Unmanaged<CFString>?
+        size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &uid) == noErr, let uid else { return .unreadable }
+        // Read from the end: a product name can contain a colon.
+        let fields = (uid.takeRetainedValue() as String).split(separator: ":", omittingEmptySubsequences: false)
+        guard fields.count >= 3 else { return .unreadable }
+        return .key(fields[fields.count - 2].trimmingCharacters(in: .whitespaces).lowercased())
     }
 
     // MARK: Registry helpers
@@ -281,6 +360,11 @@ enum USBDeviceClassifier {
     private static func intProperty(_ entry: io_registry_entry_t, _ key: String) -> Int? {
         guard let raw = IORegistryEntryCreateCFProperty(entry, key as CFString, kCFAllocatorDefault, 0) else { return nil }
         return (raw.takeRetainedValue() as? NSNumber)?.intValue
+    }
+
+    private static func stringProperty(_ entry: io_registry_entry_t, _ key: String) -> String? {
+        guard let raw = IORegistryEntryCreateCFProperty(entry, key as CFString, kCFAllocatorDefault, 0) else { return nil }
+        return raw.takeRetainedValue() as? String
     }
 
     private static func unique(_ items: [String]) -> [String] {
