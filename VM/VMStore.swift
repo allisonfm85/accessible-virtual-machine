@@ -43,13 +43,9 @@ final class VMStore: ObservableObject {
     /// configurations store, and (2026-08-15) the per-VM directories.
     private var avmDirectory: URL {
         get throws {
-            let appSupport = try fileManager.url(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask,
-                appropriateFor: nil,
-                create: true
-            )
-            let avmDirectory = appSupport.appendingPathComponent("AVM")
+            // Through AVMPaths (2026-10-26), so the accessibility audit's
+            // stand-in folder applies here too.
+            let avmDirectory = try AVMPaths.supportDirectory()
             try fileManager.createDirectory(
                 at: avmDirectory,
                 withIntermediateDirectories: true
@@ -88,9 +84,15 @@ final class VMStore: ObservableObject {
     /// installISOPath and sharedFolderPath are deliberately NOT part of
     /// this layout: they point at the user's own files (e.g. an ISO in
     /// ~/Downloads) and deletion must never touch them.
+    ///
+    /// STORAGE LOCATION (2026-10-25): a VM the user stored in a folder of
+    /// their choosing (an external drive) lives in that folder instead,
+    /// recorded in storageFolderPath. The rule above still holds: the
+    /// folder comes from that dedicated setting or the UUID, never from
+    /// diskImagePath. VMConfiguration.directoryURL() is the one place it is
+    /// worked out.
     func vmDirectoryURL(for configuration: VMConfiguration) throws -> URL {
-        try vmsContainerURL
-            .appendingPathComponent(configuration.id.uuidString)
+        try configuration.directoryURL()
     }
 
     /// Total allocated size in bytes of the VM's directory, for the
@@ -147,12 +149,15 @@ final class VMStore: ObservableObject {
     /// Sorted largest first: in a space-reclaiming list, the biggest win
     /// leads.
     func findOrphans() -> [OrphanedVMDirectory] {
+        // Every folder would look orphaned (see loadAll), unless the
+        // unreadable entries are known and each names its folder's id.
+        guard !reclaimIsOff else { return [] }
         guard
             let container = try? vmsContainerURL,
             fileManager.fileExists(atPath: container.path)
         else { return [] }
 
-        let registered = Set(configurations.map { $0.id.uuidString.uppercased() })
+        let registered = Set(configurations.map { $0.id.uuidString.uppercased() } + unreadableIDs)
 
         guard let entries = try? fileManager.contentsOfDirectory(
             at: container,
@@ -190,7 +195,7 @@ final class VMStore: ObservableObject {
     /// configuration was created while the Reclaim sheet sat open. A
     /// refused trash throws, so it is never silent.
     func trashOrphan(_ orphan: OrphanedVMDirectory) throws {
-        let registered = Set(configurations.map { $0.id.uuidString.uppercased() })
+        let registered = Set(configurations.map { $0.id.uuidString.uppercased() } + unreadableIDs)
         if let uuid = UUID(uuidString: orphan.uuidString),
            registered.contains(uuid.uuidString.uppercased()) {
             AVMLog.write("AVM: VMStore — Reclaim REFUSED for \(orphan.uuidString): it is now a registered VM.")
@@ -210,6 +215,7 @@ final class VMStore: ObservableObject {
 
     init() {
         configurations = loadAll()
+        AVMLog.setPrivateWords(configurations.compactMap(\.remoteDesktopUser))
         VMStore.shared = self
     }
 
@@ -222,39 +228,142 @@ final class VMStore: ObservableObject {
     // relaunch, is diagnosed by exactly these lines, and until this change
     // they were invisible in every log AVM has.
     //
-    // BANKED QUESTION (not changed here — behavior change, needs its own
-    // decision and wording approval): a SAVE failure is silent data loss —
-    // the in-memory list looks right and the truth only surfaces at next
-    // launch. Under "silence is never neutral" it is a candidate for a
-    // spoken .failure announcement, not just a log line. Queued for the
-    // announcements work.
+    // SAVE FAILURE IS SPOKEN (2026-10-25, closes the banked question): a
+    // save failure is silent data loss — the in-memory list looks right and
+    // the truth only surfaces at next launch. Under "silence is never
+    // neutral" saveAll now speaks a .failure as well as logging it. A LOAD
+    // failure stays log-only: it happens at launch, before anything could
+    // be said usefully, and an empty list is already visible.
+    //
+    // AN UNREADABLE LIST IS KEPT, NEVER OVERWRITTEN (2026-10-26, code
+    // audit): loading used to fall back to an empty list, and the next save
+    // (any new machine or setting) wrote that over the file, losing every
+    // machine, while Reclaim then offered all their folders for the Trash.
+    // Now the file is copied aside first, Reclaim refuses while the list
+    // couldn't be read, and the user hears what happened and where the
+    // copy is.
+    private(set) var loadFailed = false
+
     private func loadAll() -> [VMConfiguration] {
+        let data: Data
         do {
             let url = try storeURL
             guard fileManager.fileExists(atPath: url.path) else { return [] }
-            let data = try Data(contentsOf: url)
+            data = try Data(contentsOf: url)
             return try JSONDecoder().decode([VMConfiguration].self, from: data)
         } catch {
             AVMLog.write("AVM: VMStore — FAILED to load configurations: \(error.localizedDescription)")
-            return []
+            loadFailed = true
+            var kept = "it couldn't be copied aside"
+            if let url = try? storeURL, fileManager.fileExists(atPath: url.path) {
+                let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+                let aside = url.deletingLastPathComponent().appendingPathComponent("configurations-unreadable-\(stamp).json")
+                if (try? fileManager.copyItem(at: url, to: aside)) != nil {
+                    asideKept = true
+                    kept = "a copy is kept as \(aside.lastPathComponent), in AVM's folder in Application Support"
+                    AVMLog.write("AVM: VMStore — the unreadable list is kept as \(aside.lastPathComponent).")
+                }
+            }
+            // One machine at a time (2026-10-28, fourth audit): one entry
+            // AVM couldn't read used to hide every machine. The others load;
+            // only the unreadable ones wait in the copy.
+            let readable = Self.readableEntries(in: (try? storeURL).flatMap { try? Data(contentsOf: $0) })
+            unreadableEntries = readable?.kept ?? []
+            let message: String
+            if let readable, !readable.machines.isEmpty {
+                message = "AVM couldn't read \(readable.unreadable == 1 ? "one machine" : "\(readable.unreadable) machines") in your list, so \(readable.unreadable == 1 ? "it isn't" : "they aren't") shown; \(kept). Your machines' files are untouched. Next: report the problem from the Help menu."
+            } else {
+                message = "AVM couldn't read your list of virtual machines, so it shows none; \(kept). Your machines' files are untouched. Next: report the problem from the Help menu, before making new machines."
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                MainActor.assumeIsolated { Announcer.shared.announce(message, tone: .failure) }
+            }
+            return readable?.machines ?? []
         }
     }
+
+    /// The entries of a list that won't decode whole, decoded one by one.
+    /// nil when the file isn't a list at all.
+    nonisolated static func readableEntries(in data: Data?) -> (machines: [VMConfiguration], unreadable: Int, kept: [Any])? {
+        guard let data, let entries = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else { return nil }
+        var machines: [VMConfiguration] = []
+        var kept: [Any] = []
+        for entry in entries {
+            // Only an object is handed to JSONSerialization (2026-10-29,
+            // sixth audit): a number, string or null in the list made
+            // data(withJSONObject:) raise an exception that try? can't
+            // catch, and AVM crashed at every launch. Kept as it was.
+            if entry is [String: Any],
+               let one = try? JSONSerialization.data(withJSONObject: entry),
+               let machine = try? JSONDecoder().decode(VMConfiguration.self, from: one) {
+                machines.append(machine)
+            } else {
+                kept.append(entry)
+            }
+        }
+        return (machines, kept.count, kept)
+    }
+
+    /// The entries of the list AVM couldn't decode, kept as they were and
+    /// written back with every save (2026-10-28, fifth audit): written
+    /// without them, the next launch read the list whole, said nothing, and
+    /// Reclaim Disk Space offered the hidden machines' folders as leftovers.
+    private var unreadableEntries: [Any] = []
+    private var unreadableIDs: [String] {
+        unreadableEntries.compactMap { (($0 as? [String: Any])?["id"] as? String)?.uppercased() }
+    }
+    /// Reclaim Disk Space is off while the list is unreadable and the hidden
+    /// machines' folders can't be told from leftovers.
+    var reclaimIsOff: Bool {
+        loadFailed && (unreadableEntries.isEmpty || unreadableIDs.count != unreadableEntries.count)
+    }
+
+    /// True once an unreadable list has been copied aside (2026-10-28,
+    /// fourth audit): until it is, nothing is written over the original.
+    private var asideKept = false
+    private var refusalSaid = false
 
     // MARK: - Save All
 
     private func saveAll() {
+        // A list AVM couldn't read, and couldn't copy aside, is never
+        // written over (2026-10-28, fourth audit): the next new machine or
+        // setting used to replace it, and the machines in it were gone.
+        if loadFailed, !asideKept {
+            AVMLog.write("AVM: VMStore — not saving: the unreadable list couldn't be copied aside")
+            if !refusalSaid {
+                refusalSaid = true
+                Task { @MainActor in
+                    Announcer.shared.announce("AVM won't save changes to your list of virtual machines, because it couldn't read the list or keep a copy of it, and saving would replace it. Next: report the problem from the Help menu.", tone: .failure)
+                }
+            }
+            return
+        }
         do {
             let url = try storeURL
-            let data = try JSONEncoder().encode(configurations)
+            var data = try JSONEncoder().encode(configurations)
+            // The entries AVM couldn't read go back as they were (fifth audit).
+            if !unreadableEntries.isEmpty, var list = try JSONSerialization.jsonObject(with: data) as? [Any] {
+                list.append(contentsOf: unreadableEntries)
+                data = try JSONSerialization.data(withJSONObject: list, options: [.sortedKeys])
+            }
             try data.write(to: url, options: .atomic)
         } catch {
             AVMLog.write("AVM: VMStore — FAILED to save configurations: \(error.localizedDescription)")
+            let reason = error.localizedDescription
+            Task { @MainActor in
+                Announcer.shared.announce(
+                    "AVM could not save your virtual machine list. Your last change will be lost when AVM quits. Reason: \(reason) Next: make sure your Mac has free disk space, then make the change again.",
+                    tone: .failure
+                )
+            }
         }
     }
 
     // MARK: - Add or Update
 
     func save(_ configuration: VMConfiguration) {
+        defer { AVMLog.setPrivateWords(configurations.compactMap(\.remoteDesktopUser)) }
         if let index = configurations.firstIndex(where: { $0.id == configuration.id }) {
             configurations[index] = configuration
         } else {
@@ -263,7 +372,59 @@ final class VMStore: ObservableObject {
         saveAll()
     }
 
+    // MARK: - Secure Boot switch (2026-10-25)
+
+    /// Switches which firmware's variable store the VM uses. Each firmware
+    /// keeps its own: the current nvram.fd is set aside as
+    /// nvram-plain.fd or nvram-secure.fd, and the other firmware's earlier
+    /// store, if there is one, comes back. A first switch to Secure Boot
+    /// leaves no nvram.fd, so the next start makes one with Microsoft's
+    /// keys (VMManager.prepareSecureBootNVRAM). Switching back puts the
+    /// old store, and the boot entries Windows wrote to it, back exactly.
+    /// Files are moved, never deleted. Throws, for a spoken failure, with
+    /// nothing changed if the first move fails.
+    func switchSecureBoot(_ configuration: VMConfiguration, on: Bool) throws {
+        if configuration.storageIsMissing {
+            throw NSError(domain: "AVM.SecureBoot", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: configuration.storageMissingMessage])
+        }
+        let dir = try vmDirectoryURL(for: configuration)
+        let current = dir.appendingPathComponent("nvram.fd")
+        let setAside = dir.appendingPathComponent(on ? "nvram-plain.fd" : "nvram-secure.fd")
+        let comingBack = dir.appendingPathComponent(on ? "nvram-secure.fd" : "nvram-plain.fd")
+        if fileManager.fileExists(atPath: current.path) {
+            // An older set-aside store is renamed, never deleted (2026-10-25,
+            // code audit): after a half-finished switch it may be the only
+            // copy with Windows' boot entries.
+            if fileManager.fileExists(atPath: setAside.path) {
+                let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+                let older = dir.appendingPathComponent("\(setAside.deletingPathExtension().lastPathComponent)-\(stamp).fd")
+                try fileManager.moveItem(at: setAside, to: older)
+            }
+            try fileManager.moveItem(at: current, to: setAside)
+        }
+        if fileManager.fileExists(atPath: comingBack.path) {
+            try fileManager.moveItem(at: comingBack, to: current)
+        }
+        AVMLog.write("AVM: VMStore — Secure Boot \(on ? "on" : "off") for '\(configuration.name)'; firmware settings switched.")
+    }
+
     // MARK: - Delete
+
+    /// The install pipelines' scratch folder for this VM, removed with it
+    /// (2026-10-25, code audit). A build cut short by a quit or crash left
+    /// up to 15 GB there, and for Ubuntu a copy of the password hash, and
+    /// nothing else ever cleared it. AVM's own working files, so removed
+    /// outright rather than trashed.
+    private func removeScratch(for configuration: VMConfiguration) {
+        guard let scratch = try? avmDirectory
+            .appendingPathComponent("scratch")
+            .appendingPathComponent(configuration.id.uuidString) else { return }
+        if fileManager.fileExists(atPath: scratch.path) {
+            try? fileManager.removeItem(at: scratch)
+            AVMLog.write("AVM: VMStore — removed install scratch for '\(configuration.name)'.")
+        }
+    }
 
     /// Removes ONLY the configuration entry. This was the entire delete
     /// implementation until 2026-08-15 — which is exactly issue #5: the
@@ -287,12 +448,27 @@ final class VMStore: ObservableObject {
     /// caller for a spoken .failure announcement — the one state this
     /// method must never produce is "entry gone, files stranded and now
     /// invisible in the app", which is the very bug it fixes.
+    ///
+    /// A VM whose drive isn't connected is refused (2026-10-25): its folder
+    /// is missing only because the drive is, and "no directory on disk"
+    /// would otherwise remove the entry and strand the files on the drive,
+    /// invisible to AVM, which is issue #5 again.
     @discardableResult
     func deleteMovingFilesToTrash(_ configuration: VMConfiguration) throws -> UInt64 {
+        if configuration.storageIsMissing {
+            AVMLog.write("AVM: VMStore — delete of '\(configuration.name)' refused: its storage folder is missing (drive not connected?). Entry kept.")
+            throw NSError(
+                domain: "AVM.Delete",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: configuration.storageMissingMessage]
+            )
+        }
         let url = try vmDirectoryURL(for: configuration)
 
         guard fileManager.fileExists(atPath: url.path) else {
             AVMLog.write("AVM: VMStore — delete of '\(configuration.name)': no VM directory on disk (orphaned entry); removing entry only.")
+            removeScratch(for: configuration)
+            RemoteDesktop.forgetPassword(for: configuration.id)
             delete(configuration)
             return 0
         }
@@ -307,7 +483,245 @@ final class VMStore: ObservableObject {
         }
 
         AVMLog.write("AVM: VMStore — moved VM directory to Trash for '\(configuration.name)' (\(bytes) bytes).")
+        removeScratch(for: configuration)
+        // Its Remote Desktop password too (2026-10-28, fifth audit): it
+        // stayed in the keychain for good, unreachable from AVM.
+        RemoteDesktop.forgetPassword(for: configuration.id)
         delete(configuration)
         return bytes
+    }
+}
+
+// MARK: - Restore points (2026-10-25)
+
+/// One restore point: a qcow2 snapshot of the VM's disk, tagged
+/// "avm-<milliseconds>", and a folder of the same name under
+/// restore-points/ holding a copy of nvram.fd, of tpm-state, the user's
+/// label, and whether Secure Boot was on. The disk snapshot lives inside
+/// disk.qcow2 and costs nothing at first; the file grows as the disk
+/// changes afterwards, by about what changed.
+nonisolated struct RestorePoint: Identifiable, Hashable, Sendable {
+    let tag: String
+    let label: String
+    let date: Date
+    let secureBoot: Bool
+    /// Taken while the machine ran (2026-10-27): its memory is in the
+    /// snapshot too, and restoring it carries on with open apps.
+    var withMemory = false
+    /// The disk bus the machine was on (2026-10-28): "nvme" or "virtio";
+    /// nil for a point made before this was recorded. A machine moved to
+    /// the virtio disk since can't boot a point from before the move, so
+    /// a restore puts the bus back too (SettingsView).
+    var diskBus: String? = nil
+    var id: String { tag }
+}
+
+nonisolated enum RestorePointError: LocalizedError, Sendable {
+    case tool(String)
+    case secureBootMismatch(madeWithSecureBoot: Bool)
+
+    var errorDescription: String? {
+        switch self {
+        case .tool(let detail):
+            return detail
+        case .secureBootMismatch(let on):
+            return on
+                ? "This restore point was made with Secure Boot on. Next: turn Secure Boot on in Settings, then restore it."
+                : "This restore point was made with Secure Boot off. Next: turn Secure Boot off in Settings, then restore it."
+        }
+    }
+}
+
+/// Restore points for a stopped VM (2026-10-25). Only ever while the VM is
+/// stopped: QEMU holds the disk while it runs, and a snapshot of a running
+/// guest's disk alone would not match its memory. The qemu-img work runs
+/// off the main thread.
+nonisolated enum RestorePoints {
+    static let folderName = "restore-points"
+
+    static func list(vmDirectory dir: URL) async throws -> [RestorePoint] {
+        let output = try await qemuImg(["info", "--output=json", disk(dir).path])
+        guard let json = try JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any] else {
+            throw RestorePointError.tool("AVM couldn't read the disk's restore points.")
+        }
+        let snapshots = json["snapshots"] as? [[String: Any]] ?? []
+        return snapshots.compactMap { snap -> RestorePoint? in
+            guard let tag = snap["name"] as? String, isOwnTag(tag) else { return nil }
+            let seconds = snap["date-sec"] as? Double ?? 0
+            let folder = dir.appendingPathComponent(folderName).appendingPathComponent(tag)
+            let label = (try? String(contentsOf: folder.appendingPathComponent("label.txt"), encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let secure = FileManager.default.fileExists(atPath: folder.appendingPathComponent("secure-boot").path)
+            let memory = (snap["vm-state-size"] as? Double ?? 0) > 0
+            let bus = (try? String(contentsOf: folder.appendingPathComponent("disk-bus"), encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return RestorePoint(tag: tag, label: (label?.isEmpty == false ? label! : "Restore point"),
+                                date: Date(timeIntervalSince1970: seconds), secureBoot: secure, withMemory: memory,
+                                diskBus: bus?.isEmpty == false ? bus : nil)
+        }
+        .sorted { $0.date > $1.date }
+    }
+
+    static func create(vmDirectory dir: URL, label: String, secureBoot: Bool, diskBus: String? = nil) async throws -> RestorePoint {
+        let tag = newTag()
+        _ = try await qemuImg(["snapshot", "-c", tag, disk(dir).path])
+        do {
+            try writeFolder(vmDirectory: dir, tag: tag, label: label, secureBoot: secureBoot, diskBus: diskBus)
+        } catch {
+            // Half a restore point is worse than none: take the snapshot back.
+            _ = try? await qemuImg(["snapshot", "-d", tag, disk(dir).path])
+            throw error
+        }
+        AVMLog.write("AVM: RestorePoints — created \(tag).")
+        return RestorePoint(tag: tag, label: label, date: Date(), secureBoot: secureBoot, diskBus: diskBus)
+    }
+
+    static func newTag() -> String { "avm-\(Int(Date().timeIntervalSince1970 * 1000))" }
+
+    /// A tag AVM made: "avm-" and the milliseconds (2026-10-29, sixth
+    /// audit). A snapshot's name is any bytes, and one with "/" or ".." in a
+    /// disk someone else made named a folder outside restore-points, which
+    /// Delete then removed for good.
+    static func isOwnTag(_ tag: String) -> Bool {
+        guard tag.hasPrefix("avm-") else { return false }
+        let digits = tag.dropFirst(4)
+        return !digits.isEmpty && digits.count <= 20 && digits.allSatisfy { $0.isASCII && $0.isNumber }
+    }
+
+    /// The restore point's folder: copies of the firmware settings and the
+    /// TPM, its label, and whether Secure Boot was on. A folder that
+    /// couldn't be finished is removed, and that's thrown.
+    static func writeFolder(vmDirectory dir: URL, tag: String, label: String, secureBoot: Bool, diskBus: String? = nil) throws {
+        guard isOwnTag(tag) else { throw RestorePointError.tool("The restore point's name isn't one AVM made.") }
+        let fm = FileManager.default
+        let folder = dir.appendingPathComponent(folderName).appendingPathComponent(tag)
+        do {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            let nvram = dir.appendingPathComponent("nvram.fd")
+            if fm.fileExists(atPath: nvram.path) {
+                try fm.copyItem(at: nvram, to: folder.appendingPathComponent("nvram.fd"))
+            }
+            let tpm = dir.appendingPathComponent("tpm-state")
+            if fm.fileExists(atPath: tpm.path) {
+                try fm.copyItem(at: tpm, to: folder.appendingPathComponent("tpm-state"))
+            }
+            try label.write(to: folder.appendingPathComponent("label.txt"), atomically: true, encoding: .utf8)
+            if secureBoot {
+                fm.createFile(atPath: folder.appendingPathComponent("secure-boot").path, contents: nil)
+            }
+            if let diskBus {
+                try diskBus.write(to: folder.appendingPathComponent("disk-bus"), atomically: true, encoding: .utf8)
+            }
+        } catch {
+            try? fm.removeItem(at: folder)
+            throw RestorePointError.tool("The restore point could not be saved: \(error.localizedDescription)")
+        }
+    }
+
+    static func removeFolder(vmDirectory dir: URL, tag: String) {
+        guard isOwnTag(tag) else { return }
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent(folderName).appendingPathComponent(tag))
+    }
+
+    /// Puts the disk, firmware settings and TPM back as they were. The
+    /// current firmware settings and TPM state are kept beside the restore
+    /// point's copies until the restore has worked, then replaced.
+    /// `beforeRollback` runs once nothing can refuse any more, just before
+    /// the disk goes back (2026-10-29, sixth audit): Settings lets go of a
+    /// saved session there, not before checks that could still say no.
+    static func restore(_ point: RestorePoint, vmDirectory dir: URL, currentSecureBoot: Bool,
+                        beforeRollback: () async -> Void = {}) async throws {
+        guard point.secureBoot == currentSecureBoot else {
+            throw RestorePointError.secureBootMismatch(madeWithSecureBoot: point.secureBoot)
+        }
+        // ORDER (2026-10-26, code audit): this used to delete the live
+        // firmware settings and TPM, then copy the saved ones, after the
+        // disk was already rolled back; a failed copy (a full disk) left a
+        // rolled-back Windows with a new TPM, so BitLocker asked for its
+        // recovery key and Windows Hello PINs were gone. Now the saved
+        // copies are staged beside the live ones first; only once both are
+        // in hand is the disk rolled back and are they swapped in. A part
+        // the point has no copy of is left as it is.
+        let fm = FileManager.default
+        let folder = dir.appendingPathComponent(folderName).appendingPathComponent(point.tag)
+        var staged: [(live: URL, fresh: URL)] = []
+        do {
+            for name in ["nvram.fd", "tpm-state"] {
+                let saved = folder.appendingPathComponent(name)
+                guard fm.fileExists(atPath: saved.path) else { continue }
+                let fresh = dir.appendingPathComponent(".\(name).restoring")
+                try? fm.removeItem(at: fresh)
+                try fm.copyItem(at: saved, to: fresh)
+                staged.append((dir.appendingPathComponent(name), fresh))
+            }
+        } catch {
+            for item in staged { try? fm.removeItem(at: item.fresh) }
+            throw RestorePointError.tool("The restore point's firmware settings couldn't be copied, so nothing was changed: \(error.localizedDescription)")
+        }
+        await beforeRollback()
+        _ = try await qemuImg(["snapshot", "-a", point.tag, disk(dir).path])
+        // With memory (2026-10-27): the next Start loads it and carries on
+        // from that moment (QEMUSavedState.resumeTag). Without, any note
+        // left by an earlier restore goes.
+        let resume = dir.appendingPathComponent(QEMUSavedState.resumeFile)
+        if point.withMemory {
+            try point.tag.write(to: resume, atomically: true, encoding: .utf8)
+        } else {
+            try? fm.removeItem(at: resume)
+        }
+        for item in staged {
+            if fm.fileExists(atPath: item.live.path) {
+                _ = try fm.replaceItemAt(item.live, withItemAt: item.fresh)
+            } else {
+                try fm.moveItem(at: item.fresh, to: item.live)
+            }
+        }
+        AVMLog.write("AVM: RestorePoints — restored \(point.tag).")
+    }
+
+    /// The disk's size in gigabytes (GiB, as qemu-img's "G" makes them).
+    /// A restore point made before the disk grew puts the old size back.
+    static func diskSizeGB(vmDirectory dir: URL) async throws -> Int {
+        let output = try await qemuImg(["info", "--output=json", disk(dir).path])
+        let json = try JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any]
+        let bytes = (json?["virtual-size"] as? Double) ?? 0
+        return Int((bytes / 1_073_741_824).rounded())
+    }
+
+    static func delete(_ point: RestorePoint, vmDirectory dir: URL) async throws {
+        guard isOwnTag(point.tag) else { throw RestorePointError.tool("The restore point's name isn't one AVM made, so it wasn't deleted.") }
+        _ = try await qemuImg(["snapshot", "-d", point.tag, disk(dir).path])
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent(folderName).appendingPathComponent(point.tag))
+        AVMLog.write("AVM: RestorePoints — deleted \(point.tag).")
+    }
+
+    private static func disk(_ dir: URL) -> URL {
+        dir.appendingPathComponent("disk.qcow2")
+    }
+
+    /// Runs the bundled qemu-img off the main thread; stdout on success,
+    /// a spoken-ready error with qemu-img's own words on failure.
+    static func qemuImg(_ arguments: [String]) async throws -> String {
+        guard let tool = Bundle.main.resourceURL?.appendingPathComponent("qemu-img"),
+              FileManager.default.isExecutableFile(atPath: tool.path) else {
+            throw RestorePointError.tool("qemu-img is missing from AVM, so restore points can't be used.")
+        }
+        return try await Task.detached(priority: .userInitiated) { () throws -> String in
+            let process = Process()
+            process.executableURL = tool
+            process.arguments = arguments
+            let out = Pipe(), err = Pipe()
+            process.standardOutput = out
+            process.standardError = err
+            try process.run()
+            let outData = out.fileHandleForReading.readDataToEndOfFile()
+            let errData = err.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                let detail = String(decoding: errData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                throw RestorePointError.tool("qemu-img said: \(detail.isEmpty ? "exit \(process.terminationStatus)" : detail)")
+            }
+            return String(decoding: outData, as: UTF8.self)
+        }.value
     }
 }
