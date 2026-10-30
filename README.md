@@ -39,9 +39,12 @@ VO-Right and VO-Space), or with Command-1 to Command-5. Save Settings
 keeps the changes made in every category.
 
 The setup wizard downloads installers too: **Download Windows 11 for
-ARM…** follows the download on Microsoft's page, and **Download Linux…**
-gets Ubuntu Desktop, Debian or Fedora from its own server; each is
-checked against its published checksum and chosen as the installer.
+ARM…** gets Windows straight from Microsoft's servers, the way
+Microsoft's Media Creation Tool does, with no web page to use, and
+makes it into an installer (about 4.5 GB to download, 20 GB free while
+it works; **Use Microsoft's Page Instead** is still there). **Download
+Linux…** gets Ubuntu Desktop, Debian or Fedora from its own server. Each
+is checked against its published checksum and chosen as the installer.
 
 After an update, **What's New in AVM** says what changed; it's in the
 Help menu too.

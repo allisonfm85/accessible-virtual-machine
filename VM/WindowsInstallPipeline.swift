@@ -1577,36 +1577,62 @@ nonisolated final class WindowsInstallPipeline {
         }
 
         // --- 1. Parse el-torito off the ORIGINAL ISO. ---
-        let reportResult = await runTool(xorriso, [
+        var reportResult = await runTool(xorriso, [
             "-indev", input.sourceISOPath,
             "-report_el_torito", "plain"
         ])
-        guard reportResult.code == 0 else {
-            throw PipelineError.stageFailed(
-                stage: .rebuildISO,
-                reason: "Couldn't read the boot information from the Windows ISO — it may not be a bootable installer. (xorriso exit \(reportResult.code))"
-            )
+        // An ISO AVM made from Microsoft's .esd (2026-10-30,
+        // WindowsAutoDownload.swift): hdiutil wrote it, UDF with an ISO 9660
+        // part libisofs can't load ("Damaged RR/SUSP information"), so the
+        // tree is read as best it can be, for the boot record alone (exit 32,
+        // a warning, with the report printed).
+        if reportResult.code != 0 {
+            let lenient = await runTool(xorriso, [
+                "-abort_on", "NEVER", "-error_behavior", "image_loading", "best_effort",
+                "-indev", input.sourceISOPath,
+                "-report_el_torito", "plain"
+            ])
+            if parseElTorito(lenient.output) != nil { reportResult = lenient }
         }
         guard let elTorito = parseElTorito(reportResult.output) else {
             throw PipelineError.stageFailed(
                 stage: .rebuildISO,
-                reason: "The Windows ISO's boot information couldn't be understood. It may not be a standard Windows installer ISO."
+                reason: reportResult.code == 0
+                    ? "The Windows ISO's boot information couldn't be understood. It may not be a standard Windows installer ISO."
+                    : "Couldn't read the boot information from the Windows ISO — it may not be a bootable installer. (xorriso exit \(reportResult.code))"
             )
         }
+        pipelineLog("stageRebuildISO: source el-torito — Ldsiz \(elTorito.ldsiz), LBA \(elTorito.lba), volid \(elTorito.volumeID)")
+        let efibootURL = scratch.appendingPathComponent("efiboot.img")
+        try? FileManager.default.removeItem(at: efibootURL)
+
+        // The boot image Microsoft ships beside the files (2026-10-30): the
+        // same one its ISOs boot, efi/microsoft/boot/efisys.bin (1,720,320
+        // bytes, as the reference ISO's Ldsiz 3360 is). Taken from the tree
+        // only when the boot record doesn't describe it: hdiutil's records
+        // it as BIOS, 4 sectors (Ldsiz 4), and dd would cut 2 KB of it.
+        // Microsoft's own ISOs, which do, keep the dd path below.
+        let treeEFI = tree.appendingPathComponent("efi/microsoft/boot/efisys.bin")
+        let treeEFISize = (try? FileManager.default.attributesOfItem(atPath: treeEFI.path)[.size] as? Int) ?? 0
+        if treeEFISize > 0, elTorito.ldsiz * 512 != treeEFISize {
+            do {
+                try FileManager.default.copyItem(at: treeEFI, to: efibootURL)
+            } catch {
+                throw PipelineError.stageFailed(stage: .rebuildISO, reason: "Couldn't take the installer's boot image. \(error.localizedDescription)")
+            }
+            pipelineLog("stageRebuildISO: efiboot.img from the tree's efisys.bin — \(treeEFISize) bytes (the boot record said Ldsiz \(elTorito.ldsiz))")
+        } else {
         guard elTorito.ldsiz > 0 else {
             throw PipelineError.stageFailed(
                 stage: .rebuildISO,
                 reason: "The Windows ISO's boot image has an unusual layout AVM can't rebuild. It may not be a standard Windows installer ISO."
             )
         }
-        pipelineLog("stageRebuildISO: source el-torito — Ldsiz \(elTorito.ldsiz), LBA \(elTorito.lba), volid \(elTorito.volumeID)")
 
         // --- 2. dd-extract the EFI boot image at the computed offsets. ---
         // Units are MIXED: LBA in 2048-byte sectors, Ldsiz in 512-byte blocks.
         let skip = elTorito.lba * 2048 / 512
         let expectedBytes = elTorito.ldsiz * 512
-        let efibootURL = scratch.appendingPathComponent("efiboot.img")
-        try? FileManager.default.removeItem(at: efibootURL)
 
         let ddResult = await runTool(dd, [
             "if=\(input.sourceISOPath)",
@@ -1633,6 +1659,7 @@ nonisolated final class WindowsInstallPipeline {
             )
         }
         pipelineLog("stageRebuildISO: extracted efiboot.img — \(expectedBytes) bytes, verified exact")
+        }
 
         // --- 3. Rebuild with the appended-partition method + Joliet (proven
         // invocation; -J -joliet-long carry $WinPEDriver$ verbatim in the Joliet

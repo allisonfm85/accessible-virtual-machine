@@ -112,6 +112,8 @@ struct SetupView: View {
     /// The Windows download, watched for as long as the wizard is open,
     /// with or without its window (2026-10-27).
     @StateObject private var isoDownloader = WindowsISODownloader()
+    /// Windows with no web page (2026-10-30, WindowsAutoDownload.swift).
+    @StateObject private var windowsAutoDownloader = WindowsAutoDownloader()
     /// Linux, downloaded by AVM itself (2026-10-30, LinuxISODownload.swift).
     @State private var showingLinuxDownload = false
     @StateObject private var linuxDownloader = LinuxISODownloader()
@@ -307,7 +309,7 @@ struct SetupView: View {
                         Button("Download Windows 11 for ARM…") {
                             showingISODownload = true
                         }
-                        .accessibilityHint("Opens Microsoft's download page, then tells you how the download is going and picks the file for you")
+                        .accessibilityHint("Gets Windows 11 from Microsoft's servers, with no web page, makes the installer and picks it for you")
 
                         // 2026-10-30: Ubuntu, Debian or Fedora, by AVM.
                         Button("Download Linux…") {
@@ -381,7 +383,7 @@ struct SetupView: View {
             LinuxDownloadView(downloader: linuxDownloader)
         }
         .sheet(isPresented: $showingISODownload) {
-            ISODownloadView(assistant: isoDownloader) { url in
+            ISODownloadView(assistant: isoDownloader, automatic: windowsAutoDownloader) { url in
                 installerURL = url
                 identifyInstaller(url)
             }
@@ -396,10 +398,15 @@ struct SetupView: View {
                 installerURL = url
                 identifyInstaller(url)
             }
+            windowsAutoDownloader.onReady = { url in
+                installerURL = url
+                identifyInstaller(url)
+            }
         }
         .onDisappear {
             isoDownloader.stop()
             linuxDownloader.cancel()
+            windowsAutoDownloader.cancel()
         }
         .fileImporter(
             isPresented: $showingFilePicker,
