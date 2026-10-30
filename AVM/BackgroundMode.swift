@@ -229,6 +229,22 @@ final class BackgroundMode: ObservableObject {
     func autoStartFromLaunch() {
         guard !autoStarted, let store = VMStore.shared else { return }
         AVMLog.write("AVM: the dashboard hasn't appeared; starting the chosen machine from launch")
+        // The list too, under the machine's window (2026-10-30, a tester at
+        // login): with only the machine's window, Command-Tab to AVM showed
+        // Stop and Pause and nothing else, no other machine and no
+        // settings. Opened before the start, so the machine's window comes
+        // up over it; autoStartIfChosen below runs first, so the list's own
+        // onAppear doesn't start the machine twice.
+        if autoStartID != nil, !MainWindowCloseGuard.hasMainWindow {
+            if let open = MainWindowCloseGuard.openMainWindow {
+                open()
+            } else {
+                let configuration = NSWorkspace.OpenConfiguration()
+                configuration.activates = false
+                NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in }
+            }
+            AVMLog.write("AVM: opening the list of machines behind the machine")
+        }
         autoStartIfChosen(in: store.configurations) { config, takesKeyboard in
             if MachineArchiveController.shared.refusesWhileBusy(config) { return }
             if config.guestOS == .macOS {
