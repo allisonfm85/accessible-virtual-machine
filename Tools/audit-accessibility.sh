@@ -53,8 +53,22 @@ mkdir -p "$OUT"
 # bash 3.2 with set -u.
 # An old report never stands in for this run's (2026-10-26, code audit).
 rm -f "$OUT/accessibility-report.txt" "$OUT/accessibility-tree.txt"
+
+# A copy with its own bundle identifier (2026-10-30): while AVM runs,
+# macOS's loginwindow sends a second process with AVM's identifier SIGTERM
+# after about 30 seconds, and a full audit takes longer, so it ended at
+# its last screen with no report (exit 143). The copy is a clone, so it
+# takes no time or space, signed for this Mac; its settings are its own
+# too, apart from AVM's.
+COPY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/avm-audit-app-XXXXXX")"
+trap 'rm -rf "$COPY_DIR"' EXIT
+AUDIT_APP="$COPY_DIR/AVM.app"
+cp -cR "$APP" "$AUDIT_APP" 2>/dev/null || cp -R "$APP" "$AUDIT_APP"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.alllisonmeloy.AVM.audit" "$AUDIT_APP/Contents/Info.plist"
+codesign --force --deep --sign - "$AUDIT_APP" >/dev/null 2>&1 || fail "Couldn't sign the audit's copy of AVM." "Check that $APP is a complete AVM build."
+
 set +e
-"$APP/Contents/MacOS/AVM" --audit-accessibility --out "$OUT" ${EXTRA[@]+"${EXTRA[@]}"} 2>"$OUT/audit-stderr.txt"
+"$AUDIT_APP/Contents/MacOS/AVM" --audit-accessibility --out "$OUT" ${EXTRA[@]+"${EXTRA[@]}"} 2>"$OUT/audit-stderr.txt"
 RESULT=$?
 set -e
 
