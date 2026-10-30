@@ -497,7 +497,10 @@ nonisolated final class WindowsInstallPipeline {
         ("virtio/vioserial", "vioser.inf", "vioser.inf"),
         ("virtio/vioserial", "vioser.cat", "vioser.cat"),
         ("virtio/vioserial", "vioser.sys", "vioser.sys"),
-        ("vdagent", "spice-vdagent-x64-0.10.0.msi", "VDAGENT.MSI")
+        ("vdagent", "spice-vdagent-x64-0.10.0.msi", "VDAGENT.MSI"),
+        // The installers' time limit (2026-10-30): specialize runs every
+        // installer through it, so a hung msiexec can't stop Setup.
+        ("vdagent", "AVMRUN.PS1", "AVMRUN.PS1")
     ]
 
     init(onProgress: (@MainActor (PipelineProgress) -> Void)? = nil) {
