@@ -52,6 +52,9 @@ enum MacTestJob {
         }
         let bootMinutes = Double(value("--boot-minutes") ?? "8") ?? 8
         let reuse = arguments.contains("--reuse")
+        // --auto-setup (2026-10-30): Setup Assistant done by MacAutoSetup,
+        // so the save and resume run on a set-up Mac.
+        let autoSetup = arguments.contains("--auto-setup")
         final class Outcome { var code: Int32? }
         let outcome = Outcome()
         guard #available(macOS 14.0, *) else {
@@ -60,7 +63,7 @@ enum MacTestJob {
         }
         Task { @MainActor in
             do {
-                try await run(ipsw: URL(fileURLWithPath: ipsw), folder: URL(fileURLWithPath: out, isDirectory: true), bootMinutes: bootMinutes, reuse: reuse)
+                try await run(ipsw: URL(fileURLWithPath: ipsw), folder: URL(fileURLWithPath: out, isDirectory: true), bootMinutes: bootMinutes, reuse: reuse, autoSetup: autoSetup)
                 print("PASSED")
                 outcome.code = 0
             } catch {
@@ -103,7 +106,7 @@ enum MacTestJob {
     }
 
     @available(macOS 14.0, *)
-    private static func run(ipsw: URL, folder: URL, bootMinutes: Double, reuse: Bool) async throws {
+    private static func run(ipsw: URL, folder: URL, bootMinutes: Double, reuse: Bool, autoSetup: Bool = false) async throws {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         var config = VMConfiguration(name: "macOS test", cpuCount: 4, ramSizeGB: 8, diskSizeGB: 64,
                                      guestOSName: GuestOS.macOS.rawValue)
@@ -112,6 +115,12 @@ enum MacTestJob {
 
         if reuse && files.isInstalled {
             step("Using the machine already installed in \(folder.lastPathComponent)")
+            // From the start of Setup Assistant again (2026-10-30): a kept
+            // machine stopped part-way through it.
+            if autoSetup, let fresh = MacRestorePoints.list(files).first(where: { $0.name.hasPrefix("Fresh install") }) {
+                try MacRestorePoints.restore(fresh, into: files)
+                print("   put back to \"\(fresh.name)\" first")
+            }
         } else {
             step("Installing macOS from \(ipsw.lastPathComponent)")
             let installer = MacInstaller()
@@ -147,9 +156,19 @@ enum MacTestJob {
         try await waitForLease(mac: mac, minutes: bootMinutes)
         print("   yes  macOS is up (it asked for a network address)")
 
-        print("   (letting Setup Assistant settle for 3 minutes)")
-        fflush(stdout)
-        try await Task.sleep(nanoseconds: 180_000_000_000)
+        if autoSetup {
+            step("Setting macOS up automatically, as \"Set up macOS for me\" does")
+            let answers = MacSetupAnswers(fullName: "AVM Test", accountName: "avmtest", password: "avm-test-1", voiceOver: true)
+            try MacAutoSetup.save(answers, files: files)
+            let done = await MacAutoSetup.run(machine: machine, files: files, answers: answers) { print("   \($0)"); fflush(stdout) }
+            guard done else { throw MacGuestError("Automatic setup didn't reach the desktop.") }
+            print("   yes  set up, at the desktop, VoiceOver turned on")
+            try await Task.sleep(nanoseconds: 20_000_000_000)
+        } else {
+            print("   (letting Setup Assistant settle for 3 minutes)")
+            fflush(stdout)
+            try await Task.sleep(nanoseconds: 180_000_000_000)
+        }
 
         step("Saving it while it runs, as Save and Quit does")
         try await pause(machine)
@@ -197,13 +216,12 @@ enum MacTestJob {
         machine = VZVirtualMachine(configuration: try MacGuestConfiguration.make(config, files: files))
         do {
             try await restore(machine, from: files.savedState)
-        } catch where error.localizedDescription.localizedCaseInsensitiveContains("permission denied") {
-            // Setup Assistant's limit, not a failure (2026-10-30, the full
-            // system test on macOS 27.2): this machine never gets past Setup
-            // Assistant, and there the framework refuses to resume, "permission
-            // denied" every time, for a minute of tries. Save and Quit on a
-            // machine that's been set up is checked by hand.
-            print("   note: macOS refuses to resume a machine still in Setup Assistant (permission denied); not checkable here")
+        } catch where error.localizedDescription.localizedCaseInsensitiveContains("permission denied") && !autoSetup {
+            // Without --auto-setup, a note: the machine is still in Setup
+            // Assistant. But with it (2026-10-30, twelfth run), past Setup
+            // Assistant and signed in, the resume was refused the same way,
+            // so Setup Assistant isn't the cause, and there it's a failure.
+            print("   note: macOS refused to resume (permission denied); run with --auto-setup to count it")
             try? FileManager.default.removeItem(at: files.savedState)
             machine = nil
         }

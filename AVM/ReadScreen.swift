@@ -31,6 +31,21 @@ extension VMManager {
     nonisolated static func recognizeText(inPicture url: URL) -> String? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        return ScreenText.lines(in: image)?.map(\.text).joined(separator: "\n")
+    }
+}
+
+/// Lines of text in a picture, with where each is (2026-10-30): Read Screen
+/// says them, and automatic macOS setup clicks the buttons it finds.
+nonisolated enum ScreenText {
+    struct Line {
+        let text: String
+        /// In the picture's own pixels, origin at the top left.
+        let frame: CGRect
+    }
+
+    /// Top to bottom, left to right; nil when recognition failed.
+    static func lines(in image: CGImage) -> [Line]? {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
@@ -46,6 +61,11 @@ extension VMManager {
             if abs(a.boundingBox.midY - b.boundingBox.midY) > 0.015 { return a.boundingBox.midY > b.boundingBox.midY }
             return a.boundingBox.minX < b.boundingBox.minX
         }
-        return sorted.compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+        let w = CGFloat(image.width), h = CGFloat(image.height)
+        return sorted.compactMap { observation in
+            guard let text = observation.topCandidates(1).first?.string else { return nil }
+            let box = observation.boundingBox
+            return Line(text: text, frame: CGRect(x: box.minX * w, y: (1 - box.maxY) * h, width: box.width * w, height: box.height * h))
+        }
     }
 }

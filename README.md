@@ -65,6 +65,18 @@ keyboard once. **Report a Problem…** in the Help menu can email the whole
 diagnostic log, and **Remove AVM…** in the AVM menu removes AVM, its USB
 helper and login item, and, if you choose, its machines, all to the Trash.
 
+**AVM > Permissions…** lists everything macOS has to allow for AVM (the
+USB helper, Input Monitoring, VoiceOver control, the microphone, the
+camera and the local network), what each is for, whether it's allowed,
+and a button to allow it. It opens by itself only when AVM opens and
+something your setup needs isn't allowed.
+
+**New macOS Virtual Machine** can set macOS up for you: with **Set up
+macOS for me**, your full name and a password, the first start goes
+through Setup Assistant by itself (no Apple Account, Siri, Screen Time or
+location; all can be turned on later), signs in and turns on VoiceOver.
+If a screen stops it, AVM reads that screen aloud so you can finish.
+
 When AVM opens at login to start a machine, only that machine shows: AVM
 stays out of Command-Tab, and its list stays hidden, until you open AVM
 from Applications, the Dock or Spotlight.

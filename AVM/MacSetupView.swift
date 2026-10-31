@@ -25,6 +25,11 @@ struct MacSetupView: View {
     @State private var useIPSW = false
     @State private var progress: String?
     @State private var working = false
+    // Set up macOS for me (2026-10-30, MacAutoSetup.swift).
+    @State private var autoSetup = MacAutoSetup.isAvailable
+    @State private var fullName = NSFullUserName()
+    @State private var password = ""
+    @State private var voiceOver = true
     @FocusState private var nameFocused: Bool
 
     private let maxCores = max(2, ProcessInfo.processInfo.processorCount / 2)
@@ -79,6 +84,24 @@ struct MacSetupView: View {
                     HStack {
                         Button("Choose IPSW File…") { chooseIPSW() }
                         Text(ipsw?.lastPathComponent ?? "No file chosen")
+                    }
+                }
+
+                if MacAutoSetup.isAvailable {
+                    Toggle("Set up macOS for me", isOn: $autoSetup)
+                        .accessibilityHint("AVM goes through Setup Assistant at the first start, makes your account and signs in, with no screens to get through")
+                    if autoSetup {
+                        TextField("Your full name", text: $fullName)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityLabel("Your full name")
+                        SecureField("Password for the macOS account", text: $password)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityLabel("Password for the macOS account")
+                        Toggle("Turn on VoiceOver in macOS", isOn: $voiceOver)
+                        Text("Account name: \(MacSetupAnswers.accountName(for: fullName)). AVM skips the optional steps: no Apple Account, Siri, Screen Time or location; you can turn any of them on later in System Settings. The password is kept in the machine's folder, readable only by you, until setup ends.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 
@@ -150,6 +173,12 @@ struct MacSetupView: View {
             Announcer.shared.announce("There isn't room on this Mac: \(downloadGB > 0 ? "the macOS download needs about \(downloadGB) gigabytes and " : "")the disk can grow to \(diskSizeGB), with 20 to spare, and \(freeGB) gigabytes are free. Free some space, or choose a smaller disk.", tone: .failure)
             return
         }
+        if autoSetup {
+            guard !fullName.trimmingCharacters(in: .whitespaces).isEmpty, password.count >= 4 else {
+                Announcer.shared.announce("To set macOS up for you, AVM needs your full name and a password of at least 4 characters. Or turn off Set up macOS for me.", tone: .info)
+                return
+            }
+        }
         ramSizeGB = min(ramSizeGB, maxMemoryGB)
         let id = UUID()
         var config = VMConfiguration(id: id, name: trimmed, cpuCount: cpuCount, ramSizeGB: ramSizeGB,
@@ -170,6 +199,12 @@ struct MacSetupView: View {
         Task { @MainActor in
             do {
                 try await installer.install(config, ipsw: useIPSW ? ipsw : nil)
+                if autoSetup {
+                    let name = fullName.trimmingCharacters(in: .whitespaces)
+                    try MacAutoSetup.save(MacSetupAnswers(fullName: name, accountName: MacSetupAnswers.accountName(for: name),
+                                                          password: password, voiceOver: voiceOver),
+                                          files: MacGuestFiles(folder: folder))
+                }
                 vmStore.save(config)
                 Announcer.shared.announce("\(trimmed) is ready. Choose Start on the dashboard; macOS's Setup Assistant runs first.", tone: .success)
                 working = false

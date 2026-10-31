@@ -468,7 +468,24 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
                 AVMLog.write("AVM: MacGuest — \(config.name) started.")
                 Announcer.shared.announce("\(config.name) is running.", tone: .success)
                 self.enterIfWanted()
-                self.offerVoiceOverOnce(config)
+                // Set up for the user when chosen (2026-10-30,
+                // MacAutoSetup.swift): Setup Assistant gone through, and
+                // VoiceOver turned on there, instead of asking for it.
+                if let folder = try? config.directoryURL(),
+                   case let files = MacGuestFiles(folder: folder),
+                   let answers = MacAutoSetup.answers(in: files) {
+                    if var updated = VMStore.shared?.configurations.first(where: { $0.id == config.id }) {
+                        updated.macVoiceOverOffered = true
+                        VMStore.shared?.save(updated)
+                    }
+                    Task { @MainActor in
+                        _ = await MacAutoSetup.run(machine: machine, files: files, answers: answers) {
+                            Announcer.shared.announce($0, tone: .info)
+                        }
+                    }
+                } else {
+                    self.offerVoiceOverOnce(config)
+                }
             case .failure(let error):
                 self.ended(spoken: "\(config.name) could not start. Reason: \(error.localizedDescription)", tone: .failure)
             }
