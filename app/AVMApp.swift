@@ -120,6 +120,9 @@ struct AVMApp: App {
                     updater.checkForUpdates()
                 }
                 .disabled(!updater.canCheckForUpdates)
+                // Remove AVM… (2026-10-30, RemoveAVM.swift): the helper and
+                // login item with it, which dragging to the Trash leaves.
+                Button("Remove AVM…") { RemoveAVM.ask() }
             }
 
             // Save Diagnostic Log… (File menu) — STAGE D (2026-08-06). The
