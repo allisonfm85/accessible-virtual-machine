@@ -2696,7 +2696,11 @@ final class VMManager: ObservableObject {
         // (2026-10-28, SoundSmoothness): 2.5 ms x 2 crackled in Windows on
         // a tester's Mac, so balanced, 5 ms x 3, is the default.
         let output = configuration.soundSmoothness.buffer
-        args += ["-audiodev", "coreaudio,id=avmaudio,out.frequency=48000,out.buffer-length=\(output.microseconds),out.buffer-count=\(output.count),timer-period=1250,\(microphone)"]
+        // Its own output device when chosen (2026-10-30, out.dev in AVM's
+        // coreaudio patch); QEMU falls back to the default output when
+        // that device isn't connected.
+        let outputDevice = configuration.soundOutputUID.map { ",out.dev=\(SoundOutputDevices.qemuValue($0))" } ?? ""
+        args += ["-audiodev", "coreaudio,id=avmaudio,out.frequency=48000,out.buffer-length=\(output.microseconds),out.buffer-count=\(output.count),timer-period=1250,\(microphone)\(outputDevice)"]
         avmLog("buildQEMUArguments: sound \(configuration.soundSmoothness.rawValue), \(output.microseconds) us x \(output.count)")
         args += ["-device", "intel-hda"]
         args += ["-device", "hda-duplex,audiodev=avmaudio,use-timer=off"]

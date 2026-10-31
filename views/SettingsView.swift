@@ -154,6 +154,9 @@ struct SettingsView: View {
     @State private var shareClipboard = true
     @State private var shareMicrophone = false
     @State private var soundSmoothness: SoundSmoothness = .balanced
+    @State private var soundOutputUID: String?
+    @State private var soundOutputName: String?
+    @State private var soundOutputs: [SoundOutputDevices.Device] = []
     @State private var isTemplate = false
     @State private var noWindow = false
     @State private var sharePrinters = false
@@ -416,6 +419,25 @@ struct SettingsView: View {
             }
             .choicePopUp("Chooses between hearing speech from \(guest) sooner and sound that doesn't crackle when your Mac is busy")
             Text("If sound or speech from \(guest) crackles, choose Smoothest. Fastest gets speech to you about 40 milliseconds sooner, but can crackle while your Mac is busy. Takes effect at the next Start.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            // Sound Output (2026-10-30, SoundOutputDevices.swift).
+            Picker("Sound Output", selection: $soundOutputUID) {
+                Text("Same as the Mac").tag(String?.none)
+                ForEach(soundOutputs) { device in
+                    Text(device.name).tag(Optional(device.uid))
+                }
+                if let uid = soundOutputUID, !soundOutputs.contains(where: { $0.uid == uid }) {
+                    Text("\(soundOutputName ?? "Chosen output") (not connected now)").tag(Optional(uid))
+                }
+            }
+            .choicePopUp("Chooses where sound from \(guest) plays: the same output as the Mac, or one of its own, such as headphones")
+            .onChange(of: soundOutputUID) { uid in
+                if let uid, let device = soundOutputs.first(where: { $0.uid == uid }) { soundOutputName = device.name }
+            }
+            .onAppear { soundOutputs = SoundOutputDevices.list() }
+            Text("To keep \(guest)'s screen reader apart from VoiceOver, play \(guest) through its own output, headphones say, and leave the Mac's on the speakers. When the chosen output isn't connected, \(guest) plays through the Mac's. Takes effect at the next Start.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1260,6 +1282,8 @@ struct SettingsView: View {
         shareClipboard = saved.sharesClipboard
         shareMicrophone = saved.sharesMicrophone
         soundSmoothness = saved.soundSmoothness
+        soundOutputUID = saved.soundOutputUID
+        soundOutputName = saved.soundOutputName
         isTemplate = saved.isATemplate
         noWindow = saved.startsWithoutWindow
         sharePrinters = saved.sharesPrinters
@@ -1472,6 +1496,8 @@ struct SettingsView: View {
             updated.shareClipboard = shareClipboard ? nil : false
             updated.shareMicrophone = shareMicrophone ? true : nil
             updated.soundBuffer = soundSmoothness == .balanced ? nil : soundSmoothness.rawValue
+            updated.soundOutputUID = soundOutputUID
+            updated.soundOutputName = soundOutputUID == nil ? nil : soundOutputName
             updated.isTemplate = isTemplate ? true : nil
             updated.noWindow = noWindow ? true : nil
             updated.sharePrinters = sharePrinters ? true : nil

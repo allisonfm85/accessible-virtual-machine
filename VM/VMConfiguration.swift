@@ -120,6 +120,12 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// through soundSmoothness.
     var soundBuffer: String?
 
+    /// The Mac output this machine plays through (2026-10-30,
+    /// SoundOutputDevices.swift), by its Core Audio unique ID, and its name
+    /// for Settings while it isn't connected; nil: the Mac's default output.
+    var soundOutputUID: String?
+    var soundOutputName: String?
+
     // MARK: - Remote Desktop (2026-10-28, RemoteDesktop.swift)
 
     /// The account the Windows App signs in with; nil: Remote Desktop off.
