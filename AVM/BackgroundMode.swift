@@ -46,6 +46,12 @@ final class BackgroundMode: ObservableObject {
     }
     /// True while AVM is out of Command-Tab and the Dock.
     @Published private(set) var inBackground = false
+    /// Opened at login to start a machine, and not opened by the user yet
+    /// (2026-10-30, the user's request: at startup only the machine, not
+    /// AVM's window or AVM in Command-Tab, until the user opens AVM from
+    /// Applications or the Dock). The machine still comes forward and takes
+    /// the keyboard; AVM itself stays out of sight. See startQuietly().
+    @Published private(set) var quietUntilOpened = false
     /// Open at login, as macOS has it (it can be turned off in System
     /// Settings, so it is read from there, not stored here).
     @Published private(set) var opensAtLogin = false
@@ -128,6 +134,13 @@ final class BackgroundMode: ObservableObject {
     /// Back in Command-Tab and the Dock, in front: from the menu bar item,
     /// opening AVM again, or turning the setting off.
     func comeForward(announce: Bool = true, openingDashboard: Bool = true) {
+        // Quiet since login: in front for the machine, but still out of
+        // Command-Tab and with no list, until the user opens AVM
+        // (openedByUser).
+        if quietUntilOpened {
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
         let wasBackground = inBackground
         inBackground = false
         NSApp.setActivationPolicy(.regular)
@@ -148,6 +161,30 @@ final class BackgroundMode: ObservableObject {
             NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: NSWorkspace.OpenConfiguration()) { _, _ in }
         }
         if wasBackground { AVMLog.write("AVM: out of the background") }
+    }
+
+    // MARK: Quiet at login
+
+    /// Opened at login with a machine chosen to start (AVMAppDelegate, at
+    /// will-finish-launching, before any window): out of Command-Tab and
+    /// the Dock from the first moment, so nothing flashes up.
+    func startQuietly(because reason: String) {
+        guard autoStartID != nil else { return }
+        quietUntilOpened = true
+        NSApp.setActivationPolicy(.accessory)
+        AVMLog.write("AVM: opened at login (\(reason)) to start a machine; AVM stays out of sight until it's opened")
+    }
+
+    /// The user opened AVM (Applications, the Dock, Spotlight, its menu
+    /// bar item): AVM as usual from here on, with its list.
+    func openedByUser() {
+        if quietUntilOpened {
+            quietUntilOpened = false
+            AVMLog.write("AVM: opened by the user; in Command-Tab with its list from now on")
+            comeForward()
+        } else if inBackground {
+            comeForward()
+        }
     }
 
     /// Whether comeForward can show a dashboard (2026-10-28, fifth audit):
@@ -231,11 +268,11 @@ final class BackgroundMode: ObservableObject {
         AVMLog.write("AVM: the dashboard hasn't appeared; starting the chosen machine from launch")
         // The list too, under the machine's window (2026-10-30, a tester at
         // login): with only the machine's window, Command-Tab to AVM showed
-        // Stop and Pause and nothing else, no other machine and no
-        // settings. Opened before the start, so the machine's window comes
-        // up over it; autoStartIfChosen below runs first, so the list's own
-        // onAppear doesn't start the machine twice.
-        if autoStartID != nil, !MainWindowCloseGuard.hasMainWindow {
+        // Stop and Pause and nothing else. Not while quiet since login
+        // (later the same day, the user's request): the list waits until
+        // the user opens AVM. autoStartIfChosen below runs first, so the
+        // list's own onAppear doesn't start the machine twice.
+        if autoStartID != nil, !quietUntilOpened, !MainWindowCloseGuard.hasMainWindow {
             if let open = MainWindowCloseGuard.openMainWindow {
                 open()
             } else {
@@ -321,7 +358,7 @@ struct BackgroundMenu: View {
     @ObservedObject private var machines = MachineSessions.shared
 
     var body: some View {
-        Button("Show AVM") { background.comeForward() }
+        Button("Show AVM") { background.openedByUser() }
         let running = machines.sessions.values
             .filter { $0.vmState == .running || $0.vmState == .paused }
             .sorted { $0.configuration.name.localizedStandardCompare($1.configuration.name) == .orderedAscending }

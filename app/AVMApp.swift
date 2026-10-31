@@ -712,9 +712,34 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
     /// background: it comes forward (BackgroundMode).
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         MainActor.assumeIsolated {
-            if BackgroundMode.shared.inBackground { BackgroundMode.shared.comeForward() }
+            // Or quiet since login (2026-10-30): the user's first opening
+            // brings AVM and its list.
+            BackgroundMode.shared.openedByUser()
         }
         return true
+    }
+
+    /// Opened at login to start a machine (2026-10-30): AVM stays out of
+    /// sight until the user opens it (BackgroundMode.startQuietly). macOS
+    /// marks a login item's launch with keyAELaunchedAsLogInItem; a Mac
+    /// started in the last few minutes counts too, in case a login item
+    /// launch doesn't carry the mark.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            guard !CommandLine.arguments.dropFirst().contains(where: { $0.hasPrefix("--") }) else { return }
+            let event = NSAppleEventManager.shared().currentAppleEvent
+            let loginItem = event?.eventID == kAEOpenApplication
+                && event?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
+            if loginItem {
+                BackgroundMode.shared.startQuietly(because: "as a login item")
+            } else if ProcessInfo.processInfo.systemUptime < 300, BackgroundMode.shared.opensAtLogin {
+                // Only with Open at Login on, so opening AVM by hand just
+                // after the Mac starts, without it, still shows AVM.
+                BackgroundMode.shared.startQuietly(because: "within five minutes of the Mac starting, with Open at Login on")
+            } else {
+                AVMLog.write("AVM: launch event \(event.map { "\($0.eventID)" } ?? "none"), not a login item")
+            }
+        }
     }
 
     /// Quitting with a VM running (2026-10-25). See QuitCoordinator.
@@ -842,6 +867,11 @@ final class MainWindowCloseGuard: NSObject, NSWindowDelegate {
 
     func install(on window: NSWindow) {
         mainWindow = window
+        // Out of sight while AVM is quiet since login (2026-10-30): kept,
+        // not closed, so the user's first opening shows it.
+        if BackgroundMode.shared.quietUntilOpened {
+            window.orderOut(nil)
+        }
         guard window.delegate !== self else { return }
         original = window.delegate
         window.delegate = self

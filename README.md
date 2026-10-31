@@ -65,6 +65,10 @@ keyboard once. **Report a Problem…** in the Help menu can email the whole
 diagnostic log, and **Remove AVM…** in the AVM menu removes AVM, its USB
 helper and login item, and, if you choose, its machines, all to the Trash.
 
+When AVM opens at login to start a machine, only that machine shows: AVM
+stays out of Command-Tab, and its list stays hidden, until you open AVM
+from Applications, the Dock or Spotlight.
+
 The setup wizard downloads installers too: **Download Windows 11 for
 ARM…** gets Windows straight from Microsoft's servers, the way
 Microsoft's Media Creation Tool does, with no web page to use, and
