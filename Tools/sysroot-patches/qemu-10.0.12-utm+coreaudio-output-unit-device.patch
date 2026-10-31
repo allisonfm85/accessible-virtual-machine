@@ -1,0 +1,130 @@
+AVM: play a machine through a chosen output device (out.dev)
+
+The coreaudio backend always played through the system's default output.
+A blind user who wants Windows' screen reader in headphones while the
+Mac's VoiceOver stays on the speakers (or the other way round) had no way
+to split them (2026-10-30). This adds out.dev, the output device's unique
+ID (as Core Audio's kAudioDevicePropertyDeviceUID gives it): playback goes
+through a HAL output unit set to that device, with the same buffer sizing
+and refit as the default output unit. A device that isn't connected when
+the machine starts falls back to the default output with a warning, so the
+machine is never silent. Without out.dev nothing changes.
+
+Applies after qemu-10.0.12-utm+coreaudio-output-unit-and-microphone.patch.
+
+--- a/qapi/audio.json
++++ b/qapi/audio.json
+@@ -155,13 +155,17 @@
+ # and recording.
+ #
+ # @buffer-count: number of buffers
++#
++# @dev: the unique ID of the device to use, instead of the system's
++#     default (since 10.0, AVM)
+ #
+ # Since: 4.0
+ ##
+ { 'struct': 'AudiodevCoreaudioPerDirectionOptions',
+   'base': 'AudiodevPerDirectionOptions',
+   'data': {
+-    '*buffer-count': 'uint32' } }
++    '*buffer-count': 'uint32',
++    '*dev': 'str' } }
+ 
+ ##
+ # @AudiodevCoreaudioOptions:
+--- a/audio/coreaudio.m
++++ b/audio/coreaudio.m
+@@ -389,6 +389,33 @@
+     core->unit = NULL;
+ }
+ 
++/*
++ * The output device named by its unique ID (AVM, 2026-10-30): out.dev
++ * plays a machine through a chosen device, headphones say, while VoiceOver
++ * stays on the Mac's default output. kAudioObjectUnknown when no device
++ * has that ID now.
++ */
++static AudioDeviceID coreaudio_device_for_uid(const char *uid)
++{
++    AudioObjectPropertyAddress address = {
++        kAudioHardwarePropertyTranslateUIDToDevice,
++        kAudioObjectPropertyScopeGlobal,
++        kAudioObjectPropertyElementMain
++    };
++    AudioDeviceID device = kAudioObjectUnknown;
++    UInt32 size = sizeof(device);
++    CFStringRef cfuid = CFStringCreateWithCString(NULL, uid, kCFStringEncodingUTF8);
++
++    if (cfuid) {
++        if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &address,
++                                       sizeof(cfuid), &cfuid, &size, &device) != noErr) {
++            device = kAudioObjectUnknown;
++        }
++        CFRelease(cfuid);
++    }
++    return device;
++}
++
+ static int coreaudio_init_out(HWVoiceOut *hw, struct audsettings *as,
+                               void *drv_opaque)
+ {
+@@ -428,16 +455,49 @@
+ 
+     core->bufferCount = cpdo->has_buffer_count ? cpdo->buffer_count : 4;
+ 
+-    component = AudioComponentFindNext(NULL, &description);
+-    if (!component) {
+-        dolog("Could not initialize playback - no default output unit\n");
+-        goto fail;
++    /*
++     * A chosen device (out.dev, AVM 2026-10-30) through a HAL output unit
++     * set to it; the default output unit otherwise, or when that device
++     * isn't connected now, so the machine is never silent for it.
++     */
++    core->unit = NULL;
++    if (cpdo->dev && cpdo->dev[0]) {
++        AudioDeviceID device = coreaudio_device_for_uid(cpdo->dev);
++        AudioComponentDescription hal = description;
++        AudioComponent halComponent;
++
++        hal.componentSubType = kAudioUnitSubType_HALOutput;
++        halComponent = AudioComponentFindNext(NULL, &hal);
++        if (device != kAudioObjectUnknown && halComponent
++            && AudioComponentInstanceNew(halComponent, &core->unit) == noErr) {
++            if (AudioUnitSetProperty(core->unit, kAudioOutputUnitProperty_CurrentDevice,
++                                     kAudioUnitScope_Global, 0,
++                                     &device, sizeof(device)) == noErr) {
++                info_report("coreaudio: playing through the chosen device %s", cpdo->dev);
++            } else {
++                AudioComponentInstanceDispose(core->unit);
++                core->unit = NULL;
++            }
++        } else {
++            core->unit = NULL;
++        }
++        if (!core->unit) {
++            warn_report("coreaudio: the chosen output device %s isn't available; "
++                        "playing through the default output", cpdo->dev);
++        }
+     }
+-    status = AudioComponentInstanceNew(component, &core->unit);
+-    if (status != noErr) {
+-        coreaudio_playback_logerr(status, "Could not open the default output\n");
+-        core->unit = NULL;
+-        goto fail;
++    if (!core->unit) {
++        component = AudioComponentFindNext(NULL, &description);
++        if (!component) {
++            dolog("Could not initialize playback - no default output unit\n");
++            goto fail;
++        }
++        status = AudioComponentInstanceNew(component, &core->unit);
++        if (status != noErr) {
++            coreaudio_playback_logerr(status, "Could not open the default output\n");
++            core->unit = NULL;
++            goto fail;
++        }
+     }
+ 
+     format = (AudioStreamBasicDescription) {
