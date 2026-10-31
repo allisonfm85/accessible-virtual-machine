@@ -1,0 +1,23 @@
+#!/bin/sh
+# avmctl — AVM from the command line (2026-10-27; AVM/ControlServer.swift).
+#
+#   avmctl list | status <machine> | start <machine> [--no-window]
+#          stop <machine> | save <machine> | force-stop <machine>
+#          send-file <machine> <file>
+#
+# Put it on your PATH, for example:
+#   ln -s "$PWD/Tools/avmctl" /usr/local/bin/avmctl
+# (it runs AVM's own program with the word ctl).
+# It uses $AVM_APP if set, else AVM in /Applications or ~/Applications.
+
+app="${AVM_APP:-}"
+if [ -z "$app" ]; then
+    for candidate in /Applications/AVM.app "$HOME/Applications/AVM.app"; do
+        [ -x "$candidate/Contents/MacOS/AVM" ] && app="$candidate" && break
+    done
+fi
+if [ -z "$app" ] || [ ! -x "$app/Contents/MacOS/AVM" ]; then
+    echo "avmctl: AVM.app wasn't found. Set AVM_APP to where it is." >&2
+    exit 1
+fi
+exec "$app/Contents/MacOS/AVM" ctl "$@"
