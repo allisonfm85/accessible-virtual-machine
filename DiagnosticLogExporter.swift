@@ -149,6 +149,35 @@ enum DiagnosticLogExporter {
         }
     }
 
+    /// The whole log as one zip in a temporary folder, for Report a
+    /// Problem's email (2026-10-30, ProblemReporter.swift): the same files
+    /// Save Diagnostic Log saves, sanitized the same way. nil when there's
+    /// nothing to send yet.
+    @MainActor
+    static func makeZip() async throws -> URL? {
+        _ = AVMLog.currentLogURL()
+        let sources = collectSources()
+        guard !sources.isEmpty else { return nil }
+        let name = defaultBundleName()
+        let work = FileManager.default.temporaryDirectory.appendingPathComponent("avm-report-\(UUID().uuidString)")
+        let folder = work.appendingPathComponent(name)
+        let zip = work.appendingPathComponent("\(name).zip")
+        try await Task.detached(priority: .userInitiated) {
+            try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+            _ = try performCopy(sources: sources, to: folder)
+            let ditto = Process()
+            ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+            ditto.arguments = ["-c", "-k", "--keepParent", folder.path, zip.path]
+            try ditto.run()
+            ditto.waitUntilExit()
+            guard ditto.terminationStatus == 0 else {
+                throw NSError(domain: "AVM.DiagnosticLog", code: 2, userInfo: [NSLocalizedDescriptionKey: "The log couldn't be zipped."])
+            }
+        }.value
+        AVMLog.write("Diagnostics — log zipped for a problem report: \(sources.count) file(s).")
+        return zip
+    }
+
     // MARK: - Gathering
 
     /// Everything collectible right now: file logs with content, non-empty
@@ -175,10 +204,9 @@ enum DiagnosticLogExporter {
 
         // Firmware serial logs: one per VM runtime dir that has a non-empty
         // one. Same Application Support root AVMLog anchors to.
-        if let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            let vmsDir = appSupport
-                .appendingPathComponent("AVM", isDirectory: true)
-                .appendingPathComponent("vms", isDirectory: true)
+        // The real container, "VMs", through AVMPaths (2026-10-28, fourth
+        // audit): "vms" found nothing on a case-sensitive disk.
+        if let vmsDir = try? VMConfiguration.defaultVMsContainer() {
             if let entries = try? fm.contentsOfDirectory(at: vmsDir, includingPropertiesForKeys: [.isDirectoryKey]) {
                 // Sorted so bundle contents are deterministic run to run.
                 for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
@@ -192,6 +220,19 @@ enum DiagnosticLogExporter {
                                           destinationName: "firmware-serial-\(shortID).log"))
                 }
             }
+        }
+
+        // VMs stored in a folder the user chose (2026-10-25), such as an
+        // external drive: their folders aren't under Application Support.
+        // A drive that isn't connected is skipped, like a missing log.
+        for config in (VMStore.shared?.configurations ?? []).sorted(by: { $0.id.uuidString < $1.id.uuidString })
+        where config.isStoredElsewhere && !config.storageIsMissing {
+            guard let dir = try? config.directoryURL() else { continue }
+            let serial = dir.appendingPathComponent("firmware-serial.log")
+            guard let attrs = try? fm.attributesOfItem(atPath: serial.path),
+                  let size = attrs[.size] as? Int, size > 0 else { continue }
+            let shortID = String(config.id.uuidString.prefix(8))
+            sources.append(Source(url: serial, destinationName: "firmware-serial-\(shortID).log"))
         }
 
         return sources
@@ -225,16 +266,33 @@ enum DiagnosticLogExporter {
         let fm = FileManager.default
         // The save panel already asked the user about replacing an existing
         // item with this name; honoring that answer means actually replacing
-        // it rather than failing on "file exists".
+        // it rather than failing on "file exists". It goes to the Trash
+        // (2026-10-25, code audit), like everything else AVM replaces: a
+        // folder that happened to share the name used to be deleted outright.
+        // Only an earlier diagnostic log is replaced (2026-10-26, code
+        // audit): typing an existing folder's name, Documents say, and
+        // confirming Replace sent that whole folder to the Trash, with
+        // nothing said.
         if fm.fileExists(atPath: destination.path) {
-            try fm.removeItem(at: destination)
+            guard destination.lastPathComponent.hasPrefix("AVM Diagnostic Log") else {
+                throw NSError(domain: "AVM.DiagnosticLog", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                    "Something called \(destination.lastPathComponent) is already there, and AVM only replaces an earlier diagnostic log. Next: save it under another name."])
+            }
+            try fm.trashItem(at: destination, resultingItemURL: nil)
         }
         try fm.createDirectory(at: destination, withIntermediateDirectories: true)
 
         var copied = 0
         for source in sources {
-            try fm.copyItem(at: source.url,
-                            to: destination.appendingPathComponent(source.destinationName))
+            let target = destination.appendingPathComponent(source.destinationName)
+            if source.destinationName.hasPrefix("firmware-serial") {
+                // Written by the guest, not by AVM, so never passed through
+                // the sanitizer (2026-10-25, privacy audit). It is here.
+                let text = String(decoding: try Data(contentsOf: source.url), as: UTF8.self)
+                try Data(AVMLog.sanitize(text).utf8).write(to: target)
+            } else {
+                try fm.copyItem(at: source.url, to: target)
+            }
             copied += 1
         }
         return copied
