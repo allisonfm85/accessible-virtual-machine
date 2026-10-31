@@ -1547,6 +1547,10 @@ final class VMManager: ObservableObject {
             // first's while the keyboard stayed in the first.
             WindowsKeyboard.shared.start(keyboardID: keyboardID, name: configuration.windowsKeyboardName, target: self,
                                          appleISO: configuration.windowsKeyboardAppleISO == true)
+        } else if installComplete {
+            // None chosen (2026-10-30, KeyboardOffer.swift): a second
+            // keyboard connected is offered once.
+            KeyboardOffer.offerIfUseful(machine: self, configuration: configuration)
         }
 
         startDiskWatch(configuration: configuration, runtimeDir: runtimeDir, installed: installComplete)
