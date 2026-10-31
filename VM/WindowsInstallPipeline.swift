@@ -204,7 +204,7 @@ import Foundation
 /// Mac user's name with `~`. This file logs scratch paths, mount points, the
 /// bundled-tool paths, and tool output that quotes paths back — all under the
 /// user's home directory.
-private func pipelineLog(_ msg: String) {
+nonisolated private func pipelineLog(_ msg: String) {
     AVMLog.write(msg, category: "pipeline")
 }
 
@@ -215,7 +215,7 @@ private func pipelineLog(_ msg: String) {
 /// validation gate runs BEFORE these (it's cheap + fail-fast) and is represented
 /// separately so it never counts toward the user-facing step total of the
 /// expensive build work.
-enum PipelineStage: Int, CaseIterable, Sendable {
+nonisolated enum PipelineStage: Int, CaseIterable, Sendable {
     case extractISO        = 1   // hdiutil attach + ditto copy: UDF tree -> scratch
     case injectWinpeshl    = 2   // wimlib-imagex: winpeshl.ini -> boot.wim image 2 (ConX bypass)
     case dropVirtioDrivers = 3   // FileManager: virtio ARM64 .inf/.sys/.cat -> $WinPEDriver$
@@ -242,7 +242,7 @@ enum PipelineStage: Int, CaseIterable, Sendable {
 /// (`spoken`) and visible text (`visible`). Emitted before each stage begins, so
 /// a blind user always knows the pipeline is alive and what it's doing.
 /// Sendable: it crosses from the background pipeline to the main actor.
-struct PipelineProgress: Sendable {
+nonisolated struct PipelineProgress: Sendable {
     let stage: PipelineStage
     let stepNumber: Int          // 1-based, == stage.rawValue
     let totalSteps: Int          // == PipelineStage.allCases.count
@@ -266,7 +266,7 @@ struct PipelineProgress: Sendable {
 // MARK: - WIM Image Info (parsed from wimlib-imagex info)
 
 /// One image (edition) inside install.wim, as parsed from `wimlib-imagex info`.
-struct WIMImageInfo {
+nonisolated struct WIMImageInfo {
     let index: Int
     let name: String
 }
@@ -274,16 +274,17 @@ struct WIMImageInfo {
 /// The subset of `wimlib-imagex info` we act on: the install.wim architecture and
 /// its list of images (editions). Drives both the validation gate and (later) the
 /// multi-edition picker.
-struct WIMInfo {
+nonisolated struct WIMInfo {
     let architecture: String     // e.g. "ARM64", "AMD64", "x86"
     let images: [WIMImageInfo]
+    var language: String? = nil  // "Default Language", e.g. "fr-FR" (2026-10-26)
 }
 
 // MARK: - El Torito Info (parsed from xorriso -report_el_torito plain)
 
 /// The subset of the el-torito report Stage 5 acts on. All values PARSED off the
 /// actual ISO, never hardcoded (they vary per edition/language/build).
-private struct ELToritoInfo {
+nonisolated private struct ELToritoInfo {
     let ldsiz: Int               // EFI image load size, in 512-byte blocks
     let lba: Int                 // EFI image start, in 2048-byte sectors
     let volumeID: String         // for the rebuild's -V
@@ -300,7 +301,7 @@ private struct ELToritoInfo {
 /// guarantees the issue-#6 silent Setup hang), while a user-chosen edition
 /// missing from the disc keeps the warn-and-proceed tier (the disc may name it
 /// slightly differently). It also scopes Stage 4's backstop assert.
-private struct ResolvedEdition {
+nonisolated private struct ResolvedEdition {
     let name: String
     let key: String
     let wasDefaulted: Bool
@@ -315,7 +316,7 @@ private struct ResolvedEdition {
 /// guarantees a silent Setup hang); WARN-AND-PROCEED where AVM is merely UNSURE
 /// (user-requested edition not in the image list, unrecognized build) so a
 /// techy user is never blocked on a valid-but-unusual ISO.
-enum ISOValidation {
+nonisolated enum ISOValidation {
     /// Cleared the gate — proceed with the build.
     case ok
     /// AVM is certain this can't work. Halt before the extract, with a reason.
@@ -329,7 +330,7 @@ enum ISOValidation {
 /// A stage failure. Names the stage and carries a spoken, ACTIONABLE reason
 /// (never a bare "failed"). Conforms to LocalizedError so it reads cleanly if it
 /// ever surfaces through the same channel as AVMError.
-enum PipelineError: LocalizedError {
+nonisolated enum PipelineError: LocalizedError {
     case notImplemented(PipelineStage)
     case toolNotFound(String)                       // a bundled tool missing from Resources
     case stageFailed(stage: PipelineStage, reason: String)
@@ -361,7 +362,7 @@ enum PipelineError: LocalizedError {
 // MARK: - Pipeline Input / Output
 
 /// Everything the pipeline needs to build the media for one VM.
-struct PipelineInput {
+nonisolated struct PipelineInput {
     let vmID: UUID
     let sourceISOPath: String        // the user's original Windows 11 ARM64 ISO
     let runtimeDir: URL              // the VM's runtime dir (verified artifacts land here)
@@ -373,10 +374,23 @@ struct PipelineInput {
     /// CONCURRENCY: this closure is invoked OFF the main actor. A closure that
     /// shows UI must hop to the main actor itself (e.g. await MainActor.run).
     var confirmWarning: ((String) async -> Bool)?
+    /// Screen reader installers to put on the install media (2026-10-26):
+    /// the name Windows sees (ScreenReader.mediaFileName) to the checked
+    /// download. Stage 3 copies them into AVMSR\ at the media's root, and
+    /// the answer file's specialize pass installs whatever it finds there.
+    var screenReaderInstallers: [String: URL] = [:]
+    /// The wizard's answers for Windows Setup (WindowsSetupAnswers.swift);
+    /// the default leaves Windows to ask everything but privacy.
+    var answers = WindowsSetupAnswers()
+    /// The disk Windows installs onto, as Setup numbers it (2026-10-27):
+    /// 0 on NVMe, whose driver is built in and finds it first; 1 on the
+    /// virtio disk, whose driver Setup loads after the USB answer-file disk
+    /// has taken 0 (MEASURED: "could not clean disk 0 ... does not exist").
+    var setupDiskID = 0
 }
 
 /// The verified artifacts the pipeline produces, living in the VM runtime dir.
-struct PipelineOutput {
+nonisolated struct PipelineOutput {
     let rebuiltISOPath: String       // the /legacy + driver ISO AVM generated
     let answerImagePath: String      // the FAT autounattend image (removable usb-storage at launch)
 }
@@ -386,14 +400,23 @@ struct PipelineOutput {
 /// NOT actor-isolated; run() is @concurrent so the whole pipeline executes on
 /// the background global executor regardless of the caller's actor (see
 /// CONCURRENCY MODEL in the file header). Progress hops to the main actor.
-final class WindowsInstallPipeline {
+// NONISOLATED (2026-10-25, code audit): under the app target's default
+// MainActor isolation this class was implicitly @MainActor, so every stage
+// hopped back to the main thread, and moving the 7.5 GB install-avm.iso to
+// a VM folder on another drive became a minutes-long copy that froze AVM
+// and VoiceOver. Like UbuntuInstallPipeline, it now runs off the main actor;
+// only onProgress runs on it.
+nonisolated final class WindowsInstallPipeline {
 
     /// Progress sink. The host (VMManager) assigns this to forward events to its
     /// own @Published install-progress property + appendConsole, so the UI can
     /// announce them via VoiceOver and show them on screen.
     /// INVOKED ON THE MAIN ACTOR (emit hops there), so the host can touch UI
     /// state directly. Assign BEFORE calling run(); don't reassign mid-run.
-    var onProgress: ((PipelineProgress) -> Void)?
+    var onProgress: (@MainActor (PipelineProgress) -> Void)?
+    /// The ISO's language, for Setup's own screens (2026-10-26); set when
+    /// the ISO is validated, read by Stage 4.
+    private var setupLanguage = "en-US"
 
     /// Scratch dir for the in-progress build. Everything is built HERE and only
     /// promoted into the runtime dir on verified success, so a failure never
@@ -444,7 +467,10 @@ final class WindowsInstallPipeline {
     /// extra files — .pdb, helper .exe — which are harmless and simply copied).
     private let virtioRequiredFiles: [(driver: String, required: [String])] = [
         ("NetKVM",  ["netkvm.inf", "netkvm.sys", "netkvm.cat", "netkvmp.exe"]),
-        ("Balloon", ["balloon.inf", "balloon.sys", "balloon.cat"])
+        ("Balloon", ["balloon.inf", "balloon.sys", "balloon.cat"]),
+        // The virtio disk's driver (2026-10-27): Setup must see the disk to
+        // install onto it, and Windows boots from it afterwards.
+        ("viostor", ["viostor.inf", "viostor.sys", "viostor.cat"])
     ]
 
     /// The guest-agent payload Stage 4 copies into the FAT answer image
@@ -471,10 +497,13 @@ final class WindowsInstallPipeline {
         ("virtio/vioserial", "vioser.inf", "vioser.inf"),
         ("virtio/vioserial", "vioser.cat", "vioser.cat"),
         ("virtio/vioserial", "vioser.sys", "vioser.sys"),
-        ("vdagent", "spice-vdagent-x64-0.10.0.msi", "VDAGENT.MSI")
+        ("vdagent", "spice-vdagent-x64-0.10.0.msi", "VDAGENT.MSI"),
+        // The installers' time limit (2026-10-30): specialize runs every
+        // installer through it, so a hung msiexec can't stop Setup.
+        ("vdagent", "AVMRUN.PS1", "AVMRUN.PS1")
     ]
 
-    init(onProgress: ((PipelineProgress) -> Void)? = nil) {
+    init(onProgress: (@MainActor (PipelineProgress) -> Void)? = nil) {
         self.onProgress = onProgress
     }
 
@@ -534,10 +563,22 @@ final class WindowsInstallPipeline {
     /// (Process reports terminationStatus 6 = the signal number). Proven by test.
     /// `extraEnvironment` merges per-call variables (e.g. MTOOLS_SKIP_CHECK).
     @discardableResult
-    private func runTool(_ executable: URL, _ arguments: [String], extraEnvironment: [String: String] = [:]) async -> (code: Int32, output: String) {
-        await withCheckedContinuation { continuation in
+    private func runTool(_ executable: URL, _ arguments: [String], extraEnvironment: [String: String] = [:],
+                         cancellable: Bool = true) async -> (code: Int32, output: String) {
+        // Ended when the build is cancelled (2026-10-28, fifth audit: Force
+        // Stop during a build left the tool running, and the next Start's
+        // build was deleted from under it). Not a clean-up step, such as
+        // detaching the ISO (2026-10-29, sixth audit): in a cancelled task
+        // it never ran, and the installer stayed mounted.
+        nonisolated(unsafe) let process = Process()
+        nonisolated(unsafe) var cancelled = false
+        return await withTaskCancellationHandler {
+          await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
+                if cancelled {
+                    continuation.resume(returning: (-3, "the build was stopped"))
+                    return
+                }
                 process.executableURL = executable
                 process.arguments = arguments
 
@@ -560,13 +601,30 @@ final class WindowsInstallPipeline {
                     continuation.resume(returning: (-1, "Failed to launch \(executable.lastPathComponent): \(error.localizedDescription)"))
                     return
                 }
+                // A cancel that came between the check above and the launch
+                // found nothing running to end (sixth audit).
+                if cancelled { process.terminate() }
 
+                // A time limit (2026-10-26, code audit): an ISO on a drive
+                // unplugged mid-copy left hdiutil or ditto waiting for good,
+                // after "Step N of M", with nothing more said. 45 minutes is
+                // far past any real step; the pipeline then fails and says so.
+                nonisolated(unsafe) var timedOut = false
+                let limit = DispatchWorkItem { timedOut = true; process.terminate() }
+                DispatchQueue.global().asyncAfter(deadline: .now() + 45 * 60, execute: limit)
                 // Read before waitUntilExit to avoid a full-pipe deadlock on large output.
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
-                let output = String(data: data, encoding: .utf8) ?? ""
-                continuation.resume(returning: (process.terminationStatus, output))
+                limit.cancel()
+                var output = String(data: data, encoding: .utf8) ?? ""
+                if timedOut { output += "\n\(executable.lastPathComponent) took more than 45 minutes and was stopped. Is the installer's drive still connected?" }
+                continuation.resume(returning: (timedOut ? -2 : process.terminationStatus, output))
             }
+          }
+        } onCancel: {
+            guard cancellable else { return }
+            cancelled = true
+            if process.isRunning { process.terminate() }
         }
     }
 
@@ -599,19 +657,38 @@ final class WindowsInstallPipeline {
             }
         }
         // Attached but no /Volumes mount point parsed — fail. (Rare; usually means
-        // a non-filesystem image.)
+        // a non-filesystem image.) Detach what was attached first (2026-10-25,
+        // code audit): it used to stay attached, once more with every retry.
+        // hdiutil's first column is the device node.
+        if let device = result.output.split(separator: "\n").first?
+            .split(separator: "\t").first.map({ String($0).trimmingCharacters(in: .whitespaces) }),
+           device.hasPrefix("/dev/") {
+            _ = await runTool(hdiutil, ["detach", device, "-force"], cancellable: false)
+            pipelineLog("mountISO: no volume mounted; detached \(device)")
+        }
         throw PipelineError.isoMountFailed(reason: "It mounted but exposed no readable volume.")
     }
 
-    /// Detach a previously mounted ISO. Best-effort; tries a force detach on a
-    /// first-attempt failure (a tool may still hold a handle for a moment).
+    /// Detach a previously mounted ISO. Best-effort; tried again a few times
+    /// (a tool may still hold a handle for a moment), never forced
+    /// (2026-10-29, sixth audit): hdiutil gives a second build of the same
+    /// ISO, or the user's own Finder mount, the same mount, and a forced
+    /// detach pulled it out from under the other copy, which then failed.
+    /// One still busy is left for whoever is using it.
     private func detachISO(_ mountPoint: URL) async {
         let hdiutil = URL(fileURLWithPath: "/usr/bin/hdiutil")
-        let r = await runTool(hdiutil, ["detach", mountPoint.path])
-        if r.code != 0 {
-            _ = await runTool(hdiutil, ["detach", mountPoint.path, "-force"])
+        for attempt in 1...4 {
+            let r = await runTool(hdiutil, ["detach", mountPoint.path], cancellable: false)
+            if r.code == 0 {
+                pipelineLog("detachISO: \(mountPoint.path)")
+                return
+            }
+            // A sleep that still sleeps in a cancelled task (2026-10-29,
+            // seventh audit): Task.sleep returned at once, and the four
+            // tries came within milliseconds.
+            if attempt < 4 { _ = try? await Task.detached { try await Task.sleep(for: .milliseconds(1500)) }.value }
         }
-        pipelineLog("detachISO: \(mountPoint.path)")
+        pipelineLog("detachISO: \(mountPoint.path) is still in use; left mounted for whoever uses it")
     }
 
     // MARK: - WIM Info Parsing
@@ -620,10 +697,16 @@ final class WindowsInstallPipeline {
     /// the (index, name) of each image. The format is stable "Key: value" lines;
     /// `Architecture:` appears per-image but is the same across images in a normal
     /// Windows ISO, so we take the first one seen.
+    /// "en-US", "sr-Latn-RS": what Windows Setup takes as a language.
+    static func isLanguageTag(_ text: String) -> Bool {
+        text.range(of: "^[a-z]{2,3}(-[A-Za-z]{2,4}){1,2}$", options: .regularExpression) != nil
+    }
+
     private func parseWIMInfo(_ text: String) -> WIMInfo {
         var architecture = ""
         var images: [WIMImageInfo] = []
         var pendingIndex: Int?
+        var language: String?
 
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
@@ -638,9 +721,12 @@ final class WindowsInstallPipeline {
                 }
             } else if line.hasPrefix("Architecture:") && architecture.isEmpty {
                 architecture = line.dropFirst("Architecture:".count).trimmingCharacters(in: .whitespaces)
+            } else if line.hasPrefix("Default Language:") && language == nil {
+                let v = line.dropFirst("Default Language:".count).trimmingCharacters(in: .whitespaces)
+                if Self.isLanguageTag(v) { language = v }
             }
         }
-        return WIMInfo(architecture: architecture, images: images)
+        return WIMInfo(architecture: architecture, images: images, language: language)
     }
 
     // MARK: - El Torito Parsing
@@ -729,6 +815,8 @@ final class WindowsInstallPipeline {
 
         do {
             for stage in PipelineStage.allCases {
+                // Force Stop during the build (2026-10-28, fifth audit).
+                try Task.checkCancellation()
                 await emit(.forStage(stage))
                 try await runStage(stage, input: input, scratch: scratch)
             }
@@ -834,21 +922,28 @@ final class WindowsInstallPipeline {
             // We found install.wim but couldn't read it. Unsure rather than
             // certain — let a techy user proceed. (discEditionNames stays nil;
             // Stage 4's backstop cannot assert without a list.)
-            return .warn(reason: "AVM found the Windows install image but couldn't read its details. The ISO may be unusual or partly corrupted. You can proceed, but the install might not complete cleanly.")
+            // Said as what happens, not a choice (2026-10-28, fifth audit:
+            // nothing could answer "you can proceed").
+            return .warn(reason: "AVM found the Windows install image but couldn't read its details, so it can't check the edition or the architecture. The ISO may be unusual or partly corrupted. AVM is going ahead; if Windows doesn't install, use a standard Windows 11 ARM64 ISO from Microsoft.")
         }
 
         let info = parseWIMInfo(result.output)
+        // The disc's language, as soon as it's read (2026-10-26, code audit):
+        // set only on the OK path, every "proceed anyway" install got an
+        // English Setup language, which stops Setup at its first screen on
+        // any other language's disc.
+        setupLanguage = info.language ?? "en-US"
 
         // CERTAIN hard-stop: wrong architecture. An x64/x86 install.wim will never
         // boot on the aarch64 `virt` machine.
         if !info.architecture.isEmpty {
             let arch = info.architecture.uppercased()
             if arch != "ARM64" {
-                return .hardStop(reason: "This is a \(info.architecture) version of Windows, which can't run on this Mac's virtual machine. You need a Windows 11 ARM64 ISO.")
+                return .hardStop(reason: "This installer is for \(info.architecture) PCs, so its Windows can't run on this Mac's virtual machine. You need a Windows 11 ARM64 ISO.")
             }
         } else {
             // Couldn't read architecture — unsure, not certain. Warn.
-            return .warn(reason: "AVM couldn't confirm this ISO is the ARM64 version of Windows. If it isn't ARM64, the install won't boot. You can proceed if you're sure it's the ARM64 ISO.")
+            return .warn(reason: "AVM couldn't confirm this ISO is the ARM64 version of Windows, and is going ahead. If it isn't ARM64, Windows won't start from it: then make a new virtual machine with a Windows 11 ARM64 ISO from Microsoft.")
         }
 
         // The wim is readable — record the disc's edition names for Stage 4's
@@ -869,13 +964,16 @@ final class WindowsInstallPipeline {
                 // is nothing to warn about — stop, say why, name what IS there.
                 return .hardStop(reason: "This ISO does not contain \(resolved.name), the edition AVM currently installs. It contains: \(available). AVM can't install these editions yet. A standard Windows 11 ARM64 ISO from Microsoft's Windows 11 download page will work.")
             } else {
-                // UNSURE: the user chose this name; the disc may name the
-                // edition slightly differently. Warn and let them decide.
-                return .warn(reason: "The edition you chose (\(resolved.name)) wasn't found on this ISO. Available editions are: \(available). You can proceed, but the install may not match your choice.")
+                // A chosen edition missing stops too (2026-10-28, fourth
+                // audit): the warning went to a handler nothing set, so the
+                // build went ahead and Setup hung exactly as in issue #6.
+                // The wizard's names are Microsoft's image names, so a
+                // missing one is missing, not spelled differently.
+                return .hardStop(reason: "This ISO doesn't contain \(resolved.name), the edition chosen for this virtual machine. It contains: \(available). Next: make a new virtual machine and choose one of those editions if AVM offers it, or use a standard Windows 11 ARM64 ISO from Microsoft's Windows 11 download page.")
             }
         }
 
-        pipelineLog("validateISO: OK — arch \(info.architecture), \(info.images.count) edition(s), effective edition \"\(resolved.name)\" present")
+        pipelineLog("validateISO: OK — arch \(info.architecture), \(info.images.count) edition(s), effective edition \"\(resolved.name)\" present, language \(info.language ?? "unread (using en-US)")")
         return .ok
     }
 
@@ -990,6 +1088,18 @@ final class WindowsInstallPipeline {
         // Generate winpeshl.ini with CRLF line endings. The [LaunchApps] section
         // forces legacy Setup; %SYSTEMDRIVE%\sources\setup.exe is WinPE's path to
         // the installer at boot. (Verified contents — see header.)
+        //
+        //
+        // THE VIRTIO DISK (2026-10-27, MEASURED): a machine on the virtio disk
+        // needs viostor before Setup's disk step. In $WinPEDriver$ alone it
+        // came too late ("Windows could not clean disk 0. The specified disk
+        // does not exist", 0x80300025), and so did drvload from this file.
+        // So viostor rides inside this image, at \AVM\viostor, where the
+        // answer file's PnpCustomizationsWinPE DriverPaths (X:\AVM\viostor)
+        // has Setup load it in the windowsPE pass. $WinPEDriver$ still puts
+        // it into the installed Windows.
+        let viostor = try? resourceDirURL(named: "virtio").appendingPathComponent("viostor", isDirectory: true)
+        let addViostor = viostor.map { FileManager.default.fileExists(atPath: $0.appendingPathComponent("viostor.inf").path) } ?? false
         let winpeshlContents = "[LaunchApps]\r\n%SYSTEMDRIVE%\\sources\\setup.exe, /legacy\r\n"
         let winpeshlURL = scratch.appendingPathComponent("winpeshl.ini")
         do {
@@ -1033,6 +1143,22 @@ final class WindowsInstallPipeline {
                 stage: .injectWinpeshl,
                 reason: "The setup configuration didn't take effect inside the boot image."
             )
+        }
+
+        if addViostor, let viostor {
+            let addDriver = "add \"\(viostor.path)\" \"/AVM/viostor\""
+            let driverResult = await runTool(wimlib, [
+                "update", bootWim.path, "\(setupBootWimImageIndex)",
+                "--command=\(addDriver)"
+            ])
+            let check = await runTool(wimlib, ["dir", bootWim.path, "\(setupBootWimImageIndex)", "--path=/AVM/viostor"])
+            guard driverResult.code == 0, check.output.lowercased().contains("viostor.inf") else {
+                throw PipelineError.stageFailed(
+                    stage: .injectWinpeshl,
+                    reason: "Couldn't add the virtio disk driver to the boot image. (wimlib exit \(driverResult.code): \(driverResult.output.suffix(300)))"
+                )
+            }
+            pipelineLog("stageInjectWinpeshl: viostor added at /AVM/viostor, for the answer file's DriverPaths")
         }
 
         pipelineLog("stageInjectWinpeshl: winpeshl.ini injected into boot.wim image \(setupBootWimImageIndex) and verified")
@@ -1128,6 +1254,49 @@ final class WindowsInstallPipeline {
         }
 
         pipelineLog("stageDropVirtioDrivers: staged \(virtioRequiredFiles.map { $0.driver }.joined(separator: ", ")) into $WinPEDriver$ and verified required files")
+
+        // The shared-folder service (2026-10-26): spice-webdavd 2.4, x64
+        // (Windows on ARM runs it emulated, like the vdagent). 12 MB is too
+        // big for the 8 MB answer image, so it rides the DVD; the specialize
+        // pass installs it. Without a shared folder it just waits.
+        let extraDir = tree.appendingPathComponent("AVMEXTRA", isDirectory: true)
+        do {
+            try? fm.removeItem(at: extraDir)
+            try fm.createDirectory(at: extraDir, withIntermediateDirectories: true)
+            let webdavd = try resourceDirURL(named: "vdagent").appendingPathComponent("spice-webdavd-x64-2.4.msi")
+            guard fm.fileExists(atPath: webdavd.path) else {
+                throw PipelineError.stageFailed(stage: .dropVirtioDrivers, reason: "The bundled shared-folder service is missing from the app. This is a build problem, not something you did.")
+            }
+            try fm.copyItem(at: webdavd, to: extraDir.appendingPathComponent("WEBDAVD.MSI"))
+            // The QEMU guest agent (2026-10-26), x64 as well: sets the clock
+            // after the Mac sleeps. Optional: without it, setup goes on.
+            let guestAgent = try resourceDirURL(named: "vdagent").appendingPathComponent("qemu-ga-x86_64.msi")
+            if fm.fileExists(atPath: guestAgent.path) {
+                try fm.copyItem(at: guestAgent, to: extraDir.appendingPathComponent("QEMUGA.MSI"))
+            }
+        } catch let error as PipelineError {
+            throw error
+        } catch {
+            throw PipelineError.stageFailed(stage: .dropVirtioDrivers, reason: "Couldn't copy the shared-folder service into the installer. (\(error.localizedDescription))")
+        }
+
+        // Screen readers (2026-10-26). Copied, not linked: the rebuilt ISO
+        // must carry the file itself.
+        let readerDir = tree.appendingPathComponent("AVMSR", isDirectory: true)
+        try? fm.removeItem(at: readerDir)
+        guard !input.screenReaderInstallers.isEmpty else { return }
+        do {
+            try fm.createDirectory(at: readerDir, withIntermediateDirectories: true)
+            for (name, source) in input.screenReaderInstallers.sorted(by: { $0.key < $1.key }) {
+                try fm.copyItem(at: source, to: readerDir.appendingPathComponent(name))
+            }
+        } catch {
+            throw PipelineError.stageFailed(
+                stage: .dropVirtioDrivers,
+                reason: "Couldn't copy the screen reader installers into the installer. (\(error.localizedDescription))"
+            )
+        }
+        pipelineLog("stageDropVirtioDrivers: staged screen readers \(input.screenReaderInstallers.keys.sorted().joined(separator: ", ")) into AVMSR")
     }
 
     // MARK: - Stage 4 — Build answer image (implemented)
@@ -1204,7 +1373,7 @@ final class WindowsInstallPipeline {
         // list. The validation gate hard-stops this case, so firing here means
         // a code path skipped the gate. See the doc comment for why user-chosen
         // and unreadable-wim runs are exempt. ---
-        if resolved.wasDefaulted, let names = discEditionNames, !names.contains(resolved.name) {
+        if let names = discEditionNames, !names.isEmpty, !names.contains(resolved.name) {
             throw PipelineError.stageFailed(
                 stage: .buildAnswerImage,
                 reason: "The edition \(resolved.name) is not on this ISO, and the earlier check that should have caught this didn't run. This is a build problem, not something you did."
@@ -1241,9 +1410,24 @@ final class WindowsInstallPipeline {
         // --- Substitute from the RESOLVED pair (no local fallback — the single
         // resolution point at the top of run() is the only place defaults can
         // engage; issue #6). ---
-        let filled = template
+        var filled = template
             .replacingOccurrences(of: editionToken, with: resolved.name)
             .replacingOccurrences(of: productKeyToken, with: resolved.key)
+            .replacingOccurrences(of: "AVM_SETUP_LANGUAGE", with: setupLanguage)
+            .replacingOccurrences(of: "AVM_DISK_ID", with: "\(input.setupDiskID)")
+        for (marker, section) in input.answers.answerFileSections {
+            filled = filled.replacingOccurrences(of: marker, with: section)
+        }
+        // The wizard's answers went in as text (2026-10-26): the result must
+        // still be well-formed XML, with every marker filled, or Windows
+        // Setup would stop on a screen the user can't read.
+        let unfilled = Array(input.answers.answerFileSections.keys) + [editionToken, productKeyToken, "AVM_SETUP_LANGUAGE", "AVM_DISK_ID"]
+        guard !unfilled.contains(where: { filled.contains($0) }), XMLParser(data: Data(filled.utf8)).parse() else {
+            throw PipelineError.stageFailed(
+                stage: .buildAnswerImage,
+                reason: "AVM couldn't write a valid answer file from the setup answers. This is a build problem, not something you did."
+            )
+        }
 
         // --- Write the filled XML to scratch. ---
         let filledXMLURL = scratch.appendingPathComponent("autounattend-filled.xml")
@@ -1396,36 +1580,62 @@ final class WindowsInstallPipeline {
         }
 
         // --- 1. Parse el-torito off the ORIGINAL ISO. ---
-        let reportResult = await runTool(xorriso, [
+        var reportResult = await runTool(xorriso, [
             "-indev", input.sourceISOPath,
             "-report_el_torito", "plain"
         ])
-        guard reportResult.code == 0 else {
-            throw PipelineError.stageFailed(
-                stage: .rebuildISO,
-                reason: "Couldn't read the boot information from the Windows ISO — it may not be a bootable installer. (xorriso exit \(reportResult.code))"
-            )
+        // An ISO AVM made from Microsoft's .esd (2026-10-30,
+        // WindowsAutoDownload.swift): hdiutil wrote it, UDF with an ISO 9660
+        // part libisofs can't load ("Damaged RR/SUSP information"), so the
+        // tree is read as best it can be, for the boot record alone (exit 32,
+        // a warning, with the report printed).
+        if reportResult.code != 0 {
+            let lenient = await runTool(xorriso, [
+                "-abort_on", "NEVER", "-error_behavior", "image_loading", "best_effort",
+                "-indev", input.sourceISOPath,
+                "-report_el_torito", "plain"
+            ])
+            if parseElTorito(lenient.output) != nil { reportResult = lenient }
         }
         guard let elTorito = parseElTorito(reportResult.output) else {
             throw PipelineError.stageFailed(
                 stage: .rebuildISO,
-                reason: "The Windows ISO's boot information couldn't be understood. It may not be a standard Windows installer ISO."
+                reason: reportResult.code == 0
+                    ? "The Windows ISO's boot information couldn't be understood. It may not be a standard Windows installer ISO."
+                    : "Couldn't read the boot information from the Windows ISO — it may not be a bootable installer. (xorriso exit \(reportResult.code))"
             )
         }
+        pipelineLog("stageRebuildISO: source el-torito — Ldsiz \(elTorito.ldsiz), LBA \(elTorito.lba), volid \(elTorito.volumeID)")
+        let efibootURL = scratch.appendingPathComponent("efiboot.img")
+        try? FileManager.default.removeItem(at: efibootURL)
+
+        // The boot image Microsoft ships beside the files (2026-10-30): the
+        // same one its ISOs boot, efi/microsoft/boot/efisys.bin (1,720,320
+        // bytes, as the reference ISO's Ldsiz 3360 is). Taken from the tree
+        // only when the boot record doesn't describe it: hdiutil's records
+        // it as BIOS, 4 sectors (Ldsiz 4), and dd would cut 2 KB of it.
+        // Microsoft's own ISOs, which do, keep the dd path below.
+        let treeEFI = tree.appendingPathComponent("efi/microsoft/boot/efisys.bin")
+        let treeEFISize = (try? FileManager.default.attributesOfItem(atPath: treeEFI.path)[.size] as? Int) ?? 0
+        if treeEFISize > 0, elTorito.ldsiz * 512 != treeEFISize {
+            do {
+                try FileManager.default.copyItem(at: treeEFI, to: efibootURL)
+            } catch {
+                throw PipelineError.stageFailed(stage: .rebuildISO, reason: "Couldn't take the installer's boot image. \(error.localizedDescription)")
+            }
+            pipelineLog("stageRebuildISO: efiboot.img from the tree's efisys.bin — \(treeEFISize) bytes (the boot record said Ldsiz \(elTorito.ldsiz))")
+        } else {
         guard elTorito.ldsiz > 0 else {
             throw PipelineError.stageFailed(
                 stage: .rebuildISO,
                 reason: "The Windows ISO's boot image has an unusual layout AVM can't rebuild. It may not be a standard Windows installer ISO."
             )
         }
-        pipelineLog("stageRebuildISO: source el-torito — Ldsiz \(elTorito.ldsiz), LBA \(elTorito.lba), volid \(elTorito.volumeID)")
 
         // --- 2. dd-extract the EFI boot image at the computed offsets. ---
         // Units are MIXED: LBA in 2048-byte sectors, Ldsiz in 512-byte blocks.
         let skip = elTorito.lba * 2048 / 512
         let expectedBytes = elTorito.ldsiz * 512
-        let efibootURL = scratch.appendingPathComponent("efiboot.img")
-        try? FileManager.default.removeItem(at: efibootURL)
 
         let ddResult = await runTool(dd, [
             "if=\(input.sourceISOPath)",
@@ -1452,6 +1662,7 @@ final class WindowsInstallPipeline {
             )
         }
         pipelineLog("stageRebuildISO: extracted efiboot.img — \(expectedBytes) bytes, verified exact")
+        }
 
         // --- 3. Rebuild with the appended-partition method + Joliet (proven
         // invocation; -J -joliet-long carry $WinPEDriver$ verbatim in the Joliet
@@ -1507,14 +1718,16 @@ final class WindowsInstallPipeline {
     private func stagePromote(input: PipelineInput, scratch: URL) async throws {
         let fm = FileManager.default
 
-        // Ensure the runtime dir exists (it normally does — VMManager creates
-        // it — but the pipeline shouldn't assume).
-        do {
-            try fm.createDirectory(at: input.runtimeDir, withIntermediateDirectories: true)
-        } catch {
+        // The machine's folder must still be there (2026-10-29, sixth audit):
+        // made again here, a machine deleted during its build got its folder
+        // back, holding the install media and the answer file's password,
+        // with no machine in the list to delete it from. VMManager (and the
+        // install-media job) make the folder before the build starts.
+        var isFolder: ObjCBool = false
+        guard fm.fileExists(atPath: input.runtimeDir.path, isDirectory: &isFolder), isFolder.boolValue else {
             throw PipelineError.stageFailed(
                 stage: .promote,
-                reason: "Couldn't access the virtual machine's folder. (\(error.localizedDescription))"
+                reason: "The virtual machine's folder is gone, so the install media wasn't kept."
             )
         }
 
@@ -1536,6 +1749,11 @@ final class WindowsInstallPipeline {
             try? fm.removeItem(at: dst)
             do {
                 try fm.moveItem(at: move.src, to: dst)
+                // Owner-only (2026-10-26, code audit), as Ubuntu's are: the
+                // answer volume holds the account's password, Windows-
+                // encoded, and a machine on an external drive is otherwise
+                // readable by every account on the Mac.
+                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dst.path)
             } catch {
                 throw PipelineError.stageFailed(
                     stage: .promote,
@@ -1574,7 +1792,7 @@ final class WindowsInstallPipeline {
             create: true
         )
         let dir = appSupport
-            .appendingPathComponent("AVM")
+            .appendingPathComponent(AVMPaths.supportFolderName)
             .appendingPathComponent("scratch")
             .appendingPathComponent(vmID.uuidString)
         try? FileManager.default.removeItem(at: dir)
