@@ -149,6 +149,35 @@ enum DiagnosticLogExporter {
         }
     }
 
+    /// The whole log as one zip in a temporary folder, for Report a
+    /// Problem's email (2026-10-30, ProblemReporter.swift): the same files
+    /// Save Diagnostic Log saves, sanitized the same way. nil when there's
+    /// nothing to send yet.
+    @MainActor
+    static func makeZip() async throws -> URL? {
+        _ = AVMLog.currentLogURL()
+        let sources = collectSources()
+        guard !sources.isEmpty else { return nil }
+        let name = defaultBundleName()
+        let work = FileManager.default.temporaryDirectory.appendingPathComponent("avm-report-\(UUID().uuidString)")
+        let folder = work.appendingPathComponent(name)
+        let zip = work.appendingPathComponent("\(name).zip")
+        try await Task.detached(priority: .userInitiated) {
+            try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+            _ = try performCopy(sources: sources, to: folder)
+            let ditto = Process()
+            ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+            ditto.arguments = ["-c", "-k", "--keepParent", folder.path, zip.path]
+            try ditto.run()
+            ditto.waitUntilExit()
+            guard ditto.terminationStatus == 0 else {
+                throw NSError(domain: "AVM.DiagnosticLog", code: 2, userInfo: [NSLocalizedDescriptionKey: "The log couldn't be zipped."])
+            }
+        }.value
+        AVMLog.write("Diagnostics — log zipped for a problem report: \(sources.count) file(s).")
+        return zip
+    }
+
     // MARK: - Gathering
 
     /// Everything collectible right now: file logs with content, non-empty

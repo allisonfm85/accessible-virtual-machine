@@ -27,10 +27,18 @@ enum ProblemReporter {
     static func reportAProblem() {
         let alert = NSAlert()
         alert.messageText = "Report a problem on GitHub?"
-        alert.informativeText = "AVM puts a report on the clipboard: your AVM, macOS and Mac versions, and the last part of the diagnostic log, which never has your user name or anything you typed. Then it opens a new GitHub issue in your browser. Describe what happened, paste the report with Command-V, and submit. Nothing is sent until you submit it, and you can read and change everything first. You need to be signed in to GitHub."
+        alert.informativeText = "AVM puts a report on the clipboard: your AVM, macOS and Mac versions, and the last part of the diagnostic log, which never has your user name or anything you typed. Then it opens a new GitHub issue in your browser. Describe what happened, paste the report with Command-V, and submit. Nothing is sent until you submit it, and you can read and change everything first. You need to be signed in to GitHub. Or Email the Whole Log puts every log file, zipped, in a new email in your mail app instead."
         alert.addButton(withTitle: "Copy Report and Open GitHub")
+        // Or the whole log by email (2026-10-30): a tester's problem took
+        // Save Diagnostic Log, zipping the folder and attaching it by hand.
+        alert.addButton(withTitle: "Email the Whole Log…")
         alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let answer = alert.runModal()
+        if answer == .alertSecondButtonReturn {
+            Task { await emailWholeLog() }
+            return
+        }
+        guard answer == .alertFirstButtonReturn else { return }
 
         let report = makeReport()
         NSPasteboard.general.clearContents()
@@ -46,6 +54,34 @@ enum ProblemReporter {
             NSWorkspace.shared.open(url)
         }
         Announcer.shared.announce("The report is on the clipboard, and GitHub's new issue page is opening in your browser. Describe what happened, then paste the report with Command-V.", tone: .info)
+    }
+
+    /// The whole diagnostic log, zipped, in a new email in the Mac's mail
+    /// app, with the short report as its text. Nothing is sent until the
+    /// user sends it.
+    static func emailWholeLog() async {
+        let zip: URL
+        do {
+            guard let made = try await DiagnosticLogExporter.makeZip() else {
+                Announcer.shared.announce("There is no diagnostic log to send yet.", tone: .info)
+                return
+            }
+            zip = made
+        } catch {
+            Announcer.shared.announce("The log couldn't be prepared. Reason: \(error.localizedDescription)", tone: .failure)
+            return
+        }
+        let text = "What happened, and what you expected:\n\n\n\n" + makeReport()
+        if let mail = NSSharingService(named: .composeEmail), mail.canPerform(withItems: [text, zip]) {
+            mail.subject = "AVM problem report"
+            mail.perform(withItems: [text, zip])
+            AVMLog.write("AVM: Report a Problem — whole log attached to a new email.")
+            Announcer.shared.announce("A new email is open with the whole log attached. Add who it's for and what happened, then send it.", tone: .info)
+        } else {
+            // No mail app set up: the zip is shown, to attach by hand.
+            NSWorkspace.shared.activateFileViewerSelecting([zip])
+            Announcer.shared.announce("No mail app is set up, so the zipped log is shown in the Finder instead: \(zip.lastPathComponent). Attach it to a message by hand.", tone: .info)
+        }
     }
 
     static func makeReport() -> String {
