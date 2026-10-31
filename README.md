@@ -46,6 +46,25 @@ Background** (opening AVM at login, running in the background with a
 keyboard for Windows, the second monitor), **Keyboard** (Caps Lock as
 the screen reader key in Windows) and **Devices** (Restart USB Helper).
 
+The **Virtual Machine** menu can also:
+
+- **Read Screen** (Command-Shift-O): reads the machine's screen aloud with
+  the Mac's text recognition, for screens no screen reader in the machine
+  reads yet, such as Windows Setup, startup and recovery pages.
+- **Type Clipboard into Windows** (Command-Shift-V): types the clipboard's
+  text as key presses, for a sign-in box or product key field that won't
+  take a paste. It types a US keyboard's characters.
+- **Speak Updates and Disk** (Command-Option-Shift-I): how full the
+  machine's disk is and how many updates are waiting.
+
+A machine's Settings, under Display and Sound, has **Sound Output**: play
+the machine through its own output, headphones say, so its screen reader
+and VoiceOver don't talk in the same ear. When a Windows machine starts
+with a second keyboard connected and none chosen for it, AVM offers that
+keyboard once. **Report a Problem…** in the Help menu can email the whole
+diagnostic log, and **Remove AVM…** in the AVM menu removes AVM, its USB
+helper and login item, and, if you choose, its machines, all to the Trash.
+
 The setup wizard downloads installers too: **Download Windows 11 for
 ARM…** gets Windows straight from Microsoft's servers, the way
 Microsoft's Media Creation Tool does, with no web page to use, and
