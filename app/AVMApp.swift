@@ -393,6 +393,39 @@ struct AVMApp: App {
                 }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
 
+                // Read Screen (2026-10-30, ReadScreen.swift): for screens no
+                // guest screen reader reads, such as Setup and recovery pages.
+                Button("Read Screen") {
+                    Task { @MainActor in
+                        guard let manager = VMManager.shared else {
+                            Announcer.shared.announce("Read Screen works in Windows and Linux machines. In macOS, VoiceOver reads the screen.", tone: .info)
+                            return
+                        }
+                        guard let text = await manager.readScreenText() else {
+                            Announcer.shared.announce("\(manager.machineName)'s screen couldn't be read. Next: make sure it's running, then try again.", tone: .failure)
+                            return
+                        }
+                        AVMLog.write("AVM: Read Screen — \(text.split(separator: "\n").count) line(s) read.")
+                        Announcer.shared.announce(text.isEmpty ? "No text on \(manager.machineName)'s screen." : text, tone: .info)
+                    }
+                }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                .disabled(!activity.isRunning)
+
+                // Speak Updates and Disk (2026-10-30, GuestStatus.swift).
+                Button("Speak Updates and Disk") {
+                    Task { @MainActor in
+                        guard let manager = VMManager.shared else {
+                            Announcer.shared.announce("Updates and disk are said for Windows and Linux machines.", tone: .info)
+                            return
+                        }
+                        Announcer.shared.announce("Asking \(manager.machineName). Counting updates can take a minute.", tone: .info)
+                        Announcer.shared.announce(await manager.updatesAndDisk(), tone: .info)
+                    }
+                }
+                .keyboardShortcut("i", modifiers: [.command, .option, .shift])
+                .disabled(!activity.isRunning)
+
                 Divider()
 
                 Button("Send Ctrl-Alt-Delete") {

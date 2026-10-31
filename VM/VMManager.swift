@@ -3424,6 +3424,8 @@ final class VMManager: ObservableObject {
     /// Windows when no VM has started, as before Ubuntu support.
     /// This machine's name, for announcements (2026-10-27).
     var machineName: String { activeConfiguration?.name ?? GuestOS.windows.displayName }
+    /// The running machine's system (2026-10-30, GuestStatus.swift).
+    var runningGuestOS: GuestOS? { activeConfiguration?.guestOS }
     /// The running machine's id, for code outside that follows it.
     var machineID: UUID? { activeConfiguration?.id }
 
