@@ -408,6 +408,30 @@ struct AVMApp: App {
                 .keyboardShortcut("d", modifiers: [.command, .shift])
                 .disabled(!activity.isRunning)
 
+                // Type Clipboard (2026-10-30, TypeText.swift): for a sign-in
+                // box or a product key field that won't take a paste.
+                Button("Type Clipboard into \(focusLock.guestName)") {
+                    Task { @MainActor in
+                        guard let manager = VMManager.shared else {
+                            Announcer.shared.announce("Typing the clipboard works in Windows and Linux machines. In macOS, paste with Command-V.", tone: .info)
+                            return
+                        }
+                        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else {
+                            Announcer.shared.announce("The clipboard has no text to type.", tone: .info)
+                            return
+                        }
+                        Announcer.shared.announce("Typing \(text.count) characters into \(manager.machineName).", tone: .info)
+                        guard let result = await manager.typeText(text) else {
+                            Announcer.shared.announce("The clipboard couldn't be typed into \(manager.machineName). Next: make sure it's running, then try again.", tone: .failure)
+                            return
+                        }
+                        let skipped = result.skipped == 0 ? "" : " \(result.skipped) had no key on a US keyboard and were left out."
+                        Announcer.shared.announce("Typed \(result.typed) characters.\(skipped)", tone: result.skipped == 0 ? .success : .info)
+                    }
+                }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
+                .disabled(!activity.isRunning)
+
                 Divider()
 
                 // Send File (2026-10-27): into the current machine's
