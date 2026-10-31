@@ -122,6 +122,8 @@ struct AVMApp: App {
                 .disabled(!updater.canCheckForUpdates)
                 // Remove AVM… (2026-10-30, RemoveAVM.swift): the helper and
                 // login item with it, which dragging to the Trash leaves.
+                // Permissions… (2026-10-30, Permissions.swift).
+                Button("Permissions…") { PermissionsCenter.shared.show() }
                 Button("Remove AVM…") { RemoveAVM.ask() }
             }
 
@@ -705,6 +707,16 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
             if !testRun { ReleaseNotes.showIfUpdated() }
             // Run in the background and the second display (2026-10-28).
             BackgroundMode.shared.start()
+            // Permissions (2026-10-30, Permissions.swift): the window opens
+            // only when something needed isn't allowed, and not while AVM is
+            // quiet since login (it opens when the user opens AVM).
+            if !testRun {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    MainActor.assumeIsolated {
+                        if !BackgroundMode.shared.quietUntilOpened { PermissionsCenter.shared.showIfSomethingIsMissing() }
+                    }
+                }
+            }
         }
     }
 

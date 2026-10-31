@@ -73,6 +73,9 @@ final class WindowsKeyboard {
     private(set) weak var target: VMManager?
     private(set) var keyboardName = "The keyboard for Windows"
     private var announcedHeld = false
+    /// The helper holds it for Windows now (2026-10-30): what "types into
+    /// Windows" may be said on, not just that one is chosen.
+    private(set) var isHeld = false
 
     private init() {}
 
@@ -136,6 +139,16 @@ final class WindowsKeyboard {
             // without a word (InputMonitoring.swift). Not asked again in this
             // run after a Not Now, at every start and unlock; the helper's
             // refusal then says what to do.
+            // Not a question at login (2026-10-30, a tester's log): asked
+            // while AVM was out of sight, it sat unanswered for two and a
+            // half minutes and held the rest of AVM up. Said instead; the
+            // Permissions window asks when the user opens AVM.
+            if !InputMonitoring.isAllowed, BackgroundMode.shared.quietUntilOpened {
+                AVMLog.write("AVM: WindowsKeyboard — Input Monitoring not allowed yet, at login; the keyboard stays with the Mac.")
+                Announcer.shared.announce("\(keyboardName) types on the Mac for now: AVM isn't allowed under Input Monitoring yet. Open AVM to allow it in its Permissions window; then it goes to Windows the next time the machine starts.", tone: .info)
+                self.keyboardID = nil
+                return
+            }
             if !InputMonitoring.isAllowed, !Self.inputMonitoringNotNow {
                 let outcome = await InputMonitoring.ask(
                     title: "AVM needs Input Monitoring for the keyboard for Windows",
@@ -206,6 +219,7 @@ final class WindowsKeyboard {
         guard keyboardID != nil else { return }
         releaseAllKeys()
         keyboardID = nil
+        isHeld = false
         target = nil
         retriedAfterHelperLoss = false
         releasedForScreenLock = false
@@ -220,6 +234,7 @@ final class WindowsKeyboard {
         guard let id = keyboardID else { return }
         releaseAllKeys()
         keyboardID = nil
+        isHeld = false
         AVMLog.write("AVM: WindowsKeyboard — the helper stopped while holding the keyboard.")
         guard !retriedAfterHelperLoss else {
             Announcer.shared.announce("\(keyboardName) types on the Mac again: AVM's helper stopped. Restart the machine to try again.", tone: .failure)
@@ -270,6 +285,7 @@ final class WindowsKeyboard {
                         // keys were dropped and the password couldn't be typed.
                         // Taken again at the unlock.
                         self.releasedForScreenLock = true
+                        self.isHeld = false
                         AVMLog.write("AVM: WindowsKeyboard — the screen locked; the keyboard goes back to the Mac until it's unlocked.")
                         Task { await USBHelperClient.shared.releaseKeyboard() }
                     }
@@ -309,6 +325,7 @@ final class WindowsKeyboard {
 
     func stateChanged(_ id: String, held: Bool, detail: String?) {
         guard id == keyboardID else { return }
+        isHeld = held
         if held {
             AVMLog.write("AVM: WindowsKeyboard — held.")
             // Held again, so a later helper loss gets its retry too

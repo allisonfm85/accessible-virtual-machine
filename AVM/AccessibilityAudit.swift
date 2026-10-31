@@ -387,6 +387,10 @@ private final class Auditor {
             Screen(name: "Attach USB Device", size: NSSize(width: 600, height: 500), headings: title("Attach USB Device")) {
                 host(USBDevicePickerView(mode: .attach, devices: s.usbDevices))
             },
+            // Permissions (2026-10-30, Permissions.swift).
+            Screen(name: "AVM Permissions", size: NSSize(width: 600, height: 640), headings: title("AVM Permissions")) {
+                host(PermissionsView(close: {}))
+            },
             // What's New after an update (2026-10-30, AVMUpdater.swift).
             Screen(name: "What's New", size: WhatsNewView.size, headings: title("What's New in AVM")) {
                 host(WhatsNewView(title: "What's New in AVM", notes: ReleaseNotes.recent, close: {}))

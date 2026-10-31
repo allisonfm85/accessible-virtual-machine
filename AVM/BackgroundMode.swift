@@ -127,7 +127,10 @@ final class BackgroundMode: ObservableObject {
         AVMLog.write("AVM: in the background (\(watched.count) machine window(s) left up on another display)")
         if !explained {
             explained = true
-            Announcer.shared.announce("AVM is in the background. Your keyboard for Windows still types into it. To bring AVM back, use AVM's item in the menu bar, or open AVM again.", tone: .info)
+            // "Still types into it" only when it does (2026-10-30, a
+            // tester's log: said while Input Monitoring kept it on the Mac).
+            let keyboard = WindowsKeyboard.shared.isHeld ? " Your keyboard for Windows still types into it." : ""
+            Announcer.shared.announce("AVM is in the background.\(keyboard) To bring AVM back, use AVM's item in the menu bar, or open AVM again.", tone: .info)
         }
     }
 
@@ -182,6 +185,8 @@ final class BackgroundMode: ObservableObject {
             quietUntilOpened = false
             AVMLog.write("AVM: opened by the user; in Command-Tab with its list from now on")
             comeForward()
+            // Held back while quiet since login (Permissions.swift).
+            PermissionsCenter.shared.showIfSomethingIsMissing()
         } else if inBackground {
             comeForward()
         }
