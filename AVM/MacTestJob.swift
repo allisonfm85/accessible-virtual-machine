@@ -202,8 +202,9 @@ enum MacTestJob {
             // in the machine's folder, in the temporary folder and in
             // Application Support alike, run from a shell or opened by
             // Launch Services, with the machine in Setup Assistant.
-            // Setup Assistant's limit too (2026-10-30): a note, not a failure.
-            print("   note: couldn't save a machine still in Setup Assistant (permission denied); carrying on with the restore point steps")
+            // The Mac being locked, it seems (2026-10-30, see the resume
+            // below), not Setup Assistant: a note, not a failure.
+            print("   note: couldn't save the machine (permission denied; is the Mac locked?); carrying on with the restore point steps")
             try await stop(machine)
         } else {
         try await stop(machine)
@@ -215,13 +216,20 @@ enum MacTestJob {
         let resumedAt = Date()
         machine = VZVirtualMachine(configuration: try MacGuestConfiguration.make(config, files: files))
         do {
-            try await restore(machine, from: files.savedState)
-        } catch where error.localizedDescription.localizedCaseInsensitiveContains("permission denied") && !autoSetup {
-            // Without --auto-setup, a note: the machine is still in Setup
-            // Assistant. But with it (2026-10-30, twelfth run), past Setup
-            // Assistant and signed in, the resume was refused the same way,
-            // so Setup Assistant isn't the cause, and there it's a failure.
-            print("   note: macOS refused to resume (permission denied); run with --auto-setup to count it")
+            do {
+                try await restore(machine, from: files.savedState)
+            } catch {
+                print("   the resume was refused: \(describe(error))")
+                fflush(stdout)
+                throw error
+            }
+        } catch where FocusLockManager.screenIsLockedNow {
+            // Refused with the Mac locked (2026-10-30): the saved state is
+            // readable only while it's unlocked, the cause of every
+            // "permission denied" seen here, first taken for Setup
+            // Assistant's. The app waits for the unlock (MacGuestRunner
+            // resume); here, a note.
+            print("   note: the Mac is locked, and macOS doesn't resume a saved machine while it is; unlock it and run again to check this")
             try? FileManager.default.removeItem(at: files.savedState)
             machine = nil
         }

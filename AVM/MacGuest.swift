@@ -382,6 +382,8 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
     private var files: MacGuestFiles?
     /// New at every start, so timers from an earlier run can tell.
     private var runToken = UUID()
+    /// Waiting for the Mac's unlock to resume a saved machine (resume).
+    private var unlockObserver: NSObjectProtocol?
     private var clipboard: MacClipboard?
     private var vzConfiguration: VZVirtualMachineConfiguration?
     private var window: NSWindow?
@@ -509,6 +511,28 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
                     // run that was ended meanwhile neither deletes the saved
                     // state nor starts the machine AVM let go of.
                     guard let self, self.runToken == run, self.machine === machine else { return }
+                    // Refused while the Mac is locked (2026-10-30, the
+                    // twelfth macOS test run was refused "permission
+                    // denied" with the display off and locked, the next
+                    // passed unlocked, same machine and code): the saved
+                    // state is readable only while the Mac is unlocked.
+                    // It's kept, and the resume tried again at the unlock,
+                    // instead of a fresh start losing the session.
+                    if let error, FocusLockManager.screenIsLockedNow {
+                        AVMLog.write("AVM: MacGuest — resume refused with the Mac locked (\(error.localizedDescription)); trying again at the unlock.")
+                        Announcer.shared.announce("\(config.name) resumes when you unlock the Mac.", tone: .info)
+                        self.unlockObserver = DistributedNotificationCenter.default().addObserver(
+                            forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+                            MainActor.assumeIsolated {
+                                guard let self else { return }
+                                if let observer = self.unlockObserver { DistributedNotificationCenter.default().removeObserver(observer) }
+                                self.unlockObserver = nil
+                                guard self.runToken == run, self.machine === machine else { return }
+                                self.resume(machine, config: config, files: files)
+                            }
+                        }
+                        return
+                    }
                     if let error {
                         AVMLog.write("AVM: MacGuest — saved state not usable: \(error.localizedDescription); starting as usual.")
                         try? FileManager.default.removeItem(at: files.savedState)
@@ -1086,6 +1110,8 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
         releaseFullControl()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
+        if let unlockObserver { DistributedNotificationCenter.default().removeObserver(unlockObserver) }
+        unlockObserver = nil
         window?.delegate = nil
         window?.close()
         window = nil

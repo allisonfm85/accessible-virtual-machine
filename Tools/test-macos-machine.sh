@@ -53,7 +53,9 @@ fail() {
 if [ -z "$IPSW" ]; then
     IPSW=$(ls -t "$HOME/Library/Application Support/com.alllisonmeloy.AVM/macos-restore-images/"*.ipsw 2>/dev/null | head -1 || true)
 fi
-[ -n "$IPSW" ] && [ -f "$IPSW" ] || fail "No macOS installer. Pass one with --ipsw, or make a macOS machine in AVM once so it downloads one."
+# A reused machine is installed already (2026-10-30): no installer needed.
+[ -n "$REUSE" ] && [ -z "$IPSW" ] && IPSW="$REUSE/none.ipsw"
+[ -n "$REUSE" ] || { [ -n "$IPSW" ] && [ -f "$IPSW" ]; } || fail "No macOS installer. Pass one with --ipsw, or make a macOS machine in AVM once so it downloads one."
 [ -x "$APP/Contents/MacOS/AVM" ] || fail "No AVM build at $APP. Build AVM first, or pass --app."
 
 WORK="${REUSE:-$HOME/Library/Caches/AVM-build/macos-test-$(date +%Y%m%d-%H%M%S)}"
