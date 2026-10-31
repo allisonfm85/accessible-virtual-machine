@@ -1,0 +1,46 @@
+AVM: usbredirhost sends an interrupt OUT transfer longer than one packet
+to the device whole, instead of refusing it
+
+usbredirhost refused every interrupt OUT transfer longer than the
+endpoint's wMaxPacketSize ("error received interrupt out packet is
+larger than wMaxPacketSize") and answered the guest usb_redir_inval.
+USB allows such a transfer: the host controller sends it as a run of
+packets, and QEMU's xHCI hands usb-redir each guest transfer whole. A
+HID device's output report goes as one interrupt OUT transfer, so a
+report longer than the endpoint's packet size never reached the device.
+An APH Mantis Q40 sent to a Windows machine through AVM's USB helper
+typed into Windows, while NVDA and JAWS, which write to it, never found
+it (2026-10-29). The same error from a Windows 10 guest, through SPICE's
+client, is on the spice-devel list (2020-10, "wMaxPacketSize"),
+unanswered.
+
+libusb's macOS backend submits an interrupt transfer of any length
+(WritePipeAsync), and the parser holds data_len to the header's 16-bit
+length. Applies to usbredir 0.14.0, the release UTM's build uses. AVM's
+USB helper is the only user of usbredirhost in the sysroot; QEMU uses
+only the parser.
+
+--- a/usbredirhost/usbredirhost.c
++++ b/usbredirhost/usbredirhost.c
+@@ -2513,14 +2513,13 @@
+         return;
+     }
+ 
+-    if (data_len > host->endpoint[EP2I(ep)].max_packetsize) {
+-        ERROR("error received interrupt out packet is larger than wMaxPacketSize");
+-        usbredirhost_send_interrupt_status(host, id, interrupt_packet,
+-                                           usb_redir_inval);
+-        usbredirparser_free_packet_data(host->parser, data);
+-        FLUSH(host);
+-        return;
+-    }
++    /* AVM: a transfer longer than one packet goes to the device whole, and
++       the host controller splits it into packets, as USB does for any
++       interrupt OUT transfer. Refused, every HID output report longer than
++       the endpoint's wMaxPacketSize failed: Windows sends each report as one
++       transfer, so NVDA and JAWS never reached a USB braille display
++       (2026-10-29, an APH Mantis Q40). The parser holds data_len to the
++       header's 16-bit length. */
+ 
+     usbredirhost_log_data(host, "interrupt data out:", data, data_len);
+ 
