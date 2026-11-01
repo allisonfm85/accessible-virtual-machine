@@ -599,6 +599,10 @@ struct AVMApp: App {
             // never received it (tested 2026-10-24). The search field is the
             // system's and stays.
             CommandGroup(replacing: .help) {
+                // Take the AVM Tour (2026-10-31, Tour.swift).
+                Button("Take the AVM Tour") {
+                    Tour.show()
+                }
                 // What's New in AVM (2026-10-30, AVMUpdater.swift).
                 Button("What's New in AVM") {
                     ReleaseNotes.showRecent()
