@@ -6,11 +6,11 @@
 //
 //   AVM.app/Contents/MacOS/AVM --build-install-media --iso <Windows ISO>
 //       --out <folder> [--edition pro|home|homeSingleLanguage]
-//       [--screen-readers nvda,jaws] [--guest windows|ubuntu|debian|fedora]
+//       [--screen-readers nvda,jaws] [--guest windows|ubuntu|debian|fedora|kali]
 //       [--disk virtio|nvme]   (the disk the answers install onto; default
 //                               virtio, as new machines have since 2026-10-27)
 //
-// For Ubuntu, Debian or Fedora, <folder> must hold the account as the wizard
+// For a Linux guest (ubuntu, debian, fedora, kali), <folder> must hold the account as the wizard
 // writes it (ubuntu-account.json); Tools/test-linux-install.sh does that.
 //
 // It runs the same ensureInstallMedia a real first start runs, into

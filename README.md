@@ -4,7 +4,7 @@ AVM is a macOS application that lets blind and low-vision users install
 and run Windows 11 ARM64 virtual machines entirely through VoiceOver —
 no sighted assistance required at any step. Every failure produces a
 spoken, specific, actionable announcement. It can also install Ubuntu
-Desktop for ARM, Debian or Fedora Workstation with no installer
+Desktop for ARM, Debian, Fedora Workstation or Kali Linux with no installer
 questions, with the Orca screen reader speaking from the first boot
 (tester guide, section 16), and macOS itself, from Apple.
 
@@ -110,7 +110,7 @@ ARM…** gets Windows straight from Microsoft's servers, the way
 Microsoft's Media Creation Tool does, with no web page to use, and
 makes it into an installer (about 4.5 GB to download, 20 GB free while
 it works; **Use Microsoft's Page Instead** is still there). **Download
-Linux…** gets Ubuntu Desktop, Debian or Fedora from its own server. Each
+Linux…** gets Ubuntu Desktop, Debian, Fedora or Kali Linux from its own server. Each
 is checked against its published checksum and chosen as the installer.
 
 After an update, **What's New in AVM** says what changed; it's in the
@@ -349,6 +349,14 @@ and Orca) the same way, downloading it from Fedora's mirrors during the
 install. The Workstation live image is not used: AVM says so and names
 the download it needs (tester guide, section 16).
 
+## Kali Linux
+
+Choose Kali's arm64 installer (Download Linux… gets the netinstaller from
+cdimage.kali.org) and AVM installs Kali the way it installs Debian, whose
+installer Kali uses: Kali's own mirror, the GNOME desktop rather than
+Kali's default Xfce (GNOME's sign-in screen speaks with Orca), and Kali's
+default tool set, with Orca speaking from the first boot.
+
 ## Sharing a folder with Windows
 
 In a Windows machine's Settings, choose Choose Folder to Share. Windows
@@ -549,7 +557,8 @@ one machine at a time.
 ## Testing an install
 
 `Tools/test-linux-install.sh --guest debian --iso <ISO>` does the same
-for Ubuntu, Debian and Fedora (`--guest ubuntu`, `--guest fedora`): it
+for Ubuntu, Debian, Fedora and Kali (`--guest ubuntu`, `--guest fedora`,
+`--guest kali`): it
 waits for the install-complete marker and the installer's power-off.
 
 ## Testing a Windows install

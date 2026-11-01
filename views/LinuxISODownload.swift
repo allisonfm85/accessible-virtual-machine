@@ -16,7 +16,8 @@
 //     used as it is.
 //   - It picks the file as the new machine's installer.
 // The releases are the ones AVM's unattended installs are proven on:
-// Ubuntu 26.04, Debian's current stable and Fedora 44.
+// Ubuntu 26.04, Debian's current stable and Fedora 44, and since
+// 2026-10-30 Kali Linux's current release (2026.3 when added).
 
 import SwiftUI
 import AppKit
@@ -29,7 +30,10 @@ import Combine
 final class LinuxISODownloader: NSObject, ObservableObject {
 
     enum Distribution: String, CaseIterable, Identifiable {
-        case ubuntu, debian, fedora
+        // Kali Linux (2026-10-30, the user's request), from its own server
+        // and checked against its own published SHA-256 list, like the
+        // first three.
+        case ubuntu, debian, fedora, kali
 
         var id: Self { self }
 
@@ -38,6 +42,7 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             case .ubuntu: return "Ubuntu Desktop"
             case .debian: return "Debian"
             case .fedora: return "Fedora"
+            case .kali: return "Kali Linux"
             }
         }
 
@@ -47,6 +52,7 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             case .ubuntu: return "Ubuntu 26.04, the whole desktop on the installer: about 4 gigabytes."
             case .debian: return "Debian's current release, a small installer that downloads the desktop while it installs: about 700 megabytes."
             case .fedora: return "Fedora 44 Workstation, a small installer that downloads the desktop while it installs: about 1.2 gigabytes."
+            case .kali: return "Kali Linux's current release with the GNOME desktop and Kali's default tools, a small installer that downloads them while it installs: about 600 megabytes."
             }
         }
 
@@ -55,6 +61,8 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             case .ubuntu: return URL(string: "https://cdimage.ubuntu.com/releases/26.04/release/")!
             case .debian: return URL(string: "https://cdimage.debian.org/debian-cd/current/arm64/iso-cd/")!
             case .fedora: return URL(string: "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Everything/aarch64/iso/")!
+            // Kali's "current" folder always holds its newest release.
+            case .kali: return URL(string: "https://cdimage.kali.org/current/")!
             }
         }
 
@@ -64,13 +72,15 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             case .ubuntu: return #"ubuntu-26\.04(\.\d+)?-desktop-arm64\.iso"#
             case .debian: return #"debian-\d+\.\d+\.\d+-arm64-netinst\.iso"#
             case .fedora: return #"Fedora-Everything-netinst-aarch64-44-[\d.]+\.iso"#
+            case .kali: return #"kali-linux-\d{4}\.\d+[a-z]?-installer-netinst-arm64\.iso"#
             }
         }
 
-        /// The list of SHA-256 sums in the same folder.
-        var checksumPattern: String {
+        /// The list of SHA-256 sums in the same folder, for the installer
+        /// named `file`.
+        func checksumPattern(for file: String) -> String {
             switch self {
-            case .ubuntu, .debian: return #"SHA256SUMS"#
+            case .ubuntu, .debian, .kali: return #"SHA256SUMS"#
             case .fedora: return #"Fedora-Everything-44-[\d.]+-aarch64-CHECKSUM"#
             }
         }
@@ -168,7 +178,7 @@ final class LinuxISODownloader: NSObject, ObservableObject {
         guard let name = names.max(by: { $0.compare($1, options: .numeric) == .orderedAscending }) else {
             throw CocoaError(.fileNoSuchFile, userInfo: [NSLocalizedDescriptionKey: "Its folder lists no installer."])
         }
-        guard let sumsName = Self.matches(distribution.checksumPattern, in: listing).max(by: { $0.compare($1, options: .numeric) == .orderedAscending }) else {
+        guard let sumsName = Self.matches(distribution.checksumPattern(for: name), in: listing).max(by: { $0.compare($1, options: .numeric) == .orderedAscending }) else {
             throw CocoaError(.fileNoSuchFile, userInfo: [NSLocalizedDescriptionKey: "Its folder lists no checksums."])
         }
         let sums = try await Self.text(at: folder.appendingPathComponent(sumsName))
@@ -214,14 +224,23 @@ final class LinuxISODownloader: NSObject, ObservableObject {
     }
 
     /// The SHA-256 for `name`, from either form a distribution publishes:
-    /// "hash  name" or "hash *name" (Debian, Ubuntu), or "SHA256 (name) =
-    /// hash" (Fedora).
+    /// "hash  name" or "hash *name" (Debian, Ubuntu, Kali), or
+    /// "SHA256 (name) = hash" (Fedora). The line must
+    /// name the file itself (2026-10-30): in Kali's list the installer's
+    /// .torrent, whose name contains the installer's, is listed too.
     static func hash(of name: String, in sums: String) -> String? {
-        for line in sums.split(separator: "\n").map(String.init) where line.contains(name) {
+        for line in sums.split(separator: "\n").map(String.init) where names(name, line) {
             let hex = matches("[0-9a-fA-F]{64}", in: line)
             if let first = hex.first { return first.lowercased() }
         }
         return nil
+    }
+
+    /// True when a checksum line is for `name` itself: "… name",
+    /// "…*name" or "(name)", not a longer name that starts with it.
+    static func names(_ name: String, _ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasSuffix(" " + name) || trimmed.hasSuffix("*" + name) || trimmed.contains("(" + name + ")")
     }
 
     // MARK: Progress and the finished file
@@ -424,7 +443,7 @@ struct LinuxDownloadView: View {
 /// The download with no window (2026-10-30), for a full system test of a
 /// Linux install the way a user gets it:
 ///
-///   AVM.app/Contents/MacOS/AVM --download-linux ubuntu|debian|fedora
+///   AVM.app/Contents/MacOS/AVM --download-linux ubuntu|debian|fedora|kali
 ///
 /// It runs LinuxISODownloader exactly as the setup wizard's Download Linux
 /// does, printing each step, and exits 0 with the installer's path as its
@@ -440,7 +459,7 @@ enum LinuxDownloadJob {
         Announcer.isMuted = true
         guard arguments.indices.contains(i + 1),
               let distribution = LinuxISODownloader.Distribution(rawValue: arguments[i + 1]) else {
-            print("Usage: AVM \(flag) ubuntu|debian|fedora")
+            print("Usage: AVM \(flag) \(LinuxISODownloader.Distribution.allCases.map(\.rawValue).joined(separator: "|"))")
             exit(64)
         }
         let downloader = LinuxISODownloader()

@@ -194,6 +194,7 @@ struct SetupView: View {
         case .ubuntu: return .ubuntu
         case .debian: return .debian
         case .fedora: return .fedora
+        case .kali: return .kali
         }
     }
 
@@ -303,7 +304,7 @@ struct SetupView: View {
                         Button("Choose Installer Image") {
                             showingFilePicker = true
                         }
-                        .accessibilityHint("Opens a file picker to select your Windows, Ubuntu, Debian or Fedora installer ISO")
+                        .accessibilityHint("Opens a file picker to select your Windows or Linux installer ISO")
 
                         // 2026-10-25, roadmap item 9.
                         Button("Download Windows 11 for ARM…") {
@@ -311,11 +312,12 @@ struct SetupView: View {
                         }
                         .accessibilityHint("Gets Windows 11 from Microsoft's servers, with no web page, makes the installer and picks it for you")
 
-                        // 2026-10-30: Ubuntu, Debian or Fedora, by AVM.
+                        // 2026-10-30: Ubuntu, Debian or Fedora, by AVM; Kali
+                        // and more since (the list is LinuxISODownloader's).
                         Button("Download Linux…") {
                             showingLinuxDownload = true
                         }
-                        .accessibilityHint("Downloads Ubuntu, Debian or Fedora from its own server, checks it, and picks it for you")
+                        .accessibilityHint("Downloads a Linux installer from the distribution's own server, checks it, and picks it for you")
                     }
                 }
 

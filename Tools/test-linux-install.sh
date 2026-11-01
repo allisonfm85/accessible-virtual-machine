@@ -2,10 +2,10 @@
 # test-linux-install.sh
 # AVM — Accessible Virtual Machine
 #
-# A complete unattended Ubuntu, Debian or Fedora install with no one at the screen
+# A complete unattended Ubuntu, Debian, Fedora or Kali install with no one at the screen
 # (2026-10-26), the Linux counterpart of test-windows-install.sh:
 #   1. builds install media with AVM's own pipeline
-#      (AVM --build-install-media --guest ubuntu|debian|fedora), with a test
+#      (AVM --build-install-media --guest ubuntu|debian|fedora|kali), with a test
 #      account in the form the wizard writes;
 #   2. makes a blank disk and firmware settings, and starts QEMU the way
 #      AVM starts a Linux machine, with no window;
@@ -18,7 +18,7 @@
 # about 15 GB while it runs. The test machine is deleted afterwards unless
 # it failed or --keep.
 #
-#   Tools/test-linux-install.sh --iso PATH [--guest debian|ubuntu|fedora] [--app PATH] [--minutes N] [--keep] [--disk virtio|nvme]
+#   Tools/test-linux-install.sh --iso PATH [--guest debian|ubuntu|fedora|kali] [--app PATH] [--minutes N] [--keep] [--disk virtio|nvme]
 
 set -euo pipefail
 
@@ -54,7 +54,7 @@ fail() {
     exit 1
 }
 
-case "$GUEST" in ubuntu|debian|fedora) ;; *) fail "--guest must be ubuntu, debian or fedora." ;; esac
+case "$GUEST" in ubuntu|debian|fedora|kali) ;; *) fail "--guest must be ubuntu, debian, fedora or kali." ;; esac
 [ -n "$ISO" ] && [ -f "$ISO" ] || fail "No installer ISO given." "Pass one with --iso."
 R="$APP/Contents/Resources"
 [ -x "$APP/Contents/MacOS/AVM" ] && [ -x "$R/qemu-system-aarch64" ] || fail "No AVM build at $APP." "Build AVM first, or pass --app."

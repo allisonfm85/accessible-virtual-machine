@@ -1698,5 +1698,133 @@ final class GuestWatchTests: XCTestCase {
         UserDefaults.standard.set(false, forKey: key)
         XCTAssertFalse(GuestWatchSettings.isOn(key))
         UserDefaults.standard.removeObject(forKey: key)
+// MARK: - Kali Linux, Debian's way (2026-10-30)
+
+final class KaliInstallTests: XCTestCase {
+    private let account = UbuntuAccount(realName: "Amena T", userName: "amena", passwordHash: "$6$salt$hash",
+                                        signInAutomatically: true, keyboardLayout: "gb", keyboardVariant: "mac")
+
+    /// The first two entries of kali-linux-2026.3-installer-netinst-arm64.iso's
+    /// menu, as they are on the disc.
+    private let menu = """
+        menuentry 'Install' {
+            set background_color=black
+            linux    /install.a64/vmlinuz net.ifnames=0 console=tty0 preseed/file=/cdrom/simple-cdd/default.preseed simple-cdd/profiles=kali --- quiet
+            initrd   /install.a64/initrd.gz
+        }
+        menuentry 'Graphical install' {
+            set background_color=black
+            linux    /install.a64/vmlinuz net.ifnames=0 console=tty0 preseed/file=/cdrom/simple-cdd/default.preseed simple-cdd/profiles=kali --- quiet
+            initrd   /install.a64/gtk/initrd.gz
+        }
+        """
+
+    /// AVM's preseed takes the place of Kali's on the entry that boots,
+    /// and only there; Kali's profile and the GNOME choice stay.
+    func testBootMenuEdit() throws {
+        let edited = try XCTUnwrap(UbuntuInstallPipeline.editedKaliBootMenu(menu, keyboard: "keymap=gb"))
+        XCTAssertTrue(edited.hasPrefix(UbuntuInstallPipeline.markerGuardLine))
+        let first = try XCTUnwrap(edited.components(separatedBy: "\n").first { $0.contains("/install.a64/vmlinuz") })
+        XCTAssertTrue(first.contains("\(UbuntuInstallPipeline.debianKernelArguments) keymap=gb desktop=gnome"))
+        XCTAssertFalse(first.contains(UbuntuInstallPipeline.kaliOwnPreseedArgument))
+        XCTAssertTrue(first.contains("simple-cdd/profiles=kali"))
+        XCTAssertEqual(edited.components(separatedBy: "preseed/file=").count, 3, "the second entry is untouched")
+        XCTAssertTrue(edited.contains("set timeout=1"))
+        // Debian's own menu has no Kali profile: not Kali's.
+        XCTAssertNil(UbuntuInstallPipeline.editedKaliBootMenu("menuentry 'x' {\n linux /install.a64/vmlinuz --- quiet\n}"))
+        XCTAssertNil(UbuntuInstallPipeline.editedKaliBootMenu("menuentry 'x' { linux /casper/vmlinuz }"))
+    }
+
+    func testPreseedIsKalis() {
+        let preseed = UbuntuInstallPipeline.kaliPreseed(account: account, hostName: "amenas-kali", timeZone: "UTC", disk: "vda")
+        for line in ["d-i preseed/early_command string anna-install simple-cdd-profiles\n",
+                     "d-i mirror/http/hostname string http.kali.org\n", "d-i mirror/http/directory string /kali\n",
+                     "d-i apt-setup/services-select multiselect\n",
+                     "tasksel tasksel/first multiselect core, desktop-gnome, meta-default, standard\n",
+                     "orca spice-vdagent qemu-guest-agent spice-webdavd", "d-i partman-auto/disk string /dev/vda\n",
+                     "d-i passwd/username string amena\n", "d-i preseed/late_command string sh /cdrom/nocloud/setup.sh",
+                     "d-i debian-installer/exit/poweroff boolean true\n"] {
+            XCTAssertTrue(preseed.contains(line), line)
+        }
+        XCTAssertFalse(preseed.contains("deb.debian.org"))
+        XCTAssertFalse(preseed.contains("gnome-desktop"))
+    }
+
+    func testSetupScriptIsKalis() throws {
+        let script = UbuntuInstallPipeline.kaliSetupScript(account: account)
+        XCTAssertTrue(script.hasPrefix("#!/bin/sh"))
+        XCTAssertTrue(script.contains("Kali Linux installed by AVM"))
+        XCTAssertTrue(script.contains("/etc/gdm3/daemon.conf"))
+        XCTAssertTrue(script.contains(#"XKBLAYOUT="gb""#))
+        // Kali's own dconf profile is added to, not written over.
+        XCTAssertTrue(script.contains("grep -qx 'system-db:local' $T/etc/dconf/profile/user ||"))
+        let profile = try XCTUnwrap(script.range(of: "system-db:local"))
+        let update = try XCTUnwrap(script.range(of: "in-target dconf update"))
+        XCTAssertLessThan(profile.lowerBound, update.lowerBound)
+        XCTAssertTrue(UbuntuInstallPipeline.kaliFailureScript.contains("Kali Linux install failed"))
+        XCTAssertTrue(UbuntuInstallPipeline.kaliFailureScript.contains("AVMFAIL.TAG"))
+    }
+
+    func testKaliDiscIsKnown() {
+        XCTAssertEqual(UbuntuInstallPipeline.debianFamily(
+            discInfo: "Kali GNU/Linux 2026.3rc2 \"Kali-last-snapshot\" - Official arm64 NETINST with firmware 20261009-17:19"), .kali)
+        XCTAssertEqual(UbuntuInstallPipeline.debianFamily(discInfo: "Debian GNU/Linux 13.7.0 \"Trixie\" - Official arm64 NETINST"), .debian)
+        let kali = UbuntuISOInfo(discInfo: "Kali GNU/Linux 2026.3", version: "2026.3", isARM64: true, isDesktop: true, distro: .kali)
+        XCTAssertEqual(kali.spokenName, "Kali Linux 2026.3")
+        XCTAssertNil(UbuntuInstallPipeline.problem(with: kali))
+        let intel = UbuntuISOInfo(discInfo: "Kali", version: "2026.3", isARM64: false, isDesktop: true, distro: .kali)
+        XCTAssertTrue(UbuntuInstallPipeline.problem(with: intel)?.contains("arm64") ?? false)
+        XCTAssertTrue(LinuxDistro.kali.usesPreseed)
+        XCTAssertTrue(GuestOS.kali.isLinux)
+        XCTAssertEqual(GuestOS(rawValue: "kali")?.displayName, "Kali Linux")
+        XCTAssertNotNil(UbuntuAccount.problem(withUserName: "postgres"), "a Kali tool's own user")
+    }
+}
+
+// MARK: - Download Linux: finding the file and its checksum (2026-10-30)
+
+final class LinuxDownloadTests: XCTestCase {
+    private func newest(_ distribution: LinuxISODownloader.Distribution, in listing: String) -> String? {
+        LinuxISODownloader.matches(distribution.filePattern, in: listing)
+            .max(by: { $0.compare($1, options: .numeric) == .orderedAscending })
+    }
+
+    /// cdimage.kali.org/current/ lists every kind of image; only the arm64
+    /// netinstaller is wanted, and its checksum, not its .torrent's.
+    func testKali() throws {
+        let listing = """
+            <a href="kali-linux-2026.3-installer-amd64.iso">x</a>
+            <a href="kali-linux-2026.3-installer-arm64.iso">x</a>
+            <a href="kali-linux-2026.3-installer-netinst-amd64.iso">x</a>
+            <a href="kali-linux-2026.3-installer-netinst-arm64.iso">x</a>
+            <a href="kali-linux-2026.3-installer-netinst-arm64.iso.torrent">x</a>
+            <a href="kali-linux-2026.3-live-arm64.iso.torrent">x</a>
+            <a href="SHA256SUMS">x</a> <a href="SHA256SUMS.gpg">x</a>
+            """
+        let name = try XCTUnwrap(newest(.kali, in: listing))
+        XCTAssertEqual(name, "kali-linux-2026.3-installer-netinst-arm64.iso")
+        XCTAssertEqual(LinuxISODownloader.matches(LinuxISODownloader.Distribution.kali.checksumPattern(for: name), in: listing), ["SHA256SUMS"])
+        let sums = """
+            0dd3e70f2e0b092286b29355450bc79a034a13fb1d5b4bf83c297149115258cd  kali-linux-2026.3-installer-netinst-amd64.iso
+            a986c7fe0f8e887a77e7ea9f868da88eae04e7ac780ae75e6b702f243b63bf8d  kali-linux-2026.3-installer-netinst-arm64.iso
+            5ad419b75bc29abc0f41047481ff46ff55c11a85588eb4c474892dca874100b7  kali-linux-2026.3-installer-netinst-arm64.iso.torrent
+            """
+        XCTAssertEqual(LinuxISODownloader.hash(of: name, in: sums), "a986c7fe0f8e887a77e7ea9f868da88eae04e7ac780ae75e6b702f243b63bf8d")
+        // The .torrent's line alone is no answer for the installer.
+        XCTAssertNil(LinuxISODownloader.hash(of: name, in: "5ad419b75bc29abc0f41047481ff46ff55c11a85588eb4c474892dca874100b7  \(name).torrent"))
+        // A later release is the newest.
+        XCTAssertEqual(newest(.kali, in: listing + "kali-linux-2026.4-installer-netinst-arm64.iso"),
+                       "kali-linux-2026.4-installer-netinst-arm64.iso")
+        XCTAssertEqual(LinuxISODownloader.Distribution(rawValue: "kali"), .kali)
+    }
+
+    /// The first three's lists still read: Ubuntu's "*name", Fedora's
+    /// "SHA256 (name) = hash".
+    func testExistingForms() {
+        let hex = String(repeating: "ab", count: 32)
+        XCTAssertEqual(LinuxISODownloader.hash(of: "ubuntu.iso", in: "\(hex) *ubuntu.iso"), hex)
+        XCTAssertEqual(LinuxISODownloader.hash(of: "debian.iso", in: "\(hex)  debian.iso"), hex)
+        XCTAssertEqual(LinuxISODownloader.hash(of: "Fedora.iso", in: "SHA256 (Fedora.iso) = \(hex)"), hex)
+        XCTAssertNil(LinuxISODownloader.hash(of: "Fedora.iso", in: "# Fedora.iso: 123 bytes"))
     }
 }

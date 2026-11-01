@@ -383,6 +383,10 @@ enum GuestOS: String {
     /// account, Orca and markers, Fedora's own kickstart answers, from the
     /// Everything netinstall ISO (UbuntuInstallPipeline.swift).
     case fedora
+    /// Kali Linux (2026-10-30, the user's request): Debian's installer and
+    /// preseed answers, with Kali's own mirror, GNOME desktop and default
+    /// tools (UbuntuInstallPipeline.swift).
+    case kali
     /// Runs on Apple's Virtualization framework, not QEMU (MacGuest.swift).
     case macOS
 
@@ -394,13 +398,14 @@ enum GuestOS: String {
         case .ubuntu: return "Ubuntu"
         case .debian: return "Debian"
         case .fedora: return "Fedora"
+        case .kali: return "Kali Linux"
         case .macOS: return "macOS"
         }
     }
 
-    /// Ubuntu, Debian or Fedora: AVM's Linux install and run path (account,
-    /// Orca, install markers, stall watch).
-    var isLinux: Bool { self == .ubuntu || self == .debian || self == .fedora }
+    /// Ubuntu, Debian, Fedora or Kali: AVM's Linux install and run path
+    /// (account, Orca, install markers, stall watch).
+    var isLinux: Bool { self == .ubuntu || self == .debian || self == .fedora || self == .kali }
 }
 
 extension VMConfiguration {

@@ -334,7 +334,7 @@ The window reads top to bottom:
   Watching** stops AVM telling you; your browser keeps downloading, and
   you choose the file with **Choose Installer Image** when it's done.
 - **Download Linux** opens a window where you choose Ubuntu Desktop,
-  Debian or Fedora (a radio group, "Distribution to download"), then
+  Debian, Fedora or Kali Linux (a radio group, "Distribution to download"), then
   **Download** it (Command-Return). AVM downloads the current release from
   the distribution's own server into Downloads, says how far along it is
   every 10 percent (**Speak Progress**, Command-P, at any time), checks it
@@ -1286,6 +1286,38 @@ connection, and AVM says the install takes about 20 to 60 minutes.
   skipped.
 - SELinux stays on, as Fedora ships it.
 - A larger disk is not used automatically, as for Ubuntu.
+
+### Kali Linux
+
+AVM can install **Kali Linux** the same way (added 2026-10-30): the same
+account section (titled **Kali Linux Account**), Orca on at the login
+screen and after with Caps Lock as its key, and everything listed under
+What AVM sets up in Ubuntu. Kali's installer is Debian's, so it goes the
+way Debian does.
+
+**Getting the Kali ISO.** **Download Linux** in the setup wizard gets it
+for you. By hand: on kali.org, under Installer Images, choose Apple
+Silicon (ARM64) and download the **netinstaller** (named like
+`kali-linux-2026.3-installer-netinst-arm64.iso`, about 600 MB). The
+version for Intel and AMD PCs (`amd64`) won't work, and AVM says so.
+
+**The install downloads Kali.** The disc holds only the installer; the
+desktop and Kali's tools come from Kali's own mirror (http.kali.org).
+
+**How Kali differs from Debian:**
+
+- The desktop is GNOME, not Kali's default Xfce: GNOME's sign-in screen
+  speaks with Orca, and it's the desktop AVM's Orca settings are made for.
+- Kali's default tools (kali-linux-default, what Kali's own installer
+  picks) are installed, about 14 GB on the disk in all.
+- Kali sets things up its own way at the end, as its own installer does:
+  your account's shell is zsh, and the account is in Kali's groups
+  (wireshark among them) as well as sudo.
+
+Tested so far with AVM's unattended install test only (Kali 2026.3, from
+Download Linux): it installed in 7 minutes, signed in to a GNOME desktop
+by itself with Orca and the SPICE agent running. Orca's speech has not
+yet been listened to in the app. Please report what you hear.
 
 ---
 

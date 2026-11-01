@@ -48,6 +48,8 @@ let package = Package(
                 "AVM/MacGuestFiles.swift",
                 "AVM/MachineArchive.swift",
                 "AVM/RemoteDesktopAddress.swift",
+                // For its file and checksum patterns (2026-10-30).
+                "views/LinuxISODownload.swift",
             ],
             swiftSettings: appSettings
         ),

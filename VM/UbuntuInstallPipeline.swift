@@ -163,7 +163,13 @@ nonisolated struct UbuntuAccount: Codable, Equatable {
                                      "ftp", "halt", "shutdown", "dbus", "chrony", "pipewire", "flatpak",
                                      "unbound", "rpc", "rpcuser", "usbmuxd", "abrt", "setroubleshoot",
                                      "qemu", "brlapi", "pesign", "wsdd", "saslauth", "openvpn",
-                                     "nm-openconnect", "passim", "dhcpcd"]
+                                     "nm-openconnect", "passim", "dhcpcd",
+                                     // Kali's tools' own (2026-10-30): the
+                                     // account is made before they install,
+                                     // and their adduser would then fail.
+                                     "kali", "postgres", "mysql", "redis", "sshd", "statd", "stunnel4",
+                                     "debian-tor", "inetsim", "iodine", "miredo", "mosquitto", "ntpsec",
+                                     "arpwatch", "kaboxer", "wireshark", "beef-xss", "king-phisher"]
         if reserved.contains(name) || name.hasPrefix("systemd-") {
             return "Linux keeps the name \(name) for itself. Please choose another user name."
         }
@@ -333,6 +339,11 @@ enum UbuntuKeyboard {
 /// (the account, Orca, the marker, the stall watch) is shared.
 nonisolated enum LinuxDistro: String, Equatable, Sendable {
     case ubuntu, debian, fedora
+    /// Kali Linux (2026-10-30): Debian's installer, Debian's path.
+    case kali
+
+    /// Installed with Debian's installer and a preseed file.
+    var usesPreseed: Bool { self == .debian || self == .kali }
 }
 
 nonisolated struct UbuntuISOInfo: Equatable {
@@ -354,6 +365,9 @@ nonisolated struct UbuntuISOInfo: Equatable {
         }
         if distro == .fedora {
             return version.isEmpty ? "Fedora" : "Fedora \(version)"
+        }
+        if distro == .kali {
+            return version.isEmpty ? "Kali Linux" : "Kali Linux \(version)"
         }
         var name = "Ubuntu"
         if !version.isEmpty { name += " \(version)" }
@@ -585,16 +599,30 @@ nonisolated final class UbuntuInstallPipeline {
             version = String(discInfo[match])
         }
         // The netinst installs the desktop from the network, so every Debian
-        // installer counts as a desktop one.
+        // installer counts as a desktop one. Kali's is Debian's installer
+        // (2026-10-30), with "Kali GNU/Linux 2026.3 ..." as its disc info.
         let info = UbuntuISOInfo(discInfo: discInfo, version: version,
-                                 isARM64: found.contains("'/EFI/boot/bootaa64.efi'"), isDesktop: true, distro: .debian)
+                                 isARM64: found.contains("'/EFI/boot/bootaa64.efi'"), isDesktop: true,
+                                 distro: debianFamily(discInfo: discInfo))
         ubuntuLog("identify: \(info.spokenName), arm64=\(info.isARM64), disc info \"\(discInfo)\"")
         return info
+    }
+
+    /// Kali or Debian, from a Debian-installer disc's /.disk/info.
+    static func debianFamily(discInfo: String) -> LinuxDistro {
+        discInfo.hasPrefix("Kali") ? .kali : .debian
     }
 
     static func problem(with info: UbuntuISOInfo?) -> String? {
         guard let info else {
             return "This ISO isn't an Ubuntu installer AVM recognizes."
+        }
+        if info.distro == .kali {
+            // Kali is a rolling release: any arm64 installer is current.
+            if !info.isARM64 {
+                return "This is a Kali Linux installer for Intel and AMD PCs. This Mac needs the arm64 one: on kali.org, under Installer Images, download the Apple Silicon (ARM64) netinstaller."
+            }
+            return nil
         }
         if info.distro == .debian {
             if !info.isARM64 {
@@ -687,13 +715,16 @@ nonisolated final class UbuntuInstallPipeline {
         let nocloud = scratch.appendingPathComponent("nocloud")
         do {
             try FileManager.default.createDirectory(at: nocloud, withIntermediateDirectories: true)
-            if distro == .debian {
-                try Self.debianPreseed(account: account, hostName: Self.hostName(fromVMName: input.vmName),
-                                       timeZone: TimeZone.current.identifier, disk: input.diskName)
+            if distro.usesPreseed {
+                let kali = distro == .kali
+                let hostName = Self.hostName(fromVMName: input.vmName)
+                let timeZone = TimeZone.current.identifier
+                try (kali ? Self.kaliPreseed(account: account, hostName: hostName, timeZone: timeZone, disk: input.diskName)
+                          : Self.debianPreseed(account: account, hostName: hostName, timeZone: timeZone, disk: input.diskName))
                     .write(to: nocloud.appendingPathComponent("preseed.cfg"), atomically: true, encoding: .utf8)
-                try Self.debianSetupScript(account: account)
+                try (kali ? Self.kaliSetupScript(account: account) : Self.debianSetupScript(account: account))
                     .write(to: nocloud.appendingPathComponent("setup.sh"), atomically: true, encoding: .utf8)
-                try Self.debianFailureScript
+                try (kali ? Self.kaliFailureScript : Self.debianFailureScript)
                     .write(to: nocloud.appendingPathComponent("failed.sh"), atomically: true, encoding: .utf8)
                 return
             }
@@ -1046,7 +1077,13 @@ nonisolated final class UbuntuInstallPipeline {
             throw UbuntuPipelineError.stageFailed(stage: .rebuildISO,
                                                  reason: "Couldn't read the installer's boot menu. (xorriso exit \(extract.code))")
         }
-        guard let edited = distro == .debian ? Self.editedDebianBootMenu(original, keyboard: Self.debianKeyboardArguments(account)) : Self.editedBootMenu(original) else {
+        let menu: String?
+        switch distro {
+        case .debian: menu = Self.editedDebianBootMenu(original, keyboard: Self.debianKeyboardArguments(account))
+        case .kali: menu = Self.editedKaliBootMenu(original, keyboard: Self.debianKeyboardArguments(account))
+        default: menu = Self.editedBootMenu(original)
+        }
+        guard let edited = menu else {
             throw UbuntuPipelineError.stageFailed(stage: .rebuildISO,
                                                  reason: "The installer's boot menu isn't in the form AVM knows, so the answers couldn't be added. This Ubuntu release may be newer than this version of AVM.")
         }
@@ -1080,8 +1117,8 @@ nonisolated final class UbuntuInstallPipeline {
         let readBack = (try? String(contentsOf: check, encoding: .utf8)) ?? ""
         guard verify.code == 0,
               readBack.hasPrefix(Self.markerGuardLine),
-              readBack.contains(distro == .debian ? Self.debianKernelArguments : Self.kernelArguments),
-              verify.output.contains(distro == .debian ? "\n'/nocloud/preseed.cfg'" : "\n'/nocloud/user-data'"),
+              readBack.contains(distro.usesPreseed ? Self.debianKernelArguments : Self.kernelArguments),
+              verify.output.contains(distro.usesPreseed ? "\n'/nocloud/preseed.cfg'" : "\n'/nocloud/user-data'"),
               verify.output.contains("\n'/nocloud/setup.sh'"),
               verify.output.contains("\n'/nocloud/failed.sh'") else {
             throw UbuntuPipelineError.stageFailed(stage: .rebuildISO,
@@ -1232,6 +1269,86 @@ nonisolated final class UbuntuInstallPipeline {
 
             """
     }
+
+    // MARK: Kali Linux (2026-10-30, the user's request)
+    //
+    // Kali's installer is Debian's, so Kali takes Debian's path: the same
+    // preseed answers, setup script, failure script and marker. MEASURED on
+    // kali-linux-2026.3-installer-netinst-arm64.iso, what differs:
+    //   - Its boot menu already names a preseed file of its own
+    //     (preseed/file=/cdrom/simple-cdd/default.preseed, with
+    //     simple-cdd/profiles=kali). A second preseed/file on the command
+    //     line replaces the first, so AVM's takes its place on the entry it
+    //     boots, and AVM's answers start the same thing Kali's did (its only
+    //     line: anna-install simple-cdd-profiles), which then loads Kali's
+    //     own answers (kali.preseed: Kali's mirror, no Debian security
+    //     mirror, contrib and non-free) and runs kali.postinst at the end.
+    //   - Kali's mirror is http.kali.org/kali, and Debian's security and
+    //     updates mirrors don't apply to it.
+    //   - Kali's tasks are its own (tasksel-data 3.90+kali1): core,
+    //     desktop-gnome, meta-default (the tools a Kali install brings by
+    //     default) and standard. GNOME rather than Kali's default Xfce:
+    //     GDM speaks with Orca at the sign-in screen, and the setup script's
+    //     settings (dconf, gdm3) are GNOME's, proven on Debian.
+    //   - desktop=gnome on the command line, as Kali's own GNOME menu entry
+    //     has it, so Kali's packages pick GNOME's defaults too.
+
+    /// The words Kali's own menu uses to load its preseed file.
+    static let kaliOwnPreseedArgument = "preseed/file=/cdrom/simple-cdd/default.preseed"
+
+    /// Debian's menu edit, with Kali's own preseed argument taken off the
+    /// entry that boots (AVM's file starts what it started) and GNOME
+    /// chosen. nil when the menu isn't Kali's: no installer entry, or one
+    /// without Kali's profile.
+    static func editedKaliBootMenu(_ original: String, keyboard: String = "") -> String? {
+        let words = keyboard.isEmpty ? "desktop=gnome" : "\(keyboard) desktop=gnome"
+        guard var menu = editedDebianBootMenu(original, keyboard: words),
+              let start = menu.range(of: debianKernelArguments) else {
+            return nil
+        }
+        let line = menu.lineRange(for: start)
+        guard menu[line].contains("simple-cdd/profiles=kali"),
+              let own = menu.range(of: " " + kaliOwnPreseedArgument, range: line) else {
+            return nil
+        }
+        menu.removeSubrange(own)
+        return menu
+    }
+
+    /// Debian's answers, made Kali's (see the section header). The early
+    /// command is Kali's default.preseed's only line.
+    static func kaliPreseed(account: UbuntuAccount, hostName: String, timeZone: String, disk: String = "nvme0n1") -> String {
+        debianPreseed(account: account, hostName: hostName, timeZone: timeZone, disk: disk)
+            .replacingOccurrences(of: "# Written by AVM. Debian's installer reads this and asks nothing.",
+                                  with: "# Written by AVM. Kali's installer reads this and asks nothing.\nd-i preseed/early_command string anna-install simple-cdd-profiles")
+            .replacingOccurrences(of: "d-i mirror/http/hostname string deb.debian.org\nd-i mirror/http/directory string /debian",
+                                  with: "d-i mirror/http/hostname string http.kali.org\nd-i mirror/http/directory string /kali\nd-i apt-setup/services-select multiselect\nd-i apt-setup/contrib boolean true\nd-i apt-setup/non-free boolean true")
+            .replacingOccurrences(of: "tasksel tasksel/first multiselect standard, gnome-desktop",
+                                  with: "tasksel tasksel/first multiselect core, desktop-gnome, meta-default, standard")
+            .replacingOccurrences(of: "d-i pkgsel/upgrade select safe-upgrade", with: "d-i pkgsel/upgrade select full-upgrade")
+    }
+
+    /// Debian's setup script, made Kali's. Kali's GNOME may bring a dconf
+    /// profile of its own (its themes), so AVM's local database is added
+    /// to it rather than written over it.
+    static func kaliSetupScript(account: UbuntuAccount) -> String {
+        debianSetupScript(account: account)
+            .replacingOccurrences(of: "at the end of Debian's install", with: "at the end of Kali's install")
+            .replacingOccurrences(of: "Debian installed by AVM", with: "Kali Linux installed by AVM")
+            .replacingOccurrences(of: "printf 'user-db:user\\nsystem-db:local\\n' > $T/etc/dconf/profile/user",
+                                  with: """
+                                  if [ -s $T/etc/dconf/profile/user ]; then
+                                      grep -qx 'system-db:local' $T/etc/dconf/profile/user || sed -i '/^user-db:user$/a system-db:local' $T/etc/dconf/profile/user
+                                      grep -qx 'system-db:local' $T/etc/dconf/profile/user || echo 'system-db:local' >> $T/etc/dconf/profile/user
+                                  else
+                                      printf 'user-db:user\\nsystem-db:local\\n' > $T/etc/dconf/profile/user
+                                  fi
+                                  """)
+    }
+
+    static let kaliFailureScript = debianFailureScript
+        .replacingOccurrences(of: "Runs only if Debian's install fails.", with: "Runs only if Kali's install fails.")
+        .replacingOccurrences(of: "Debian install failed", with: "Kali Linux install failed")
 
     // MARK: Fedora (2026-10-26)
     //
