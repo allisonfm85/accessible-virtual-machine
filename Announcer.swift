@@ -177,8 +177,10 @@ final class Announcer {
     private var voiceOverBusyUntil = Date.distantPast
     /// VoiceOver's AppleScript refused (not allowed in VoiceOver Utility, or
     /// AVM not allowed to control it): background lines use the system
-    /// voice for the rest of this run.
-    private var voiceOverScriptRefused = false
+    /// voice for a minute, then VoiceOver is tried again (2026-10-30: a
+    /// refusal held for the rest of the run, so a user who turned both
+    /// switches on heard the system voice until AVM quit).
+    private var voiceOverScriptRefused: Bool { refusedLatch.withLock { Date() < $0 } }
     private var toldHowToAllowScripting = false
     private let scriptQueue = DispatchQueue(label: "avm.announcer.voiceover")
 
@@ -249,16 +251,21 @@ final class Announcer {
             defer { self.queuedScripts.withLock { $0 -= 1 } }
             let wait = start.timeIntervalSinceNow
             if wait > 0 { Thread.sleep(forTimeInterval: min(wait, 20)) }
-            if self.refusedLatch.withLock({ $0 }) {
+            if self.refusedLatch.withLock({ Date() < $0 }) {
                 self.systemVoiceInstead(message)
                 return
             }
             let script = Process()
             script.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            // The line as text before the tell (2026-10-30, a tester's log):
+            // "output (item 1 of argv)" sent VoiceOver a reference to the
+            // item, and it answered "item 1 of {...} doesn't understand the
+            // output message" (-1708), on every line.
             script.arguments = ["-e", "on run argv",
                                 "-e", "if application \"VoiceOver\" is not running then return \"off\"",
+                                "-e", "set spoken to (item 1 of argv) as text",
                                 "-e", "with timeout of 5 seconds",
-                                "-e", "tell application \"VoiceOver\" to output (item 1 of argv)",
+                                "-e", "tell application \"VoiceOver\" to output spoken",
                                 "-e", "end timeout",
                                 "-e", "return \"said\"",
                                 "-e", "end run", "--", message]
@@ -280,13 +287,14 @@ final class Announcer {
                 return
             }
             let error = String(decoding: said, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            // A refusal for the run: AVM isn't allowed to control VoiceOver
-            // (-1743), or VoiceOver's scripting is off (-1708, -10004).
-            // Anything else (VoiceOver restarting, a timeout) is this line
-            // only (fifth audit: every error latched the system voice for
-            // the rest of the run).
-            let refused = ["-1743", "-1708", "-10004"].contains { error.contains($0) }
-            if refused { self.refusedLatch.withLock { $0 = true } }
+            // A refusal, for a minute: AVM isn't allowed to control
+            // VoiceOver (-1743), or VoiceOver's scripting is off (-10000,
+            // "AppleEvent handler failed", in a tester's log with the
+            // switch off; -10004). Not -1708 (2026-10-30): that was this
+            // script's own mistake, above. Anything else (VoiceOver
+            // restarting, a timeout) is this line only (fifth audit).
+            let refused = ["-1743", "-10000", "-10004"].contains { error.contains($0) }
+            if refused { self.refusedLatch.withLock { $0 = Date().addingTimeInterval(60) } }
             self.scriptFailed(message, error: error, refused: refused)
         }
         return true
@@ -299,14 +307,20 @@ final class Announcer {
     private var systemVoiceBusyUntil = Date.distantPast
     /// Scripted lines queued and not yet handed over (seventh audit).
     private nonisolated let queuedScripts = OSAllocatedUnfairLock(initialState: 0)
-    /// The refusal, readable from the script queue (sixth audit).
-    private nonisolated let refusedLatch = OSAllocatedUnfairLock(initialState: false)
+    /// Until when a refusal holds, readable from the script queue (sixth
+    /// audit).
+    private nonisolated let refusedLatch = OSAllocatedUnfairLock(initialState: Date.distantPast)
+
+    /// VoiceOver control found allowed (the Permissions window's check):
+    /// the next background line goes to VoiceOver again.
+    nonisolated func voiceOverControlAllowed() {
+        refusedLatch.withLock { $0 = .distantPast }
+    }
 
     private nonisolated func scriptFailed(_ message: String, error: String, refused: Bool) {
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
                 AVMLog.write("AVM: Announcer — VoiceOver's AppleScript failed (\(error)); \(refused ? "lines said while AVM isn't in front use the system voice" : "this line uses the system voice").")
-                if refused { self.voiceOverScriptRefused = true }
                 self.synthesizer.speak(AVSpeechUtterance(string: message))
                 if refused, !self.toldHowToAllowScripting {
                     self.toldHowToAllowScripting = true

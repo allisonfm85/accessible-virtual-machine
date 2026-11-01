@@ -67,9 +67,9 @@ final class PermissionsCenter: ObservableObject {
                  button: "Allow Input Monitoring"),
             Item(id: "voiceover", title: "VoiceOver control",
                  why: "Lets AVM speak in your own VoiceOver voice while you're in other apps. Two switches: in VoiceOver Utility, General, Allow VoiceOver to be controlled with AppleScript; and AVM allowed to control VoiceOver, which macOS asks about.",
-                 state: Self.voiceOverScriptingAllowed() ? .allowed : .notAllowed,
+                 state: voiceOverControl == .allowed ? .allowed : (voiceOverControl == .unknown ? .unknown : .notAllowed),
                  neededNow: voiceOverOn,
-                 button: Self.voiceOverUtilitySwitchOn() ? "Allow AVM to Control VoiceOver" : "Open VoiceOver Utility"),
+                 button: voiceOverControl == .scriptingOff ? "Open VoiceOver Utility" : "Allow AVM to Control VoiceOver"),
             Item(id: "microphone", title: "Microphone",
                  why: "Lets a virtual machine hear your Mac's microphone, when it's turned on in that machine's Settings.",
                  state: Self.state(AVCaptureDevice.authorizationStatus(for: .audio)),
@@ -93,15 +93,64 @@ final class PermissionsCenter: ObservableObject {
         status == .authorized ? .allowed : .notAllowed
     }
 
-    /// VoiceOver Utility's "Allow VoiceOver to be controlled with AppleScript".
-    static func voiceOverUtilitySwitchOn() -> Bool {
-        (CFPreferencesCopyAppValue("SCREnableAppleScript" as CFString, "com.apple.VoiceOver4/default" as CFString) as? Bool) == true
+    nonisolated enum VoiceOverControl: Equatable, Sendable {
+        case allowed
+        /// AVM not allowed to control VoiceOver (System Settings, Automation).
+        case automationNotAllowed
+        /// VoiceOver Utility's "Allow VoiceOver to be controlled with
+        /// AppleScript" off.
+        case scriptingOff
+        /// VoiceOver isn't running, or not checked yet.
+        case unknown
     }
 
-    /// Both switches: VoiceOver Utility's, and AVM allowed to send VoiceOver
-    /// Apple events (read without asking).
-    static func voiceOverScriptingAllowed() -> Bool {
-        voiceOverUtilitySwitchOn() && automationStatus(ask: false) == noErr
+    /// The last check of VoiceOver control (checkVoiceOver).
+    private(set) var voiceOverControl: VoiceOverControl = .unknown
+
+    /// Asks VoiceOver itself (2026-10-30): VoiceOver Utility's switch used
+    /// to be read from the com.apple.VoiceOver4/default preferences, which
+    /// macOS 27 no longer has (VoiceOver's settings are in a protected group
+    /// container now), so it read as off with the switch on. Reading the
+    /// last phrase VoiceOver said is harmless and needs both switches.
+    /// Blocking: off the main thread.
+    nonisolated static func probeVoiceOver() -> VoiceOverControl {
+        guard NSWorkspace.shared.isVoiceOverEnabled else { return .unknown }
+        let status = automationStatus(ask: false)
+        if status == OSStatus(errAEEventNotPermitted) || status == OSStatus(errAEEventWouldRequireUserConsent) {
+            return .automationNotAllowed
+        }
+        let script = Process()
+        script.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        script.arguments = ["-e", "with timeout of 3 seconds",
+                            "-e", "tell application \"VoiceOver\" to get content of last phrase",
+                            "-e", "end timeout"]
+        script.standardOutput = FileHandle.nullDevice
+        let errors = Pipe()
+        script.standardError = errors
+        guard (try? script.run()) != nil else { return .unknown }
+        let said = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        script.waitUntilExit()
+        if script.terminationStatus == 0 { return .allowed }
+        if said.contains("-1743") { return .automationNotAllowed }
+        if said.contains("-10000") || said.contains("-10004") { return .scriptingOff }
+        AVMLog.write("AVM: Permissions — VoiceOver check inconclusive: \(said.trimmingCharacters(in: .whitespacesAndNewlines))", category: "Permissions")
+        return .unknown
+    }
+
+    /// Checks VoiceOver control in the background, then reads everything
+    /// again and runs `then`.
+    func checkVoiceOver(then: (@MainActor () -> Void)? = nil) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let control = Self.probeVoiceOver()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    if control == .allowed { Announcer.shared.voiceOverControlAllowed() }
+                    PermissionsCenter.shared.voiceOverControl = control
+                    PermissionsCenter.shared.refresh()
+                    then?()
+                }
+            }
+        }
     }
 
     nonisolated static func automationStatus(ask: Bool) -> OSStatus {
@@ -130,11 +179,21 @@ final class PermissionsCenter: ObservableObject {
                                                  then: "Come back to AVM's Permissions window afterwards.",
                                                  while: { true }) }
         case "voiceover":
-            if Self.voiceOverUtilitySwitchOn() {
-                // macOS's own question, which waits for the answer.
+            if voiceOverControl != .scriptingOff {
+                // macOS's own question, which waits for the answer; once
+                // refused, only System Settings can change it.
                 DispatchQueue.global(qos: .userInitiated).async {
-                    _ = Self.automationStatus(ask: true)
-                    DispatchQueue.main.async { MainActor.assumeIsolated { PermissionsCenter.shared.refresh() } }
+                    let answer = Self.automationStatus(ask: true)
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            if answer == OSStatus(errAEEventNotPermitted),
+                               let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
+                                NSWorkspace.shared.open(url)
+                                Announcer.shared.announce("System Settings is opening Automation. Under AVM, turn on VoiceOver, then come back to AVM's Permissions window.", tone: .info)
+                            }
+                            PermissionsCenter.shared.checkVoiceOver()
+                        }
+                    }
                 }
             } else {
                 NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/VoiceOver Utility.app"))
@@ -162,14 +221,17 @@ final class PermissionsCenter: ObservableObject {
     /// At launch, once AVM is in front (AVMAppDelegate): only when
     /// something needed now isn't allowed.
     func showIfSomethingIsMissing() {
-        refresh()
+        checkVoiceOver { [weak self] in self?.showMissing() }
+    }
+
+    private func showMissing() {
         guard !missing.isEmpty else { return }
         AVMLog.write("AVM: Permissions — not allowed yet: \(missing.map(\.title).joined(separator: ", ")); showing the window", category: "Permissions")
         show()
     }
 
     func show() {
-        refresh()
+        checkVoiceOver()
         if let window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -184,7 +246,7 @@ final class PermissionsCenter: ObservableObject {
         window = panel
         // Fresh each time AVM comes back, from System Settings say.
         activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { PermissionsCenter.shared.refresh() }
+            MainActor.assumeIsolated { PermissionsCenter.shared.checkVoiceOver() }
         }
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -229,7 +291,7 @@ struct PermissionsView: View {
             }
             Divider()
             HStack {
-                Button("Check Again") { center.refresh() }
+                Button("Check Again") { center.checkVoiceOver() }
                     .accessibilityHint("Reads every permission again, after you've changed one in System Settings")
                 Spacer()
                 Button("Done") { close() }
