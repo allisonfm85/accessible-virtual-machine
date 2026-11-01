@@ -72,7 +72,7 @@ struct AppPreferencesView: View {
     @State private var capsLockKey = CapsLockRemapper.shared.isEnabled
     @AppStorage(GuestWatchSettings.speakScreenKey) private var speakScreen = true
     @AppStorage(GuestWatchSettings.restartReaderKey) private var restartReader = true
-    @AppStorage(GuestWatchSettings.pointBeforeUpdatesKey) private var pointBeforeUpdates = true
+    @AppStorage(GuestWatchSettings.pointBeforeUpdatesKey) private var pointBeforeUpdates = false
 
     private var category: PreferencesCategory { startCategory ?? preferences.category }
 
@@ -142,7 +142,7 @@ struct AppPreferencesView: View {
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
             Toggle("Take a restore point before updates", isOn: $pointBeforeUpdates)
-            Text("When updates are waiting, AVM takes a restore point with the machine running, at most once a day, keeping only the newest. If the machine doesn't come back from its restart, AVM says how to go back. Not while devices are sent to the machine, and only for machines that can take restore points while running.")
+            Text("When updates are waiting, AVM takes a restore point with the machine running, at most once a day, keeping only the newest. If the machine doesn't come back from its restart, AVM says how to go back. Off unless you turn it on: in testing, Windows sometimes didn't come back from the restart after one of these points. Not while devices are sent to the machine, and only for machines that can take restore points while running.")
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
             Text("AVM always warns when a machine's disk, or your Mac's, is nearly full.")

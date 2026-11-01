@@ -540,7 +540,10 @@ nonisolated enum RestorePoints {
     static let folderName = "restore-points"
 
     static func list(vmDirectory dir: URL) async throws -> [RestorePoint] {
-        let output = try await qemuImg(["info", "--output=json", disk(dir).path])
+        // -U (2026-10-31): reading only, so it also works while QEMU holds
+        // the disk; without it the list came back empty for a running
+        // machine, and the before-updates check never saw its last point.
+        let output = try await qemuImg(["info", "--output=json", "-U", disk(dir).path])
         guard let json = try JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any] else {
             throw RestorePointError.tool("AVM couldn't read the disk's restore points.")
         }

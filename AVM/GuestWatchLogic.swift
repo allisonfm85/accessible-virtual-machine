@@ -14,9 +14,13 @@ nonisolated enum GuestWatchSettings {
     static let restartReaderKey = "AVMRestartStoppedScreenReader"
     static let pointBeforeUpdatesKey = "AVMRestorePointBeforeUpdates"
 
-    /// On unless turned off.
+    /// On unless turned off, except the restore point before updates: off
+    /// until turned on (2026-10-31). Twice in tests, Windows didn't come
+    /// back from the restart that followed a point taken while it ran, and
+    /// came back every time without one; on until that's understood would
+    /// strand someone mid-update.
     static func isOn(_ key: String) -> Bool {
-        UserDefaults.standard.object(forKey: key) as? Bool ?? true
+        UserDefaults.standard.object(forKey: key) as? Bool ?? (key != pointBeforeUpdatesKey)
     }
 }
 

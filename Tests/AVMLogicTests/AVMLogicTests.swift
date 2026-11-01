@@ -1698,6 +1698,11 @@ final class GuestWatchTests: XCTestCase {
         UserDefaults.standard.set(false, forKey: key)
         XCTAssertFalse(GuestWatchSettings.isOn(key))
         UserDefaults.standard.removeObject(forKey: key)
+        XCTAssertFalse(GuestWatchSettings.isOn(GuestWatchSettings.pointBeforeUpdatesKey) && UserDefaults.standard.object(forKey: GuestWatchSettings.pointBeforeUpdatesKey) == nil,
+                       "the point before updates is off until turned on")
+    }
+}
+
 // MARK: - Kali Linux, Debian's way (2026-10-30)
 
 final class KaliInstallTests: XCTestCase {

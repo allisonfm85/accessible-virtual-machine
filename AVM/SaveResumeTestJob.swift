@@ -1002,6 +1002,8 @@ enum SaveResumeTestJob {
     }
 
     private static func guestWatch(_ folder: URL, _ guest: GuestOS) async -> Bool {
+        // Off by default (2026-10-31); this test checks it, so it's on here.
+        UserDefaults.standard.set(true, forKey: GuestWatchSettings.pointBeforeUpdatesKey)
         let started = Date()
         let manager = VMManager()
         guard await start(manager, configuration(folder: folder, guest: guest)),

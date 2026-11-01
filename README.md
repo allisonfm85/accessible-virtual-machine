@@ -63,7 +63,8 @@ unless turned off in **Watching Machines**:
   a restore point with the machine running (once a day at most, keeping
   the newest), and says how to go back if the machine doesn't return
   from its restart within 20 minutes. Not while devices are sent to the
-  machine.
+  machine. Off unless turned on: in testing, Windows sometimes didn't
+  come back from the restart after one of these points.
 - **Disk space**: AVM warns when a machine's disk, or the Mac's, is nearly
   full.
 

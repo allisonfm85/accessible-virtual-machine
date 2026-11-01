@@ -592,9 +592,11 @@ of this is AVM.
   files.
 - While no screen reader runs in the machine (Setup, a restart, a blue
   screen), AVM reads new text on its screen by itself. If NVDA or JAWS
-  stops, AVM presses its start key in Windows and tells you. Both, and
-  the restore point AVM takes before updates, can be turned off in AVM's
-  Settings (Command-Comma), Watching Machines.
+  stops, AVM presses its start key in Windows and tells you. Both can be
+  turned off in AVM's Settings (Command-Comma), Watching Machines. The
+  restore point before updates is there too, off unless you turn it on:
+  in testing, Windows sometimes didn't come back from the restart after
+  one of these points.
 - **Command-Shift-L** is Virtual Machines List, in the Window menu. It
   brings the dashboard back, or opens it, while a machine's window is in
   front.
