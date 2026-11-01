@@ -74,6 +74,8 @@ struct AppPreferencesView: View {
     @AppStorage(GuestWatchSettings.restartReaderKey) private var restartReader = true
     @AppStorage(GuestWatchSettings.pointBeforeUpdatesKey) private var pointBeforeUpdates = false
     @AppStorage(GuestWatchSettings.holdWhileInMachineKey) private var holdWhileInMachine = true
+    @AppStorage(ClaudeDescribe.enabledKey) private var describeWithClaude = false
+    @State private var claudeKeyText = ""
 
     private var category: PreferencesCategory { startCategory ?? preferences.category }
 
@@ -153,6 +155,30 @@ struct AppPreferencesView: View {
             Text("AVM always warns when a machine's disk, or your Mac's, is nearly full.")
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
+            // Describe Screen (2026-10-31, DescribeScreen.swift).
+            Text("Describe Screen")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Text("Virtual Machine, Describe Screen (Command-Option-Shift-O) says what a machine's screen looks like: its colour, and its text by where it is. Your Mac does this itself; nothing leaves it.")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle("Describe screens with Claude", isOn: $describeWithClaude)
+                .accessibilityHint("Sends a picture of the machine's screen to Anthropic's Claude for a fuller description. AVM asks before the first one for each machine.")
+            Text("For a fuller description, AVM can send a picture of the screen to Anthropic's Claude. It needs your Anthropic API key, kept in your keychain, and AVM asks before the first picture from each machine. Whatever is on the screen goes with it.")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            if describeWithClaude {
+                HStack {
+                    SecureField("Anthropic API key", text: $claudeKeyText)
+                        .accessibilityHint(ClaudeKey.load() == nil ? "No key is kept yet." : "A key is kept. Type a new one to replace it.")
+                    Button("Save Key") {
+                        let saved = ClaudeKey.save(claudeKeyText.trimmingCharacters(in: .whitespacesAndNewlines))
+                        claudeKeyText = ""
+                        Announcer.shared.announce(saved ? "The API key is in your keychain." : "The API key couldn't be kept in your keychain.", tone: saved ? .success : .failure)
+                    }
+                    .disabled(claudeKeyText.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
         }
     }
 

@@ -417,6 +417,19 @@ struct AVMApp: App {
                 .keyboardShortcut("o", modifiers: [.command, .shift])
                 .disabled(!activity.isRunning)
 
+                // Describe Screen (2026-10-31, DescribeScreen.swift).
+                Button("Describe Screen") {
+                    Task { @MainActor in
+                        guard let manager = VMManager.shared else {
+                            Announcer.shared.announce("Describe Screen works in Windows and Linux machines.", tone: .info)
+                            return
+                        }
+                        await manager.describeScreen()
+                    }
+                }
+                .keyboardShortcut("o", modifiers: [.command, .option, .shift])
+                .disabled(!activity.isRunning)
+
                 // Speak Updates and Disk (2026-10-30, GuestStatus.swift).
                 Button("Speak Updates and Disk") {
                     Task { @MainActor in

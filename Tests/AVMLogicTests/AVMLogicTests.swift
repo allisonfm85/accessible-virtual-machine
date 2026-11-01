@@ -1702,6 +1702,35 @@ final class GuestWatchTests: XCTestCase {
         XCTAssertFalse(GuestProcesses.parse("COMMAND\nsystemd\ngdm\n", windows: false).signedIn)
     }
 
+    /// Describe Screen, on the Mac: colour, amount of text, text by where it is.
+    func testTheMacsScreenDescription() {
+        XCTAssertEqual(ScreenDescription.colourName(r: 0.0, g: 0.47, b: 0.84), "blue")
+        XCTAssertEqual(ScreenDescription.colourName(r: 0.02, g: 0.02, b: 0.03), "black")
+        XCTAssertEqual(ScreenDescription.colourName(r: 0.95, g: 0.95, b: 0.96), "white")
+        let text = ScreenDescription.onDevice(colour: "blue",
+                                              lines: [("Your device ran into a problem", 0.2), ("Stop code: CRITICAL_PROCESS_DIED", 0.8)])
+        XCTAssertEqual(text, "A mostly blue screen with 2 lines of text. At the top: Your device ran into a problem. At the bottom: Stop code: CRITICAL_PROCESS_DIED.")
+        XCTAssertEqual(ScreenDescription.onDevice(colour: nil, lines: []), "A screen with no text.")
+    }
+
+    /// Describe Screen, by Claude: the request's shape, and its answers.
+    func testClaudeDescribeRequestAndAnswer() throws {
+        let request = try ClaudeDescribe.request(png: Data([1, 2, 3]), apiKey: "k")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-api-key"), "k")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "anthropic-version"), "2026-10-21")
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: Any])
+        XCTAssertEqual(body["model"] as? String, "claude-opus-5-5")
+        XCTAssertEqual(body["fallbacks"] as? String, "default")
+        let content = try XCTUnwrap(((body["messages"] as? [[String: Any]])?.first?["content"]) as? [[String: Any]])
+        XCTAssertEqual(content.first?["type"] as? String, "image")
+        XCTAssertEqual((content.first?["source"] as? [String: Any])?["data"] as? String, "AQID")
+        let ok = #"{"stop_reason":"end_turn","content":[{"type":"thinking","thinking":""},{"type":"text","text":"A blue stop screen."}]}"#
+        XCTAssertEqual(ClaudeDescribe.answer(status: 200, data: Data(ok.utf8)), .description("A blue stop screen."))
+        XCTAssertEqual(ClaudeDescribe.answer(status: 200, data: Data(#"{"stop_reason":"refusal","content":[]}"#.utf8)), .declined)
+        XCTAssertEqual(ClaudeDescribe.answer(status: 401, data: Data(#"{"error":{"message":"invalid x-api-key"}}"#.utf8)),
+                       .failed("Claude refused the API key. Check it in AVM's Settings."))
+    }
+
     /// AVM's updates wait only while the keyboard is in a machine whose screen reader runs.
     func testUpdatesWaitForTheMachinesScreenReader() {
         XCTAssertTrue(Announcer.holds(.info, keyboardIn: "PC", readerRunningIn: ["PC"], settingOn: true))
