@@ -135,8 +135,6 @@ add "debian 3d"                        debian   "--test-3d"
 # The core tests, on every other Linux (2026-10-31). Fedora's used to be
 # disk info alone, its machine on NVMe (no Save there) and its agent kept
 # from running programs by SELinux; whatever still fails there says so.
-# Not what AVM doesn't offer there (2026-10-31, GuestOS in
-# VMConfiguration.swift): Remote Desktop on AlmaLinux and Rocky (no xrdp).
 for distro in ubuntu fedora kali almalinux rocky opensuse; do
     nvme=""; [ "$distro" = fedora ] && nvme="$NVME"
     add "$distro save and resume"       "$distro" "--test-save-resume$nvme"
@@ -145,8 +143,7 @@ for distro in ubuntu fedora kali almalinux rocky opensuse; do
     add "$distro control socket"        "$distro" "--test-ctl$nvme"
     add "$distro disk info"             "$distro" "--test-disk-info$nvme"
     add "$distro agent shutdown"        "$distro" "--test-agent-shutdown$nvme"
-    case "$distro" in almalinux|rocky) ;; *)
-    add "$distro remote desktop"        "$distro" "--test-remote-desktop$nvme" ;; esac
+    add "$distro remote desktop"        "$distro" "--test-remote-desktop$nvme"
 done
 add "screen reader downloads"          downloads "--test-screen-readers"
 

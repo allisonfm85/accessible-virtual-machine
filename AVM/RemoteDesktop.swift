@@ -243,6 +243,9 @@ extension VMManager {
         guard made.contains("AVM-RD-ACCOUNT") else {
             throw AVMError.refused("the account \(user) couldn't be made, or its password set: \(made.trimmingCharacters(in: .whitespacesAndNewlines))")
         }
+        if configuration.guestOS.remoteDesktopIsGNOME {
+            return try await setUpGNOMERemoteDesktop(configuration: configuration, user: user, password: password)
+        }
         // xrdp, from the distribution, and its service.
         let host = """
         set -e
@@ -282,6 +285,42 @@ extension VMManager {
         let sound = out.contains("SOUND")
         return .ready("Remote Desktop is on in \(configuration.name), with the account \(user)."
                       + (sound ? "" : " This Linux has no xrdp sound module, so the remote session has no sound."))
+    }
+
+    /// GNOME's own RDP server, for AlmaLinux and Rocky (2026-10-31), which
+    /// have no xrdp: in system mode, so a client gets the sign-in screen and
+    /// signs in with the account.
+    // MEASURED 2026-10-31 on AlmaLinux 10.2: gnome-remote-desktop 49 comes
+    // with Server with GUI, off. It needs a TLS key and certificate (made
+    // here, ten years), the RDP credentials (the same account and
+    // password; grdctl reads the password from standard input when only
+    // the user is given), and 3389 open in firewalld. An RDP request
+    // through the Mac's port was then answered.
+    private func setUpGNOMERemoteDesktop(configuration: VMConfiguration, user: String, password: String) async throws -> RemoteDesktopSetup {
+        let host = """
+        set -e
+        export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        command -v grdctl >/dev/null || dnf install -y -q gnome-remote-desktop
+        D=/var/lib/gnome-remote-desktop/.local/share/gnome-remote-desktop
+        mkdir -p $D
+        [ -s $D/tls.crt ] || openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 -subj "/CN=$(hostname)" -keyout $D/tls.key -out $D/tls.crt 2>/dev/null
+        chown -R gnome-remote-desktop: /var/lib/gnome-remote-desktop/.local
+        grdctl --system rdp set-tls-key $D/tls.key
+        grdctl --system rdp set-tls-cert $D/tls.crt
+        grdctl --system rdp set-credentials "$1" >/dev/null 2>&1
+        grdctl --system rdp enable
+        systemctl enable gnome-remote-desktop.service >/dev/null 2>&1
+        systemctl restart gnome-remote-desktop.service
+        if command -v firewall-cmd >/dev/null; then firewall-cmd --permanent --add-port=3389/tcp >/dev/null 2>&1 || true; firewall-cmd --reload >/dev/null 2>&1 || true; fi
+        sleep 2
+        systemctl is-active gnome-remote-desktop.service && echo AVM-RD-READY
+        """
+        // The password by standard input, as for the account.
+        let out = try await agentRun("/bin/sh", ["-c", host, "sh", user], limit: .seconds(300), input: "\(password)\n")
+        guard out.contains("AVM-RD-READY") else {
+            throw AVMError.qmpCommandFailed(out.trimmingCharacters(in: .whitespacesAndNewlines).description)
+        }
+        return .ready("Remote Desktop is on in \(configuration.name), with GNOME's own Remote Desktop and the account \(user).")
     }
 
     /// Forwards the Mac's port to the running machine now (QEMU's user

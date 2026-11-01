@@ -426,12 +426,12 @@ enum GuestOS: String {
     /// (account, Orca, install markers, stall watch).
     var isLinux: Bool { self != .windows && self != .macOS }
 
-    /// Remote Desktop's Linux host, xrdp, is in this guest's software
-    /// sources, so Settings offers Remote Desktop.
+    /// Remote Desktop's host is GNOME's own (gnome-remote-desktop), not
+    /// xrdp (RemoteDesktop.setUpGNOMERemoteDesktop).
     // MEASURED 2026-10-31 (launch suite): AlmaLinux and Rocky 10 have no
     // xrdp, and nor has EPEL 10 (EPEL 9 had); setup ended in "Unable to
     // find a match: xrdp xorgxrdp".
-    var hasRemoteDesktopHost: Bool { self != .almalinux && self != .rocky }
+    var remoteDesktopIsGNOME: Bool { self == .almalinux || self == .rocky }
 
     /// The shared folder's guest service, spice-webdavd, is there, so
     /// Settings offers a shared folder: on Rocky, AlmaLinux's, which AVM

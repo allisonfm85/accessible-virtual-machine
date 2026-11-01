@@ -948,10 +948,10 @@ final class DebianInstallTests: XCTestCase {
 
     /// Settings hides what the guest's software sources can't provide.
     func testSettingsOnlyOfferWhatTheGuestCanHave() {
-        XCTAssertFalse(GuestOS.almalinux.hasRemoteDesktopHost)
-        XCTAssertFalse(GuestOS.rocky.hasRemoteDesktopHost)
+        XCTAssertTrue(GuestOS.almalinux.remoteDesktopIsGNOME)
+        XCTAssertTrue(GuestOS.rocky.remoteDesktopIsGNOME)
         for os: GuestOS in [.windows, .ubuntu, .debian, .fedora, .kali, .opensuse, .macOS] {
-            XCTAssertTrue(os.hasRemoteDesktopHost, os.rawValue)
+            XCTAssertFalse(os.remoteDesktopIsGNOME, os.rawValue)
         }
         XCTAssertTrue(GuestOS.rocky.hasSharedFolderService, "AlmaLinux's service, installed by AVM")
         XCTAssertFalse(GuestOS.macOS.hasSharedFolderService, "macOS has its own sharing")
