@@ -2094,6 +2094,8 @@ final class OpenSUSEInstallTests: XCTestCase {
         XCTAssertFalse(script.contains("]]>"))
         XCTAssertTrue(UbuntuInstallPipeline.openSUSEFailureScript.contains("sysrq-trigger"))
         XCTAssertTrue(script.contains(#"FILTER_RPC_ARGS=""\n' > $T/etc/sysconfig/qemu-ga"#), "the guest agent may run commands")
+        XCTAssertTrue(script.contains(#"[Service]\nPrivateDevices=no\n' > $T/etc/systemd/system/spice-webdavd.service.d/avm.conf"#),
+                      "spice-webdavd can open its virtio port")
         let permissive = try XCTUnwrap(script.range(of: "(typepermissive virt_qemu_ga_t)"), "SELinux lets the guest agent do its work")
         XCTAssertLessThan(permissive.lowerBound, marker.lowerBound)
     }

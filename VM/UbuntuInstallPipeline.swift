@@ -2092,6 +2092,12 @@ nonisolated final class UbuntuInstallPipeline {
             # file, read after it, lets it answer everything, as Fedora's,
             # Debian's and Ubuntu's do. Only AVM on the Mac reaches it.
             printf '# Written by AVM: the guest agent answers everything AVM asks.\\nFILTER_RPC_ARGS=""\\n' > $T/etc/sysconfig/qemu-ga
+            # openSUSE's systemd hardening gives spice-webdavd PrivateDevices,
+            # which hides /dev/virtio-ports, so the shared folder never
+            # mounted ("Failed to open /dev/virtio-ports/org.spice-space.webdav.0",
+            # 2026-10-31). It gets its devices back; the rest stays.
+            mkdir -p $T/etc/systemd/system/spice-webdavd.service.d
+            printf '# Written by AVM: the shared folder needs its virtio port.\\n[Service]\\nPrivateDevices=no\\n' > $T/etc/systemd/system/spice-webdavd.service.d/avm.conf
             # The keyboard chosen in AVM's wizard, for the sign-in screen
             # and the desktop (the profile's keymap is only the console's).
             mkdir -p $T/etc/X11/xorg.conf.d
