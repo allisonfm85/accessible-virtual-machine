@@ -28,5 +28,8 @@ avm_own_copy() {
     AVM_COPY="$AVM_COPY_DIR/AVM.app"
     cp -cR "$app" "$AVM_COPY" 2>/dev/null || cp -R "$app" "$AVM_COPY"
     /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $id.$suffix" "$AVM_COPY/Contents/Info.plist"
-    codesign --force --deep --sign - "$AVM_COPY" >/dev/null 2>&1
+    # Its entitlements kept (2026-10-31): without them the copy had no
+    # virtualization entitlement, and --download-macos failed with "The
+    # restore image catalog failed to load."
+    codesign --force --deep --sign - --preserve-metadata=entitlements "$AVM_COPY" >/dev/null 2>&1
 }

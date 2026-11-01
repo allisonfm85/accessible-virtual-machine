@@ -65,8 +65,13 @@ START=$(date +%s)
 
 set +e
 [ -n "$AUTOSETUP" ] && mkdir -p "$WORK/setup-screens" && export AVM_SETUP_PICTURES="$WORK/setup-screens"
-"$APP/Contents/MacOS/AVM" --test-mac-machine --ipsw "$IPSW" --out "$WORK" ${REUSE:+--reuse} ${AUTOSETUP:+--auto-setup}
+# Its own copy while AVM runs (2026-10-31), as the other tests: loginwindow
+# ends a second AVM after about 30 seconds.
+source "$(dirname "$0")/avm-own-copy.sh"
+avm_own_copy "$APP" test || fail "Couldn't make a copy of AVM for the test." "Check that $APP is a complete AVM build."
+"$AVM_COPY/Contents/MacOS/AVM" --test-mac-machine --ipsw "$IPSW" --out "$WORK" ${REUSE:+--reuse} ${AUTOSETUP:+--auto-setup}
 CODE=$?
+[ -n "$AVM_COPY_DIR" ] && rm -rf "$AVM_COPY_DIR"
 set -e
 MINUTES=$(( ($(date +%s) - START + 59) / 60 ))
 
