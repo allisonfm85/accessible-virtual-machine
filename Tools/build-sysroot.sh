@@ -27,8 +27,11 @@
 #          is compiled only when OpenGL is, QEMU's coreaudio playback and
 #          microphone, usb-camera (the Mac's camera as a USB webcam),
 #          usb-hid-bridge (Bluetooth HID devices, relayed by AVM's helper),
-#          and usbredirhost sending interrupt OUT transfers longer than one
-#          packet (a USB braille display's output, for NVDA and JAWS).
+#          usbredirhost sending interrupt OUT transfers longer than one
+#          packet (a USB braille display's output, for NVDA and JAWS),
+#          and HVF keeping the UEFI variable flash read-only when dirty
+#          tracking stops (2026-10-31: after a save, Windows hung at its
+#          boot manager on the next restart).
 #          Each patch's header says what it does and where it comes from.
 #          Patches for git clones, which UTM's build doesn't patch, are in
 #          Tools/sysroot-patches/clones, applied just before their build:

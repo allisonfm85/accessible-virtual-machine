@@ -475,10 +475,13 @@ QEMU, SPICE, GStreamer, the OpenGL stack (ANGLE, libepoxy and
 virglrenderer, for Linux machines' 3D acceleration) and related
 frameworks, plus EFI firmware images. These are staged at build time
 from the sysroot that `Tools/build-sysroot.sh` builds from source with
-UTM's dependency build, with nine patches from `Tools/sysroot-patches`:
-five to QEMU (CoreAudio output and the microphone, a Metal build fix,
-the Mac's camera as a USB webcam, the Bluetooth HID bridge, and the
-USB keyboard's F13 to F24 and keypad keys), one to GStreamer (an
+UTM's dependency build, with eleven patches from `Tools/sysroot-patches`:
+seven to QEMU (CoreAudio output and the microphone, a machine's own
+output device, a Metal build fix, the Mac's camera as a USB webcam, the
+Bluetooth HID bridge, the USB keyboard's F13 to F24 and keypad keys, and
+the UEFI variable flash kept read-only after a save, without which
+Windows didn't come back from a restart after a restore point taken
+while it ran), one to GStreamer (an
 osxaudio deadlock fix, backported from upstream), one to usbredir (the
 USB helper sending a device's output reports longer than one USB
 packet, which a USB braille display needs), and two to the clones of

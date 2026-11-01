@@ -1,0 +1,64 @@
+AVM: HVF puts a slot back to its own permissions when dirty tracking stops,
+so the UEFI variable flash stays read-only after a savevm
+
+accel/hvf/hvf-accel-ops.c's hvf_set_dirty_tracking made every slot
+read-write when tracking stopped. Saving a running machine's memory (a
+restore point taken while it runs, AVM's Save, any migration) starts and
+stops tracking on every slot, including the UEFI variable store's
+pflash, a ROM device in romd mode that hvf_set_phys_mem maps read-only
+so the guest's writes trap to the CFI command handler. Made writable,
+the firmware's commands went into the flash's memory instead: at the
+next boot the firmware wrote the read-status command (0x70) and read
+back its own 0x70, never the ready bit, and Windows Boot Manager waited
+on a black screen forever (2026-10-31: two restore points taken by the
+before-updates check, then reproduced with QEMU alone; a register sync
+alone, the in-kernel GIC off and the TPM off all made no difference,
+and a paused save of the device state without the disk still hung).
+Stopping now restores what hvf_set_phys_mem gave the slot, and a
+section with no slot (a ROM device out of romd mode) is skipped instead
+of dereferenced.
+
+Applied after UTM's own patches/qemu-10.0.12-utm.patch, which doesn't
+touch this function.
+
+--- a/accel/hvf/hvf-accel-ops.c
++++ b/accel/hvf/hvf-accel-ops.c
+@@ -305,10 +305,15 @@
+ static void hvf_set_dirty_tracking(MemoryRegionSection *section, bool on)
+ {
+     hvf_slot *slot;
++    MemoryRegion *area = section->mr;
+ 
+     slot = hvf_find_overlap_slot(
+             section->offset_within_address_space,
+             int128_get64(section->size));
++    /* AVM: a ROM device out of romd mode has no slot; nothing to track */
++    if (!slot) {
++        return;
++    }
+ 
+     /* protect region against writes; begin tracking it */
+     if (on) {
+@@ -318,8 +323,20 @@
+     /* stop tracking region*/
+     } else {
+         slot->flags &= ~HVF_SLOT_LOG;
+-        hv_vm_protect((uintptr_t)slot->start, (size_t)slot->size,
+-                      HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC);
++        /*
++         * AVM: back to the permissions hvf_set_phys_mem gave the slot, not
++         * always writable. A ROM device in romd mode (the UEFI variable
++         * flash) must stay read-only, so the guest's writes trap to the
++         * device's command handler; made writable after a migration or a
++         * savevm, the firmware's commands landed in its memory and it
++         * waited forever for a status that never came.
++         */
++        hv_memory_flags_t flags = HV_MEMORY_READ | HV_MEMORY_EXEC;
++        if (!area->readonly &&
++            !(!memory_region_is_ram(area) && memory_region_is_romd(area))) {
++            flags |= HV_MEMORY_WRITE;
++        }
++        hv_vm_protect((uintptr_t)slot->start, (size_t)slot->size, flags);
+     }
+ }
+ 
