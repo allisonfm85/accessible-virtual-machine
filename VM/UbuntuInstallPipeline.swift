@@ -510,6 +510,16 @@ nonisolated final class UbuntuInstallPipeline {
                 ubuntuLog("identify: no /casper/vmlinuz, /install.a64/vmlinuz or Fedora disc — not a Linux installer AVM knows")
                 return .notUbuntu
             }
+            // A UDF disc xorriso can't read (2026-10-30, a tester): the
+            // Windows installer AVM makes from Microsoft's download has UDF
+            // and only a stub ISO 9660 part, so xorriso fails on it ("Cannot
+            // read ISO image tree") and AVM called its own download
+            // unreadable. Linux installers are plain ISO 9660, which xorriso
+            // reads, so they never get here; the Windows pipeline reads UDF.
+            if readable && hasUDF(isoPath) {
+                ubuntuLog("identify: a UDF disc xorriso can't read — the Windows path")
+                return .notUbuntu
+            }
             ubuntuLog("identify: xorriso couldn't read the ISO (exit \(listing.code)): \(listing.output.suffix(300))")
             return .unreadable("AVM couldn't read this ISO. It may be damaged, still downloading, or not a disc image.")
         }
@@ -536,6 +546,19 @@ nonisolated final class UbuntuInstallPipeline {
         let info = UbuntuISOInfo(discInfo: discInfo, version: version, isARM64: isARM64, isDesktop: isDesktop)
         ubuntuLog("identify: \(info.spokenName), arm64=\(isARM64), desktop=\(isDesktop), disc info \"\(discInfo)\"")
         return .ubuntu(info)
+    }
+
+    /// True for a disc with UDF's volume recognition sequence: NSR02 or
+    /// NSR03 among the descriptors from sector 16 on (2048-byte sectors).
+    nonisolated static func hasUDF(_ path: String) -> Bool {
+        guard let file = FileHandle(forReadingAtPath: path) else { return false }
+        defer { try? file.close() }
+        guard (try? file.seek(toOffset: 16 * 2048)) != nil,
+              let head = try? file.read(upToCount: 8 * 2048), head.count == 8 * 2048 else { return false }
+        func id(_ sector: Int) -> String {
+            String(decoding: head[(sector * 2048 + 1)..<(sector * 2048 + 6)], as: UTF8.self)
+        }
+        return (0..<8).map(id).contains { $0 == "NSR02" || $0 == "NSR03" }
     }
 
     /// Why AVM can't install from this ISO, or nil when it can. The same
