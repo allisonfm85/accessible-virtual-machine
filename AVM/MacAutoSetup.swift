@@ -140,7 +140,11 @@ enum MacAutoSetup {
     }
 
     /// Buttons pressed when seen, most wanted first.
-    nonisolated static let buttons = ["Get Started", "Set Up Later", "Not Now", "Don't Use", "Skip", "Agree",
+    nonisolated static let buttons = ["Get Started", "Set Up Later",
+                                      // The same menu item's newer words (2026-10-31): the setup
+                                      // opened the menu and pressed Continue on it round and round.
+                                      "Sign in Later in Settings", "Sign In Later",
+                                      "Not Now", "Don't Use", "Skip", "Agree",
                                       // The Apple Account screen's menu, which has Set Up Later (sixth test run).
                                       "Other Sign-In Options", "Continue", "Done"]
 
