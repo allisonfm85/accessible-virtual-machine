@@ -13,7 +13,7 @@ import Combine
 import SwiftUI
 
 enum PreferencesCategory: String, CaseIterable, Identifiable, SettingsCategoryItem {
-    case general, startup, keyboard, devices
+    case general, startup, watching, keyboard, devices
 
     var id: Self { self }
 
@@ -21,6 +21,7 @@ enum PreferencesCategory: String, CaseIterable, Identifiable, SettingsCategoryIt
         switch self {
         case .general: return "General"
         case .startup: return "Startup and Background"
+        case .watching: return "Watching Machines"
         case .keyboard: return "Keyboard"
         case .devices: return "Devices"
         }
@@ -30,6 +31,7 @@ enum PreferencesCategory: String, CaseIterable, Identifiable, SettingsCategoryIt
         switch self {
         case .general: return "gearshape"
         case .startup: return "power"
+        case .watching: return "eye"
         case .keyboard: return "keyboard"
         case .devices: return "cable.connector"
         }
@@ -68,6 +70,9 @@ struct AppPreferencesView: View {
     var startCategory: PreferencesCategory?
 
     @State private var capsLockKey = CapsLockRemapper.shared.isEnabled
+    @AppStorage(GuestWatchSettings.speakScreenKey) private var speakScreen = true
+    @AppStorage(GuestWatchSettings.restartReaderKey) private var restartReader = true
+    @AppStorage(GuestWatchSettings.pointBeforeUpdatesKey) private var pointBeforeUpdates = true
 
     private var category: PreferencesCategory { startCategory ?? preferences.category }
 
@@ -88,6 +93,7 @@ struct AppPreferencesView: View {
                     switch category {
                     case .general: general
                     case .startup: BackgroundSettingsControls()
+                    case .watching: watching
                     case .keyboard: keyboard
                     case .devices: devices
                     }
@@ -116,6 +122,30 @@ struct AppPreferencesView: View {
                     .accessibilityHint("Shows what changed in this version of AVM and the two before it")
             }
             Text("Each virtual machine's own settings, such as its memory, devices and shared folder, are in its Settings: select it in the list and press Command-Option-Comma.")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: Watching Machines (2026-10-31, GuestWatch.swift)
+
+    private var watching: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("While a Windows or Linux machine runs, AVM watches for what you'd otherwise need someone to see.")
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle("Speak screen changes when no screen reader is running", isOn: $speakScreen)
+            Text("During Windows Setup, a restart, a boot error or a blue screen, nothing in the machine talks. AVM reads new text on its screen by itself, as Read Screen does, and stays quiet once NVDA, JAWS, Narrator or Orca is running.")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle("Start a screen reader again when it stops", isOn: $restartReader)
+            Text("If NVDA, JAWS or Orca stops in a machine, AVM presses its start key there: Control-Alt-N for NVDA, Control-Alt-J for JAWS, Super-Alt-S for Orca in GNOME. AVM also starts the screen reader you chose for Windows if it hasn't started a minute after you sign in.")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle("Take a restore point before updates", isOn: $pointBeforeUpdates)
+            Text("When updates are waiting, AVM takes a restore point with the machine running, at most once a day, keeping only the newest. If the machine doesn't come back from its restart, AVM says how to go back. Not while devices are sent to the machine, and only for machines that can take restore points while running.")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("AVM always warns when a machine's disk, or your Mac's, is nearly full.")
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
         }

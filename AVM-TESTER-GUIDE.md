@@ -586,7 +586,14 @@ of this is AVM.
 - **Command-Shift-F** is Send File to Windows… (the menu names the
   machine's system). Pick a file on your Mac, and it lands in the
   machine's Downloads folder, through the agent AVM installs with
-  Windows.
+  Windows. In Finder, the right-click menu's **Send to Virtual Machine**
+  (under Quick Actions or Services) does the same for the selected
+  files.
+- While no screen reader runs in the machine (Setup, a restart, a blue
+  screen), AVM reads new text on its screen by itself. If NVDA or JAWS
+  stops, AVM presses its start key in Windows and tells you. Both, and
+  the restore point AVM takes before updates, can be turned off in AVM's
+  Settings (Command-Comma), Watching Machines.
 - **Command-Shift-L** is Virtual Machines List, in the Window menu. It
   brings the dashboard back, or opens it, while a machine's window is in
   front.

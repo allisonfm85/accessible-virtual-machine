@@ -523,6 +523,8 @@ final class VMManager: ObservableObject {
     private var installWatchdogTask: Task<Void, Never>?
     /// Disk space, checked once a minute while running (DiskWatch.swift).
     private var diskWatchTask: Task<Void, Never>?
+    /// Screen changes, screen readers and updates watched (GuestWatch.swift).
+    var guestWatchTask: Task<Void, Never>?
 
     // MARK: Private — configuration reference
 
@@ -1554,6 +1556,7 @@ final class VMManager: ObservableObject {
         }
 
         startDiskWatch(configuration: configuration, runtimeDir: runtimeDir, installed: installComplete)
+        startGuestWatch(configuration: configuration, runtimeDir: runtimeDir, installed: installComplete)
         if installComplete, configuration.sharesPrinters {
             Task { [weak self] in await self?.addMacPrinters(configuration: configuration) }
         }
@@ -4073,6 +4076,8 @@ final class VMManager: ObservableObject {
     private func cleanUp() {
         diskWatchTask?.cancel()
         diskWatchTask = nil
+        guestWatchTask?.cancel()
+        guestWatchTask = nil
         // The keyboard for Windows goes back to the Mac when the machine
         // stops (WindowsKeyboard.swift), and only then: it doesn't follow
         // the machine's window.
@@ -4320,7 +4325,7 @@ extension VMManager {
     }()
 
     /// The disk's top node, which snapshot-save and snapshot-load name.
-    private func diskNodeName() async throws -> String {
+    func diskNodeName() async throws -> String {
         let blocks = try await sendQMPCommand("query-block", arguments: nil) as? [[String: Any]] ?? []
         guard let disk = blocks.first(where: { $0["device"] as? String == "disk0" }),
               let inserted = disk["inserted"] as? [String: Any],
@@ -4332,7 +4337,7 @@ extension VMManager {
 
     /// Runs a QMP job (snapshot-save, -load, -delete) and waits for it to
     /// end, at most `limit`. Throws the job's own error.
-    private func runQMPJob(_ command: String, id: String, arguments: [String: Any],
+    func runQMPJob(_ command: String, id: String, arguments: [String: Any],
                            limit: Duration = .seconds(600)) async throws {
         var args = arguments
         args["job-id"] = id

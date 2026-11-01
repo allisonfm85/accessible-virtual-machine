@@ -43,8 +43,32 @@ AVM's own Settings are Command-Comma from any AVM window, or **AVM
 Settings…** on the dashboard, in four categories in the same kind of
 toolbar: **General** (checking for updates, What's New), **Startup and
 Background** (opening AVM at login, running in the background with a
-keyboard for Windows, the second monitor), **Keyboard** (Caps Lock as
-the screen reader key in Windows) and **Devices** (Restart USB Helper).
+keyboard for Windows, the second monitor), **Watching Machines** (see
+below), **Keyboard** (Caps Lock as the screen reader key in Windows) and
+**Devices** (Restart USB Helper).
+
+While a Windows or Linux machine runs, AVM watches it, each part on
+unless turned off in **Watching Machines**:
+
+- **Screen changes are said** while no screen reader runs in the
+  machine: during Windows Setup, a restart, a boot error or a blue
+  screen, new text on its screen is read out, as Read Screen reads it.
+  Once NVDA, JAWS, Narrator or Orca is running, AVM stays quiet.
+- **A screen reader that stops is started again** with its own start key
+  (Control-Alt-N for NVDA, Control-Alt-J for JAWS, Super-Alt-S for Orca
+  in GNOME), and the Windows screen reader chosen at setup is started if
+  it hasn't started a minute after sign-in. AVM says when it does this.
+- **A restore point before updates**: when updates are waiting, AVM takes
+  a restore point with the machine running (once a day at most, keeping
+  the newest), and says how to go back if the machine doesn't return
+  from its restart within 20 minutes. Not while devices are sent to the
+  machine.
+- **Disk space**: AVM warns when a machine's disk, or the Mac's, is nearly
+  full.
+
+**Send to Virtual Machine** is in Finder's right-click menu (Quick Actions
+or Services) for any file: it goes to Downloads in the running Windows or
+Linux machine, and AVM asks which one when several run.
 
 The **Virtual Machine** menu can also:
 

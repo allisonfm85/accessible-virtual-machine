@@ -1647,3 +1647,56 @@ final class ImportedValuesTests: XCTestCase {
         XCTAssertEqual(imported.name, "Badname")
     }
 }
+
+/// What's running in a machine, and what's new on its screen
+/// (2026-10-31, GuestWatchLogic.swift).
+final class GuestWatchTests: XCTestCase {
+    func testWindowsProcessListFindsScreenReadersAndSignIn() {
+        let listing = """
+        "System Idle Process","0","Services","0","8 K"
+        "explorer.exe","4120","Console","1","98,000 K"
+        "nvda.exe","5100","Console","1","60,000 K"
+        "NVDA_slave.exe","5120","Console","1","9,000 K"
+        """
+        let found = GuestProcesses.parse(listing, windows: true)
+        XCTAssertTrue(found.signedIn)
+        XCTAssertEqual(found.screenReaders, ["NVDA"])
+        XCTAssertFalse(GuestProcesses.parse(#""winlogon.exe","600","Console","1","5 K""#, windows: true).signedIn)
+    }
+
+    func testLinuxProcessListFindsOrcaAndGnome() {
+        let found = GuestProcesses.parse("COMMAND\nsystemd\ngnome-shell\norca\n", windows: false)
+        XCTAssertTrue(found.signedIn)
+        XCTAssertTrue(found.gnome)
+        XCTAssertEqual(found.screenReaders, ["Orca"])
+        XCTAssertFalse(GuestProcesses.parse("COMMAND\nsystemd\ngdm\n", windows: false).signedIn)
+    }
+
+    func testCountersAndRepeatsAreSaidOnce() {
+        let said = Set(["Working on updates 23%"].map(ScreenChange.key))
+        XCTAssertEqual(ScreenChange.newLines(["Working on updates 24%", "Don't turn off your computer", "5", "Don't turn off your computer"], after: said),
+                       ["Don't turn off your computer"])
+    }
+
+    func testStopScreenIsRecognised() {
+        XCTAssertTrue(ScreenChange.isStopScreen(["Your device ran into a problem and needs to restart.", "Stop code: CRITICAL_PROCESS_DIED"]))
+        XCTAssertFalse(ScreenChange.isStopScreen(["Your device ran into a problem"]))
+    }
+
+    func testASpinnerIsNotANewScreen() {
+        var a = [UInt8](repeating: 10, count: 64 * 36)
+        var b = a
+        for i in 0..<20 { b[i] = 200 }
+        XCTAssertFalse(ScreenChange.isNewScreen(a, b))
+        for i in 0..<(64 * 36 / 2) { a[i] = 220 }
+        XCTAssertTrue(ScreenChange.isNewScreen(a, b))
+    }
+
+    func testWatchingIsOnUnlessTurnedOff() {
+        let key = "AVMTest-\(UUID().uuidString)"
+        XCTAssertTrue(GuestWatchSettings.isOn(key))
+        UserDefaults.standard.set(false, forKey: key)
+        XCTAssertFalse(GuestWatchSettings.isOn(key))
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+}
