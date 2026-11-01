@@ -350,6 +350,7 @@ class FocusLockManager: ObservableObject {
         ]
         registerHotKey()
         isLocked = true
+        Announcer.keyboardIn = VMManager.currentGuestName
         startEnforcement()
         // Caps Lock remap BEFORE the transition announcement — a .failure
         // from here interrupts and flushes the queue, so speaking it after
@@ -386,6 +387,7 @@ class FocusLockManager: ObservableObject {
         NSApp.presentationOptions = []
         unregisterHotKey()
         isLocked = false
+        Announcer.keyboardIn = nil
         // Caps Lock back to normal Mac behavior BEFORE the transition
         // announcement, for the same queue-flush reason as lock().
         CapsLockRemapper.shared.restoreForUnlock()

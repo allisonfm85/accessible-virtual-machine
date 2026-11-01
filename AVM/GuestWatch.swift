@@ -139,6 +139,9 @@ extension VMManager {
                 // none at all, and a screen reader AVM can't see: there,
                 // only the first 3 minutes (start-up screens) are read.
                 let readerRunning = !(processes?.screenReaders.isEmpty ?? true)
+                if processes != nil {
+                    if readerRunning { Announcer.readerRunningIn.insert(machine) } else { Announcer.readerRunningIn.remove(machine) }
+                }
                 let canTell = !installed || agentEverAnswered || Date().timeIntervalSince(started) < 180
                 if GuestWatchSettings.isOn(GuestWatchSettings.speakScreenKey), !readerRunning, canTell,
                    (try? await self.sendQMPCommand("screendump", arguments: ["filename": picture.path, "format": "ppm"])) != nil,

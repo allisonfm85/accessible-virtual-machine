@@ -339,6 +339,37 @@ final class Announcer {
         }
     }
 
+    // MARK: Not over the machine's screen reader (2026-10-31)
+    //
+    // With the keyboard in a machine whose own screen reader is talking,
+    // VoiceOver reading AVM's updates talks over it, both in one pair of
+    // headphones or one hearing aid. So routine updates (.info) wait, and
+    // are said when the keyboard comes back to the Mac; failures, outcomes
+    // and the keyboard's own sounds are said at once. While no screen
+    // reader runs in the machine (Setup, a restart), nothing waits: AVM's
+    // screen reading is the only voice then.
+
+    /// The machine the keyboard is in (FocusLockManager), or nil.
+    nonisolated(unsafe) static var keyboardIn: String?
+    /// The machines whose screen reader is running now (GuestWatch).
+    nonisolated(unsafe) static var readerRunningIn: Set<String> = []
+    private var held: [String] = []
+    private var heldIn: String?
+
+    /// Whether a line waits until the keyboard is back on the Mac.
+    nonisolated static func holds(_ tone: Tone, keyboardIn machine: String?, readerRunningIn running: Set<String>, settingOn: Bool) -> Bool {
+        guard settingOn, case .info = tone, let machine else { return false }
+        return running.contains(machine)
+    }
+
+    /// What's said for the lines that waited: the newest few, in order.
+    nonisolated static func heldSummary(_ lines: [String], machine: String) -> String? {
+        guard !lines.isEmpty else { return nil }
+        let kept = lines.suffix(5)
+        let more = lines.count - kept.count
+        return "While you were in \(machine): " + kept.joined(separator: " ") + (more > 0 ? " And \(more) earlier." : "")
+    }
+
     /// Play the tone's sound immediately, then speak the message with the
     /// system voice. Every tone enqueues behind whatever is speaking, so
     /// nothing is cut off or silently eaten. See INTERRUPTION POLICY in
@@ -351,6 +382,13 @@ final class Announcer {
         // In the log as well (2026-10-26, code audit): the log's header
         // promises spoken announcements, and a failure said without its own
         // log line was missing from every diagnostic report.
+        if Self.holds(tone, keyboardIn: Self.keyboardIn, readerRunningIn: Self.readerRunningIn,
+                      settingOn: UserDefaults.standard.object(forKey: GuestWatchSettings.holdWhileInMachineKey) as? Bool ?? true) {
+            AVMLog.write("AVM: held while in \(Self.keyboardIn ?? "?") (\(tone)) — \(message)")
+            held.append(message)
+            heldIn = Self.keyboardIn
+            return
+        }
         AVMLog.write("AVM: said (\(tone)) — \(message)")
         switch tone {
         case .enterGuest: Self.enterSound?.play()
@@ -358,6 +396,16 @@ final class Announcer {
         default: tone.soundName.flatMap { NSSound(named: $0) }?.play()
         }
 
+        speak(message)
+        // Back on the Mac: what waited.
+        if case .leaveGuest = tone, let machine = heldIn, let summary = Self.heldSummary(held, machine: machine) {
+            held = []; heldIn = nil
+            AVMLog.write("AVM: said (held) — \(summary)")
+            speak(summary)
+        }
+    }
+
+    private func speak(_ message: String) {
         if speakWithVoiceOver(message) { return }
         let utterance = AVSpeechUtterance(string: message)
         synthesizer.speak(utterance)

@@ -1702,6 +1702,19 @@ final class GuestWatchTests: XCTestCase {
         XCTAssertFalse(GuestProcesses.parse("COMMAND\nsystemd\ngdm\n", windows: false).signedIn)
     }
 
+    /// AVM's updates wait only while the keyboard is in a machine whose screen reader runs.
+    func testUpdatesWaitForTheMachinesScreenReader() {
+        XCTAssertTrue(Announcer.holds(.info, keyboardIn: "PC", readerRunningIn: ["PC"], settingOn: true))
+        XCTAssertFalse(Announcer.holds(.failure, keyboardIn: "PC", readerRunningIn: ["PC"], settingOn: true), "problems are said at once")
+        XCTAssertFalse(Announcer.holds(.leaveGuest, keyboardIn: "PC", readerRunningIn: ["PC"], settingOn: true))
+        XCTAssertFalse(Announcer.holds(.info, keyboardIn: "PC", readerRunningIn: [], settingOn: true), "no screen reader: AVM is the only voice")
+        XCTAssertFalse(Announcer.holds(.info, keyboardIn: nil, readerRunningIn: ["PC"], settingOn: true))
+        XCTAssertFalse(Announcer.holds(.info, keyboardIn: "PC", readerRunningIn: ["PC"], settingOn: false))
+        XCTAssertNil(Announcer.heldSummary([], machine: "PC"))
+        XCTAssertEqual(Announcer.heldSummary(["A.", "B."], machine: "PC"), "While you were in PC: A. B.")
+        XCTAssertEqual(Announcer.heldSummary((1...7).map { "\($0)." }, machine: "PC"), "While you were in PC: 3. 4. 5. 6. 7. And 2 earlier.")
+    }
+
     func testABootIsKnownByItsFirstProcess() {
         let windows = [#""System Idle Process","0","Services","0","8 K""#,
                        #""smss.exe","412","Services","0","1,232 K""#,

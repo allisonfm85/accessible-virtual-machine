@@ -13,6 +13,9 @@ nonisolated enum GuestWatchSettings {
     static let speakScreenKey = "AVMSpeakScreenChanges"
     static let restartReaderKey = "AVMRestartStoppedScreenReader"
     static let pointBeforeUpdatesKey = "AVMRestorePointBeforeUpdates"
+    /// AVM's updates held while the keyboard is in a machine whose screen
+    /// reader is running, and said when it comes back (Announcer, 2026-10-31).
+    static let holdWhileInMachineKey = "AVMHoldUpdatesInMachine"
 
     /// On unless turned off, except the restore point before updates: off
     /// until turned on (2026-10-31). Twice in tests, Windows didn't come

@@ -73,6 +73,7 @@ struct AppPreferencesView: View {
     @AppStorage(GuestWatchSettings.speakScreenKey) private var speakScreen = true
     @AppStorage(GuestWatchSettings.restartReaderKey) private var restartReader = true
     @AppStorage(GuestWatchSettings.pointBeforeUpdatesKey) private var pointBeforeUpdates = false
+    @AppStorage(GuestWatchSettings.holdWhileInMachineKey) private var holdWhileInMachine = true
 
     private var category: PreferencesCategory { startCategory ?? preferences.category }
 
@@ -139,6 +140,10 @@ struct AppPreferencesView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Toggle("Start a screen reader again when it stops", isOn: $restartReader)
             Text("If NVDA, JAWS or Orca stops in a machine, AVM presses its start key there: Control-Alt-N for NVDA, Control-Alt-J for JAWS, Super-Alt-S for Orca in GNOME. AVM also starts the screen reader you chose for Windows if it hasn't started a minute after you sign in.")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle("Hold AVM's updates while a machine's screen reader talks", isOn: $holdWhileInMachine)
+            Text("While your keyboard is in a machine and its screen reader is running, AVM's routine updates wait instead of talking over it, and AVM says them when you come back to the Mac. Problems are still said at once.")
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
             Toggle("Take a restore point before updates", isOn: $pointBeforeUpdates)
