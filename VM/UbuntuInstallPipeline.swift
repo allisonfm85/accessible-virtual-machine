@@ -342,8 +342,29 @@ nonisolated enum LinuxDistro: String, Equatable, Sendable {
     /// Kali Linux (2026-10-30): Debian's installer, Debian's path.
     case kali
 
+    /// AlmaLinux and Rocky Linux (2026-10-30): Anaconda, Fedora's path.
+    case almalinux, rocky
+
     /// Installed with Debian's installer and a preseed file.
     var usesPreseed: Bool { self == .debian || self == .kali }
+
+    /// Installed with Anaconda and a kickstart file.
+    var usesKickstart: Bool { self == .fedora || isEnterprise }
+
+    /// AlmaLinux or Rocky Linux: Red Hat Enterprise Linux rebuilds.
+    var isEnterprise: Bool { self == .almalinux || self == .rocky }
+
+    /// The name said and shown.
+    var name: String {
+        switch self {
+        case .ubuntu: return "Ubuntu"
+        case .debian: return "Debian"
+        case .fedora: return "Fedora"
+        case .kali: return "Kali Linux"
+        case .almalinux: return "AlmaLinux"
+        case .rocky: return "Rocky Linux"
+        }
+    }
 }
 
 nonisolated struct UbuntuISOInfo: Equatable {
@@ -366,8 +387,8 @@ nonisolated struct UbuntuISOInfo: Equatable {
         if distro == .fedora {
             return version.isEmpty ? "Fedora" : "Fedora \(version)"
         }
-        if distro == .kali {
-            return version.isEmpty ? "Kali Linux" : "Kali Linux \(version)"
+        if distro == .kali || distro.isEnterprise {
+            return version.isEmpty ? distro.name : "\(distro.name) \(version)"
         }
         var name = "Ubuntu"
         if !version.isEmpty { name += " \(version)" }
@@ -636,6 +657,9 @@ nonisolated final class UbuntuInstallPipeline {
         if info.distro == .fedora {
             return fedoraProblem(with: info)
         }
+        if info.distro.isEnterprise {
+            return enterpriseProblem(with: info)
+        }
         if !info.isARM64 {
             return "This is an Ubuntu installer for Intel and AMD PCs. This Mac needs the ARM version: on ubuntu.com, download Ubuntu Desktop for ARM."
         }
@@ -728,11 +752,15 @@ nonisolated final class UbuntuInstallPipeline {
                     .write(to: nocloud.appendingPathComponent("failed.sh"), atomically: true, encoding: .utf8)
                 return
             }
-            if distro == .fedora {
+            if distro.usesKickstart {
                 // One file: the setup and failure scripts ride inside the
                 // kickstart, as its %post and %onerror sections.
-                try Self.fedoraKickstart(account: account, hostName: Self.hostName(fromVMName: input.vmName),
-                                         timeZone: TimeZone.current.identifier, version: version, disk: input.diskName)
+                let hostName = Self.hostName(fromVMName: input.vmName)
+                let timeZone = TimeZone.current.identifier
+                try (distro == .fedora
+                     ? Self.fedoraKickstart(account: account, hostName: hostName, timeZone: timeZone, version: version, disk: input.diskName)
+                     : Self.enterpriseKickstart(account: account, hostName: hostName, timeZone: timeZone, distro: distro,
+                                                version: version, disk: input.diskName))
                     .write(to: nocloud.appendingPathComponent("ks.cfg"), atomically: true, encoding: .utf8)
                 return
             }
@@ -1062,8 +1090,8 @@ nonisolated final class UbuntuInstallPipeline {
     // MARK: Stage 3 — the ISO
 
     private func stageRebuildISO(input: Input, scratch: URL, distro: LinuxDistro, account: UbuntuAccount) async throws {
-        if distro == .fedora {
-            try await stageRebuildFedoraISO(input: input, scratch: scratch)
+        if distro.usesKickstart {
+            try await stageRebuildFedoraISO(input: input, scratch: scratch, distro: distro)
             return
         }
         let xorriso = try Self.toolURL(named: "xorriso")
@@ -1336,15 +1364,19 @@ nonisolated final class UbuntuInstallPipeline {
             .replacingOccurrences(of: "at the end of Debian's install", with: "at the end of Kali's install")
             .replacingOccurrences(of: "Debian installed by AVM", with: "Kali Linux installed by AVM")
             .replacingOccurrences(of: "printf 'user-db:user\\nsystem-db:local\\n' > $T/etc/dconf/profile/user",
-                                  with: """
-                                  if [ -s $T/etc/dconf/profile/user ]; then
-                                      grep -qx 'system-db:local' $T/etc/dconf/profile/user || sed -i '/^user-db:user$/a system-db:local' $T/etc/dconf/profile/user
-                                      grep -qx 'system-db:local' $T/etc/dconf/profile/user || echo 'system-db:local' >> $T/etc/dconf/profile/user
-                                  else
-                                      printf 'user-db:user\\nsystem-db:local\\n' > $T/etc/dconf/profile/user
-                                  fi
-                                  """)
+                                  with: dconfProfileKeptAndExtended)
     }
+
+    /// The dconf user profile the distribution brings, with AVM's local
+    /// database added to it; written new only when there is none.
+    static let dconfProfileKeptAndExtended = """
+        if [ -s $T/etc/dconf/profile/user ]; then
+            grep -qx 'system-db:local' $T/etc/dconf/profile/user || sed -i '/^user-db:user$/a system-db:local' $T/etc/dconf/profile/user
+            grep -qx 'system-db:local' $T/etc/dconf/profile/user || echo 'system-db:local' >> $T/etc/dconf/profile/user
+        else
+            printf 'user-db:user\\nsystem-db:local\\n' > $T/etc/dconf/profile/user
+        fi
+        """
 
     static let kaliFailureScript = debianFailureScript
         .replacingOccurrences(of: "Runs only if Debian's install fails.", with: "Runs only if Kali's install fails.")
@@ -1447,42 +1479,54 @@ nonisolated final class UbuntuInstallPipeline {
     static func fedoraKickstart(account: UbuntuAccount, hostName: String, timeZone: String, version: String,
                                 disk: String = "nvme0n1") -> String {
         let release = version.isEmpty ? "$releasever" : version
+        return anacondaKickstart(
+            account: account, hostName: hostName, timeZone: timeZone, disk: disk,
+            installer: "Fedora's installer (Anaconda)",
+            sources: """
+                url --mirrorlist="https://mirrors.fedoraproject.org/mirrorlist?repo=fedora-\(release)&arch=aarch64"
+                repo --name=updates --mirrorlist="https://mirrors.fedoraproject.org/mirrorlist?repo=updates-released-f\(release)&arch=aarch64"
+                """,
+            partitioning: "autopart --type=btrfs",
+            packages: ["@^workstation-product-environment", "orca", "spice-vdagent", "spice-webdavd",
+                       "qemu-guest-agent", "dconf", "-gnome-tour"],
+            setup: fedoraSetupScript(account: account), failure: fedoraFailureScript)
+    }
+
+    /// A kickstart: the account, the disk, where the packages come from,
+    /// which ones, and the setup and failure scripts. Fedora's, AlmaLinux's
+    /// and Rocky's differ only in those (2026-10-30).
+    static func anacondaKickstart(account: UbuntuAccount, hostName: String, timeZone: String, disk: String,
+                                  installer: String, sources: String, partitioning: String, packages: [String],
+                                  setup: String, failure: String) -> String {
         let layout = account.keyboardLayout ?? "us"
         let xkb = account.keyboardVariant.map { "\(layout) (\($0))" } ?? layout
         return """
-        # Written by AVM. Fedora's installer (Anaconda) reads this and asks nothing.
+        # Written by AVM. \(installer) reads this and asks nothing.
         text
         lang en_US.UTF-8
         keyboard --xlayouts=\(kickstartQuoted(xkb))
         timezone \(kickstartQuoted(timeZone)) --utc
         network --bootproto=dhcp --device=link --activate --hostname=\(hostName)
-        url --mirrorlist="https://mirrors.fedoraproject.org/mirrorlist?repo=fedora-\(release)&arch=aarch64"
-        repo --name=updates --mirrorlist="https://mirrors.fedoraproject.org/mirrorlist?repo=updates-released-f\(release)&arch=aarch64"
+        \(sources)
         ignoredisk --only-use=\(disk)
         zerombr
         clearpart --all --initlabel --drives=\(disk)
-        autopart --type=btrfs
+        \(partitioning)
         rootpw --lock
         user --name=\(account.userName) --gecos=\(kickstartQuoted(account.realName)) --groups=wheel --iscrypted --password=\(kickstartQuoted(account.passwordHash))
         firstboot --disable
         poweroff
 
         %packages
-        @^workstation-product-environment
-        orca
-        spice-vdagent
-        spice-webdavd
-        qemu-guest-agent
-        dconf
-        -gnome-tour
+        \(packages.joined(separator: "\n"))
         %end
 
         %post --interpreter=/bin/bash --erroronfail --log=/root/avm-setup.log
-        \(fedoraSetupScript(account: account))
+        \(setup)
         %end
 
         %onerror --interpreter=/bin/bash
-        \(fedoraFailureScript)
+        \(failure)
         %end
 
         """
@@ -1555,7 +1599,10 @@ nonisolated final class UbuntuInstallPipeline {
             "-indev", isoPath,
             "-lsd", "/images/pxeboot/vmlinuz", "/.discinfo", "--"
         ])
-        guard let volumeID = fedoraVolumeID(inXorrisoReport: listing.output), volumeID.hasPrefix("Fedora") else {
+        // AlmaLinux's and Rocky's discs are laid out as Fedora's (2026-10-30,
+        // their 10.2 boot ISOs: AlmaLinux-10-2-aarch64-dvd, Rocky-10-2-aarch64-dvd).
+        guard let volumeID = fedoraVolumeID(inXorrisoReport: listing.output),
+              ["Fedora", "AlmaLinux", "Rocky"].contains(where: { volumeID.hasPrefix($0) }) else {
             return nil
         }
         let found = Set(listing.output.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) })
@@ -1569,8 +1616,10 @@ nonisolated final class UbuntuInstallPipeline {
             await runTool(xorriso, ["-osirrox", "on", "-indev", isoPath, "-extract", "/.discinfo", infoURL.path])
             discInfo = (try? String(contentsOf: infoURL, encoding: .utf8)) ?? ""
         }
-        let info = fedoraISOInfo(volumeID: volumeID, discInfo: discInfo,
-                                 hasInstallerKernel: found.contains("'/images/pxeboot/vmlinuz'"))
+        let hasKernel = found.contains("'/images/pxeboot/vmlinuz'")
+        let info = volumeID.hasPrefix("Fedora")
+            ? fedoraISOInfo(volumeID: volumeID, discInfo: discInfo, hasInstallerKernel: hasKernel)
+            : enterpriseISOInfo(volumeID: volumeID, discInfo: discInfo, hasInstallerKernel: hasKernel)
         ubuntuLog("identify: \(info.spokenName), arm64=\(info.isARM64), live=\(info.isLiveImage), volume id \"\(volumeID)\"")
         return info
     }
@@ -1625,9 +1674,116 @@ nonisolated final class UbuntuInstallPipeline {
         return nil
     }
 
+    // MARK: AlmaLinux and Rocky Linux (2026-10-30, the user's request)
+    //
+    // Red Hat Enterprise Linux's rebuilds install with Anaconda, as Fedora
+    // does, so they take Fedora's path: the same two-menu boot edit, the
+    // same kickstart shape, the same %post and %onerror. MEASURED on
+    // AlmaLinux-10.2-aarch64-boot.iso and Rocky-10.2-aarch64-boot.iso: the
+    // discs are laid out exactly as Fedora's (/EFI/BOOT/grub.cfg,
+    // /images/efiboot.img, /images/pxeboot, a .discinfo of time stamp,
+    // "10.2", "aarch64"), with menus that start on "Test this media"
+    // (set default="1") and find the installer by the label
+    // AlmaLinux-10-2-aarch64-dvd or Rocky-10-2-aarch64-dvd. What differs:
+    //   - The boot ISO holds only the installer. The packages come from
+    //     the distribution's own servers, BaseOS and AppStream, for the
+    //     major release (10), so an older boot ISO installs the current
+    //     point release, as their own installers do once one is out.
+    //   - "Server with GUI" (@^graphical-server-environment), the GNOME
+    //     desktop on the server base, the environment both offer for a
+    //     desktop on ARM. Orca 48, spice-vdagent and qemu-guest-agent come
+    //     from AppStream; AlmaLinux also has spice-webdavd, Rocky doesn't.
+    //   - LVM with XFS (autopart's default): RHEL has no btrfs.
+    //   - Their dconf user profile is kept and added to, as for Kali.
+
+    /// What an AlmaLinux or Rocky disc is, from its label and .discinfo.
+    /// The release is "10.2"; the label (AlmaLinux-10-2-aarch64-dvd) is
+    /// the fallback, so a disc without .discinfo is still named.
+    static func enterpriseISOInfo(volumeID: String, discInfo: String, hasInstallerKernel: Bool) -> UbuntuISOInfo {
+        let distro: LinuxDistro = volumeID.hasPrefix("Rocky") ? .rocky : .almalinux
+        let lines = discInfo.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
+        let release = lines.count > 1 ? lines[1] : ""
+        let arch = lines.count > 2 ? lines[2] : ""
+        var version = release.range(of: "^[0-9]+(\\.[0-9]+)?$", options: .regularExpression) != nil ? release : ""
+        if version.isEmpty, let match = volumeID.range(of: "-[0-9]+(-[0-9]+)?-", options: .regularExpression) {
+            version = volumeID[match].dropFirst().dropLast().replacingOccurrences(of: "-", with: ".")
+        }
+        let isARM64 = arch.isEmpty ? volumeID.contains("aarch64") : arch == "aarch64"
+        let isInstaller = hasInstallerKernel && !arch.isEmpty
+        return UbuntuISOInfo(discInfo: volumeID, version: version, isARM64: isARM64, isDesktop: true,
+                             distro: distro, isLiveImage: !isInstaller)
+    }
+
+    /// Why AVM can't install from this AlmaLinux or Rocky disc, or nil.
+    /// Version 10 or later: it brings GNOME 47 and Orca 48; 9 was never
+    /// tried.
+    static func enterpriseProblem(with info: UbuntuISOInfo) -> String? {
+        let name = info.distro.name
+        let site = info.distro == .rocky ? "rockylinux.org" : "almalinux.org"
+        if info.isLiveImage {
+            return "This is a \(name) live image. AVM installs \(name) from its boot ISO instead: on \(site), download \(name) for ARM64 (aarch64), the boot ISO."
+        }
+        if !info.isARM64 {
+            return "This is a \(name) installer for Intel and AMD PCs. This Mac needs the aarch64 one: on \(site), download the \(name) boot ISO for ARM64 (aarch64)."
+        }
+        if info.majorVersion == 0 {
+            return "AVM couldn't tell which \(name) version this is. AVM needs \(name) 10 or later, from \(site)."
+        }
+        if info.majorVersion < 10 {
+            return "This is \(info.spokenName). AVM needs \(name) 10 or later."
+        }
+        return nil
+    }
+
+    /// The kickstart for AlmaLinux or Rocky: their own servers, Server with
+    /// GUI, LVM, and the same setup and failure scripts as Fedora's.
+    static func enterpriseKickstart(account: UbuntuAccount, hostName: String, timeZone: String, distro: LinuxDistro,
+                                    version: String, disk: String = "nvme0n1") -> String {
+        let major = version.split(separator: ".").first.map(String.init) ?? "$releasever"
+        let base = distro == .rocky
+            ? "https://download.rockylinux.org/pub/rocky/\(major)"
+            : "https://repo.almalinux.org/almalinux/\(major)"
+        var packages = ["@^graphical-server-environment", "orca", "spice-vdagent", "qemu-guest-agent", "dconf", "-gnome-tour"]
+        if distro == .almalinux { packages.insert("spice-webdavd", at: 3) }
+        return anacondaKickstart(
+            account: account, hostName: hostName, timeZone: timeZone, disk: disk,
+            installer: "\(distro.name)'s installer (Anaconda)",
+            sources: """
+                url --url="\(base)/BaseOS/aarch64/os/"
+                repo --name=AppStream --baseurl="\(base)/AppStream/aarch64/os/"
+                """,
+            partitioning: "autopart",
+            packages: packages,
+            setup: enterpriseSetupScript(account: account, distro: distro),
+            failure: fedoraFailureScript.replacingOccurrences(of: "Fedora", with: distro.name))
+    }
+
+    /// Fedora's %post, named for AlmaLinux or Rocky, with their dconf user
+    /// profile kept and added to (Fedora's already reads the local one).
+    static func enterpriseSetupScript(account: UbuntuAccount, distro: LinuxDistro) -> String {
+        // MEASURED 2026-10-31 on AlmaLinux 10.2 (guest-info): RHEL's
+        // /etc/sysconfig/qemu-ga lets the guest agent answer only a list of
+        // commands, without guest-exec and the guest-file ones, which AVM's
+        // Send File, disk check and install test use; the first install
+        // test's agent answered pings and refused the rest. An empty list
+        // enables all, as Fedora, Debian and Ubuntu ship it. The agent's
+        // channel is reachable only from AVM on the Mac.
+        let agent = """
+            # The guest agent answers everything AVM asks (see AVM's source).
+            sed -i 's/^FILTER_RPC_ARGS=.*/FILTER_RPC_ARGS=""/' /etc/sysconfig/qemu-ga
+            grep -qx 'FILTER_RPC_ARGS=""' /etc/sysconfig/qemu-ga
+
+            """
+        return fedoraSetupScript(account: account)
+            .replacingOccurrences(of: "# Fedora's own /etc/dconf/profile/user already reads the local database.",
+                                  with: dconfProfileKeptAndExtended)
+            .replacingOccurrences(of: "# The install-complete marker, last", with: agent + "# The install-complete marker, last")
+            .replacingOccurrences(of: "Fedora", with: distro.name)
+    }
+
     /// Stage 3 for Fedora: both copies of the boot menu edited (see the
     /// section header), the kickstart added, and the result read back.
-    private func stageRebuildFedoraISO(input: Input, scratch: URL) async throws {
+    private func stageRebuildFedoraISO(input: Input, scratch: URL, distro: LinuxDistro = .fedora) async throws {
         let xorriso = try Self.toolURL(named: "xorriso")
         let mcopy = try Self.toolURL(named: "mcopy")
         let env = ["MTOOLS_SKIP_CHECK": "1"]
@@ -1648,7 +1804,7 @@ nonisolated final class UbuntuInstallPipeline {
         guard let edited = Self.editedFedoraBootMenu(original),
               let label = Self.fedoraVolumeLabel(inBootMenu: original) else {
             throw UbuntuPipelineError.stageFailed(stage: .rebuildISO,
-                                                 reason: "The installer's boot menu isn't in the form AVM knows, so the answers couldn't be added. This Fedora release may be newer than this version of AVM.")
+                                                 reason: "The installer's boot menu isn't in the form AVM knows, so the answers couldn't be added. This \(distro.name) release may be newer than this version of AVM.")
         }
         do {
             try? fm.removeItem(at: grubURL)

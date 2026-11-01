@@ -54,7 +54,10 @@ fail() {
     exit 1
 }
 
-case "$GUEST" in ubuntu|debian|fedora|kali) ;; *) fail "--guest must be ubuntu, debian, fedora or kali." ;; esac
+case "$GUEST" in ubuntu|debian|fedora|kali|almalinux|rocky) ;; *) fail "--guest must be ubuntu, debian, fedora, kali, almalinux or rocky." ;; esac
+# SELinux keeps the guest agent from seeing the session on Fedora and its
+# relatives (2026-10-26); see below.
+case "$GUEST" in fedora|almalinux|rocky) SELINUX_GUEST=1 ;; *) SELINUX_GUEST=0 ;; esac
 [ -n "$ISO" ] && [ -f "$ISO" ] || fail "No installer ISO given." "Pass one with --iso."
 R="$APP/Contents/Resources"
 [ -x "$APP/Contents/MacOS/AVM" ] && [ -x "$R/qemu-system-aarch64" ] || fail "No AVM build at $APP." "Build AVM first, or pass --app."
@@ -266,7 +269,7 @@ if [ -z "$DESKTOP" ]; then
     screenshot
     fail "The installed $GUEST didn't answer through the guest agent in 10 minutes." "See $WORK/screen.png."
 fi
-if echo "$DESKTOP" | grep -q "session none" && [ "$GUEST" != "fedora" ]; then
+if echo "$DESKTOP" | grep -q "session none" && [ "$SELINUX_GUEST" = "0" ]; then
     screenshot
     fail "Nobody was signed in after 10 minutes: the automatic sign-in didn't happen." "See $WORK/screen.png."
 fi
@@ -305,8 +308,8 @@ info "the clipboard agent is running: $CLIPBOARD"
 # Fedora's SELinux policy keeps the guest agent from listing processes
 # (2026-10-26), so there it's reported, not required.
 if ! echo "$DESKTOP" | grep -q "orca running"; then
-    if [ "$GUEST" = "fedora" ]; then
-        info "(Orca can't be seen from the guest agent on Fedora; its setting is checked by the install)"
+    if [ "$SELINUX_GUEST" = "1" ]; then
+        info "(Orca can't be seen from the guest agent under SELinux; its setting is checked by the install)"
     else
         screenshot; fail "Orca isn't running after sign-in."
     fi

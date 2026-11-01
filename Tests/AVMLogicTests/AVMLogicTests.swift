@@ -1827,4 +1827,107 @@ final class LinuxDownloadTests: XCTestCase {
         XCTAssertEqual(LinuxISODownloader.hash(of: "Fedora.iso", in: "SHA256 (Fedora.iso) = \(hex)"), hex)
         XCTAssertNil(LinuxISODownloader.hash(of: "Fedora.iso", in: "# Fedora.iso: 123 bytes"))
     }
+
+    /// AlmaLinux's and Rocky's folders list a "10-latest" copy and, for
+    /// Rocky, a CHECKSUM per file; the numbered boot ISO and the folder's
+    /// own CHECKSUM are wanted (2026-10-30, the real listings).
+    func testAlmaLinuxAndRocky() throws {
+        let alma = """
+            <a href="AlmaLinux-10-latest-aarch64-boot.iso">x</a> <a href="AlmaLinux-10.2-aarch64-boot.iso">x</a>
+            <a href="AlmaLinux-10.2-aarch64-boot.iso.manifest">x</a> <a href="AlmaLinux-10.2-aarch64-dvd.iso">x</a>
+            <a href="AlmaLinux-10.2-aarch64-minimal.iso">x</a> <a href="CHECKSUM">x</a>
+            """
+        XCTAssertEqual(newest(.almalinux, in: alma), "AlmaLinux-10.2-aarch64-boot.iso")
+        XCTAssertEqual(newest(.almalinux, in: alma + "AlmaLinux-10.10-aarch64-boot.iso"), "AlmaLinux-10.10-aarch64-boot.iso")
+        let rocky = """
+            <a href="CHECKSUM">x</a> <a href="CHECKSUM.asc">x</a>
+            <a href="Rocky-10-latest-aarch64-boot.iso">x</a> <a href="Rocky-10-latest-aarch64-boot.iso.CHECKSUM">x</a>
+            <a href="Rocky-10.2-aarch64-boot.iso">x</a> <a href="Rocky-10.2-aarch64-boot.iso.CHECKSUM">x</a>
+            <a href="Rocky-10.2-aarch64-dvd1.iso">x</a>
+            """
+        let name = try XCTUnwrap(newest(.rocky, in: rocky))
+        XCTAssertEqual(name, "Rocky-10.2-aarch64-boot.iso")
+        XCTAssertEqual(LinuxISODownloader.matches(LinuxISODownloader.Distribution.rocky.checksumPattern(for: name), in: rocky), ["CHECKSUM"])
+        XCTAssertEqual(LinuxISODownloader.matches(LinuxISODownloader.Distribution.almalinux.checksumPattern(for: "x"), in: alma), ["CHECKSUM"])
+        let sums = """
+            # Rocky-10.2-aarch64-boot.iso: 1120931840 bytes
+            SHA256 (Rocky-10.2-aarch64-boot.iso) = 33c2d3dfd5f947b3201478180b549bb2995bd9573c2776b384e5ec1dd47326c0
+            SHA256 (Rocky-10-latest-aarch64-boot.iso) = 33c2d3dfd5f947b3201478180b549bb2995bd9573c2776b384e5ec1dd47326c1
+            """
+        XCTAssertEqual(LinuxISODownloader.hash(of: name, in: sums), "33c2d3dfd5f947b3201478180b549bb2995bd9573c2776b384e5ec1dd47326c0")
+    }
 }
+
+// MARK: - AlmaLinux and Rocky Linux, Fedora's way (2026-10-30)
+
+final class EnterpriseInstallTests: XCTestCase {
+    private let account = UbuntuAccount(realName: "Amena T", userName: "amena", passwordHash: "$6$salt$hash",
+                                        signInAutomatically: true)
+
+    func testDiscsAreKnown() throws {
+        let alma = UbuntuInstallPipeline.enterpriseISOInfo(volumeID: "AlmaLinux-10-2-aarch64-dvd",
+                                                           discInfo: "1779571190.291881\n10.2\naarch64\n", hasInstallerKernel: true)
+        XCTAssertEqual(alma.distro, .almalinux)
+        XCTAssertEqual(alma.version, "10.2")
+        XCTAssertEqual(alma.majorVersion, 10)
+        XCTAssertEqual(alma.spokenName, "AlmaLinux 10.2")
+        XCTAssertFalse(alma.isLiveImage)
+        XCTAssertNil(UbuntuInstallPipeline.problem(with: alma))
+        let rocky = UbuntuInstallPipeline.enterpriseISOInfo(volumeID: "Rocky-10-2-aarch64-dvd", discInfo: "", hasInstallerKernel: true)
+        XCTAssertEqual(rocky.distro, .rocky)
+        XCTAssertEqual(rocky.version, "10.2", "from the label when there's no .discinfo")
+        XCTAssertTrue(rocky.isARM64)
+        let nine = UbuntuInstallPipeline.enterpriseISOInfo(volumeID: "Rocky-9-6-aarch64-dvd",
+                                                           discInfo: "1\n9.6\naarch64\n", hasInstallerKernel: true)
+        XCTAssertTrue(try XCTUnwrap(UbuntuInstallPipeline.problem(with: nine)).contains("Rocky Linux 10 or later"))
+        let intel = UbuntuInstallPipeline.enterpriseISOInfo(volumeID: "AlmaLinux-10-2-x86_64-dvd",
+                                                            discInfo: "1\n10.2\nx86_64\n", hasInstallerKernel: true)
+        XCTAssertTrue(try XCTUnwrap(UbuntuInstallPipeline.problem(with: intel)).contains("aarch64"))
+        XCTAssertTrue(LinuxDistro.rocky.usesKickstart)
+        XCTAssertTrue(GuestOS.almalinux.isLinux)
+        XCTAssertEqual(GuestOS(rawValue: "rocky")?.displayName, "Rocky Linux")
+    }
+
+    func testBootMenuEditIsFedoras() throws {
+        let menu = """
+            set default="1"
+            set timeout=60
+            menuentry 'Install AlmaLinux 10.2' --class red --class gnu-linux --class gnu --class os {
+            \tlinux /images/pxeboot/vmlinuz inst.stage2=hd:LABEL=AlmaLinux-10-2-aarch64-dvd ro
+            \tinitrd /images/pxeboot/initrd.img
+            }
+            """
+        let edited = try XCTUnwrap(UbuntuInstallPipeline.editedFedoraBootMenu(menu))
+        XCTAssertTrue(edited.contains("inst.ks=hd:LABEL=AlmaLinux-10-2-aarch64-dvd:/nocloud/ks.cfg"))
+        XCTAssertTrue(edited.contains("set default=\"0\""))
+    }
+
+    func testKickstarts() throws {
+        let alma = UbuntuInstallPipeline.enterpriseKickstart(account: account, hostName: "h", timeZone: "UTC",
+                                                             distro: .almalinux, version: "10.2", disk: "vda")
+        for line in ["url --url=\"https://repo.almalinux.org/almalinux/10/BaseOS/aarch64/os/\"\n",
+                     "repo --name=AppStream --baseurl=\"https://repo.almalinux.org/almalinux/10/AppStream/aarch64/os/\"\n",
+                     "\n@^graphical-server-environment\n", "\norca\n", "\nspice-vdagent\n", "\nspice-webdavd\n",
+                     "\nqemu-guest-agent\n", "\nautopart\n", "ignoredisk --only-use=vda\n", "--groups=wheel",
+                     "AlmaLinux installed by AVM", "AlmaLinux install failed", "\npoweroff\n"] {
+            XCTAssertTrue(alma.contains(line), line)
+        }
+        XCTAssertFalse(alma.contains("btrfs"))
+        XCTAssertFalse(alma.contains("Fedora"))
+        XCTAssertFalse(alma.contains("fedoraproject"))
+        XCTAssertEqual(alma.components(separatedBy: "\n%end\n").count, 4)
+        let rocky = UbuntuInstallPipeline.enterpriseKickstart(account: account, hostName: "h", timeZone: "UTC",
+                                                              distro: .rocky, version: "10.2", disk: "vda")
+        XCTAssertTrue(rocky.contains("url --url=\"https://download.rockylinux.org/pub/rocky/10/BaseOS/aarch64/os/\"\n"))
+        XCTAssertFalse(rocky.contains("spice-webdavd\n"), "Rocky has no spice-webdavd package")
+        XCTAssertTrue(rocky.contains("Rocky Linux installed by AVM"))
+        // RHEL's guest agent is let answer guest-exec and guest-file, before the marker.
+        let filter = try XCTUnwrap(rocky.range(of: "s/^FILTER_RPC_ARGS=.*/FILTER_RPC_ARGS=\"\"/' /etc/sysconfig/qemu-ga"))
+        let marker = try XCTUnwrap(rocky.range(of: "AVMDONE.TAG"))
+        XCTAssertLessThan(filter.lowerBound, marker.lowerBound)
+        // The setup script keeps the distribution's dconf profile.
+        XCTAssertTrue(rocky.contains("grep -qx 'system-db:local' /etc/dconf/profile/user") ||
+                      rocky.contains("grep -qx 'system-db:local' $T/etc/dconf/profile/user"))
+    }
+}
+

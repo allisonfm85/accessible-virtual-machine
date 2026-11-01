@@ -195,6 +195,8 @@ struct SetupView: View {
         case .debian: return .debian
         case .fedora: return .fedora
         case .kali: return .kali
+        case .almalinux: return .almalinux
+        case .rocky: return .rocky
         }
     }
 

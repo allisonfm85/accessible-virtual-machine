@@ -17,7 +17,8 @@
 //   - It picks the file as the new machine's installer.
 // The releases are the ones AVM's unattended installs are proven on:
 // Ubuntu 26.04, Debian's current stable and Fedora 44, and since
-// 2026-10-30 Kali Linux's current release (2026.3 when added).
+// 2026-10-30 Kali Linux's current release (2026.3 when added) and
+// AlmaLinux and Rocky Linux 10 (10.2).
 
 import SwiftUI
 import AppKit
@@ -30,10 +31,10 @@ import Combine
 final class LinuxISODownloader: NSObject, ObservableObject {
 
     enum Distribution: String, CaseIterable, Identifiable {
-        // Kali Linux (2026-10-30, the user's request), from its own server
-        // and checked against its own published SHA-256 list, like the
-        // first three.
-        case ubuntu, debian, fedora, kali
+        // Kali Linux, AlmaLinux and Rocky Linux (2026-10-30, the user's
+        // request), each from its own server and checked against its own
+        // published SHA-256 list, like the first three.
+        case ubuntu, debian, fedora, kali, almalinux, rocky
 
         var id: Self { self }
 
@@ -43,6 +44,8 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             case .debian: return "Debian"
             case .fedora: return "Fedora"
             case .kali: return "Kali Linux"
+            case .almalinux: return "AlmaLinux"
+            case .rocky: return "Rocky Linux"
             }
         }
 
@@ -53,6 +56,8 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             case .debian: return "Debian's current release, a small installer that downloads the desktop while it installs: about 700 megabytes."
             case .fedora: return "Fedora 44 Workstation, a small installer that downloads the desktop while it installs: about 1.2 gigabytes."
             case .kali: return "Kali Linux's current release with the GNOME desktop and Kali's default tools, a small installer that downloads them while it installs: about 600 megabytes."
+            case .almalinux: return "AlmaLinux 10, Server with GUI (the GNOME desktop), a small installer that downloads the rest while it installs: about 1.1 gigabytes."
+            case .rocky: return "Rocky Linux 10, Server with GUI (the GNOME desktop), a small installer that downloads the rest while it installs: about 1.1 gigabytes."
             }
         }
 
@@ -63,6 +68,8 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             case .fedora: return URL(string: "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Everything/aarch64/iso/")!
             // Kali's "current" folder always holds its newest release.
             case .kali: return URL(string: "https://cdimage.kali.org/current/")!
+            case .almalinux: return URL(string: "https://repo.almalinux.org/almalinux/10/isos/aarch64/")!
+            case .rocky: return URL(string: "https://download.rockylinux.org/pub/rocky/10/isos/aarch64/")!
             }
         }
 
@@ -73,6 +80,10 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             case .debian: return #"debian-\d+\.\d+\.\d+-arm64-netinst\.iso"#
             case .fedora: return #"Fedora-Everything-netinst-aarch64-44-[\d.]+\.iso"#
             case .kali: return #"kali-linux-\d{4}\.\d+[a-z]?-installer-netinst-arm64\.iso"#
+            // The numbered file, not "10-latest", so the file's name says
+            // which point release it is.
+            case .almalinux: return #"AlmaLinux-10\.\d+-aarch64-boot\.iso"#
+            case .rocky: return #"Rocky-10\.\d+-aarch64-boot\.iso"#
             }
         }
 
@@ -82,6 +93,9 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             switch self {
             case .ubuntu, .debian, .kali: return #"SHA256SUMS"#
             case .fedora: return #"Fedora-Everything-44-[\d.]+-aarch64-CHECKSUM"#
+            // Exactly CHECKSUM: Rocky's folder also has one per file
+            // (Rocky-10.2-aarch64-boot.iso.CHECKSUM) and its .asc.
+            case .almalinux, .rocky: return #"(?<![\w.-])CHECKSUM(?![\w.])"#
             }
         }
     }
@@ -225,7 +239,7 @@ final class LinuxISODownloader: NSObject, ObservableObject {
 
     /// The SHA-256 for `name`, from either form a distribution publishes:
     /// "hash  name" or "hash *name" (Debian, Ubuntu, Kali), or
-    /// "SHA256 (name) = hash" (Fedora). The line must
+    /// "SHA256 (name) = hash" (Fedora, AlmaLinux, Rocky). The line must
     /// name the file itself (2026-10-30): in Kali's list the installer's
     /// .torrent, whose name contains the installer's, is listed too.
     static func hash(of name: String, in sums: String) -> String? {
@@ -443,7 +457,7 @@ struct LinuxDownloadView: View {
 /// The download with no window (2026-10-30), for a full system test of a
 /// Linux install the way a user gets it:
 ///
-///   AVM.app/Contents/MacOS/AVM --download-linux ubuntu|debian|fedora|kali
+///   AVM.app/Contents/MacOS/AVM --download-linux ubuntu|debian|fedora|kali|almalinux|rocky
 ///
 /// It runs LinuxISODownloader exactly as the setup wizard's Download Linux
 /// does, printing each step, and exits 0 with the installer's path as its

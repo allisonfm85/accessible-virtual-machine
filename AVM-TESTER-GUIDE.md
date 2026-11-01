@@ -334,7 +334,8 @@ The window reads top to bottom:
   Watching** stops AVM telling you; your browser keeps downloading, and
   you choose the file with **Choose Installer Image** when it's done.
 - **Download Linux** opens a window where you choose Ubuntu Desktop,
-  Debian, Fedora or Kali Linux (a radio group, "Distribution to download"), then
+  Debian, Fedora, Kali Linux, AlmaLinux or Rocky Linux (a radio group,
+  "Distribution to download"), then
   **Download** it (Command-Return). AVM downloads the current release from
   the distribution's own server into Downloads, says how far along it is
   every 10 percent (**Speak Progress**, Command-P, at any time), checks it
@@ -1318,6 +1319,45 @@ Tested so far with AVM's unattended install test only (Kali 2026.3, from
 Download Linux): it installed in 7 minutes, signed in to a GNOME desktop
 by itself with Orca and the SPICE agent running. Orca's speech has not
 yet been listened to in the app. Please report what you hear.
+
+### AlmaLinux and Rocky Linux
+
+AVM can install **AlmaLinux** and **Rocky Linux**, version 10 or later
+(added 2026-10-30), the way it installs Fedora: the same account
+section, Orca on at the login screen and after with Caps Lock as its
+key, and everything listed under What AVM sets up in Ubuntu. Both are
+rebuilds of Red Hat Enterprise Linux and install with Fedora's
+installer.
+
+**Getting the ISO.** **Download Linux** in the setup wizard gets the
+newest one for you. By hand: from almalinux.org or rockylinux.org,
+download version 10 for ARM64 (aarch64), the **boot ISO** (named like
+`AlmaLinux-10.2-aarch64-boot.iso` or `Rocky-10.2-aarch64-boot.iso`,
+about 1.1 GB). Only the boot ISO has been tried. Versions for Intel and
+AMD PCs (`x86_64`) and version 9 won't work, and AVM says so.
+
+**The install downloads the rest.** The boot ISO holds only the
+installer; the desktop comes from the distribution's own servers
+(BaseOS and AppStream for version 10) with that day's updates.
+
+**How they differ from Fedora:**
+
+- The desktop is **Server with GUI**: GNOME on the server base, the
+  desktop both offer on ARM. Orca is version 48.
+- The disk uses LVM with XFS, as these distributions do; no btrfs.
+- Their guest agent is set to answer everything AVM asks (out of the
+  box it refuses to run commands, which Send File and the disk check
+  need). SELinux stays on, and as on Fedora it limits what the guest
+  agent can see.
+- Rocky Linux has no package for the Mac shared folder service
+  (spice-webdavd), so the shared folder isn't there in Rocky. AlmaLinux
+  has it.
+
+Tested so far with AVM's unattended install test only (AlmaLinux 10.2
+and Rocky Linux 10.2, from Download Linux's files): each installed in
+about 5 minutes and signed in to a GNOME desktop by itself, with Orca
+running and the SPICE agent's channel open. Orca's speech has not yet
+been listened to in the app. Please report what you hear.
 
 ---
 

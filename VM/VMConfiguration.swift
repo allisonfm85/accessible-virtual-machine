@@ -387,6 +387,10 @@ enum GuestOS: String {
     /// preseed answers, with Kali's own mirror, GNOME desktop and default
     /// tools (UbuntuInstallPipeline.swift).
     case kali
+    /// AlmaLinux and Rocky Linux (2026-10-30, the user's request): Fedora's
+    /// way, Anaconda and a kickstart, Server with GUI from their own servers
+    /// (UbuntuInstallPipeline.swift).
+    case almalinux, rocky
     /// Runs on Apple's Virtualization framework, not QEMU (MacGuest.swift).
     case macOS
 
@@ -399,13 +403,15 @@ enum GuestOS: String {
         case .debian: return "Debian"
         case .fedora: return "Fedora"
         case .kali: return "Kali Linux"
+        case .almalinux: return "AlmaLinux"
+        case .rocky: return "Rocky Linux"
         case .macOS: return "macOS"
         }
     }
 
-    /// Ubuntu, Debian, Fedora or Kali: AVM's Linux install and run path
+    /// Every guest but Windows and macOS: AVM's Linux install and run path
     /// (account, Orca, install markers, stall watch).
-    var isLinux: Bool { self == .ubuntu || self == .debian || self == .fedora || self == .kali }
+    var isLinux: Bool { self != .windows && self != .macOS }
 }
 
 extension VMConfiguration {
