@@ -391,6 +391,10 @@ enum GuestOS: String {
     /// way, Anaconda and a kickstart, Server with GUI from their own servers
     /// (UbuntuInstallPipeline.swift).
     case almalinux, rocky
+    /// openSUSE Tumbleweed (2026-10-30, the user's request): YaST with an
+    /// AutoYaST profile, GNOME from openSUSE's own repository
+    /// (UbuntuInstallPipeline.swift).
+    case opensuse
     /// Runs on Apple's Virtualization framework, not QEMU (MacGuest.swift).
     case macOS
 
@@ -405,6 +409,7 @@ enum GuestOS: String {
         case .kali: return "Kali Linux"
         case .almalinux: return "AlmaLinux"
         case .rocky: return "Rocky Linux"
+        case .opensuse: return "openSUSE"
         case .macOS: return "macOS"
         }
     }

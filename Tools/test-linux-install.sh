@@ -2,10 +2,12 @@
 # test-linux-install.sh
 # AVM — Accessible Virtual Machine
 #
-# A complete unattended Ubuntu, Debian, Fedora or Kali install with no one at the screen
+# A complete unattended Ubuntu, Debian, Fedora, Kali, AlmaLinux, Rocky or openSUSE
+# install with no one at the screen
 # (2026-10-26), the Linux counterpart of test-windows-install.sh:
 #   1. builds install media with AVM's own pipeline
-#      (AVM --build-install-media --guest ubuntu|debian|fedora|kali), with a test
+#      (AVM --build-install-media --guest ubuntu|debian|fedora|kali|almalinux|
+#      rocky|opensuse), with a test
 #      account in the form the wizard writes;
 #   2. makes a blank disk and firmware settings, and starts QEMU the way
 #      AVM starts a Linux machine, with no window;
@@ -18,7 +20,7 @@
 # about 15 GB while it runs. The test machine is deleted afterwards unless
 # it failed or --keep.
 #
-#   Tools/test-linux-install.sh --iso PATH [--guest debian|ubuntu|fedora|kali] [--app PATH] [--minutes N] [--keep] [--disk virtio|nvme]
+#   Tools/test-linux-install.sh --iso PATH [--guest debian|ubuntu|fedora|kali|almalinux|rocky|opensuse] [--app PATH] [--minutes N] [--keep] [--disk virtio|nvme]
 
 set -euo pipefail
 
@@ -39,7 +41,7 @@ while [ $# -gt 0 ]; do
         --keep) KEEP=1; shift ;;
         --disk) DISK="$2"; shift 2 ;;
         --keyboard) LAYOUT="${2%%:*}"; [ "$2" != "$LAYOUT" ] && VARIANT="${2#*:}"; shift 2 ;;
-        -h|--help) sed -n 2,22p "$0"; exit 0 ;;
+        -h|--help) sed -n 2,23p "$0"; exit 0 ;;
         *) echo "Unknown option $1. Run with --help."; exit 64 ;;
     esac
 done
@@ -54,10 +56,10 @@ fail() {
     exit 1
 }
 
-case "$GUEST" in ubuntu|debian|fedora|kali|almalinux|rocky) ;; *) fail "--guest must be ubuntu, debian, fedora, kali, almalinux or rocky." ;; esac
+case "$GUEST" in ubuntu|debian|fedora|kali|almalinux|rocky|opensuse) ;; *) fail "--guest must be ubuntu, debian, fedora, kali, almalinux, rocky or opensuse." ;; esac
 # SELinux keeps the guest agent from seeing the session on Fedora and its
 # relatives (2026-10-26); see below.
-case "$GUEST" in fedora|almalinux|rocky) SELINUX_GUEST=1 ;; *) SELINUX_GUEST=0 ;; esac
+case "$GUEST" in fedora|almalinux|rocky|opensuse) SELINUX_GUEST=1 ;; *) SELINUX_GUEST=0 ;; esac
 [ -n "$ISO" ] && [ -f "$ISO" ] || fail "No installer ISO given." "Pass one with --iso."
 R="$APP/Contents/Resources"
 [ -x "$APP/Contents/MacOS/AVM" ] && [ -x "$R/qemu-system-aarch64" ] || fail "No AVM build at $APP." "Build AVM first, or pass --app."

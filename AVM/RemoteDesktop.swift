@@ -251,6 +251,7 @@ extension VMManager {
         if command -v xrdp >/dev/null; then :
         elif command -v apt-get >/dev/null; then apt-get update -qq && apt-get install -y -qq xrdp xorgxrdp
         elif command -v dnf >/dev/null; then dnf install -y -q xrdp xorgxrdp
+        elif command -v zypper >/dev/null; then zypper --non-interactive --quiet install xrdp xorgxrdp
         else echo NOPKG; exit 0; fi
         # Sound in the remote session takes the distribution's xrdp sound
         # module (pipewire-module-xrdp: Debian 13 and Ubuntu 24.04 or newer
@@ -260,6 +261,10 @@ extension VMManager {
             dpkg -s pipewire-module-xrdp >/dev/null 2>&1 && echo SOUND
         elif command -v dnf >/dev/null; then
             rpm -q pipewire-module-xrdp >/dev/null 2>&1 || dnf install -y -q pipewire-module-xrdp >/dev/null 2>&1 || true
+            rpm -q pipewire-module-xrdp >/dev/null 2>&1 && echo SOUND
+        elif command -v zypper >/dev/null; then
+            # openSUSE (2026-10-30).
+            rpm -q pipewire-module-xrdp >/dev/null 2>&1 || zypper --non-interactive --quiet install pipewire-module-xrdp >/dev/null 2>&1 || true
             rpm -q pipewire-module-xrdp >/dev/null 2>&1 && echo SOUND
         fi
         adduser xrdp ssl-cert 2>/dev/null || true

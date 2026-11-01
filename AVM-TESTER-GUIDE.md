@@ -334,8 +334,8 @@ The window reads top to bottom:
   Watching** stops AVM telling you; your browser keeps downloading, and
   you choose the file with **Choose Installer Image** when it's done.
 - **Download Linux** opens a window where you choose Ubuntu Desktop,
-  Debian, Fedora, Kali Linux, AlmaLinux or Rocky Linux (a radio group,
-  "Distribution to download"), then
+  Debian, Fedora, Kali Linux, AlmaLinux, Rocky Linux or openSUSE
+  Tumbleweed (a radio group, "Distribution to download"), then
   **Download** it (Command-Return). AVM downloads the current release from
   the distribution's own server into Downloads, says how far along it is
   every 10 percent (**Speak Progress**, Command-P, at any time), checks it
@@ -1358,6 +1358,47 @@ and Rocky Linux 10.2, from Download Linux's files): each installed in
 about 5 minutes and signed in to a GNOME desktop by itself, with Orca
 running and the SPICE agent's channel open. Orca's speech has not yet
 been listened to in the app. Please report what you hear.
+
+### openSUSE Tumbleweed
+
+AVM can install **openSUSE Tumbleweed** (added 2026-10-30): the same
+account section, Orca on at the login screen and after with Caps Lock
+as its key, and everything listed under What AVM sets up in Ubuntu.
+openSUSE's own installer, YaST, does the work, with AVM's answers.
+
+**Getting the ISO.** **Download Linux** in the setup wizard gets the
+current snapshot for you. By hand: on get.opensuse.org, choose
+Tumbleweed, then aarch64, and download the **Network Image** (named like
+`openSUSE-Tumbleweed-NET-aarch64-Snapshot20261020-Media.iso`, about
+450 MB). Live images, the version for Intel and AMD PCs, and openSUSE
+Leap (whose newer installer AVM doesn't answer yet) won't work, and AVM
+says so.
+
+**The install downloads Tumbleweed.** The network image holds only the
+installer; GNOME and everything else come from openSUSE's repository.
+
+**At the end of the install** YaST restarts the machine instead of
+switching it off; the installer disc then switches it off itself, and
+AVM starts it again from its disk as for the other distributions. The
+first start after that takes a little longer while SELinux labels the
+files.
+
+**How openSUSE differs from Ubuntu:**
+
+- The system administrator (root) has your password, as openSUSE's own
+  installer sets it by default, so YaST and sudo ask for the password
+  you know.
+- The disk uses btrfs with snapshots, as openSUSE sets it up.
+- openSUSE's welcome window and GNOME's welcome tour don't open.
+- The guest agent is set to answer everything AVM asks (out of the box
+  it refuses to run commands). SELinux stays on, and as on Fedora it
+  limits what the guest agent can see.
+
+Tested so far with AVM's unattended install test only (snapshot
+20261020, from Download Linux): it installed in 8 minutes, switched
+itself off, and signed in to a GNOME desktop by itself with Orca running
+and the SPICE agent's channel open. Orca's speech has not yet been
+listened to in the app. Please report what you hear.
 
 ---
 

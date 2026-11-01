@@ -1931,3 +1931,156 @@ final class EnterpriseInstallTests: XCTestCase {
     }
 }
 
+// MARK: - openSUSE Tumbleweed, YaST and AutoYaST (2026-10-30)
+
+final class OpenSUSEInstallTests: XCTestCase {
+    private let account = UbuntuAccount(realName: "Amena & Co <T>", userName: "amena", passwordHash: "$6$salt$hash",
+                                        signInAutomatically: true, keyboardLayout: "gb", keyboardVariant: "mac")
+
+    /// The menu of openSUSE-Tumbleweed-NET-aarch64-Snapshot20261020-Media.iso,
+    /// cut to its first entries.
+    private let menu = """
+        if sleep --interruptible 0 ; then
+          timeout=60
+        fi
+
+        default=1
+
+        menuentry "Boot from Hard Disk" --class opensuse --class gnu-linux --class gnu --class os {
+          exit
+        }
+
+        menuentry 'Installation' --class opensuse --class gnu-linux --class gnu --class os {
+          set gfxpayload=keep
+          echo 'Loading kernel ...'
+          linux /boot/aarch64/linux splash=silent
+          echo 'Loading initial ramdisk ...'
+          initrd /boot/aarch64/initrd
+        }
+
+        menuentry 'Upgrade' --class opensuse --class gnu-linux --class gnu --class os {
+          linux /boot/aarch64/linux splash=silent upgrade=1
+        }
+        """
+
+    func testBootMenuEdit() throws {
+        let edited = try XCTUnwrap(UbuntuInstallPipeline.editedOpenSUSEBootMenu(menu))
+        // After YaST's restart the disc powers the machine off (2026-10-31).
+        XCTAssertTrue(edited.hasPrefix(UbuntuInstallPipeline.openSUSEMarkerGuardLine + "\n"))
+        XCTAssertTrue(UbuntuInstallPipeline.openSUSEMarkerGuardLine.contains("/AVMDONE.TAG; then halt; exit; fi"))
+        XCTAssertTrue(edited.contains("linux /boot/aarch64/linux \(UbuntuInstallPipeline.openSUSEKernelArguments) splash=silent\n"))
+        XCTAssertTrue(UbuntuInstallPipeline.openSUSEKernelArguments.contains("autoyast=cd:/nocloud/autoinst.xml"))
+        XCTAssertEqual(edited.components(separatedBy: "autoyast=").count, 2, "only the installer entry")
+        XCTAssertTrue(edited.contains("\ndefault=1\ntimeout=1\n"), "Installation, the second entry, after a second")
+        XCTAssertTrue(edited.contains("  timeout=1\n"))
+        XCTAssertFalse(edited.contains("timeout=60"))
+        XCTAssertNil(UbuntuInstallPipeline.editedOpenSUSEBootMenu("menuentry 'x' { linux /images/pxeboot/vmlinuz }"))
+    }
+
+    func testDiscsAreKnown() throws {
+        let net = UbuntuInstallPipeline.openSUSEISOInfo(volumeID: "openSUSE-Tumbleweed-NET-aarch64",
+                                                         products: "/ openSUSE 20261020-0\n", hasInstallerKernel: true)
+        XCTAssertEqual(net.distro, .opensuse)
+        XCTAssertEqual(net.version, "20261020")
+        XCTAssertEqual(net.spokenName, "openSUSE Tumbleweed")
+        XCTAssertNil(UbuntuInstallPipeline.problem(with: net))
+        let live = UbuntuInstallPipeline.openSUSEISOInfo(volumeID: "openSUSE-Tumbleweed-GNOME-Live-aarch64",
+                                                          products: "", hasInstallerKernel: false)
+        XCTAssertTrue(try XCTUnwrap(UbuntuInstallPipeline.problem(with: live)).contains("live image"))
+        let intel = UbuntuInstallPipeline.openSUSEISOInfo(volumeID: "openSUSE-Tumbleweed-NET-x86_64",
+                                                           products: "", hasInstallerKernel: true)
+        XCTAssertTrue(try XCTUnwrap(UbuntuInstallPipeline.problem(with: intel)).contains("aarch64"))
+        let leap = UbuntuInstallPipeline.openSUSEISOInfo(volumeID: "openSUSE-Leap-16.0-aarch64",
+                                                          products: "", hasInstallerKernel: true)
+        XCTAssertTrue(try XCTUnwrap(UbuntuInstallPipeline.problem(with: leap)).contains("Tumbleweed"))
+        XCTAssertTrue(GuestOS.opensuse.isLinux)
+        XCTAssertEqual(GuestOS(rawValue: "opensuse")?.displayName, "openSUSE")
+    }
+
+    /// Well-formed XML whatever the name holds, every answer given, and the
+    /// setup and failure scripts inside it.
+    func testProfileAnswersEverything() throws {
+        let profile = UbuntuInstallPipeline.autoYaSTProfile(account: account, hostName: "amenas-suse",
+                                                            timeZone: "America/Chicago", disk: "vda")
+        let document = try XMLDocument(xmlString: profile, options: [])
+        let root = try XCTUnwrap(document.rootElement())
+        XCTAssertEqual(root.name, "profile")
+        func text(_ path: String) throws -> [String] {
+            try root.nodes(forXPath: path).compactMap(\.stringValue)
+        }
+        XCTAssertEqual(try text("./*[local-name()='users']/*[local-name()='user']/*[local-name()='username']"), ["amena", "root"])
+        XCTAssertEqual(try text("./*[local-name()='users']/*[local-name()='user']/*[local-name()='fullname']"), ["Amena & Co <T>"])
+        XCTAssertEqual(try text("./*[local-name()='users']/*[local-name()='user']/*[local-name()='user_password']"),
+                       ["$6$salt$hash", "$6$salt$hash"])
+        XCTAssertEqual(try text(".//*[local-name()='autologin_user']"), ["amena"])
+        XCTAssertEqual(try text(".//*[local-name()='drive']/*[local-name()='device']"), ["/dev/vda"])
+        // YaST's own restart ends the install; final_halt only powered off
+        // the installed system at its first start (2026-10-31).
+        XCTAssertEqual(try text(".//*[local-name()='final_halt']"), [])
+        XCTAssertEqual(try text(".//*[local-name()='final_reboot']"), [])
+        XCTAssertEqual(try text(".//*[local-name()='products']/*[local-name()='product']"), ["openSUSE"])
+        XCTAssertEqual(try text(".//*[local-name()='second_stage']"), ["false"])
+        XCTAssertEqual(try text(".//*[local-name()='timezone']/*[local-name()='timezone']"), ["America/Chicago"])
+        let packages = try text(".//*[local-name()='package']")
+        for package in ["orca", "spice-vdagent", "spice-webdavd", "qemu-guest-agent"] {
+            XCTAssertTrue(packages.contains(package), package)
+        }
+        XCTAssertTrue(try text(".//*[local-name()='pattern']").contains("gnome"))
+        let source = try XCTUnwrap(try text(".//*[local-name()='source']").first)
+        XCTAssertTrue(source.contains("openSUSE Tumbleweed installed by AVM"))
+        XCTAssertTrue(source.contains("AVMFAIL.TAG"))
+        XCTAssertTrue(source.contains("|| bash /tmp/avm-failed.sh"))
+        // Without automatic sign-in there's no autologin user.
+        var manual = account
+        manual.signInAutomatically = false
+        let other = try XMLDocument(xmlString: UbuntuInstallPipeline.autoYaSTProfile(account: manual, hostName: "h", timeZone: "UTC"))
+        XCTAssertEqual(try other.rootElement()?.nodes(forXPath: ".//*[local-name()='autologin_user']").count, 0)
+    }
+
+    func testSetupScriptIsOpenSUSEs() throws {
+        let script = UbuntuInstallPipeline.openSUSESetupScript(account: account)
+        XCTAssertFalse(script.contains("curtin"))
+        XCTAssertFalse(script.contains("/target"))
+        XCTAssertFalse(script.contains("gdm3"))
+        XCTAssertFalse(script.contains("update-grub"))
+        XCTAssertTrue(script.contains("\nT=\n"))
+        XCTAssertTrue(script.contains("/etc/gdm/custom.conf"))
+        XCTAssertTrue(script.contains("chown -R $U: /home/$U/.config"), "openSUSE's users share the users group")
+        XCTAssertTrue(script.contains("welcome-dialog-last-shown-version"))
+        XCTAssertTrue(script.contains(#""XkbLayout" "%s"\n"#) && script.contains("'gb' 'mac'"))
+        XCTAssertTrue(script.contains("grep -qx 'system-db:local' $T/etc/dconf/profile/user ||"))
+        let tour = try XCTUnwrap(script.range(of: "01-avm-opensuse"))
+        let update = try XCTUnwrap(script.range(of: "\ndconf update\n"))
+        XCTAssertLessThan(tour.lowerBound, update.lowerBound)
+        let restore = try XCTUnwrap(script.range(of: "restorecon -R"))
+        let marker = try XCTUnwrap(script.range(of: "AVMDONE.TAG"))
+        XCTAssertLessThan(restore.lowerBound, marker.lowerBound)
+        // The heredoc that carries it into the chroot can't end early.
+        XCTAssertFalse(script.components(separatedBy: "\n").contains("AVMSETUP"))
+        XCTAssertFalse(script.contains("]]>"))
+        XCTAssertTrue(UbuntuInstallPipeline.openSUSEFailureScript.contains("sysrq-trigger"))
+        XCTAssertTrue(script.contains(#"FILTER_RPC_ARGS=""\n' > $T/etc/sysconfig/qemu-ga"#), "the guest agent may run commands")
+    }
+
+    /// download.opensuse.org's ports folder: the dated NET snapshot, not
+    /// "Current", the DVD or a live image, and its own .sha256 beside it.
+    func testDownloadPatterns() throws {
+        let listing = """
+            <a href="./openSUSE-Tumbleweed-DVD-aarch64-Snapshot20261020-Media.iso">x</a>
+            <a href="./openSUSE-Tumbleweed-NET-aarch64-Current.iso">x</a>
+            <a href="./openSUSE-Tumbleweed-NET-aarch64-Current.iso.sha256">x</a>
+            <a href="./openSUSE-Tumbleweed-NET-aarch64-Snapshot20261020-Media.iso">x</a>
+            <a href="./openSUSE-Tumbleweed-NET-aarch64-Snapshot20261020-Media.iso.mirrorlist">x</a>
+            <a href="./openSUSE-Tumbleweed-NET-aarch64-Snapshot20261020-Media.iso.sha256">x</a>
+            <a href="./openSUSE-Tumbleweed-NET-aarch64-Snapshot20261020-Media.iso.sha256.asc">x</a>
+            <a href="./openSUSE-Tumbleweed-GNOME-Live-aarch64-Snapshot20261020-Media.iso">x</a>
+            """
+        let distribution = LinuxISODownloader.Distribution.opensuse
+        let name = try XCTUnwrap(LinuxISODownloader.matches(distribution.filePattern, in: listing)
+            .max(by: { $0.compare($1, options: .numeric) == .orderedAscending }))
+        XCTAssertEqual(name, "openSUSE-Tumbleweed-NET-aarch64-Snapshot20261020-Media.iso")
+        XCTAssertEqual(LinuxISODownloader.matches(distribution.checksumPattern(for: name), in: listing), [name + ".sha256"])
+        let sums = "33916688227949b0691502ed35f10329ce0047a7312239573bb99a93ce941f82  \(name)\n"
+        XCTAssertEqual(LinuxISODownloader.hash(of: name, in: sums), "33916688227949b0691502ed35f10329ce0047a7312239573bb99a93ce941f82")
+    }
+}

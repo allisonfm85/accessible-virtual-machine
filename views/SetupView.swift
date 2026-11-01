@@ -197,6 +197,7 @@ struct SetupView: View {
         case .kali: return .kali
         case .almalinux: return .almalinux
         case .rocky: return .rocky
+        case .opensuse: return .opensuse
         }
     }
 

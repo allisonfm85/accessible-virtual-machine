@@ -17,8 +17,9 @@
 //   - It picks the file as the new machine's installer.
 // The releases are the ones AVM's unattended installs are proven on:
 // Ubuntu 26.04, Debian's current stable and Fedora 44, and since
-// 2026-10-30 Kali Linux's current release (2026.3 when added) and
-// AlmaLinux and Rocky Linux 10 (10.2).
+// 2026-10-30 Kali Linux's current release (2026.3 when added),
+// AlmaLinux and Rocky Linux 10 (10.2), and openSUSE Tumbleweed's current
+// snapshot (20261020 when added).
 
 import SwiftUI
 import AppKit
@@ -31,10 +32,11 @@ import Combine
 final class LinuxISODownloader: NSObject, ObservableObject {
 
     enum Distribution: String, CaseIterable, Identifiable {
-        // Kali Linux, AlmaLinux and Rocky Linux (2026-10-30, the user's
-        // request), each from its own server and checked against its own
-        // published SHA-256 list, like the first three.
-        case ubuntu, debian, fedora, kali, almalinux, rocky
+        // Kali Linux, AlmaLinux, Rocky Linux and openSUSE Tumbleweed
+        // (2026-10-30, the user's request), each from its own server and
+        // checked against its own published SHA-256 list, like the first
+        // three.
+        case ubuntu, debian, fedora, kali, almalinux, rocky, opensuse
 
         var id: Self { self }
 
@@ -46,6 +48,7 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             case .kali: return "Kali Linux"
             case .almalinux: return "AlmaLinux"
             case .rocky: return "Rocky Linux"
+            case .opensuse: return "openSUSE Tumbleweed"
             }
         }
 
@@ -58,6 +61,7 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             case .kali: return "Kali Linux's current release with the GNOME desktop and Kali's default tools, a small installer that downloads them while it installs: about 600 megabytes."
             case .almalinux: return "AlmaLinux 10, Server with GUI (the GNOME desktop), a small installer that downloads the rest while it installs: about 1.1 gigabytes."
             case .rocky: return "Rocky Linux 10, Server with GUI (the GNOME desktop), a small installer that downloads the rest while it installs: about 1.1 gigabytes."
+            case .opensuse: return "openSUSE Tumbleweed with the GNOME desktop, a small installer that downloads the rest while it installs: about 450 megabytes."
             }
         }
 
@@ -70,6 +74,8 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             case .kali: return URL(string: "https://cdimage.kali.org/current/")!
             case .almalinux: return URL(string: "https://repo.almalinux.org/almalinux/10/isos/aarch64/")!
             case .rocky: return URL(string: "https://download.rockylinux.org/pub/rocky/10/isos/aarch64/")!
+            // Tumbleweed for ARM lives in openSUSE's ports tree.
+            case .opensuse: return URL(string: "https://download.opensuse.org/ports/aarch64/tumbleweed/iso/")!
             }
         }
 
@@ -84,6 +90,8 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             // which point release it is.
             case .almalinux: return #"AlmaLinux-10\.\d+-aarch64-boot\.iso"#
             case .rocky: return #"Rocky-10\.\d+-aarch64-boot\.iso"#
+            // The dated snapshot, not "Current", for the same reason.
+            case .opensuse: return #"openSUSE-Tumbleweed-NET-aarch64-Snapshot\d{8}-Media\.iso"#
             }
         }
 
@@ -96,6 +104,8 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             // Exactly CHECKSUM: Rocky's folder also has one per file
             // (Rocky-10.2-aarch64-boot.iso.CHECKSUM) and its .asc.
             case .almalinux, .rocky: return #"(?<![\w.-])CHECKSUM(?![\w.])"#
+            // openSUSE publishes one list per file, beside it.
+            case .opensuse: return NSRegularExpression.escapedPattern(for: file + ".sha256") + #"(?![\w.])"#
             }
         }
     }
@@ -238,7 +248,7 @@ final class LinuxISODownloader: NSObject, ObservableObject {
     }
 
     /// The SHA-256 for `name`, from either form a distribution publishes:
-    /// "hash  name" or "hash *name" (Debian, Ubuntu, Kali), or
+    /// "hash  name" or "hash *name" (Debian, Ubuntu, Kali, openSUSE), or
     /// "SHA256 (name) = hash" (Fedora, AlmaLinux, Rocky). The line must
     /// name the file itself (2026-10-30): in Kali's list the installer's
     /// .torrent, whose name contains the installer's, is listed too.
@@ -457,7 +467,7 @@ struct LinuxDownloadView: View {
 /// The download with no window (2026-10-30), for a full system test of a
 /// Linux install the way a user gets it:
 ///
-///   AVM.app/Contents/MacOS/AVM --download-linux ubuntu|debian|fedora|kali|almalinux|rocky
+///   AVM.app/Contents/MacOS/AVM --download-linux ubuntu|debian|fedora|kali|almalinux|rocky|opensuse
 ///
 /// It runs LinuxISODownloader exactly as the setup wizard's Download Linux
 /// does, printing each step, and exits 0 with the installer's path as its

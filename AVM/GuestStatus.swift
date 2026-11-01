@@ -25,7 +25,7 @@ extension VMManager {
                 let usedPercent = fields.count > 4 ? fields[4].replacingOccurrences(of: "%", with: "") : "?"
                 let freeGB = fields.count > 3 ? (Int64(fields[3]) ?? 0) / 1_048_576 : 0
                 let count = try await agentRun("/bin/sh", ["-c",
-                    "if command -v apt >/dev/null; then apt list --upgradable 2>/dev/null | grep -c upgradable; elif command -v dnf >/dev/null; then dnf -q check-update 2>/dev/null | grep -c '^[A-Za-z0-9]'; else echo ?; fi"],
+                    "if command -v apt >/dev/null; then apt list --upgradable 2>/dev/null | grep -c upgradable; elif command -v dnf >/dev/null; then dnf -q check-update 2>/dev/null | grep -c '^[A-Za-z0-9]'; elif command -v zypper >/dev/null; then zypper --non-interactive --quiet list-updates 2>/dev/null | grep -c '^v '; else echo ?; fi"],
                     limit: .seconds(120)).trimmingCharacters(in: .whitespacesAndNewlines)
                 return "\(name)'s disk is \(usedPercent) percent full, with \(freeGB) gigabytes free. \(Self.updatesPhrase(count))"
             }

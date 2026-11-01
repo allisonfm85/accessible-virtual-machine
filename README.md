@@ -4,8 +4,8 @@ AVM is a macOS application that lets blind and low-vision users install
 and run Windows 11 ARM64 virtual machines entirely through VoiceOver —
 no sighted assistance required at any step. Every failure produces a
 spoken, specific, actionable announcement. It can also install Ubuntu
-Desktop for ARM, Debian, Fedora Workstation, Kali Linux, AlmaLinux or
-Rocky Linux with no installer
+Desktop for ARM, Debian, Fedora Workstation, Kali Linux, AlmaLinux,
+Rocky Linux or openSUSE Tumbleweed with no installer
 questions, with the Orca screen reader speaking from the first boot
 (tester guide, section 16), and macOS itself, from Apple.
 
@@ -111,8 +111,8 @@ ARM…** gets Windows straight from Microsoft's servers, the way
 Microsoft's Media Creation Tool does, with no web page to use, and
 makes it into an installer (about 4.5 GB to download, 20 GB free while
 it works; **Use Microsoft's Page Instead** is still there). **Download
-Linux…** gets Ubuntu Desktop, Debian, Fedora, Kali Linux, AlmaLinux or
-Rocky Linux from its own server. Each
+Linux…** gets Ubuntu Desktop, Debian, Fedora, Kali Linux, AlmaLinux,
+Rocky Linux or openSUSE Tumbleweed from its own server. Each
 is checked against its published checksum and chosen as the installer.
 
 After an update, **What's New in AVM** says what changed; it's in the
@@ -367,6 +367,13 @@ download.rockylinux.org) and AVM installs it the way it installs Fedora,
 whose installer they use: Server with GUI (GNOME) and Orca, downloaded
 from the distribution's own servers during the install.
 
+## openSUSE Tumbleweed
+
+Choose Tumbleweed's aarch64 network image (Download Linux… gets the
+current snapshot from download.opensuse.org) and AVM installs it with
+YaST and an AutoYaST profile: GNOME and Orca from openSUSE's own
+repository, your account, and Orca speaking from the first boot.
+
 ## Sharing a folder with Windows
 
 In a Windows machine's Settings, choose Choose Folder to Share. Windows
@@ -567,8 +574,9 @@ one machine at a time.
 ## Testing an install
 
 `Tools/test-linux-install.sh --guest debian --iso <ISO>` does the same
-for Ubuntu, Debian, Fedora, Kali, AlmaLinux and Rocky (`--guest ubuntu`,
-`--guest fedora`, `--guest kali`, `--guest almalinux`, `--guest rocky`): it
+for Ubuntu, Debian, Fedora, Kali, AlmaLinux, Rocky and openSUSE
+(`--guest ubuntu`, `--guest fedora`, `--guest kali`, `--guest almalinux`,
+`--guest rocky`, `--guest opensuse`): it
 waits for the install-complete marker and the installer's power-off.
 
 ## Testing a Windows install
