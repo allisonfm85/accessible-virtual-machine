@@ -15,15 +15,20 @@
 #   --windows FOLDER   a Windows test machine (default: the newest install-test-*)
 #   --debian FOLDER    a Debian test machine (default: the newest debian-test-*)
 #   --debian2 FOLDER   a second one, for two machines at once (default: the next newest)
-#   --fedora FOLDER    a Fedora test machine, on NVMe (default: the newest fedora-test-*);
-#                      only disk info runs there: its agent can't run programs (SELinux)
+#   --fedora FOLDER    a Fedora test machine (default: the newest fedora-test-*)
+#   --ubuntu, --kali, --almalinux, --rocky, --opensuse FOLDER
+#                      one of those (default: the newest ubuntu-test-* and so on)
+#   --nvme             the Fedora machine is on NVMe (installed before 2026-10-27)
 #   --only WORDS       run only the tests whose names contain one of the words
 #   --skip WORDS       skip the tests whose names contain one of the words
 #   --with-downloads   include the screen-reader download test (NVDA, about 70 MB)
 #   --out FOLDER       keep every test's output there (default: a temporary folder)
 #   --list             print the tests that would run, and stop
 #
-# The whole run takes about 45 minutes. Each test gets at most 25 minutes.
+# Every Linux AVM installs gets the same core tests (2026-10-31); Debian
+# also gets the rest. A distro with no test machine is skipped: make one
+# with Tools/test-linux-install.sh --guest NAME --keep.
+# The whole run takes about 90 minutes. Each test gets at most 25 minutes.
 # One AVM runs at a time: two launched
 # together have lost their arguments before (2026-10-28). The report says
 # PASSED, FAILED (with the checks that said NO), or NO VERDICT (the test
@@ -33,7 +38,8 @@ set -uo pipefail
 
 CACHE="$HOME/Library/Caches/AVM-build"
 APP="$CACHE/DerivedData/Build/Products/Debug/AVM.app"
-WINDOWS=""; DEBIAN=""; DEBIAN2=""; FEDORA=""
+WINDOWS=""; DEBIAN=""; DEBIAN2=""; FEDORA=""; NVME=""
+UBUNTU=""; KALI=""; ALMALINUX=""; ROCKY=""; OPENSUSE=""
 ONLY=""; SKIP=""; DOWNLOADS=0; OUT=""; LIST=0
 LIMIT=1500
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -45,12 +51,18 @@ while [ $# -gt 0 ]; do
         --debian) DEBIAN="$2"; shift 2 ;;
         --debian2) DEBIAN2="$2"; shift 2 ;;
         --fedora) FEDORA="$2"; shift 2 ;;
+        --ubuntu) UBUNTU="$2"; shift 2 ;;
+        --kali) KALI="$2"; shift 2 ;;
+        --almalinux) ALMALINUX="$2"; shift 2 ;;
+        --rocky) ROCKY="$2"; shift 2 ;;
+        --opensuse) OPENSUSE="$2"; shift 2 ;;
+        --nvme) NVME=" --nvme"; shift ;;
         --only) ONLY="$2"; shift 2 ;;
         --skip) SKIP="$2"; shift 2 ;;
         --with-downloads) DOWNLOADS=1; shift ;;
         --out) OUT="$2"; shift 2 ;;
         --list) LIST=1; shift ;;
-        -h|--help) sed -n 2,29p "$0"; exit 0 ;;
+        -h|--help) sed -n "2,/^$/p" "$0"; exit 0 ;;
         *) echo "Unknown option $1. Run with --help."; exit 64 ;;
     esac
 done
@@ -64,6 +76,11 @@ second_newest() { ls -d "$CACHE"/$1 2>/dev/null | sort | tail -2 | head -1; }
 [ -n "$DEBIAN" ] || DEBIAN="$(newest 'debian-test-*')"
 [ -n "$DEBIAN2" ] || DEBIAN2="$(second_newest 'debian-test-*')"
 [ -n "$FEDORA" ] || FEDORA="$(newest 'fedora-test-*')"
+[ -n "$UBUNTU" ] || UBUNTU="$(newest 'ubuntu-test-*')"
+[ -n "$KALI" ] || KALI="$(newest 'kali-test-*')"
+[ -n "$ALMALINUX" ] || ALMALINUX="$(newest 'almalinux-test-*')"
+[ -n "$ROCKY" ] || ROCKY="$(newest 'rocky-test-*')"
+[ -n "$OPENSUSE" ] || OPENSUSE="$(newest 'opensuse-test-*')"
 [ -n "$OUT" ] || OUT="$(mktemp -d "${TMPDIR:-/tmp}/avm-tests-XXXXXX")"
 mkdir -p "$OUT"
 
@@ -79,7 +96,8 @@ fi
 BIN="$APP/Contents/MacOS/AVM"
 
 # The tests: name | what it needs | the AVM arguments.
-# Needs: none, windows, debian, debian2 (both Debian machines), fedora, downloads.
+# Needs: none, windows, debian, debian2 (both Debian machines), another
+# Linux by name (ubuntu, fedora, kali, almalinux, rocky, opensuse), downloads.
 TESTS=()
 add() { TESTS+=("$1|$2|$3"); }
 add "unit tests"                       none     "swift-test"
@@ -111,10 +129,19 @@ add "debian agent shutdown"            debian   "--test-agent-shutdown"
 add "debian remote desktop"            debian   "--test-remote-desktop"
 add "debian two machines"              debian2  "--test-two-machines"
 add "debian 3d"                        debian   "--test-3d"
-# Fedora: its guest agent can't run programs (SELinux), so the tests that
-# read the guest don't work there, and its test machine is on NVMe, where
-# Save isn't offered. 3D on Fedora was checked by hand (2026-10-27).
-add "fedora disk info"                 fedora   "--test-disk-info --nvme"
+# The core tests, on every other Linux (2026-10-31). Fedora's used to be
+# disk info alone, its machine on NVMe (no Save there) and its agent kept
+# from running programs by SELinux; whatever still fails there says so.
+for distro in ubuntu fedora kali almalinux rocky opensuse; do
+    nvme=""; [ "$distro" = fedora ] && nvme="$NVME"
+    add "$distro save and resume"       "$distro" "--test-save-resume$nvme"
+    add "$distro send file"             "$distro" "--test-send-file$nvme"
+    add "$distro shared folder"         "$distro" "--test-linux-share$nvme"
+    add "$distro control socket"        "$distro" "--test-ctl$nvme"
+    add "$distro disk info"             "$distro" "--test-disk-info$nvme"
+    add "$distro agent shutdown"        "$distro" "--test-agent-shutdown$nvme"
+    add "$distro remote desktop"        "$distro" "--test-remote-desktop$nvme"
+done
 add "screen reader downloads"          downloads "--test-screen-readers"
 
 wanted() {
@@ -133,6 +160,11 @@ machine_for() {
         windows) echo "$WINDOWS" ;;
         debian|debian2) echo "$DEBIAN" ;;
         fedora) echo "$FEDORA" ;;
+        ubuntu) echo "$UBUNTU" ;;
+        kali) echo "$KALI" ;;
+        almalinux) echo "$ALMALINUX" ;;
+        rocky) echo "$ROCKY" ;;
+        opensuse) echo "$OPENSUSE" ;;
         *) echo "" ;;
     esac
 }
@@ -141,7 +173,7 @@ guest_for() {
     case "$1" in
         windows) echo windows ;;
         debian|debian2) echo debian ;;
-        fedora) echo fedora ;;
+        *) echo "$1" ;;
     esac
 }
 
@@ -176,7 +208,10 @@ echo "AVM tests"
 echo "   app: $APP"
 echo "   Windows: ${WINDOWS:-none}"
 echo "   Debian: ${DEBIAN:-none}${DEBIAN2:+, and $DEBIAN2}"
-echo "   Fedora: ${FEDORA:-none}"
+for distro in Ubuntu Fedora Kali AlmaLinux Rocky openSUSE; do
+    var="$(echo "$distro" | tr '[:lower:]' '[:upper:]')"
+    echo "   $distro: ${!var:-none}"
+done
 echo "   outputs: $OUT"
 echo
 

@@ -139,8 +139,11 @@ nonisolated final class AVMLog: @unchecked Sendable {
     /// run where it broke" stays one discrete file. Generous today; Stage C
     /// removes the screendump timer that generates most of the volume.
     private let byteCap = 5 * 1024 * 1024
-    /// Including the one being created now.
-    private let filesKept = 3
+    /// Including the one being created now. The test runs' folder keeps
+    /// more (2026-10-31): the suite starts an AVM for every test, and with
+    /// three kept, a longer test running beside it lost the log it was
+    /// still writing, and reading, within minutes.
+    private var filesKept: Int { Self.logDirectoryOverride == nil ? 3 : 30 }
 
     // MARK: State — touched ONLY on `queue`.
     private let queue = DispatchQueue(label: "com.alllisonmeloy.AVM.filelog", qos: .utility)

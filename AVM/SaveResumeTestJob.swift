@@ -1026,9 +1026,16 @@ enum SaveResumeTestJob {
         check("NVDA is running", up)
         try? await Task.sleep(for: .seconds(40))   // GuestWatch sees it
         print("== NVDA ended in the machine")
-        _ = await exec(agent, program: "taskkill.exe", args: ["/f", "/im", "nvda.exe"])
-        check("AVM said NVDA stopped", await waitForLog("NVDA stopped in", seconds: 120))
-        check("NVDA is running again", await nvdaRunning())
+        // Only after sign-in (2026-10-31): at the lock screen AVM leaves the
+        // screen reader alone, as GuestWatch does, so there's nothing to check.
+        let signedIn = (await exec(agent, program: "tasklist.exe", args: ["/fo", "csv", "/nh"]) ?? "").lowercased().contains("\"explorer.exe\"")
+        if signedIn {
+            _ = await exec(agent, program: "taskkill.exe", args: ["/f", "/im", "nvda.exe"])
+            check("AVM said NVDA stopped", await waitForLog("NVDA stopped in", seconds: 120))
+            check("NVDA is running again", await nvdaRunning())
+        } else {
+            print("   skipped: no one is signed in to Windows (it's at the lock screen), and AVM restarts a screen reader only after sign-in")
+        }
         print("== The before-updates check, at 5 minutes")
         let wait = 330 - Date().timeIntervalSince(started)
         if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
