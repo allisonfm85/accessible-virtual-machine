@@ -259,9 +259,11 @@ struct SettingsView: View {
             if configuration.guestOS == .windows { windowsAppsSection }
         case .sharing:
             clipboardSection
-            if configuration.guestOS != .macOS { sharedFolderSection }
+            // Not where the guest can't have them (2026-10-31): hidden,
+            // rather than a setting that only ever fails.
+            if configuration.guestOS.hasSharedFolderService { sharedFolderSection }
             printersSection
-            remoteDesktopSection
+            if configuration.guestOS.hasRemoteDesktopHost { remoteDesktopSection }
         case .devices:
             microphoneSection
             cameraSection

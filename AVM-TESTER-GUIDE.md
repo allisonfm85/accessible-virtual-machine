@@ -1349,11 +1349,14 @@ installer; the desktop comes from the distribution's own servers
 - The disk uses LVM with XFS, as these distributions do; no btrfs.
 - Their guest agent is set to answer everything AVM asks (out of the
   box it refuses to run commands, which Send File and the disk check
-  need). SELinux stays on, and as on Fedora it limits what the guest
-  agent can see.
+  need). SELinux stays on, with the guest agent left free to do what
+  AVM asks (machines installed before 2026-10-31 can't receive files;
+  install them again).
+- Neither has a package for Remote Desktop's host (xrdp), even in EPEL
+  10, so Settings doesn't offer Remote Desktop in them.
 - Rocky Linux has no package for the Mac shared folder service
-  (spice-webdavd), so the shared folder isn't there in Rocky. AlmaLinux
-  has it.
+  (spice-webdavd), so Settings doesn't offer a shared folder in Rocky.
+  AlmaLinux has it.
 
 Tested so far with AVM's unattended install test only (AlmaLinux 10.2
 and Rocky Linux 10.2, from Download Linux's files): each installed in

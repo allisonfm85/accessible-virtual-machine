@@ -417,6 +417,19 @@ enum GuestOS: String {
     /// Every guest but Windows and macOS: AVM's Linux install and run path
     /// (account, Orca, install markers, stall watch).
     var isLinux: Bool { self != .windows && self != .macOS }
+
+    /// Remote Desktop's Linux host, xrdp, is in this guest's software
+    /// sources, so Settings offers Remote Desktop.
+    // MEASURED 2026-10-31 (launch suite): AlmaLinux and Rocky 10 have no
+    // xrdp, and nor has EPEL 10 (EPEL 9 had); setup ended in "Unable to
+    // find a match: xrdp xorgxrdp".
+    var hasRemoteDesktopHost: Bool { self != .almalinux && self != .rocky }
+
+    /// The shared folder's guest service, spice-webdavd, is in this
+    /// guest's software sources, so Settings offers a shared folder.
+    // MEASURED 2026-10-31: Rocky 10 has none, nor EPEL 10; the folder
+    // never mounted. AlmaLinux has it.
+    var hasSharedFolderService: Bool { self != .macOS && self != .rocky }
 }
 
 extension VMConfiguration {

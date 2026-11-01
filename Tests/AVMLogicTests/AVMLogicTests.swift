@@ -931,6 +931,19 @@ final class DebianInstallTests: XCTestCase {
         XCTAssertFalse(GuestOS.windows.isLinux)
         XCTAssertFalse(GuestOS.macOS.isLinux)
     }
+
+    /// Settings hides what the guest's software sources can't provide.
+    func testSettingsOnlyOfferWhatTheGuestCanHave() {
+        XCTAssertFalse(GuestOS.almalinux.hasRemoteDesktopHost)
+        XCTAssertFalse(GuestOS.rocky.hasRemoteDesktopHost)
+        for os: GuestOS in [.windows, .ubuntu, .debian, .fedora, .kali, .opensuse, .macOS] {
+            XCTAssertTrue(os.hasRemoteDesktopHost, os.rawValue)
+        }
+        XCTAssertFalse(GuestOS.rocky.hasSharedFolderService)
+        XCTAssertFalse(GuestOS.macOS.hasSharedFolderService, "macOS has its own sharing")
+        XCTAssertTrue(GuestOS.almalinux.hasSharedFolderService)
+        XCTAssertTrue(GuestOS.windows.hasSharedFolderService)
+    }
 }
 
 // MARK: - Export and import (2026-10-26)
