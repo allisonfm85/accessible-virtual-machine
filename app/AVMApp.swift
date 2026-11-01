@@ -697,6 +697,8 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
                 // macOS machine (2026-10-26).
                 MacVoiceOver.recoverAtLaunch()
             }
+            // Send to Virtual Machine in Finder (2026-10-31, SendToMachine.swift).
+            if !testRun { SendToMachineService.install() }
             // Pause a running VM before the Mac sleeps (2026-10-26).
             SleepCoordinator.shared.start()
             ControlServer.shared.start()

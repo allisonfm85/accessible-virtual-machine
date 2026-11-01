@@ -35,6 +35,26 @@
 	</dict>
 	<key>NSUSBDeviceUsageDescription</key>
 	<string>AVM needs USB access to connect peripherals to your Windows virtual machine.</string>
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Send to Virtual Machine</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>sendToVirtualMachine</string>
+			<key>NSPortName</key>
+			<string>AVM</string>
+			<key>NSRequiredContext</key>
+			<dict/>
+			<key>NSSendFileTypes</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
+	</array>
 	<key>SUFeedURL</key>
 	<string>https://raw.githubusercontent.com/allisonfm85/accessible-virtual-machine/main/appcast.xml</string>
 	<key>SUPublicEDKey</key>
