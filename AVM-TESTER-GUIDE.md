@@ -1355,8 +1355,9 @@ installer; the desktop comes from the distribution's own servers
 - Neither has a package for Remote Desktop's host (xrdp), even in EPEL
   10, so Settings doesn't offer Remote Desktop in them.
 - Rocky Linux has no package for the Mac shared folder service
-  (spice-webdavd), so Settings doesn't offer a shared folder in Rocky.
-  AlmaLinux has it.
+  (spice-webdavd), so AVM installs AlmaLinux's, checked against
+  AlmaLinux's signing key. A Rocky machine installed before 2026-10-31
+  has no shared folder; install it again.
 
 Tested so far with AVM's unattended install test only (AlmaLinux 10.2
 and Rocky Linux 10.2, from Download Linux's files): each installed in

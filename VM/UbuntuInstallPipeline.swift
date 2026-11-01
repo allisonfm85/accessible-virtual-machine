@@ -1804,6 +1804,31 @@ nonisolated final class UbuntuInstallPipeline {
             failure: fedoraFailureScript.replacingOccurrences(of: "Fedora", with: distro.name))
     }
 
+    /// Rocky Linux's shared folder service, from AlmaLinux (2026-10-31).
+    // MEASURED 2026-10-31 on Rocky 10.2: Rocky has no spice-webdavd or
+    // libphodav, and its kernel has no 9p, so its shared folder never
+    // mounted. AlmaLinux builds both from the same RHEL 10 sources; they're
+    // checked against AlmaLinux's signing key, imported for them, and their
+    // one missing library (avahi-gobject) comes from Rocky's own devel
+    // repository, used for this install only. The newest of each is taken
+    // from AlmaLinux's folder. A failure leaves Rocky without a shared
+    // folder, as before, and doesn't stop the install.
+    static let rockyWebDAV = """
+        # The shared folder's service, which Rocky doesn't package: AlmaLinux's,
+        # signature-checked (see AVM's source).
+        ( set -e
+          B=https://repo.almalinux.org/almalinux/10/AppStream/aarch64/os/Packages
+          rpm --import https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-10
+          L=$(curl -fsSL "$B/" | grep -o -E 'href="(libphodav|spice-webdavd)-[0-9][^"]*[.]aarch64[.]rpm"' | sed 's/href="//; s/"$//' | sort -V | awk -F- '{n=$1; if ($1=="spice") n=$1"-"$2; last[n]=$0} END {for (k in last) print last[k]}')
+          [ "$(echo "$L" | grep -c .)" = 2 ]
+          for f in $L; do curl -fsSL -o /tmp/$f "$B/$f"; rpm -K /tmp/$f | grep -q 'signatures OK'; done
+          dnf install -y -q --enablerepo=devel $(for f in $L; do echo /tmp/$f; done)
+          rm -f /tmp/libphodav-*.rpm /tmp/spice-webdavd-*.rpm
+          rpm -q spice-webdavd >/dev/null
+        ) || echo "AVM: the shared folder's service couldn't be installed from AlmaLinux"
+
+        """
+
     /// Fedora's %post, named for AlmaLinux or Rocky, with their dconf user
     /// profile kept and added to (Fedora's already reads the local one).
     static func enterpriseSetupScript(account: UbuntuAccount, distro: LinuxDistro) -> String {
@@ -1819,7 +1844,7 @@ nonisolated final class UbuntuInstallPipeline {
             sed -i 's/^FILTER_RPC_ARGS=.*/FILTER_RPC_ARGS=""/' /etc/sysconfig/qemu-ga
             grep -qx 'FILTER_RPC_ARGS=""' /etc/sysconfig/qemu-ga
 
-            """
+            """ + (distro == .rocky ? rockyWebDAV : "")
         return fedoraSetupScript(account: account)
             .replacingOccurrences(of: "# Fedora's own /etc/dconf/profile/user already reads the local database.",
                                   with: dconfProfileKeptAndExtended)

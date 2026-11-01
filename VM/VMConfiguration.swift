@@ -433,11 +433,10 @@ enum GuestOS: String {
     // find a match: xrdp xorgxrdp".
     var hasRemoteDesktopHost: Bool { self != .almalinux && self != .rocky }
 
-    /// The shared folder's guest service, spice-webdavd, is in this
-    /// guest's software sources, so Settings offers a shared folder.
-    // MEASURED 2026-10-31: Rocky 10 has none, nor EPEL 10; the folder
-    // never mounted. AlmaLinux has it.
-    var hasSharedFolderService: Bool { self != .macOS && self != .rocky }
+    /// The shared folder's guest service, spice-webdavd, is there, so
+    /// Settings offers a shared folder: on Rocky, AlmaLinux's, which AVM
+    /// installs (UbuntuInstallPipeline.rockyWebDAV, 2026-10-31).
+    var hasSharedFolderService: Bool { self != .macOS }
 }
 
 extension VMConfiguration {

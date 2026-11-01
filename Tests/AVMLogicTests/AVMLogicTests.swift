@@ -953,7 +953,7 @@ final class DebianInstallTests: XCTestCase {
         for os: GuestOS in [.windows, .ubuntu, .debian, .fedora, .kali, .opensuse, .macOS] {
             XCTAssertTrue(os.hasRemoteDesktopHost, os.rawValue)
         }
-        XCTAssertFalse(GuestOS.rocky.hasSharedFolderService)
+        XCTAssertTrue(GuestOS.rocky.hasSharedFolderService, "AlmaLinux's service, installed by AVM")
         XCTAssertFalse(GuestOS.macOS.hasSharedFolderService, "macOS has its own sharing")
         XCTAssertTrue(GuestOS.almalinux.hasSharedFolderService)
         XCTAssertTrue(GuestOS.windows.hasSharedFolderService)
@@ -1966,13 +1966,17 @@ final class EnterpriseInstallTests: XCTestCase {
         let rocky = UbuntuInstallPipeline.enterpriseKickstart(account: account, hostName: "h", timeZone: "UTC",
                                                               distro: .rocky, version: "10.2", disk: "vda")
         XCTAssertTrue(rocky.contains("url --url=\"https://download.rockylinux.org/pub/rocky/10/BaseOS/aarch64/os/\"\n"))
-        XCTAssertFalse(rocky.contains("spice-webdavd\n"), "Rocky has no spice-webdavd package")
+        XCTAssertFalse(rocky.contains("spice-webdavd\n"), "Rocky has no spice-webdavd package of its own")
         XCTAssertTrue(rocky.contains("Rocky Linux installed by AVM"))
         // RHEL's guest agent is let answer guest-exec and guest-file, before the marker.
         let filter = try XCTUnwrap(rocky.range(of: "s/^FILTER_RPC_ARGS=.*/FILTER_RPC_ARGS=\"\"/' /etc/sysconfig/qemu-ga"))
         let marker = try XCTUnwrap(rocky.range(of: "AVMDONE.TAG"))
         XCTAssertLessThan(filter.lowerBound, marker.lowerBound)
         XCTAssertTrue(rocky.contains("(typepermissive virt_qemu_ga_t)"), "and SELinux lets it")
+        let webdav = try XCTUnwrap(rocky.range(of: "rpm --import https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-10"), "Rocky gets AlmaLinux's shared folder service")
+        XCTAssertLessThan(webdav.lowerBound, marker.lowerBound)
+        XCTAssertTrue(rocky.contains("rpm -K /tmp/$f | grep -q 'signatures OK'"))
+        XCTAssertFalse(alma.contains("RPM-GPG-KEY-AlmaLinux-10"), "AlmaLinux has its own")
         // The setup script keeps the distribution's dconf profile.
         XCTAssertTrue(rocky.contains("grep -qx 'system-db:local' /etc/dconf/profile/user") ||
                       rocky.contains("grep -qx 'system-db:local' $T/etc/dconf/profile/user"))
