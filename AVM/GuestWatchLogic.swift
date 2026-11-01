@@ -34,16 +34,28 @@ nonisolated struct GuestProcesses: Equatable {
     var screenReaders: Set<String> = []
     /// GNOME, where Orca has a shortcut to start it.
     var gnome = false
+    /// Different after every restart (2026-10-31): Windows' smss.exe, the
+    /// first process it starts, by its process number; Linux's boot_id.
+    /// A restart shorter than the 16 seconds between listings got no
+    /// "no answer" in between, so it went unnoticed.
+    var boot: String?
 
-    /// From `tasklist /fo csv /nh` (Windows) or `ps -eo comm` (Linux).
+    /// From `tasklist /fo csv /nh` (Windows), or the boot_id and then
+    /// `ps -eo comm` (Linux).
     static func parse(_ listing: String, windows: Bool) -> GuestProcesses {
         var found = GuestProcesses()
         for raw in listing.split(whereSeparator: \.isNewline) {
             var name = raw.trimmingCharacters(in: .whitespaces)
             if windows {
                 // "nvda.exe","1234","Console","1","50,000 K"
-                guard name.hasPrefix("\""), let end = name.dropFirst().firstIndex(of: "\"") else { continue }
-                name = String(name[name.index(after: name.startIndex)..<end])
+                let fields = name.split(separator: ",", omittingEmptySubsequences: false)
+                    .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) }
+                guard name.hasPrefix("\""), let first = fields.first else { continue }
+                name = first
+                if name.lowercased() == "smss.exe", fields.count > 1 { found.boot = fields[1] }
+            } else if found.boot == nil, name.count == 36, name.filter({ $0 == "-" }).count == 4 {
+                found.boot = name
+                continue
             }
             switch name.lowercased() {
             case "explorer.exe": found.signedIn = true

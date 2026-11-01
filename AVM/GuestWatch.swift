@@ -67,6 +67,7 @@ extension VMManager {
             var agentEverAnswered = false
             let started = Date()
             defer { try? FileManager.default.removeItem(at: picture) }
+            var lastBoot: String?
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(4))
                 guard let self, !Task.isCancelled else { return }
@@ -78,13 +79,20 @@ extension VMManager {
                 if tick % 4 == 1 {
                     let listing: String? = windows
                         ? try? await self.agentRun("tasklist.exe", ["/fo", "csv", "/nh"], limit: .seconds(20))
-                        : try? await self.agentRun("/bin/ps", ["-eo", "comm"], limit: .seconds(20))
+                        : try? await self.agentRun("/bin/sh", ["-c", "cat /proc/sys/kernel/random/boot_id; ps -eo comm"], limit: .seconds(20))
                     processes = listing.map { GuestProcesses.parse($0, windows: windows) }
                     agentAnswered = listing != nil
                     agentEverAnswered = agentEverAnswered || agentAnswered
+                    // Restarted between two listings (2026-10-31): with the
+                    // restore point fixed, Windows was back in under 16
+                    // seconds, every listing answered, and "back" was never said.
+                    let boot = processes?.boot
+                    let restarted = boot != nil && lastBoot != nil && boot != lastBoot
+                    if let boot { lastBoot = boot }
                     if agentAnswered {
-                        if let lost = agentLostAt, pointThisRun {
-                            AVMLog.write("AVM: GuestWatch — \(machine) answers again, \(Int(Date().timeIntervalSince(lost))) s after it stopped")
+                        if pointThisRun, agentLostAt != nil || restarted {
+                            let away = agentLostAt.map { ", \(Int(Date().timeIntervalSince($0))) s after it stopped" } ?? ", restarted between two looks"
+                            AVMLog.write("AVM: GuestWatch — \(machine) answers again\(away)")
                             Announcer.shared.announce("\(machine) is back after its restart. The restore point from before the updates is kept, in Settings, Startup and Recovery.", tone: .success)
                             pointThisRun = false
                         }

@@ -1672,6 +1672,18 @@ final class GuestWatchTests: XCTestCase {
         XCTAssertFalse(GuestProcesses.parse("COMMAND\nsystemd\ngdm\n", windows: false).signedIn)
     }
 
+    func testABootIsKnownByItsFirstProcess() {
+        let windows = [#""System Idle Process","0","Services","0","8 K""#,
+                       #""smss.exe","412","Services","0","1,232 K""#,
+                       #""nvda.exe","5120","Console","1","50,000 K""#].joined(separator: "\n")
+        XCTAssertEqual(GuestProcesses.parse(windows, windows: true).boot, "412")
+        XCTAssertEqual(GuestProcesses.parse(windows, windows: true).screenReaders, ["NVDA"])
+        let linux = "6f0c1a52-58a3-4c1e-9e9a-2b7d1c0e4f11\nCOMMAND\nsystemd\norca\n"
+        XCTAssertEqual(GuestProcesses.parse(linux, windows: false).boot, "6f0c1a52-58a3-4c1e-9e9a-2b7d1c0e4f11")
+        XCTAssertEqual(GuestProcesses.parse(linux, windows: false).screenReaders, ["Orca"])
+        XCTAssertNil(GuestProcesses.parse("COMMAND\nsystemd\n", windows: false).boot)
+    }
+
     func testCountersAndRepeatsAreSaidOnce() {
         let said = Set(["Working on updates 23%"].map(ScreenChange.key))
         XCTAssertEqual(ScreenChange.newLines(["Working on updates 24%", "Don't turn off your computer", "5", "Don't turn off your computer"], after: said),

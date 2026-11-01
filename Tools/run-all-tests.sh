@@ -71,7 +71,9 @@ done
 # install has every feature the tests expect (an older Debian lacks the
 # shared folder's sign-in script, 2026-10-28).
 newest() { ls -d "$CACHE"/$1 2>/dev/null | sort | tail -1; }
-second_newest() { ls -d "$CACHE"/$1 2>/dev/null | sort | tail -2 | head -1; }
+# None when there's only one (2026-10-31): the newest again ran "two
+# machines" on one machine twice, which can't start.
+second_newest() { local all; all="$(ls -d "$CACHE"/$1 2>/dev/null | sort)"; [ "$(echo "$all" | grep -c .)" -ge 2 ] && echo "$all" | tail -2 | head -1; }
 [ -n "$WINDOWS" ] || WINDOWS="$(newest 'install-test-*')"
 [ -n "$DEBIAN" ] || DEBIAN="$(newest 'debian-test-*')"
 [ -n "$DEBIAN2" ] || DEBIAN2="$(second_newest 'debian-test-*')"
@@ -113,6 +115,7 @@ add "windows camera"                   windows  "--test-camera"
 add "windows braille bridge"           windows  "--test-hid-bridge --braille"
 add "windows agent shutdown"           windows  "--test-agent-shutdown"
 add "windows remote desktop"           windows  "--test-remote-desktop"
+add "windows guest watch"              windows  "--test-guest-watch"
 add "debian save and resume"           debian   "--test-save-resume"
 add "debian duplicate"                 debian   "--test-duplicate"
 add "debian send file"                 debian   "--test-send-file"

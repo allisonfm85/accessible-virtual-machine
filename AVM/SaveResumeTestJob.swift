@@ -1004,6 +1004,14 @@ enum SaveResumeTestJob {
     private static func guestWatch(_ folder: URL, _ guest: GuestOS) async -> Bool {
         // Off by default (2026-10-31); this test checks it, so it's on here.
         UserDefaults.standard.set(true, forKey: GuestWatchSettings.pointBeforeUpdatesKey)
+        // A fresh point every run: one from an earlier run under 20 hours
+        // old would be kept, and the restart after a new point not tested.
+        for point in (try? await RestorePoints.list(vmDirectory: folder)) ?? []
+        where FileManager.default.fileExists(atPath: folder.appendingPathComponent(RestorePoints.folderName)
+            .appendingPathComponent(point.tag).appendingPathComponent(VMManager.beforeUpdatesMarker).path) {
+            try? await RestorePoints.delete(point, vmDirectory: folder)
+            print("   (an earlier run's restore point before updates removed)")
+        }
         let started = Date()
         let manager = VMManager()
         guard await start(manager, configuration(folder: folder, guest: guest)),
