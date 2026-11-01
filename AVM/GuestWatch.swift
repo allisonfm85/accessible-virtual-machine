@@ -161,7 +161,9 @@ extension VMManager {
                 if installed, agentAnswered, GuestWatchSettings.isOn(GuestWatchSettings.pointBeforeUpdatesKey),
                    Date().timeIntervalSince(lastUpdateCheck) > (tick < 100 ? 300 : 1800) {
                     lastUpdateCheck = Date()
-                    switch await self.takePointBeforeUpdates(configuration: configuration, runtimeDir: runtimeDir, windows: windows) {
+                    let outcome = await self.takePointBeforeUpdates(configuration: configuration, runtimeDir: runtimeDir, windows: windows)
+                    AVMLog.write("AVM: GuestWatch — before-updates check for \(machine): \(outcome)")
+                    switch outcome {
                     case .taken: pointThisRun = true
                     case .devicesSent where !toldDevices:
                         toldDevices = true

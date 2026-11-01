@@ -67,6 +67,11 @@
 // /usr/local/lib/avm/mount-mac-folder.sh, and a file in it reads back in
 // the guest; a file written in the guest appears on the Mac.
 //
+// --test-guest-watch (2026-10-31, GuestWatch.swift), Windows with NVDA:
+// NVDA ended in the machine is started again and said; the before-updates
+// check runs at 5 minutes (a restore point if updates wait, else a note);
+// a restart's screens are read out while no screen reader runs.
+//
 // --test-send-file: sends a 3 MB file of random bytes (three pieces) to
 // the machine's Downloads, twice, and checks both arrive whole, the second
 // under a new name.
@@ -115,7 +120,8 @@ enum SaveResumeTestJob {
                 || arguments.contains("--test-screen-readers") || arguments.contains("--test-hid-bridge")
                 || arguments.contains("--test-background") || arguments.contains("--test-monitors")
                 || arguments.contains("--test-agent-shutdown") || arguments.contains("--test-remote-desktop")
-                || arguments.contains("--test-hid-bridge-fuzz") || arguments.contains("--test-crash-save") else { return }
+                || arguments.contains("--test-hid-bridge-fuzz") || arguments.contains("--test-crash-save")
+                || arguments.contains("--test-guest-watch") else { return }
         func value(_ name: String) -> String? {
             guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
             return arguments[i + 1]
@@ -730,6 +736,10 @@ enum SaveResumeTestJob {
                 let passed = await linuxShare(folderURL, guest)
                 print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
             }
+            if arguments.contains("--test-guest-watch") {
+                let passed = await guestWatch(folderURL, guest)
+                print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+            }
             if arguments.contains("--test-send-file") {
                 let passed = await sendFile(folderURL, guest)
                 print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
@@ -987,6 +997,49 @@ enum SaveResumeTestJob {
         if guest != .windows {
             check("they belong to the user, not root", lines.allSatisfy { !$0.hasSuffix(" root") })
         }
+        await shutDown(manager)
+        return ok
+    }
+
+    private static func guestWatch(_ folder: URL, _ guest: GuestOS) async -> Bool {
+        let started = Date()
+        let manager = VMManager()
+        guard await start(manager, configuration(folder: folder, guest: guest)),
+              let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else {
+            check("the machine started and answers", false); await shutDown(manager); return false
+        }
+        func log() -> String { AVMLog.currentLogURL().flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? "" }
+        /// In the log after its first `after` characters.
+        func waitForLog(_ text: String, seconds: Int, after: Int = 0) async -> Bool {
+            func found() -> Bool { log().dropFirst(after).contains(text) }
+            for _ in 0..<seconds where !found() { try? await Task.sleep(for: .seconds(1)) }
+            return found()
+        }
+        func nvdaRunning() async -> Bool {
+            (await exec(agent, program: "tasklist.exe", args: ["/fo", "csv", "/nh"]) ?? "").lowercased().contains("\"nvda.exe\"")
+        }
+        print("== NVDA running after sign-in")
+        var up = false
+        for _ in 0..<24 where !up { up = await nvdaRunning(); if !up { try? await Task.sleep(for: .seconds(5)) } }
+        check("NVDA is running", up)
+        try? await Task.sleep(for: .seconds(40))   // GuestWatch sees it
+        print("== NVDA ended in the machine")
+        _ = await exec(agent, program: "taskkill.exe", args: ["/f", "/im", "nvda.exe"])
+        check("AVM said NVDA stopped", await waitForLog("NVDA stopped in", seconds: 120))
+        check("NVDA is running again", await nvdaRunning())
+        print("== The before-updates check, at 5 minutes")
+        let wait = 330 - Date().timeIntervalSince(started)
+        if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+        let checked = await waitForLog("before-updates check for", seconds: 240)
+        check("the before-updates check ran", checked)
+        let taken = log().contains("before-updates check for") && log().contains("check for \(manager.machineName): taken")
+        print("   \(taken ? "a restore point was taken" : "no restore point: \(log().components(separatedBy: "before-updates check for").last?.split(separator: "\n").first ?? "")")")
+        print("== A restart's screens read out")
+        let before = log().count
+        _ = await exec(agent, program: "shutdown.exe", args: ["/r", "/t", "0"])
+        check("new screen text was said during the restart", await waitForLog("new line(s) on", seconds: 240, after: before))
+        check("the machine answers again", await waitForAgent(agent, seconds: 600))
+        if taken { check("AVM said it's back after the restart", await waitForLog("is back after its restart", seconds: 60)) }
         await shutDown(manager)
         return ok
     }
