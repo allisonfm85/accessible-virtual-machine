@@ -26,7 +26,8 @@
 //     other). It calls back through the control socket ("launch-app").
 //
 // Every few seconds, for each running Windows machine with the setting on
-// (VMConfiguration.windowsAppsInCommandTab, on unless turned off).
+// (VMConfiguration.hasWindowsAppsInCommandTab: on, unless turned off or
+// Windows has its own keyboard).
 //
 // Machines too (2026-10-30, the user's request, to switch between them):
 // each running machine, of any kind, has an app of its own in Command-Tab,
@@ -123,7 +124,7 @@ final class WindowsApps {
             $0.configuration.guestOS == .windows && $0.vmState == .running
         }
         let running = Set(machines.map { $0.configuration.id })
-        let listed = Set(machines.filter { $0.configuration.windowsAppsInCommandTab != false }.map { $0.configuration.id })
+        let listed = Set(machines.filter { $0.configuration.hasWindowsAppsInCommandTab }.map { $0.configuration.id })
         for machine in entries.keys where !listed.contains(machine) { quitEntries(of: machine) }
         for machine in helperReady.keys where !running.contains(machine) { helperReady[machine] = nil }
         ticking = true
@@ -356,7 +357,7 @@ final class WindowsApps {
         // (Settings, Command-Tab; on unless turned off).
         func add(_ id: UUID, _ fallback: String) {
             let saved = VMStore.shared?.configurations.first { $0.id == id }
-            guard saved?.inCommandTab != false else { return }
+            guard saved?.isInCommandTab ?? true else { return }
             want[id.uuidString] = saved?.name ?? fallback
         }
         for session in MachineSessions.shared.sessions.values where session.isRunningOrPaused {

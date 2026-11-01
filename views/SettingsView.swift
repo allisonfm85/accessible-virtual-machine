@@ -766,7 +766,7 @@ struct SettingsView: View {
             Text("Keyboard for Windows")
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
-            Text("Choose a second keyboard, USB or Bluetooth, to type only into \(guest) while it runs, whichever app is in front. Your Mac's keyboard stays with the Mac and VoiceOver, so there's nothing to switch. Takes effect the next time \(guest) starts.")
+            Text("Choose a second keyboard, USB or Bluetooth, to type only into \(guest) while it runs, whichever app is in front. Your Mac's keyboard stays with the Mac and VoiceOver, so there's nothing to switch, and \(guest) and its apps stay out of Command-Tab unless you turn them on in General. Takes effect the next time \(guest) starts.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -784,6 +784,12 @@ struct SettingsView: View {
                 if let id, let keyboard = connectedKeyboards.first(where: { $0.id == id }) {
                     windowsKeyboardName = keyboard.name
                 }
+                // The two Command-Tab settings follow the keyboard (2026-10-31),
+                // unless they were chosen before.
+                let saved = vmStore.configurations.first { $0.id == configuration.id }
+                let byDefault = VMConfiguration.inCommandTabByDefault(keyboard: id)
+                if saved?.inCommandTab == nil { inCommandTab = byDefault }
+                if saved?.windowsAppsInCommandTab == nil { windowsAppsInCommandTab = byDefault }
             }
             if windowsKeyboardID != nil {
                 Toggle("It's an Apple keyboard with a § key (ISO)", isOn: $windowsKeyboardAppleISO)
@@ -1297,9 +1303,9 @@ struct SettingsView: View {
         windowsKeyboardID = saved.windowsKeyboardID
         windowsKeyboardName = saved.windowsKeyboardName
         windowsKeyboardAppleISO = saved.windowsKeyboardAppleISO == true
-        windowsAppsInCommandTab = saved.windowsAppsInCommandTab != false
+        windowsAppsInCommandTab = saved.hasWindowsAppsInCommandTab
         trackpadAndMouseOn = saved.trackpadAndMouseOff != true
-        inCommandTab = saved.inCommandTab != false
+        inCommandTab = saved.isInCommandTab
         displayID = saved.displayID
         displayName = saved.displayName
         remoteDesktopOn = saved.remoteDesktopOn
@@ -1511,9 +1517,11 @@ struct SettingsView: View {
             updated.windowsKeyboardID = windowsKeyboardID
             updated.windowsKeyboardName = windowsKeyboardID == nil ? nil : windowsKeyboardName
             updated.windowsKeyboardAppleISO = windowsKeyboardID != nil && windowsKeyboardAppleISO ? true : nil
-            updated.windowsAppsInCommandTab = windowsAppsInCommandTab ? nil : false
+            // Stored only when it differs from the default for this keyboard choice.
+            let commandTabDefault = VMConfiguration.inCommandTabByDefault(keyboard: windowsKeyboardID)
+            updated.windowsAppsInCommandTab = windowsAppsInCommandTab == commandTabDefault ? nil : windowsAppsInCommandTab
             updated.trackpadAndMouseOff = trackpadAndMouseOn ? nil : true
-            updated.inCommandTab = inCommandTab ? nil : false
+            updated.inCommandTab = inCommandTab == commandTabDefault ? nil : inCommandTab
             updated.displayID = displayID
             updated.displayName = displayID == nil ? nil : displayName
             let remoteDesktopWasOn = saved.remoteDesktopOn

@@ -932,6 +932,20 @@ final class DebianInstallTests: XCTestCase {
         XCTAssertFalse(GuestOS.macOS.isLinux)
     }
 
+    /// With its own keyboard, Windows stays out of Command-Tab unless chosen.
+    func testAWindowsKeyboardKeepsCommandTabTheMacs() {
+        var c = VMConfiguration(name: "W", cpuCount: 2, ramSizeGB: 4, diskSizeGB: 64, diskImagePath: "/tmp/x")
+        XCTAssertTrue(c.isInCommandTab)
+        XCTAssertTrue(c.hasWindowsAppsInCommandTab)
+        c.windowsKeyboardID = "kbd"
+        XCTAssertFalse(c.isInCommandTab)
+        XCTAssertFalse(c.hasWindowsAppsInCommandTab)
+        c.inCommandTab = true
+        XCTAssertTrue(c.isInCommandTab, "a choice made in Settings wins")
+        c.windowsKeyboardID = nil; c.inCommandTab = false
+        XCTAssertFalse(c.isInCommandTab)
+    }
+
     /// Settings hides what the guest's software sources can't provide.
     func testSettingsOnlyOfferWhatTheGuestCanHave() {
         XCTAssertFalse(GuestOS.almalinux.hasRemoteDesktopHost)

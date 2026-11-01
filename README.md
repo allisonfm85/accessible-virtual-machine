@@ -299,6 +299,11 @@ the Mac, where Command-Tab takes you to another. It leaves the list when
 the machine shuts down. To leave a machine out, turn off **This machine in
 Command-Tab** in its Settings, under Command-Tab.
 
+A Windows machine with a **Keyboard for Windows** (its Settings, Devices)
+starts out of Command-Tab, and so do its apps: with a keyboard of its
+own, Command-Tab stays the Mac's, so the Mac's keyboard never lands in
+Windows by accident. Turn either back on in Settings, General.
+
 ## Windows apps in Command-Tab
 
 While a Windows machine runs, every app with a window open in it is in

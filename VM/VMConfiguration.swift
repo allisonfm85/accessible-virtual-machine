@@ -184,7 +184,8 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// Not for a macOS machine, which has its own view.
     var trackpadAndMouseOff: Bool?
     /// The machine's own app in the Mac's Command-Tab list while it runs
-    /// (WindowsApps.syncMachines, 2026-10-30); nil: on.
+    /// (WindowsApps.syncMachines, 2026-10-30); nil: the default, which is
+    /// isInCommandTab.
     var inCommandTab: Bool?
 
     // MARK: - Display (2026-10-28)
@@ -307,6 +308,13 @@ extension VMConfiguration {
     var startsWithoutWindow: Bool { noWindow == true }
     var sharesPrinters: Bool { sharePrinters == true }
     var sharesCamera: Bool { shareCamera == true }
+    /// Off by default with a Keyboard for Windows (2026-10-31, a tester):
+    /// someone who gives Windows its own keyboard wants Command-Tab to stay
+    /// the Mac's, not to land in Windows by accident. A choice made in
+    /// Settings (true or false) wins either way.
+    static func inCommandTabByDefault(keyboard: String?) -> Bool { keyboard == nil }
+    var isInCommandTab: Bool { inCommandTab ?? Self.inCommandTabByDefault(keyboard: windowsKeyboardID) }
+    var hasWindowsAppsInCommandTab: Bool { windowsAppsInCommandTab ?? Self.inCommandTabByDefault(keyboard: windowsKeyboardID) }
     var uses3D: Bool { gpu3D == true && guestOS.isLinux }
     /// Known screen readers only, in a fixed order; unknown words ignored.
     var windowsScreenReaders: [ScreenReader] {
