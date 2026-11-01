@@ -94,6 +94,13 @@ if gh release view "v$VERSION" --repo "$REPO_SLUG" >/dev/null 2>&1; then
     echo "GitHub already has a release v$VERSION; this run finishes it: its files are replaced, then the feed is updated."
 fi
 
+# The release test first (2026-10-31): signed, notarized, stapled, and an
+# update installed copies will accept. 0.4.19 went out without one.
+echo "Checking the release (Tools/test-release.sh)…"
+if ! "$(dirname "$0")/test-release.sh" --dmg "$DMG"; then
+    fail "The release test failed." "Read the NO lines above, rebuild with Tools/build-installer.sh, and publish again."
+fi
+echo
 echo "About to publish AVM $VERSION to https://github.com/$REPO_SLUG"
 echo "  $(basename "$DMG"), $(du -h "$DMG" | cut -f1)"
 echo "  $(basename "$ZIP"), $(du -h "$ZIP" | cut -f1)"

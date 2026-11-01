@@ -20,6 +20,7 @@
 #                      one of those (default: the newest ubuntu-test-* and so on)
 #   --nvme             the Fedora machine is on NVMe (installed before 2026-10-27)
 #   --only WORDS       run only the tests whose names contain one of the words
+#                      (a hyphen stands for a space: debian-send)
 #   --skip WORDS       skip the tests whose names contain one of the words
 #   --with-downloads   include the screen-reader download test (NVDA, about 70 MB)
 #   --out FOLDER       keep every test's output there (default: a temporary folder)
@@ -151,10 +152,11 @@ wanted() {
     local name="$1" w
     if [ -n "$ONLY" ]; then
         local hit=0
-        for w in $ONLY; do case "$name" in *"$w"*) hit=1 ;; esac; done
+        # A hyphen stands for a space (2026-10-31): "debian-send" is one test.
+        for w in $ONLY; do w="${w//-/ }"; case "$name" in *"$w"*) hit=1 ;; esac; done
         [ $hit = 1 ] || return 1
     fi
-    for w in $SKIP; do case "$name" in *"$w"*) return 1 ;; esac; done
+    for w in $SKIP; do w="${w//-/ }"; case "$name" in *"$w"*) return 1 ;; esac; done
     return 0
 }
 
