@@ -1311,6 +1311,9 @@ final class FedoraInstallTests: XCTestCase {
         let restore = try XCTUnwrap(script.range(of: "restorecon -R /etc /home/$U"))
         let marker = try XCTUnwrap(script.range(of: "AVMDONE.TAG"))
         XCTAssertLessThan(restore.lowerBound, marker.lowerBound, "SELinux labels before the marker")
+        let permissive = try XCTUnwrap(script.range(of: "(typepermissive virt_qemu_ga_t)\\n' > /tmp/avm-qemu-ga.cil"))
+        XCTAssertLessThan(permissive.lowerBound, marker.lowerBound, "the guest agent unconfined before the marker")
+        XCTAssertTrue(script.contains("semodule -i /tmp/avm-qemu-ga.cil ||"), "a failed semodule doesn't fail the install")
         XCTAssertTrue(script.contains("Fedora installed by AVM"))
         // Nothing in it could end the kickstart's %post early.
         XCTAssertFalse(script.components(separatedBy: "\n").contains("%end"))
@@ -1942,6 +1945,7 @@ final class EnterpriseInstallTests: XCTestCase {
         let filter = try XCTUnwrap(rocky.range(of: "s/^FILTER_RPC_ARGS=.*/FILTER_RPC_ARGS=\"\"/' /etc/sysconfig/qemu-ga"))
         let marker = try XCTUnwrap(rocky.range(of: "AVMDONE.TAG"))
         XCTAssertLessThan(filter.lowerBound, marker.lowerBound)
+        XCTAssertTrue(rocky.contains("(typepermissive virt_qemu_ga_t)"), "and SELinux lets it")
         // The setup script keeps the distribution's dconf profile.
         XCTAssertTrue(rocky.contains("grep -qx 'system-db:local' /etc/dconf/profile/user") ||
                       rocky.contains("grep -qx 'system-db:local' $T/etc/dconf/profile/user"))
@@ -2077,6 +2081,8 @@ final class OpenSUSEInstallTests: XCTestCase {
         XCTAssertFalse(script.contains("]]>"))
         XCTAssertTrue(UbuntuInstallPipeline.openSUSEFailureScript.contains("sysrq-trigger"))
         XCTAssertTrue(script.contains(#"FILTER_RPC_ARGS=""\n' > $T/etc/sysconfig/qemu-ga"#), "the guest agent may run commands")
+        let permissive = try XCTUnwrap(script.range(of: "(typepermissive virt_qemu_ga_t)"), "SELinux lets the guest agent do its work")
+        XCTAssertLessThan(permissive.lowerBound, marker.lowerBound)
     }
 
     /// download.opensuse.org's ports folder: the dated NET snapshot, not

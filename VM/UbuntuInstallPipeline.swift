@@ -1555,6 +1555,29 @@ nonisolated final class UbuntuInstallPipeline {
         """
     }
 
+    /// SELinux's policy for the guest agent, for Fedora, AlmaLinux, Rocky
+    /// and openSUSE: its domain made permissive, the rest of the system
+    /// still enforcing.
+    // MEASURED 2026-10-31 (AlmaLinux 10.2, launch suite): the agent runs as
+    // virt_qemu_ga_t, which may not open files in /home or even look at
+    // /usr/sbin, so Send File, the shared folder's bookmark, avmctl
+    // send-file and Remote Desktop's useradd failed ("Permission denied",
+    // "useradd: command not found") on all four, while the same tests
+    // passed on Debian, Ubuntu and Kali, which don't confine it. The agent's
+    // channel is reachable only from AVM on the Mac. semodule is part of
+    // policycoreutils, always installed with SELinux; it works on the
+    // policy store, so it runs in the install's chroot.
+    static let guestAgentUnconfined = """
+        # SELinux (see AVM's source): the guest agent may do what AVM asks
+        # of it; everything else stays enforcing.
+        if command -v semodule >/dev/null; then
+            printf '(typepermissive virt_qemu_ga_t)\\n' > /tmp/avm-qemu-ga.cil
+            semodule -i /tmp/avm-qemu-ga.cil || echo "AVM: the guest agent's SELinux module wasn't installed"
+            rm -f /tmp/avm-qemu-ga.cil
+        fi
+
+        """
+
     /// Ubuntu's setup script, for the kickstart's %post, which runs inside
     /// the new system: no /target and no curtin, GDM's /etc/gdm in place of
     /// /etc/gdm3, grubby in place of update-grub, and Fedora's own dconf
@@ -1574,7 +1597,7 @@ nonisolated final class UbuntuInstallPipeline {
             systemctl set-default graphical.target
             systemctl enable spice-vdagentd.socket qemu-guest-agent.service || true
             restorecon -R /etc /home/$U || true
-
+            \(guestAgentUnconfined)
             """
         return setupScript(account: account)
             .replacingOccurrences(of: "at the end of Ubuntu's install", with: "at the end of Fedora's install, in its %post")
@@ -2077,7 +2100,7 @@ nonisolated final class UbuntuInstallPipeline {
             # sign-in until it's told not to; it isn't wanted here.
             rm -f $T/etc/xdg/autostart/*opensuse*welcome*.desktop $T/etc/xdg/autostart/*opensuse_welcome*.desktop
             if command -v restorecon >/dev/null; then restorecon -R /etc /home/$U /usr/local || true; fi
-
+            \(guestAgentUnconfined)
             """
         let noTour = """
             # GNOME's welcome tour asks at the first sign-in; this says it was shown.
