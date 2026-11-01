@@ -444,6 +444,16 @@ struct AVMApp: App {
                 .keyboardShortcut("i", modifiers: [.command, .option, .shift])
                 .disabled(!activity.isRunning)
 
+                // Repair for AVM (2026-10-31, GuestRepair.swift): a Fedora,
+                // AlmaLinux, Rocky or openSUSE machine from before 0.4.19.
+                Button("Repair \(focusLock.guestName) for AVM…") {
+                    Task { @MainActor in
+                        guard let manager = VMManager.shared else { return }
+                        await manager.repairForAVM()
+                    }
+                }
+                .disabled(!activity.isRunning || !VMManager.mayNeedRepair(VMManager.shared?.runningGuestOS))
+
                 Divider()
 
                 Button("Send Ctrl-Alt-Delete") {

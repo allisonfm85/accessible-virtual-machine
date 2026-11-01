@@ -4905,6 +4905,9 @@ extension VMManager {
             // A refusal is said as it is, with its own Next (sixth audit).
             if case AVMError.refused(let message) = error {
                 Announcer.shared.announce("\(name) wasn't sent to \(machine). \(message)", tone: .failure)
+            } else if Self.mayNeedRepair(runningGuestOS), error.localizedDescription.contains("Permission denied") {
+                // An install from before 0.4.19, its agent confined by SELinux (2026-10-31).
+                Announcer.shared.announce("\(name) wasn't sent to \(machine): \(machine) was installed by an older AVM. Next: choose Virtual Machine, Repair \(machine) for AVM.", tone: .failure)
             } else {
                 Announcer.shared.announce("\(name) wasn't sent to \(machine). Reason: \(error.localizedDescription) Next: check \(machine) has finished starting, then try again.", tone: .failure)
             }

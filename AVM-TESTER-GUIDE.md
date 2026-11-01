@@ -1350,15 +1350,16 @@ installer; the desktop comes from the distribution's own servers
 - Their guest agent is set to answer everything AVM asks (out of the
   box it refuses to run commands, which Send File and the disk check
   need). SELinux stays on, with the guest agent left free to do what
-  AVM asks (machines installed before 2026-10-31 can't receive files;
-  install them again).
+  AVM asks. A machine installed before 2026-10-31 can't receive files:
+  choose Virtual Machine, Repair for AVM, while it's signed in, and type
+  your password when it asks.
 - Neither has xrdp, even in EPEL 10, so Remote Desktop uses GNOME's
   own Remote Desktop instead: a client gets the sign-in screen and signs
   in with the Remote Desktop account.
 - Rocky Linux has no package for the Mac shared folder service
   (spice-webdavd), so AVM installs AlmaLinux's, checked against
   AlmaLinux's signing key. A Rocky machine installed before 2026-10-31
-  has no shared folder; install it again.
+  gets it from Virtual Machine, Repair for AVM.
 
 Tested so far with AVM's unattended install test only (AlmaLinux 10.2
 and Rocky Linux 10.2, from Download Linux's files): each installed in
