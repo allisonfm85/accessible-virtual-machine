@@ -251,3 +251,35 @@ nonisolated struct MachineCheckResult: Sendable {
     }
 }
 
+/// When a machine's automatic backup is due, and which old ones go.
+nonisolated enum BackupSchedule {
+    static let folderKey = "AVMBackupFolder"
+    static let keep = 3
+
+    static func isDue(every: String?, last: Date?, now: Date) -> Bool {
+        let period: TimeInterval
+        switch every {
+        case "daily": period = 86_400
+        case "weekly": period = 7 * 86_400
+        default: return false
+        }
+        guard let last else { return true }
+        // An hour's grace: the look is hourly, and a daily backup shouldn't creep.
+        return now.timeIntervalSince(last) >= period - 3600
+    }
+
+    /// A new backup's name: sorts by date, and never clashes within a minute.
+    static func name(base: String, ext: String, date: Date) -> String {
+        let format = DateFormatter()
+        format.locale = Locale(identifier: "en_US_POSIX")
+        format.dateFormat = "yyyy-MM-dd HHmm"
+        return "\(base) backup \(format.string(from: date)).\(ext)"
+    }
+
+    /// Of a folder's names, this machine's backups past the newest `keep`.
+    static func oldOnes(in names: [String], base: String, ext: String, keep: Int = BackupSchedule.keep) -> [String] {
+        let mine = names.filter { $0.hasPrefix("\(base) backup ") && $0.hasSuffix(".\(ext)") }.sorted()
+        return Array(mine.dropLast(keep))
+    }
+}
+

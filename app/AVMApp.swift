@@ -778,6 +778,7 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
             if !testRun { WindowsApps.shared.start() }
             // What's New, once after an update (2026-10-30, AVMUpdater.swift).
             if !testRun { ReleaseNotes.showIfUpdated() }
+            if !testRun { MachineBackups.shared.start() }
             if !testRun {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                     for config in VMStore.shared?.configurations ?? [] where config.guestOS != .macOS && VMManager.hasOrphanedQEMU(config.id) {

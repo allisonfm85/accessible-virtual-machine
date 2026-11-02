@@ -155,6 +155,8 @@ struct SettingsView: View {
     @State private var shareMicrophone = false
     @State private var soundSmoothness: SoundSmoothness = .balanced
     @State private var soundEar: SoundEar = .both
+    @State private var backupEvery = ""
+    @State private var backupFolder = UserDefaults.standard.string(forKey: BackupSchedule.folderKey) ?? ""
     @State private var soundVolume = 100.0
     @State private var soundOutputUID: String?
     @State private var soundOutputName: String?
@@ -278,6 +280,7 @@ struct SettingsView: View {
             if configuration.guestOS == .windows { secureBootSection }
             if configuration.guestOS != .macOS { saveWithAppsSection }
             restorePointsSection
+            backupsSection
             if configuration.guestOS == .windows { reinstallSection }
         }
     }
@@ -586,6 +589,38 @@ struct SettingsView: View {
             }
         }
         .padding(.horizontal)
+    }
+
+    /// Automatic backups (2026-11-01, MachineBackups.swift).
+    private var backupsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Automatic Backups")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            Picker("Back up \(guest)", selection: $backupEvery) {
+                Text("Never").tag("")
+                Text("Every day").tag("daily")
+                Text("Every week").tag("weekly")
+            }
+            .choicePopUp("Exports \(guest) to your backup folder on this schedule, while it's shut down. If it's running, the backup waits until it's shut down.")
+            Button(backupFolder.isEmpty ? "Choose Backup Folder…" : "Change Backup Folder…") {
+                let panel = NSOpenPanel()
+                panel.canChooseFiles = false
+                panel.canChooseDirectories = true
+                panel.canCreateDirectories = true
+                panel.prompt = "Choose"
+                panel.message = "Choose where AVM keeps backups, such as an external drive. All machines use this folder."
+                if panel.runModal() == .OK, let url = panel.url {
+                    backupFolder = url.path
+                    UserDefaults.standard.set(url.path, forKey: BackupSchedule.folderKey)
+                    Announcer.shared.announce("Backups go to \(url.lastPathComponent).", tone: .info)
+                }
+            }
+            Text(backupFolder.isEmpty ? "No folder chosen yet. AVM keeps the newest \(BackupSchedule.keep) of each machine, and removes older ones after a new one is whole." : "Backups go to \(backupFolder). AVM keeps the newest \(BackupSchedule.keep) of each machine, and removes older ones after a new one is whole.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var restorePointsSection: some View {
@@ -1321,6 +1356,7 @@ struct SettingsView: View {
         shareMicrophone = saved.sharesMicrophone
         soundSmoothness = saved.soundSmoothness
         soundEar = saved.soundEar
+        backupEvery = saved.backupEvery ?? ""
         soundVolume = Double(saved.soundVolume ?? 100)
         soundOutputUID = saved.soundOutputUID
         soundOutputName = saved.soundOutputName
@@ -1537,6 +1573,7 @@ struct SettingsView: View {
             updated.shareMicrophone = shareMicrophone ? true : nil
             updated.soundBuffer = soundSmoothness == .balanced ? nil : soundSmoothness.rawValue
             updated.soundEarChoice = soundEar == .both ? nil : soundEar.rawValue
+            updated.backupEvery = backupEvery.isEmpty ? nil : backupEvery
             updated.soundVolume = Int(soundVolume) == 100 ? nil : Int(soundVolume)
             updated.soundOutputUID = soundOutputUID
             updated.soundOutputName = soundOutputUID == nil ? nil : soundOutputName

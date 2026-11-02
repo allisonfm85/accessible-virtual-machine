@@ -177,6 +177,55 @@ final class MachineArchiveController: ObservableObject {
         }
     }
 
+    // MARK: - Automatic backup (2026-11-01, MachineBackups.swift)
+
+    /// One backup, with no questions; true when it's done. A machine that's
+    /// busy, running or saved is left for a later look, saying nothing.
+    func backUp(_ config: VMConfiguration, into folder: URL) async -> Bool {
+        let name = config.name
+        guard activity == nil, !Self.isRunningNow(config), !QEMUSavedState.looksSavedOrWaiting(config),
+              let dir = try? config.directoryURL(),
+              MachineArchive.exportProblemNow(for: config, vmDirectory: dir) == nil else { return false }
+        let ext = MachineArchive.packageExtension
+        let base = config.backupBaseName
+        let package = folder.appendingPathComponent(BackupSchedule.name(base: base, ext: ext, date: Date()), isDirectory: true)
+        let dirPath = dir.standardizedFileURL.path
+        guard !FileManager.default.fileExists(atPath: package.path), !folder.standardizedFileURL.path.hasPrefix(dirPath + "/"), folder.standardizedFileURL.path != dirPath else { return false }
+        let place = MachineArchive.placeName(of: folder)
+        do {
+            let plan = try MachineArchive.exportPlan(vmDirectory: dir, isMac: config.guestOS == .macOS, includeRestorePoints: false)
+            let manifest = try MachineArchive.manifestData(for: config, appVersion: Self.appVersion)
+            let needed = MachineFileCopier.bytesNeeded(plan, from: dir, to: folder)
+            if let free = MachineFileCopier.availableBytes(at: folder), free < needed + Self.spareBytes {
+                Announcer.shared.announce("\(name) wasn't backed up: there isn't room on \(place). Next: free some space there. Its older backups are still there.", tone: .failure)
+                return false
+            }
+            begin("backing up \(name)", id: config.id)
+            AVMLog.write("AVM: Backup — '\(name)' to \(place), \(needed) bytes needed")
+            let ticker = ProgressTicker(verb: "Backing up", name: name, speaks: false)
+            let result = await Task.detached(priority: .utility) { () throws -> Void in
+                try MachineArchive.writePackage(plan: plan, from: dir, to: package, manifest: manifest) { done, total in
+                    ticker.report(done, of: total)
+                }
+            }.result
+            end()
+            try result.get()
+            // Only now that the new one is whole.
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+            for old in BackupSchedule.oldOnes(in: names, base: base, ext: ext) {
+                AVMLog.write("AVM: Backup — removing the older \(old)")
+                try? FileManager.default.removeItem(at: folder.appendingPathComponent(old))
+            }
+            AVMLog.write("AVM: Backup — '\(name)' done")
+            Announcer.shared.announce("\(name) is backed up to \(place).", tone: .info, routine: true)
+            return true
+        } catch {
+            AVMLog.write("AVM: Backup — FAILED for '\(name)': \(error.localizedDescription)")
+            Announcer.shared.announce("\(name) wasn't backed up. Reason: \(error.localizedDescription) Its older backups are still there.", tone: .failure)
+            return false
+        }
+    }
+
     // MARK: - Duplicate (2026-10-27)
 
     /// A second machine just like this one, as Hyper-V's and VMware's

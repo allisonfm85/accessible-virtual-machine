@@ -612,6 +612,9 @@ enum SaveResumeTestJob {
             if arguments.contains("--test-sr-setup") {
                 await finish(await screenReaderSetup(folderURL, guest))
             }
+            if arguments.contains("--test-backup") {
+                await finish(await backup(folderURL, guest))
+            }
             if arguments.contains("--test-windows-3d") {
                 await finish(await windows3D(folderURL))
             }
@@ -1251,6 +1254,35 @@ enum SaveResumeTestJob {
         check("what was there is kept beside them", after.contains("other-kept"))
         check(guest == .windows ? "its settings file is there" : "they're the user's own", after.contains(guest == .windows ? "ini" : "owned"))
         await shutDown(manager)
+        return ok
+    }
+
+    /// Automatic backup (2026-11-01): a whole package in the chosen folder, with
+    /// the older ones past the newest few removed, and another machine's left.
+    private static func backup(_ folder: URL, _ guest: GuestOS) async -> Bool {
+        let target = folder.deletingLastPathComponent().appendingPathComponent("avm-backup-test-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try? FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: target) }
+        let config = configuration(folder: folder, guest: guest)
+        let ext = MachineArchive.packageExtension
+        let base = config.backupBaseName
+        let old = (1...3).map { "\(base) backup 2020-01-0\($0) 0000.\(ext)" }
+        let someoneElse = "Other backup 2020-01-01 0000.\(ext)"
+        for name in old + [someoneElse] {
+            try? FileManager.default.createDirectory(at: target.appendingPathComponent(name), withIntermediateDirectories: true)
+        }
+        check("it says it's done", await MachineArchiveController.shared.backUp(config, into: target))
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: target.path)) ?? []
+        print("   \(names.sorted().joined(separator: ", "))")
+        let new = names.first { $0.hasPrefix("\(base) backup ") && !old.contains($0) }
+        check("the new backup is there", new != nil)
+        if let new {
+            let inside = (try? FileManager.default.contentsOfDirectory(atPath: target.appendingPathComponent(new).path)) ?? []
+            check("it holds the disk", inside.contains("disk.qcow2"))
+        }
+        check("the oldest is gone", !names.contains(old[0]))
+        check("the newer two stay", names.contains(old[1]) && names.contains(old[2]))
+        check("another machine's backup stays", names.contains(someoneElse))
         return ok
     }
 

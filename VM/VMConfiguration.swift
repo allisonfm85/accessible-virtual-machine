@@ -119,6 +119,9 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// crackle): SoundSmoothness's raw value; nil: balanced. Read it
     /// through soundSmoothness.
     var soundBuffer: String?
+    /// Automatic backups (MachineBackups.swift): "daily" or "weekly"; nil for none.
+    var backupEvery: String?
+    var lastBackup: Date?
     /// Being installed with "use my saved screen reader setup" on: put in once
     /// someone first signs in (ScreenReaderSetup.swift).
     var wantsSavedScreenReaderSetup: Bool?

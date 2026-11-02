@@ -2258,6 +2258,19 @@ final class OpenSUSEInstallTests: XCTestCase {
         XCTAssertEqual(watch.look(agentAnswered: false, screenChanged: false, now: now), .none)
     }
 
+    func testBackupScheduleAndWhatGoes() {
+        let now = Date(timeIntervalSince1970: 10_000_000)
+        XCTAssertFalse(BackupSchedule.isDue(every: nil, last: nil, now: now))
+        XCTAssertTrue(BackupSchedule.isDue(every: "daily", last: nil, now: now))
+        XCTAssertFalse(BackupSchedule.isDue(every: "daily", last: now - 3600, now: now))
+        XCTAssertTrue(BackupSchedule.isDue(every: "daily", last: now - 86_000, now: now))
+        XCTAssertFalse(BackupSchedule.isDue(every: "weekly", last: now - 86_400, now: now))
+        XCTAssertTrue(BackupSchedule.isDue(every: "weekly", last: now - 7 * 86_400, now: now))
+        let names = ["A backup 2026-01-01 0000.avmvm", "A backup 2026-01-03 0000.avmvm", "A backup 2026-01-02 0000.avmvm",
+                     "A backup 2026-01-04 0000.avmvm", "AB backup 2020-01-01 0000.avmvm", "A.avmvm", "A backup notes.txt"]
+        XCTAssertEqual(BackupSchedule.oldOnes(in: names, base: "A", ext: "avmvm"), ["A backup 2026-01-01 0000.avmvm"])
+    }
+
     func testMachineCheckSaysWhatsWrongAndWhatToDo() {
         let good = "signedin=1\nreader=nvda\nsound=1\nsounddevice=1\nclipboard=1\nsharedfolder=1\n"
         let fine = MachineCheckResult(agentAnswered: true, output: good, windows: true, soundLevels: (100, 0))
