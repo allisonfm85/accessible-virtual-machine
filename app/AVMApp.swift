@@ -447,6 +447,20 @@ struct AVMApp: App {
 
                 // Repair for AVM (2026-10-31, GuestRepair.swift): a Fedora,
                 // AlmaLinux, Rocky or openSUSE machine from before 0.4.19.
+                // Check This Machine (2026-11-01, MachineCheck.swift).
+                Button("Check This Machine") {
+                    Task { @MainActor in
+                        guard let manager = VMManager.shared else {
+                            Announcer.shared.announce("Check This Machine works in Windows and Linux machines.", tone: .info)
+                            return
+                        }
+                        let config = VMStore.shared?.configurations.first { $0.id == manager.runningMachineID }
+                        await manager.checkThisMachine(configuration: config)
+                    }
+                }
+                .keyboardShortcut("c", modifiers: [.command, .option, .shift])
+                .disabled(!activity.isRunning)
+
                 Button("Repair \(focusLock.guestName) for AVM…") {
                     Task { @MainActor in
                         guard let manager = VMManager.shared else { return }

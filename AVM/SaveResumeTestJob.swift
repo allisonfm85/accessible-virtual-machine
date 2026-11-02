@@ -606,6 +606,9 @@ enum SaveResumeTestJob {
             if arguments.contains("--test-stuck") {
                 await finish(await stuckMachine(folderURL, guest))
             }
+            if arguments.contains("--test-machine-check") {
+                await finish(await machineCheck(folderURL, guest))
+            }
             if arguments.contains("--test-windows-3d") {
                 await finish(await windows3D(folderURL))
             }
@@ -1147,6 +1150,35 @@ enum SaveResumeTestJob {
         print("== Moving again")
         _ = try? await manager.sendQMPCommand("cont", arguments: nil)
         check("AVM says it's moving again", await waitForLog("is moving again", seconds: 120))
+        await shutDown(manager)
+        return ok
+    }
+
+    /// Check This Machine (2026-11-01): what it says of the machine as it is,
+    /// and that it notices a service that stopped.
+    private static func machineCheck(_ folder: URL, _ guest: GuestOS) async -> Bool {
+        func log() -> String { AVMLog.currentLogURL().flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? "" }
+        let manager = VMManager()
+        let config = configuration(folder: folder, guest: guest)
+        guard await start(manager, config), let agent = manager.guestAgentSocketPath,
+              await waitForAgent(agent, seconds: 600) else {
+            check("the machine started and answers", false); await shutDown(manager); return false
+        }
+        try? await Task.sleep(for: .seconds(60))
+        await manager.checkThisMachine(configuration: config)
+        let first = log().components(separatedBy: "\n").last { $0.contains("said (") && $0.contains("Save test") && !$0.contains("Checking") } ?? ""
+        print("   it said: \(first.suffix(400))")
+        check("it reports that it's answering", first.contains("answering"))
+        if guest != .windows {
+            check("it found this machine good", first.contains("looks good"))
+        }
+        print("== With the shared folder service stopped")
+        _ = guest == .windows
+            ? await exec(agent, program: "powershell.exe", args: ["-NoProfile", "-Command", "Stop-Service spice-webdavd -Force"])
+            : await exec(agent, program: "/bin/sh", args: ["-c", "systemctl stop spice-webdavd"])
+        await manager.checkThisMachine(configuration: config)
+        let second = log().components(separatedBy: "\n").last { $0.contains("said (") && $0.contains("Save test") && !$0.contains("Checking") } ?? ""
+        check("it says so, with what to do", second.contains("shared folder service isn't running") && second.contains("Next:"))
         await shutDown(manager)
         return ok
     }

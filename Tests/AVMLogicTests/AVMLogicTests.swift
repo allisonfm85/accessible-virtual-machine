@@ -2258,4 +2258,20 @@ final class OpenSUSEInstallTests: XCTestCase {
         XCTAssertEqual(watch.look(agentAnswered: false, screenChanged: false, now: now), .none)
     }
 
+    func testMachineCheckSaysWhatsWrongAndWhatToDo() {
+        let good = "signedin=1\nreader=nvda\nsound=1\nsounddevice=1\nclipboard=1\nsharedfolder=1\n"
+        let fine = MachineCheckResult(agentAnswered: true, output: good, windows: true, soundLevels: (100, 0))
+        XCTAssertTrue(fine.problems.isEmpty)
+        XCTAssertTrue(fine.words(machine: "PC").hasPrefix("PC looks good"))
+        XCTAssertTrue(fine.words(machine: "PC").contains("NVDA is running"))
+        XCTAssertTrue(fine.words(machine: "PC").contains("left ear only"))
+        let silent = MachineCheckResult(agentAnswered: false, output: "", windows: true, soundLevels: nil)
+        XCTAssertTrue(silent.words(machine: "PC").contains("isn't answering AVM"))
+        let bad = MachineCheckResult(agentAnswered: true, output: "signedin=1\nreader=\nsound=0\nsounddevice=1\nclipboard=0\nsharedfolder=0\n", windows: false, soundLevels: (0, 0))
+        XCTAssertEqual(bad.problems.count, 5)
+        XCTAssertTrue(bad.words(machine: "L").contains("Super-Alt-S"))
+        // Nobody signed in on Linux: no complaints about what needs a session.
+        let locked = MachineCheckResult(agentAnswered: true, output: "signedin=0\nreader=\nsound=1\nsounddevice=0\nclipboard=0\nsharedfolder=1\n", windows: false, soundLevels: nil)
+        XCTAssertEqual(locked.problems.map(\.what), ["nobody is signed in"])
+    }
 }

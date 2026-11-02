@@ -166,3 +166,86 @@ nonisolated struct StuckWatch: Sendable {
     }
 }
 
+/// What Check This Machine found, from its script's key=value lines.
+nonisolated struct MachineCheckResult: Sendable {
+    struct Problem: Equatable, Sendable {
+        let what: String
+        let next: String
+    }
+    private(set) var problems: [Problem] = []
+    private(set) var fine: [String] = []
+
+    init(agentAnswered: Bool, output: String, windows: Bool, soundLevels: (left: Int, right: Int)?) {
+        guard agentAnswered else {
+            problems.append(Problem(what: "it isn't answering AVM", next: "wait for it to finish starting. If it's been more than a few minutes, press Command-Shift-R to reset it"))
+            return
+        }
+        var values: [String: String] = [:]
+        for line in output.split(whereSeparator: \.isNewline) {
+            let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            if parts.count == 2 { values[parts[0].trimmingCharacters(in: .whitespaces)] = parts[1].trimmingCharacters(in: .whitespaces) }
+        }
+        fine.append("it's answering")
+        let signedIn = values["signedin"] == "1"
+        if signedIn {
+            fine.append("someone is signed in")
+        } else {
+            problems.append(Problem(what: "nobody is signed in", next: "press Command-Shift-E and sign in. Its screen reader and clipboard start after that"))
+        }
+        if signedIn {
+            if let reader = values["reader"], !reader.isEmpty {
+                let names = reader.split(separator: ",").map { Self.readerName(String($0).lowercased()) }
+                fine.append("\(names.joined(separator: " and ")) is running")
+            } else {
+                problems.append(Problem(what: "no screen reader is running", next: windows ? "press Command-Shift-E, then Control-Alt-N to start NVDA" : "press Command-Shift-E, then Super-Alt-S to start Orca"))
+            }
+        }
+        // Linux has no sound to ask about until someone's signed in.
+        if signedIn || windows {
+            if values["sound"] == "1" && values["sounddevice"] == "1" {
+                fine.append("sound is working")
+            } else {
+                problems.append(Problem(what: "its sound isn't working", next: "restart it. If that doesn't help, choose Report a Problem in the Help menu"))
+            }
+        }
+        if let soundLevels {
+            if soundLevels.left == 0 && soundLevels.right == 0 {
+                problems.append(Problem(what: "its volume is set to zero in AVM", next: "turn it up in its Settings, under Display and Sound"))
+            } else if soundLevels.left == 0 {
+                fine.append("its sound goes to your right ear only")
+            } else if soundLevels.right == 0 {
+                fine.append("its sound goes to your left ear only")
+            }
+        }
+        if signedIn {
+            if values["clipboard"] == "1" {
+                fine.append("the clipboard agent is running")
+            } else {
+                problems.append(Problem(what: "the clipboard agent isn't running", next: windows ? "install spice-vdagent from spice-space.org in it" : "sign out of it and back in"))
+            }
+        }
+        if values["sharedfolder"] == "1" {
+            fine.append("the shared folder service is running")
+        } else {
+            problems.append(Problem(what: "the shared folder service isn't running", next: windows ? "install spice-webdavd from spice-space.org in it" : "choose Virtual Machine, Repair for AVM, if it's offered, or restart it"))
+        }
+    }
+
+    private static func readerName(_ raw: String) -> String {
+        switch raw {
+        case "nvda": return "NVDA"
+        case "jfw": return "JAWS"
+        case "narrator": return "Narrator"
+        case "orca": return "Orca"
+        default: return raw
+        }
+    }
+
+    func words(machine: String) -> String {
+        if problems.isEmpty { return "\(machine) looks good: \(fine.joined(separator: ", "))." }
+        let list = problems.map { "\($0.what). Next: \($0.next)." }.joined(separator: " ")
+        let count = problems.count == 1 ? "one problem" : "\(problems.count) problems"
+        return "\(machine) has \(count): \(list)" + (fine.isEmpty ? "" : " Fine: \(fine.joined(separator: ", ")).")
+    }
+}
+
