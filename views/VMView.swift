@@ -2050,6 +2050,20 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
 
         let previousHolder = primaryDisplay
         primaryDisplay = display
+        // The screen on a machine drawing with the GPU, which QMP can't see
+        // (2026-11-01): Read Screen and GuestWatch take it from here.
+        manager?.gpuScreenshot = { [weak display] in
+            await withCheckedContinuation { (done: CheckedContinuation<Data?, Never>) in
+                guard let display else { done.resume(returning: nil); return }
+                display.screenshot(completion: { shot in
+                    guard let tiff = shot?.image.tiffRepresentation,
+                          let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else {
+                        done.resume(returning: nil); return
+                    }
+                    done.resume(returning: png)
+                })
+            }
+        }
 
         // VIEWPORT SCALING (issue #3): a new holder means a new guest size for
         // the transform. Same size value the decision above was made on.

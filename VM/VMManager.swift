@@ -505,6 +505,10 @@ final class VMManager: ObservableObject {
     // MARK: Private — working directory
 
     private var vmRuntimeDir: URL?
+    /// This run draws with the GPU (2026-11-01), so screendump can't see it.
+    private(set) var drawsOnGPU = false
+    /// The screen as PNG data, from the machine's display. VMView sets it.
+    var gpuScreenshot: (() async -> Data?)?
     private var vmSocketDir: URL?
     /// The QEMU guest agent's socket (GuestAgent.swift), in vmSocketDir.
     var guestAgentSocketPath: String? { vmSocketDir?.appendingPathComponent("qga.sock").path }
@@ -1854,17 +1858,49 @@ final class VMManager: ObservableObject {
         guard case .running = state else { return nil }
         guard let runtimeDir = vmRuntimeDir else { return nil }
         let ppmPath = runtimeDir.appendingPathComponent("guest-screen.ppm").path
+        return await screenPicture(to: ppmPath) ? ppmPath : nil
+    }
+
+    /// The machine's screen in a file, for Read Screen, Describe Screen and
+    /// GuestWatch. On a machine drawing with the GPU, QMP's screendump is
+    /// black (MEASURED 2026-11-01): the picture is in a texture, so it comes
+    /// from the window's display instead (CSDisplay, set by VMView), as a
+    /// PNG, whatever the file's name. The readers go by the content.
+    func screenPicture(to path: String) async -> Bool {
         do {
-            try await sendQMPCommand("screendump", arguments: [
-                "filename": ppmPath,
-                "format": "ppm"
-            ])
-            avmLog("captureScreendump: wrote \(ppmPath)")
-            return ppmPath
+            if drawsOnGPU {
+                guard let provider = gpuScreenshot, let data = await provider() else {
+                    avmLog("screenPicture: nothing from the display yet (is its window open?)")
+                    return false
+                }
+                try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+                return true
+            }
+            try await sendQMPCommand("screendump", arguments: ["filename": path, "format": "ppm"])
+            avmLog("screenPicture: wrote \(path)")
+            return true
         } catch {
-            avmLog("captureScreendump: failed: \(error)")
-            return nil
+            avmLog("screenPicture: failed: \(error)")
+            return false
         }
+    }
+
+    /// A file from the Mac into the guest, through its agent (2026-11-01).
+    func copyToGuest(_ file: URL, to target: String) async throws {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        guard let guestHandle = try await agentCall(["execute": "guest-file-open", "arguments": ["path": target, "mode": "wb"]]) as? Int else {
+            throw AVMError.qmpCommandFailed("couldn't make \(target)")
+        }
+        do {
+            while let data = try handle.read(upToCount: Self.sendChunk), !data.isEmpty {
+                _ = try await agentCall(["execute": "guest-file-write", "arguments": ["handle": guestHandle, "buf-b64": data.base64EncodedString()]])
+            }
+        } catch {
+            _ = try? await agentCall(["execute": "guest-file-close", "arguments": ["handle": guestHandle]])
+            throw error
+        }
+        _ = try await agentCall(["execute": "guest-file-close", "arguments": ["handle": guestHandle]])
     }
 
     // MARK: - Install Watchdog
@@ -2405,7 +2441,13 @@ final class VMManager: ObservableObject {
 
         // Machine: plain `virt` with NO highmem flag, matching UTM's working
         // Windows ARM command line.
-        args += ["-machine", "virt,accel=hvf"]
+        // DirectX's shared memory needs 4 KB pages from HVF, as in UTM
+        // (2026-11-01, Windows3D.swift); only QEMU's -accel can say so.
+        if configuration.usesWindows3D && Self.supportsWindows3D && !attachInstallMedia {
+            args += ["-machine", "virt", "-accel", "hvf,ipa-granule-size=0x1000"]
+        } else {
+            args += ["-machine", "virt,accel=hvf"]
+        }
 
         // CPU: `host`, matching UTM's working Windows ARM command line.
         args += ["-cpu", "host"]
@@ -2616,7 +2658,8 @@ final class VMManager: ObservableObject {
         // frames as OpenGL ES textures (ANGLE on Metal, which the QEMU
         // process is told to use), and virtio-gpu-gl-pci replaces
         // virtio-gpu-pci below, same id, so the tablet still follows it.
-        let accelerated = configuration.uses3D && Self.supports3D && !attachInstallMedia
+        let accelerated = configuration.uses3D && (configuration.guestOS == .windows ? Self.supportsWindows3D : Self.supports3D) && !attachInstallMedia
+        drawsOnGPU = accelerated
         args += [
             "-spice",
             // gl is ALWAYS given, off when not 3D: a QEMU built with OpenGL
@@ -2686,7 +2729,10 @@ final class VMManager: ObservableObject {
         // virtio-gpu-pci — both single-head configurations are proven dead
         // for real use in both phases, and the swapped order is disqualified.
         args += ["-device", "ramfb"]
-        args += ["-device", accelerated ? "virtio-gpu-gl-pci,id=gpu0" : "virtio-gpu-pci,id=gpu0"]
+        // Windows' DirectX over Neptune (2026-11-01, Windows3D.swift).
+        args += ["-device", !accelerated ? "virtio-gpu-pci,id=gpu0"
+                 : configuration.guestOS == .windows ? "virtio-gpu-gl-pci,id=gpu0,hostmem=4G,blob=true,neptune=true"
+                 : "virtio-gpu-gl-pci,id=gpu0"]
         avmLog("buildQEMUArguments: display = ramfb + \(accelerated ? "virtio-gpu-gl-pci (3D, the Mac's GPU)" : "virtio-gpu-pci") id=gpu0 (bisected pair, ramfb first — proven order; issue #4 mechanism record in header)")
 
         // SOUND (2026-10-27): QEMU plays the guest's sound to the Mac itself,
@@ -2823,7 +2869,11 @@ final class VMManager: ObservableObject {
         process.arguments = arguments
         // ANGLE draws a 3D machine's OpenGL ES with Metal, as UTM does.
         // Without 3D nothing reads it.
-        process.environment = ProcessInfo.processInfo.environment.merging(["ANGLE_DEFAULT_PLATFORM": "metal"]) { _, new in new }
+        var qemuEnvironment = ProcessInfo.processInfo.environment.merging(["ANGLE_DEFAULT_PLATFORM": "metal"]) { _, new in new }
+        if drawsOnGPU, activeConfiguration?.guestOS == .windows, let resources = Bundle.main.resourcePath {
+            qemuEnvironment.merge(Self.windows3DEnvironment(resources: resources)) { _, new in new }
+        }
+        process.environment = qemuEnvironment
 
         let errPipe = Pipe()
         process.standardOutput = FileHandle.nullDevice

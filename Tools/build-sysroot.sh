@@ -69,6 +69,10 @@ set -euo pipefail
 
 # MARK: - Pinned sources
 
+# The Windows 3D driver (--windows-3d, 2026-11-01): Microsoft-signed, BSD licensed.
+VIOGPU3D_URL="https://github.com/osy/kvm-guest-drivers-windows/releases/download/v0.5/viogpu3d-arm64x-signed.zip"
+VIOGPU3D_SHA256="155695ab7820f71e75c369aeae7b8c060691ba43646ac37edef72aa2428506d5"
+
 UTM_REPO="https://github.com/utmapp/UTM.git"
 UTM_COMMIT="1c5e2150696cf86dc6e451212a8ad4555b2b63b2"   # 2026-10-20, QEMU 10.0.12-utm
 
@@ -90,6 +94,7 @@ PIP_PACKAGES="meson ninja six pyparsing pyyaml distlib setuptools packaging"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${AVM_SYSROOT:-$HOME/Developer/sysroot-macos-arm64/sysroot-macOS-arm64}"
+WINDOWS_3D=0
 JOBS="$(sysctl -n hw.ncpu)"
 SPEAK=1
 SKIP_UTM=0
@@ -105,6 +110,9 @@ Options:
                   sysroot-macOS-arm64. Default: $AVM_SYSROOT, or
                   ~/Developer/sysroot-macos-arm64/sysroot-macOS-arm64
   --jobs N        Parallel compile jobs (default: every core).
+  --windows-3d    Also build what Windows' DirectX needs: virglrenderer with
+                  Neptune, DXMT and LLVM 15 (2026-11-01). Experimental, and
+                  hours longer.
   --tools-only    Skip the UTM build; rebuild the install tools and
                   re-check an existing sysroot.
   --mark-built    Record that the sysroot at --out was built from this
@@ -122,6 +130,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --out)        OUT="$2"; shift 2 ;;
         --jobs)       JOBS="$2"; shift 2 ;;
+        --windows-3d) WINDOWS_3D=1; shift ;;
         --tools-only) SKIP_UTM=1; shift ;;
         --mark-built) MARK_BUILT=1; shift ;;
         --licenses-only) LICENSES_ONLY=1; shift ;;
@@ -357,6 +366,7 @@ collect_licenses() {
         [ -n "$pin" ] || fail "$file has no pinned checksum in Tools/sysroot-sources.sha256." "Add it; UTM's build would have refused the file too."
         case "$file" in
             gettext-*) from_tarball "$tarball" "$pin" gettext-runtime/intl/COPYING.LIB gettext-runtime/libasprintf/COPYING.LIB ;;
+            llvm-project-*) from_tarball "$tarball" "$pin" llvm/LICENSE.TXT ;;
             qemu-*)    from_tarball "$tarball" "$pin" pc-bios/README roms/ipxe/COPYING roms/ipxe/COPYING.GPLv2 roms/ipxe/COPYING.UBDL roms/seabios/COPYING roms/seabios/COPYING.LESSER
                        qemu_name="${file%.tar.*}" ;;
             *)         from_tarball "$tarball" "$pin" ;;
@@ -375,6 +385,7 @@ collect_licenses() {
     from_tree ANGLE "$(clone_version "$build/WebKit.git")" "$build/WebKit.git/Source/ThirdParty/ANGLE" LICENSE
     from_tree libepoxy "$(clone_version "$build/libepoxy.git")" "$build/libepoxy.git" COPYING
     from_tree virglrenderer "$(clone_version "$build/virglrenderer.git")" "$build/virglrenderer.git" COPYING
+    [ -d "$build/dxmt.git" ] && from_tree DXMT "$(clone_version "$build/dxmt.git")" "$build/dxmt.git" LICENSE
     from_tree libucontext "$(clone_version "$build/libucontext.git")" "$build/libucontext.git" LICENSE
     pcre2="$( (find "$build"/glib-*/subprojects -maxdepth 1 -type d -name 'pcre2-*' 2>/dev/null || true) | sed -n 1p)"
     [ -n "$pcre2" ] || fail "GLib's PCRE2 subproject was not found under $build." "Run without --licenses-only first, so GLib's build unpacks it."
@@ -432,6 +443,8 @@ if [ ! -x "$VENV/bin/python3" ]; then
     "$(brew --prefix python@3.12)/bin/python3.12" -m venv "$VENV" || fail "Could not make the Python virtual environment."
 fi
 # shellcheck disable=SC2086
+# LLVM 15, for DXMT, configures with CMake.
+[ "$WINDOWS_3D" = 1 ] && PIP_PACKAGES="$PIP_PACKAGES cmake"
 "$VENV/bin/pip" install --quiet --upgrade $PIP_PACKAGES >"$PARENT/pip.log" 2>&1 || \
     fail "pip could not install the Python build tools." "See $PARENT/pip.log"
 info "Python $("$VENV/bin/python3" -c 'import sys; print(sys.version.split()[0])'), meson $("$VENV/bin/meson" --version)"
@@ -465,8 +478,8 @@ if [ "$SKIP_UTM" = "0" ]; then
     # Exact text replacements: if UTM's script ever stops matching, this
     # stops with the line that is missing instead of building something
     # different from what it says.
-    python3 - "$UTM_DIR" "$REPO_ROOT/Tools/sysroot-patches" <<'PY'
-import pathlib, sys
+    AVM_WINDOWS_3D="$WINDOWS_3D" python3 - "$UTM_DIR" "$REPO_ROOT/Tools/sysroot-patches" <<'PY'
+import os, pathlib, sys
 utm, patches = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 script = utm / "scripts/build_dependencies.sh"
 s = script.read_text()
@@ -501,6 +514,11 @@ for line in [
     "clone $DXMT_REPO $DXMT_COMMIT\n",
     "clone $D3DMETAL_REPO $D3DMETAL_COMMIT\n",
 ]:
+    # Windows' DirectX (--windows-3d, 2026-11-01) keeps LLVM 15 and DXMT;
+    # D3DMetal stays out: Apple's terms don't let AVM ship it, and on arm64
+    # UTM's script only makes an empty placeholder for it.
+    if os.environ.get("AVM_WINDOWS_3D") == "1" and ("LLVM15" in line or "DXMT" in line):
+        continue
     drop("    " + line, "GPU download")
 
 # GPU builds inside build_qemu_dependencies, up to the iOS-only hypervisor:
@@ -524,11 +542,15 @@ s = s[:start] + """    # GPU support: OpenGL only (AVM)
     git -C "$BUILD_DIR/libepoxy.git" checkout -q -- .
     for p in "$AVM_CLONE_PATCHES"/libepoxy+*.patch; do patch -d "$BUILD_DIR/libepoxy.git" -p1 < "$p"; done
     meson_build $EPOXY_REPO -Dtests=false -Dglx=no -Degl=yes
-    meson_darwin_build $VIRGLRENDERER_REPO -Dtests=false -Dcheck-gl-errors=false -Dvenus=false -Dneptune=false
-""" + s[end:]
+    meson_darwin_build $VIRGLRENDERER_REPO -Dtests=false -Dcheck-gl-errors=false -Dvenus=false AVM_VIRGL_OPTIONS
+""".replace("AVM_VIRGL_OPTIONS", "-Dneptune=true -Dvulkan-dload=false -Drender-server-mode=process"
+              if os.environ.get("AVM_WINDOWS_3D") == "1" else "-Dneptune=false") + s[end:]
 
 # The GPU driver stages in the main sequence.
-drop("build_vulkan_drivers\nbuild_d3d_drivers\n", "GPU driver stages")
+if os.environ.get("AVM_WINDOWS_3D") == "1":
+    drop("build_vulkan_drivers\n", "GPU driver stages")
+else:
+    drop("build_vulkan_drivers\nbuild_d3d_drivers\n", "GPU driver stages")
 
 # Every downloaded tarball checked against Tools/sysroot-sources.sha256
 # before it is unpacked (2026-10-25, code audit). UTM's download() checks
@@ -559,6 +581,14 @@ script.write_text(s)
 # applies, named for a tarball UTM's sources list, so a misnamed patch
 # still stops the build rather than going unapplied.
 sources = (utm / "patches/sources").read_text()
+# virglrenderer as of UTM's "fix Windows game hangs" (8211e84, 2026-10-29),
+# which the v0.5 Windows driver expects; QEMU stays at the pinned commit.
+if os.environ.get("AVM_WINDOWS_3D") == "1":
+    old = "451505ad0aa449290f2c0672da6877d57ee770e5"
+    if old not in sources:
+        sys.exit("UTM's sources no longer pin the virglrenderer this script moves on from.")
+    sources = sources.replace(old, "b6c4d36e12409fa92eeef4d40322c75292f10bb9")
+    (utm / "patches/sources").write_text(sources)
 for p in sorted(patches.glob("*.patch")):
     package = p.name.split("+")[0]
     target = utm / "patches" / f"{package}.patch"
@@ -572,7 +602,11 @@ for p in sorted(patches.glob("*.patch")):
     else:
         sys.exit(f"{p.name} is for {package}, but UTM neither patches nor downloads {package}.")
 PY
-    info "GPU stack: OpenGL only (ANGLE, epoxy, virglrenderer); Vulkan, Mesa, MoltenVK, LLVM and D3D left out"
+    if [ "$WINDOWS_3D" = 1 ]; then
+        info "GPU stack: ANGLE, epoxy, virglrenderer with Neptune, DXMT and LLVM 15; Vulkan, Mesa, MoltenVK and D3DMetal left out"
+    else
+        info "GPU stack: OpenGL only (ANGLE, epoxy, virglrenderer); Vulkan, Mesa, MoltenVK, LLVM and D3D left out"
+    fi
 
     step "Building UTM's dependencies (most of an hour)"
 
@@ -747,6 +781,16 @@ fi
 info "Built swtpm $("$OUT/bin/swtpm" --version 2>/dev/null | sed -n 1p | sed -E 's/.*version ([^ ,]+).*/\1/')"
 
 # MARK: - 4c. Licence texts
+
+if [ "$WINDOWS_3D" = 1 ]; then
+    step "Getting the Windows 3D driver"
+    zip="$PARENT/viogpu3d-arm64x-signed.zip"
+    curl -fsSL -o "$zip" "$VIOGPU3D_URL" || fail "Could not download the Windows 3D driver."
+    [ "$(shasum -a 256 "$zip" | cut -d' ' -f1)" = "$VIOGPU3D_SHA256" ] || { rm -f "$zip"; fail "The Windows 3D driver doesn't match its pinned checksum."; }
+    tmp="$(mktemp -d)"; unzip -qq -o "$zip" -d "$tmp"
+    rm -rf "$OUT/share/viogpu3d"; mkdir -p "$OUT/share"; cp -R "$tmp/drivers/viogpu3d" "$OUT/share/viogpu3d"; rm -rf "$tmp"
+    info "Driver v0.5 is in share/viogpu3d"
+fi
 
 collect_licenses
 

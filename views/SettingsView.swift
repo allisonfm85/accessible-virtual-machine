@@ -484,7 +484,7 @@ struct SettingsView: View {
     /// 3D graphics (2026-10-27), Linux only.
     @ViewBuilder
     private var gpuSection: some View {
-        if configuration.guestOS.isLinux && VMManager.supports3D {
+        if (configuration.guestOS.isLinux && VMManager.supports3D) || (configuration.guestOS == .windows && VMManager.supportsWindows3D) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("3D Graphics")
                     .font(.headline)
@@ -492,10 +492,17 @@ struct SettingsView: View {
                 Toggle("Draw \(guest) with your Mac's graphics chip", isOn: $gpu3D)
                     .disabled(isRunning)
                     .accessibilityHint(isRunning ? timingSentence : "When on, \(guest)'s desktop and 3D apps use your Mac's GPU")
-                Text("Makes \(guest)'s desktop smoother and lets apps that need 3D run. While it's on, \(guest) can't be saved with its apps open, and restore points are taken with \(guest) stopped: QEMU can't save 3D graphics yet. Takes effect at the next Start.")
+                if configuration.guestOS == .windows {
+                    Text("Experimental. Lets Windows apps that use Direct3D 11 draw with your Mac's graphics chip. The driver is still unstable, so don't turn this on for a machine you rely on. AVM takes a restore point first, then installs the driver the next time \(guest) starts, and asks you to restart it. While it's on, \(guest) can't be saved with its apps open.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("Makes \(guest)'s desktop smoother and lets apps that need 3D run. While it's on, \(guest) can't be saved with its apps open, and restore points are taken with \(guest) stopped: QEMU can't save 3D graphics yet. Takes effect at the next Start.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(.horizontal)
         }
@@ -1546,6 +1553,20 @@ struct SettingsView: View {
                 updated.usbRememberedDevices = rememberedDevices.isEmpty ? nil : rememberedDevices
             }
             let displayBefore = saved.displayID
+            // Windows 3D (2026-11-01): the driver is still unstable, so a way
+            // back comes first. It runs before this machine can start, as
+            // Save is still in progress.
+            if updated.usesWindows3D && !saved.usesWindows3D, VMManager.supportsWindows3D {
+                let dir = URL(fileURLWithPath: updated.diskImagePath).deletingLastPathComponent()
+                do {
+                    _ = try await RestorePoints.create(vmDirectory: dir, label: "Before 3D graphics", secureBoot: updated.usesSecureBoot, diskBus: updated.diskBus)
+                    Announcer.shared.announce("Restore point saved: Before 3D graphics. The 3D graphics driver goes in the next time \(updated.name) starts.", tone: .info)
+                } catch {
+                    Announcer.shared.announce("The restore point before 3D graphics couldn't be taken, so 3D graphics stays off. Reason: \(error.localizedDescription)", tone: .failure)
+                    updated.gpu3D = nil
+                    gpu3D = false
+                }
+            }
             vmStore.save(updated)
             // A running VM follows the clipboard setting straight away.
             AVMPasteboard.shared.refreshEnabled()

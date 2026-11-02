@@ -1535,14 +1535,16 @@ final class DiskWatchTests: XCTestCase {
 // MARK: - 3D graphics (2026-10-27)
 
 final class Graphics3DTests: XCTestCase {
-    func testOnlyLinuxMachinesDrawIn3D() {
+    func testWhichMachinesDrawIn3D() {
         var linux = VMConfiguration(guestOSName: "debian")
         XCTAssertFalse(linux.uses3D, "off unless chosen")
         linux.gpu3D = true
         XCTAssertTrue(linux.uses3D)
         var windows = VMConfiguration()
         windows.gpu3D = true
-        XCTAssertFalse(windows.uses3D, "Windows has no virgl driver")
+        XCTAssertTrue(windows.uses3D, "Windows too, through Neptune (2026-11-01)")
+        XCTAssertTrue(windows.usesWindows3D)
+        XCTAssertFalse(linux.usesWindows3D, "Linux stays on virgl's OpenGL")
     }
 }
 

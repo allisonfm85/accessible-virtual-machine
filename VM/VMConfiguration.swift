@@ -315,7 +315,9 @@ extension VMConfiguration {
     static func inCommandTabByDefault(keyboard: String?) -> Bool { keyboard == nil }
     var isInCommandTab: Bool { inCommandTab ?? Self.inCommandTabByDefault(keyboard: windowsKeyboardID) }
     var hasWindowsAppsInCommandTab: Bool { windowsAppsInCommandTab ?? Self.inCommandTabByDefault(keyboard: windowsKeyboardID) }
-    var uses3D: Bool { gpu3D == true && guestOS.isLinux }
+    /// Windows too (2026-11-01, experimental, Windows3D.swift).
+    var uses3D: Bool { gpu3D == true && (guestOS.isLinux || guestOS == .windows) }
+    var usesWindows3D: Bool { gpu3D == true && guestOS == .windows }
     /// Known screen readers only, in a fixed order; unknown words ignored.
     var windowsScreenReaders: [ScreenReader] {
         let chosen = Set(windowsScreenReaderNames ?? [])

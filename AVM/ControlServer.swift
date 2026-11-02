@@ -209,6 +209,13 @@ final class ControlServer {
             }
             return await session.saveAndStop() ? ["ok": true, "message": "\(name) is saved."] : fail("\(name) couldn't be saved.")
 
+        // The machine's screen as text (2026-11-01), as Read Screen says it;
+        // it's how the tests check the screen on a machine drawing with the GPU.
+        case "read-screen":
+            guard let session else { return fail("\(name) isn't running.") }
+            guard let text = await session.manager.readScreenText() else { return fail("\(name)'s screen couldn't be read.") }
+            return ["ok": true, "message": text]
+
         case "force-stop":
             if isMac {
                 guard mac.runningID == config.id else { return fail("\(name) isn't running.") }

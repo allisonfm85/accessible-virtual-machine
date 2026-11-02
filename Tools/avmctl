@@ -3,7 +3,7 @@
 #
 #   avmctl list | status <machine> | start <machine> [--no-window]
 #          stop <machine> | save <machine> | force-stop <machine>
-#          send-file <machine> <file>
+#          send-file <machine> <file> | read-screen <machine>
 #
 # Put it on your PATH, for example:
 #   ln -s "$PWD/Tools/avmctl" /usr/local/bin/avmctl

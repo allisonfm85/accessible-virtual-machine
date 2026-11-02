@@ -48,6 +48,10 @@ extension VMManager {
         let machine = configuration.name
         let chosenReaders = windows ? configuration.windowsScreenReaders.map(\.displayName) : []
         let picture = runtimeDir.appendingPathComponent("watch-screen.ppm")
+        // The 3D driver, the first time Windows runs with 3D on (2026-11-01).
+        if installed, configuration.usesWindows3D, Self.supportsWindows3D {
+            Task { [weak self] in await self?.installWindows3DDriverIfNeeded(machine: configuration.name) }
+        }
         guestWatchTask = Task { [weak self] in
             var lastThumb: [UInt8]?
             var said = Set<String>()
@@ -157,7 +161,7 @@ extension VMManager {
                 // only the first 3 minutes (start-up screens) are read.
                 let canTell = !installed || agentEverAnswered || Date().timeIntervalSince(started) < 180
                 if GuestWatchSettings.isOn(GuestWatchSettings.speakScreenKey), !readerRunning, canTell,
-                   (try? await self.sendQMPCommand("screendump", arguments: ["filename": picture.path, "format": "ppm"])) != nil,
+                   await self.screenPicture(to: picture.path),
                    let source = CGImageSourceCreateWithURL(picture as CFURL, nil),
                    let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
                    let thumb = ScreenChange.thumbnail(of: image) {
