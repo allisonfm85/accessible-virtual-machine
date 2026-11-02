@@ -363,12 +363,14 @@ enum SaveResumeTestJob {
                 // answered through the forwarded port.
                 let manager = VMManager()
                 var config = configuration(folder: folderURL, guest: guest)
-                config.name = "RDP test"
+                // Its own name and port (2026-11-01): tests run side by side
+                // (run-tests-parallel.sh) took each other's.
+                config.name = "RDP test \(getpid() % 1000)"
                 config.remoteDesktopUser = value("--user") ?? "avmtester"
                 // --reach network: bound to every address, and probed at the
                 // Mac's own network address.
                 config.remoteDesktopReach = value("--reach") == "network" ? "network" : nil
-                config.remoteDesktopPort = Int(value("--port") ?? "") ?? 3399
+                config.remoteDesktopPort = Int(value("--port") ?? "") ?? 3400 + Int(getpid() % 400)
                 let password = value("--password") ?? "Test-Password-1234"
                 // --at-start: as a machine set up in Settings while stopped
                 // starts: the password in the keychain, the port in QEMU's
@@ -441,11 +443,21 @@ enum SaveResumeTestJob {
                 }
                 print("   probed \(config.remoteDesktopReachesNetwork ? (RemoteDesktop.macAddress() ?? "?") : "127.0.0.1"):\(port); the host answered: \(answer.prefix(12).map { String(format: "%02x", $0) }.joined(separator: " "))")
                 check("a Remote Desktop client is answered through the Mac's port", answer.count >= 4 && answer[0] == 0x03 && answer[1] == 0x00)
-                var hints = addrinfo(); hints.ai_family = AF_INET
-                var info: UnsafeMutablePointer<addrinfo>?
-                let resolved = getaddrinfo("\(RemoteDesktop.hostLabel(for: config)).local", nil, &hints, &info) == 0
-                if info != nil { freeaddrinfo(info) }
-                check("\(RemoteDesktop.hostLabel(for: config)).local resolves on this Mac", resolved)
+                // A copy with an identifier of its own may not be able to look up
+                // .local names: the same test failed alone from a brand new
+                // identifier and from six at once, 35 s each and never answered,
+                // while the name resolved at once for a small program beside them.
+                // Some older copies' identifiers did resolve. Probably the Mac's
+                // Local Network permission; not confirmed (2026-11-02).
+                if Bundle.main.bundleIdentifier == "com.alllisonmeloy.AVM" {
+                    var hints = addrinfo(); hints.ai_family = AF_INET
+                    var info: UnsafeMutablePointer<addrinfo>?
+                    let resolved = getaddrinfo("\(RemoteDesktop.hostLabel(for: config)).local", nil, &hints, &info) == 0
+                    if info != nil { freeaddrinfo(info) }
+                    check("\(RemoteDesktop.hostLabel(for: config)).local resolves on this Mac", resolved)
+                } else {
+                    notChecked("\(RemoteDesktop.hostLabel(for: config)).local resolving: this copy of AVM has its own identifier, and such a copy may not be able to look up .local names")
+                }
                 // A real sign-in, with FreeRDP's client when it's on the Mac
                 // (brew install freerdp): authenticate only, then exit. The
                 // wrong password must be refused, or the right one proves
@@ -790,6 +802,15 @@ enum SaveResumeTestJob {
         }
     }
 
+    /// A temporary folder of this run's own: tests running side by side
+    /// overwrote each other's files, kept under one name because the guest
+    /// looks for that name (2026-11-01).
+    private static func ownTestFolder() -> URL {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("avm-test-\(getpid())", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
     private static var ok = true
     private static func check(_ what: String, _ passed: Bool) {
         print("   \(passed ? "yes" : "NO ")  \(what)")
@@ -945,7 +966,7 @@ enum SaveResumeTestJob {
         try? await Task.sleep(for: .seconds(15))
         let status = await run(["status", "Ctl Test"])
         check("status says running", status.ok && status.out.contains("running"))
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent("avmctl note.txt")
+        let file = ownTestFolder().appendingPathComponent("avmctl note.txt")
         try? "sent by avmctl\n".write(to: file, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: file) }
         let send = await run(["send-file", "Ctl Test", file.path])
@@ -1119,7 +1140,7 @@ enum SaveResumeTestJob {
         check("the service took it", error == nil)
         var arrived = false
         let look = guest == .windows
-            ? "Get-ChildItem -Path C:\\Users\\*\\Downloads -Filter '\(name)' | ForEach-Object { 'found' }"
+            ? "Get-ChildItem -Force -Directory C:\\Users | ForEach-Object { if (Test-Path -LiteralPath (Join-Path $_.FullName 'Downloads\\\(name)')) { 'found' } }"
             : "ls /home/*/Downloads/'\(name)' 2>/dev/null && echo found"
         for _ in 0..<20 where !arrived {
             try? await Task.sleep(for: .seconds(3))
@@ -1175,6 +1196,12 @@ enum SaveResumeTestJob {
         let first = log().components(separatedBy: "\n").last { $0.contains("said (") && $0.contains("Save test") && !$0.contains("Checking") } ?? ""
         print("   it said: \(first.suffix(400))")
         check("it reports that it's answering", first.contains("answering"))
+        let taken = VMManager.macTakesControlArrows
+        print("   the Mac's Spaces shortcuts hold Control and the arrows: \(taken)")
+        check("it speaks of the Mac's Control-arrow shortcuts only if they're on", first.contains("Control-Right Arrow") == taken)
+        if guest == .windows {
+            check("the start warned of them only if they're on", log().contains("the Mac's Spaces shortcuts hold") == taken)
+        }
         if guest != .windows {
             check("it found this machine good", first.contains("looks good"))
         }
@@ -1349,7 +1376,7 @@ enum SaveResumeTestJob {
     }
 
     private static func sendFile(_ folder: URL, _ guest: GuestOS) async -> Bool {
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent("avm send test.bin")
+        let file = ownTestFolder().appendingPathComponent("avm send test.bin")
         var bytes = Data(count: 3 * 1_048_576 + 12345)
         bytes.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, $0.count, $0.baseAddress!) }
         try? bytes.write(to: file)
