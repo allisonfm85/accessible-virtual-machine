@@ -2271,6 +2271,26 @@ final class OpenSUSEInstallTests: XCTestCase {
         XCTAssertEqual(BackupSchedule.oldOnes(in: names, base: "A", ext: "avmvm"), ["A backup 2026-01-01 0000.avmvm"])
     }
 
+    /// Control and the arrows: on by default, off when turned off, and not
+    /// in the way once moved to other keys.
+    func testMacSpacesShortcuts() {
+        func entry(enabled: Int, key: Int? = nil, modifiers: Int = 8650752) -> [String: Any] {
+            var e: [String: Any] = ["enabled": NSNumber(value: enabled)]
+            if let key { e["value"] = ["parameters": [NSNumber(value: 65535), NSNumber(value: key), NSNumber(value: modifiers)], "type": "standard"] as [String: Any] }
+            return e
+        }
+        XCTAssertTrue(MacSpacesShortcuts.takeControlArrows(nil))
+        XCTAssertTrue(MacSpacesShortcuts.takeControlArrows([:]))
+        XCTAssertTrue(MacSpacesShortcuts.takeControlArrows(["79": entry(enabled: 1), "81": entry(enabled: 1)]))
+        XCTAssertFalse(MacSpacesShortcuts.takeControlArrows(["79": entry(enabled: 0), "81": entry(enabled: 0)]))
+        // One left on is still a key that doesn't reach the machine.
+        XCTAssertTrue(MacSpacesShortcuts.takeControlArrows(["79": entry(enabled: 0), "81": entry(enabled: 1, key: 124)]))
+        // Moved: to other keys, or with another modifier held too.
+        XCTAssertFalse(MacSpacesShortcuts.takeControlArrows(["79": entry(enabled: 1, key: 18), "81": entry(enabled: 1, key: 19)]))
+        XCTAssertFalse(MacSpacesShortcuts.takeControlArrows(["79": entry(enabled: 1, key: 123, modifiers: 0x80000 | 0x40000), "81": entry(enabled: 0)]))
+        XCTAssertTrue(MacSpacesShortcuts.words(machine: "PC").contains("Next:"))
+    }
+
     func testMachineCheckSaysWhatsWrongAndWhatToDo() {
         let good = "signedin=1\nreader=nvda\nsound=1\nsounddevice=1\nclipboard=1\nsharedfolder=1\n"
         let fine = MachineCheckResult(agentAnswered: true, output: good, windows: true, soundLevels: (100, 0))

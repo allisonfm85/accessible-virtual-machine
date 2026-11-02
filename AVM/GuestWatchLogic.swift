@@ -251,6 +251,33 @@ nonisolated struct MachineCheckResult: Sendable {
     }
 }
 
+/// Control with the Left and Right arrows, which the Mac can take before a
+/// machine sees them (2026-11-02, the user's report): macOS has them on by
+/// default for moving between Spaces. In Windows and Linux they move by word.
+nonisolated enum MacSpacesShortcuts {
+    /// Apple's numbers for "Move left a space" and "Move right a space", in
+    /// com.apple.symbolichotkeys, with the key codes they use by default.
+    private static let shortcuts = [("79", 123), ("81", 124)]
+
+    /// An entry that isn't there is a shortcut still at its default, so on.
+    /// One moved to other keys is out of the way.
+    static func takeControlArrows(_ hotKeys: [String: Any]?) -> Bool {
+        shortcuts.contains { number, keyCode in
+            guard let entry = hotKeys?[number] as? [String: Any] else { return true }
+            if (entry["enabled"] as? NSNumber)?.boolValue == false { return false }
+            guard let value = entry["value"] as? [String: Any],
+                  let parameters = value["parameters"] as? [NSNumber], parameters.count == 3 else { return true }
+            let modifiers = parameters[2].intValue
+            let control = 0x40000, otherModifiers = 0x20000 | 0x80000 | 0x100000
+            return parameters[1].intValue == keyCode && modifiers & control != 0 && modifiers & otherModifiers == 0
+        }
+    }
+
+    static func words(machine: String) -> String {
+        "Your Mac keeps Control-Left Arrow and Control-Right Arrow for moving between Spaces, so they won't reach \(machine), where they move by word. Next: in System Settings, go to Keyboard, Keyboard Shortcuts, Mission Control, and turn off Move left a space and Move right a space."
+    }
+}
+
 /// When a machine's automatic backup is due, and which old ones go.
 nonisolated enum BackupSchedule {
     static let folderKey = "AVMBackupFolder"

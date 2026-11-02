@@ -53,6 +53,26 @@ extension VMManager {
 
     private func say(_ result: MachineCheckResult, machine: String) {
         AVMLog.write("AVM: Check This Machine — \(machine): \(result.problems.count) problem(s), \(result.fine.count) fine")
-        Announcer.shared.announce(result.words(machine: machine), tone: result.problems.isEmpty ? .success : .failure)
+        // Said beside the result, not as a problem with the machine: someone
+        // may want the shortcuts for Spaces.
+        let mac = Self.macTakesControlArrows ? " " + MacSpacesShortcuts.words(machine: machine) : ""
+        Announcer.shared.announce(result.words(machine: machine) + mac, tone: result.problems.isEmpty ? .success : .failure)
     }
+
+    /// True while the Mac's shortcuts for Spaces hold Control and the arrows.
+    static var macTakesControlArrows: Bool {
+        let domain = "com.apple.symbolichotkeys" as CFString
+        CFPreferencesAppSynchronize(domain)
+        return MacSpacesShortcuts.takeControlArrows(CFPreferencesCopyAppValue("AppleSymbolicHotKeys" as CFString, domain) as? [String: Any])
+    }
+
+    /// Once each time AVM opens, as a Windows machine starts: every start would
+    /// nag someone who keeps them for Spaces.
+    func warnAboutMacSpacesShortcuts(_ configuration: VMConfiguration) {
+        guard configuration.guestOS == .windows, !Self.warnedAboutMacSpacesShortcuts, Self.macTakesControlArrows else { return }
+        Self.warnedAboutMacSpacesShortcuts = true
+        AVMLog.write("AVM: the Mac's Spaces shortcuts hold Control and the arrows")
+        Announcer.shared.announce(MacSpacesShortcuts.words(machine: configuration.name), tone: .info)
+    }
+    private static var warnedAboutMacSpacesShortcuts = false
 }

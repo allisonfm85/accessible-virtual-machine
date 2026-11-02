@@ -187,6 +187,8 @@ Set them once before your first install.
    Control, and turn off the shortcuts for "Move left a space" and "Move
    right a space." Otherwise the Mac grabs Control with the arrow keys,
    which in Windows is how you move word by word through text.
+   AVM reminds you once each time it opens, as a Windows machine starts,
+   and Check This Machine says so too.
 3. **The Show Desktop shortcut: OFF.** In the same Keyboard Shortcuts
    window, under Mission Control, turn off "Show Desktop." Otherwise the
    Mac takes F11, which your Windows screen reader needs.

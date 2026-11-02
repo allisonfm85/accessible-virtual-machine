@@ -1563,6 +1563,8 @@ final class VMManager: ObservableObject {
         // Before the guest makes a sound, and after a resume too: QEMU doesn't
         // save these.
         await applySoundLevels(configuration)
+        // Windows Setup talks through this start, and nobody's typing in it yet.
+        if !setupStillRunning(runtimeDir: runtimeDir) { warnAboutMacSpacesShortcuts(configuration) }
         // An UNATTEND drive a snapshot was taken with comes out once it has
         // carried on (2026-10-29), as a plain Start leaves it out after Setup.
         if resumePlan != nil, !configuration.guestOS.isLinux, unattendInSession, !setupStillRunning(runtimeDir: runtimeDir) {
