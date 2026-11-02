@@ -125,3 +125,44 @@ nonisolated enum ScreenChange {
             && lines.contains { $0.localizedCaseInsensitiveContains("stop code") }
     }
 }
+
+/// "This machine looks stuck" (2026-11-01, the user's request): a person who
+/// can't see a frozen boot can't know to reset it. A sign of life is its agent
+/// answering, or its screen changing. Said once per freeze.
+nonisolated struct StuckWatch: Sendable {
+    /// Long enough for Windows' slowest quiet restarts, as a first restart
+    /// after the 3D driver, which take several minutes.
+    static let limit: TimeInterval = 600
+    /// Longer than this between looks, AVM wasn't looking: the Mac slept, or
+    /// the machine was paused.
+    static let longestGap: TimeInterval = 60
+
+    enum Change: Equatable, Sendable { case none, stuck, alive }
+
+    let limit: TimeInterval
+    private var lastSign: Date
+    private var lastLook: Date
+    private var told = false
+
+    init(limit: TimeInterval = StuckWatch.limit, now: Date = Date()) {
+        self.limit = limit
+        lastSign = now
+        lastLook = now
+    }
+
+    mutating func look(agentAnswered: Bool, screenChanged: Bool, now: Date = Date()) -> Change {
+        defer { lastLook = now }
+        if agentAnswered || screenChanged || now.timeIntervalSince(lastLook) > Self.longestGap {
+            lastSign = now
+            if told, agentAnswered || screenChanged {
+                told = false
+                return .alive
+            }
+            return .none
+        }
+        guard !told, now.timeIntervalSince(lastSign) >= limit else { return .none }
+        told = true
+        return .stuck
+    }
+}
+

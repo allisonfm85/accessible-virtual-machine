@@ -153,6 +153,7 @@ add "debian finder send"               debian   "--test-finder-send"
 add "windows finder send"              windows  "--test-finder-send"
 add "fedora repair"                    fedora   "--test-repair"
 add "debian sound in one ear"           debian   "sound-ear"
+add "debian looks stuck"                debian   "--test-stuck"
 add "screen reader downloads"          downloads "--test-screen-readers"
 
 wanted() {

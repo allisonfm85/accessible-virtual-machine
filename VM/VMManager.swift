@@ -3523,6 +3523,9 @@ final class VMManager: ObservableObject {
     var typingStopAsked = false
     /// Repair for AVM is waiting for a password (GuestRepair.swift).
     var isRepairing = false
+    /// How long with no sign of life before AVM says a machine looks stuck.
+    static var stuckLimit: TimeInterval = StuckWatch.limit
+
     private var soundLevelsChanged = false
 
     /// This machine's level in each ear, now.

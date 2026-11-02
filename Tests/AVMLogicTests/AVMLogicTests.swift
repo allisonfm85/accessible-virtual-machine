@@ -2234,4 +2234,28 @@ final class OpenSUSEInstallTests: XCTestCase {
         XCTAssertEqual(config.soundLevels.right, 100)
     }
 
+    func testStuckIsSaidOncePerFreezeAndNotAfterASleep() {
+        let start = Date(timeIntervalSince1970: 1000)
+        var watch = StuckWatch(limit: 100, now: start)
+        var now = start
+        func look(_ answered: Bool = false, _ changed: Bool = false) -> StuckWatch.Change {
+            now += 16
+            return watch.look(agentAnswered: answered, screenChanged: changed, now: now)
+        }
+        for _ in 0..<6 { XCTAssertEqual(look(), .none) }
+        XCTAssertEqual(look(), .stuck)
+        XCTAssertEqual(look(), .none)
+        XCTAssertEqual(look(true), .alive)
+        for _ in 0..<3 { XCTAssertEqual(look(true), .none) }
+        // A changing screen counts as life.
+        for _ in 0..<5 { XCTAssertEqual(look(), .none) }
+        XCTAssertEqual(look(false, true), .none)
+        for _ in 0..<6 { XCTAssertEqual(look(), .none) }
+        XCTAssertEqual(look(), .stuck)
+        XCTAssertEqual(look(false, true), .alive)
+        // AVM wasn't looking for an hour, as when the Mac slept: not stuck.
+        now += 3600
+        XCTAssertEqual(watch.look(agentAnswered: false, screenChanged: false, now: now), .none)
+    }
+
 }

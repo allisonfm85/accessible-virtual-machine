@@ -603,6 +603,9 @@ enum SaveResumeTestJob {
             if arguments.contains("--test-finder-send") {
                 await finish(await finderSend(folderURL, guest))
             }
+            if arguments.contains("--test-stuck") {
+                await finish(await stuckMachine(folderURL, guest))
+            }
             if arguments.contains("--test-windows-3d") {
                 await finish(await windows3D(folderURL))
             }
@@ -1118,6 +1121,33 @@ enum SaveResumeTestJob {
         }
         check("the file is in the machine's Downloads", arrived)
         session.forceStop()
+        return ok
+    }
+
+    /// Looks stuck (2026-11-01): QEMU's CPUs stopped, with AVM thinking it runs,
+    /// is a frozen machine. AVM says so within its limit, here a minute, and
+    /// says so when it moves again.
+    private static func stuckMachine(_ folder: URL, _ guest: GuestOS) async -> Bool {
+        func log() -> String { AVMLog.currentLogURL().flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? "" }
+        func waitForLog(_ text: String, seconds: Int) async -> Bool {
+            for _ in 0..<seconds where !log().contains(text) { try? await Task.sleep(for: .seconds(1)) }
+            return log().contains(text)
+        }
+        VMManager.stuckLimit = 60
+        let manager = VMManager()
+        guard await start(manager, configuration(folder: folder, guest: guest)), let agent = manager.guestAgentSocketPath,
+              await waitForAgent(agent, seconds: 600) else {
+            check("the machine started and answers", false); await shutDown(manager); return false
+        }
+        try? await Task.sleep(for: .seconds(30))
+        check("it isn't called stuck while it answers", !log().contains("looks stuck"))
+        print("== Frozen")
+        _ = try? await manager.sendQMPCommand("stop", arguments: nil)
+        check("AVM says it looks stuck", await waitForLog("looks stuck", seconds: 180))
+        print("== Moving again")
+        _ = try? await manager.sendQMPCommand("cont", arguments: nil)
+        check("AVM says it's moving again", await waitForLog("is moving again", seconds: 120))
+        await shutDown(manager)
         return ok
     }
 
