@@ -162,14 +162,14 @@ enum SaveResumeTestJob {
                     check("\(reader.displayName) downloaded and checked (\(size / 1_000_000) MB)", got[reader] != nil)
                 }
                 print(String(format: "   took %.0f s, into %@", Date().timeIntervalSince(started), cache.path))
-                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+                await finish(ok)
             }
             return
         }
         if arguments.contains("--test-monitors") {
             Task { @MainActor in
                 let passed = monitors()
-                print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+                await finish(passed)
             }
             return
         }
@@ -184,14 +184,14 @@ enum SaveResumeTestJob {
             if arguments.contains("--test-two-machines"), let second = value("--vm2") {
                 let guest2 = GuestOS(rawValue: value("--guest2") ?? "windows") ?? .windows
                 let passed = await twoMachines(folderURL, guest, URL(fileURLWithPath: second, isDirectory: true), guest2)
-                print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+                await finish(passed)
             }
             if arguments.contains("--test-camera-save") {
                 var manager = VMManager()
                 var config = configuration(folder: folderURL, guest: guest)
                 config.shareCamera = true
                 guard await start(manager, config), let agent = manager.guestAgentSocketPath,
-                      await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                      await waitForAgent(agent, seconds: 300) else { await finish(false) }
                 try? await Task.sleep(for: .seconds(20))
                 let lastFrame = #"""
                 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -210,10 +210,10 @@ enum SaveResumeTestJob {
                 check("an app in the machine is reading the camera", frameBefore > 10)
                 let saved = await manager.saveStateAndStop()
                 check("it was saved while the camera was in use", saved)
-                guard saved else { await shutDown(manager); print("FAILED"); exit(1) }
+                guard saved else { await shutDown(manager); await finish(false) }
                 manager = VMManager()
                 guard await start(manager, config), let agent2 = manager.guestAgentSocketPath,
-                      await waitForAgent(agent2, seconds: 60) else { check("it carried on", false); print("FAILED"); exit(1) }
+                      await waitForAgent(agent2, seconds: 60) else { check("it carried on", false); await finish(false) }
                 try? await Task.sleep(for: .seconds(8))
                 let after = (await exec(agent2, program: "/bin/sh", args: ["-c", lastFrame]) ?? "").split(whereSeparator: \.isNewline)
                 let frameAfter = Int(after.first ?? "") ?? 0
@@ -222,7 +222,7 @@ enum SaveResumeTestJob {
                 check("the Mac's camera came back on", manager.consoleOutput.contains("usb-camera: the Mac's camera ("))
                 _ = await exec(agent2, program: "/bin/sh", args: ["-c", "pkill gst-launch; rm -rf /tmp/avm-cam"])
                 await shutDown(manager)
-                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+                await finish(ok)
             }
             if arguments.contains("--test-crash-save") {
                 // QEMU killed in the middle of a save (2026-10-28, deep audit):
@@ -232,7 +232,7 @@ enum SaveResumeTestJob {
                 var manager = VMManager()
                 let config = configuration(folder: folderURL, guest: guest)
                 guard await start(manager, config), let agent = manager.guestAgentSocketPath,
-                      await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                      await waitForAgent(agent, seconds: 300) else { await finish(false) }
                 try? await Task.sleep(for: .seconds(10))
                 let pid = manager.qemuPID
                 let killAfter = Int(value("--kill-after-ms") ?? "") ?? 400
@@ -255,15 +255,15 @@ enum SaveResumeTestJob {
                 let began = Date()
                 let listSaidSaved = QEMUSavedState.looksSaved(config)
                 check("the list's word matches the save's (\(listSaidSaved ? "saved" : "not saved"))", listSaidSaved == saved)
-                guard await start(manager, config) else { check("the next Start works", false); print("FAILED"); exit(1) }
+                guard await start(manager, config) else { check("the next Start works", false); await finish(false) }
                 check("the next Start works", true)
                 guard let agent2 = manager.guestAgentSocketPath, await waitForAgent(agent2, seconds: 300) else {
-                    check("the guest answers after it", false); await shutDown(manager); print("FAILED"); exit(1)
+                    check("the guest answers after it", false); await shutDown(manager); await finish(false)
                 }
                 check("the guest answers after it (\(Int(Date().timeIntervalSince(began))) s)", true)
                 print("   the list says saved now: \(QEMUSavedState.looksSaved(config))")
                 await shutDown(manager)
-                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+                await finish(ok)
             }
             if arguments.contains("--test-hid-bridge-fuzz") {
                 // The bridge's frame parser against garbage (2026-10-28, deep
@@ -272,17 +272,17 @@ enum SaveResumeTestJob {
                 // still answer afterwards, and the device must still detach.
                 let manager = VMManager()
                 guard await start(manager, configuration(folder: folderURL, guest: guest)),
-                      let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                      let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else { await finish(false) }
                 try? await Task.sleep(for: .seconds(10))
                 let descriptor = Data([0x06, 0x00, 0xff, 0x09, 0x01, 0xa1, 0x01,
                                        0x85, 0x01, 0x09, 0x02, 0x15, 0x00, 0x26, 0xff, 0x00, 0x75, 0x08, 0x95, 0x08, 0x81, 0x02,
                                        0x85, 0x02, 0x09, 0x03, 0x75, 0x08, 0x95, 0x08, 0x91, 0x02, 0xc0])
                 let port = 5
-                guard let socketPath = manager.hidBridgeSocketPath(port: port) else { print("FAILED"); exit(1) }
+                guard let socketPath = manager.hidBridgeSocketPath(port: port) else { await finish(false) }
                 do {
                     try await manager.attachHIDBridge(port: port, socketPath: socketPath, descriptor: descriptor,
                                                       vendor: 0x46f4, product: 0x0012, name: "AVM fuzz")
-                } catch { check("QEMU added the bridge device (\(error.localizedDescription))", false); print("FAILED"); exit(1) }
+                } catch { check("QEMU added the bridge device (\(error.localizedDescription))", false); await finish(false) }
                 func dial() -> Int32 {
                     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
                     var address = sockaddr_un()
@@ -349,7 +349,7 @@ enum SaveResumeTestJob {
                 let after = (try? await manager.sendQMPCommand("x-query-usb", arguments: nil)).map { "\($0)" } ?? ""
                 check("the bridge device was removed", !after.isEmpty && !after.contains("hidbridge-dev-\(port)"))
                 await shutDown(manager)
-                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+                await finish(ok)
             }
             if arguments.contains("--test-remote-desktop") {
                 // Remote Desktop (2026-10-28, RemoteDesktop.swift): the account
@@ -372,7 +372,7 @@ enum SaveResumeTestJob {
                 let atStart = arguments.contains("--at-start")
                 if atStart { RemoteDesktop.savePassword(password, for: config.id) }
                 guard await start(manager, config), let agent = manager.guestAgentSocketPath,
-                      await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                      await waitForAgent(agent, seconds: 300) else { await finish(false) }
                 try? await Task.sleep(for: .seconds(15))
                 let began = Date()
                 if atStart {
@@ -471,14 +471,14 @@ enum SaveResumeTestJob {
                 }
                 RemoteDesktopAdvertiser.shared.unpublish(config.id)
                 await shutDown(manager)
-                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+                await finish(ok)
             }
             if arguments.contains("--test-agent-shutdown") {
                 // The second step of Shut Down (2026-10-28): the guest's
                 // agent is asked, and the machine stops.
                 let manager = VMManager()
                 guard await start(manager, configuration(folder: folderURL, guest: guest)),
-                      let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                      let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else { await finish(false) }
                 try? await Task.sleep(for: .seconds(10))
                 let asked = await manager.askGuestToShutDown()
                 check("the guest agent took the shutdown request", asked)
@@ -487,16 +487,16 @@ enum SaveResumeTestJob {
                 print(String(format: "   stopped after %.0f s", Date().timeIntervalSince(began)))
                 check("the machine shut down", manager.state == .stopped)
                 if manager.state != .stopped { await shutDown(manager) }
-                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+                await finish(ok)
             }
             if arguments.contains("--test-background") {
                 let passed = await background(folderURL, guest)
-                print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+                await finish(passed)
             }
             if arguments.contains("--test-hid-bridge") {
                 let manager = VMManager()
                 guard await start(manager, configuration(folder: folderURL, guest: guest)),
-                      let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                      let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else { await finish(false) }
                 try? await Task.sleep(for: .seconds(20))
                 // Vendor page; report 1: 8 bytes in, report 2: 8 bytes out.
                 let descriptor = Data([0x06, 0x00, 0xff, 0x09, 0x01, 0xa1, 0x01,
@@ -514,14 +514,14 @@ enum SaveResumeTestJob {
                                               0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02,
                                               0xc0])
                 let port = 5
-                guard let socketPath = manager.hidBridgeSocketPath(port: port) else { print("FAILED"); exit(1) }
+                guard let socketPath = manager.hidBridgeSocketPath(port: port) else { await finish(false) }
                 do {
                     try await manager.attachHIDBridge(port: port, socketPath: socketPath, descriptor: braille ? brailleDescriptor : descriptor,
                                                       vendor: 0x46f4, product: 0x0012, name: "AVM Bluetooth test")
                     check("QEMU added the bridge device", true)
                 } catch {
                     check("QEMU added the bridge device (\(error.localizedDescription))", false)
-                    await shutDown(manager); print("FAILED"); exit(1)
+                    await shutDown(manager); await finish(false)
                 }
                 let fd = socket(AF_UNIX, SOCK_STREAM, 0)
                 var address = sockaddr_un()
@@ -569,6 +569,7 @@ enum SaveResumeTestJob {
                 print(text.split(whereSeparator: \.isNewline).map { "   machine: " + $0 }.joined(separator: "\n"))
                 if guest == .windows {
                     check("Windows has the device, working", text.contains("device:") && text.contains("OK"))
+                    notChecked("input and output reports through Windows: only Linux reads the device here")
                 } else {
                     check("Linux has the device", text.contains("/dev/hidraw"))
                     check("the input report reached it", text.contains("01 a1 a2 a3 a4 a5 a6 a7 a8"))
@@ -589,14 +590,14 @@ enum SaveResumeTestJob {
                 print("   QEMU's USB devices after the detach: \(usb.prefix(600))")
                 check("the bridge device was removed", !usb.isEmpty && !usb.contains("hidbridge-dev-\(port)") && !usb.contains("AVM Bluetooth test"))
                 await shutDown(manager)
-                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+                await finish(ok)
             }
             if arguments.contains("--test-3d") {
                 let manager = VMManager()
                 var config = configuration(folder: folderURL, guest: guest)
                 config.gpu3D = true
                 guard await start(manager, config), let agent = manager.guestAgentSocketPath,
-                      await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                      await waitForAgent(agent, seconds: 300) else { await finish(false) }
                 try? await Task.sleep(for: .seconds(30))
                 let script = #"""
                 echo "kernel: $(dmesg | grep -i -o -E 'features:.*virgl[^ ]*' | head -1)"
@@ -611,17 +612,20 @@ enum SaveResumeTestJob {
                 let text = await exec(agent, program: "/bin/sh", args: ["-c", script]) ?? ""
                 print(text.split(whereSeparator: \.isNewline).map { "   machine: " + $0 }.joined(separator: "\n"))
                 check("the machine's kernel found virgl", text.contains("+virgl"))
-                check("OpenGL there is drawn by virgl, not in software", text.lowercased().contains("virgl") && text.contains("opengl:") && !text.contains("llvmpipe"))
+                // The renderer's own line: "+virgl" above always had the word here
+                // (2026-11-01 audit).
+                let renderers = text.lowercased().split(whereSeparator: \.isNewline).filter { $0.contains("opengl:") && $0.contains("renderer") }
+                check("OpenGL there is drawn by virgl, not in software", !renderers.isEmpty && renderers.allSatisfy { $0.contains("virgl") && !$0.contains("llvmpipe") })
                 check("AVM doesn't offer to save it with open apps", !manager.canSaveState)
                 await shutDown(manager)
-                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+                await finish(ok)
             }
             if arguments.contains("--test-camera") {
                 let manager = VMManager()
                 var config = configuration(folder: folderURL, guest: guest)
                 config.shareCamera = true
                 guard await start(manager, config), let agent = manager.guestAgentSocketPath,
-                      await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                      await waitForAgent(agent, seconds: 300) else { await finish(false) }
                 try? await Task.sleep(for: .seconds(30))
                 let out: String?
                 if guest == .windows {
@@ -671,7 +675,7 @@ enum SaveResumeTestJob {
                 try? await Task.sleep(for: .seconds(6))
                 check("and off again once the picture was taken", manager.consoleOutput.contains("usb-camera: the Mac's camera is off"))
                 await shutDown(manager)
-                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+                await finish(ok)
             }
             if arguments.contains("--test-printers") {
                 let found = await Task.detached { MacPrinters.find() }.value
@@ -681,7 +685,7 @@ enum SaveResumeTestJob {
                 var config = configuration(folder: folderURL, guest: guest)
                 config.sharePrinters = true
                 guard await start(manager, config), let agent = manager.guestAgentSocketPath,
-                      await waitForAgent(agent, seconds: 300) else { print("FAILED"); exit(1) }
+                      await waitForAgent(agent, seconds: 300) else { await finish(false) }
                 // The Start adds them; a second pass, as at the next Start,
                 // finds them already there and says nothing.
                 try? await Task.sleep(for: .seconds(60))
@@ -694,13 +698,13 @@ enum SaveResumeTestJob {
                     check("the machine has them", found.allSatisfy { p in (out ?? "").contains(p.name) || (out ?? "").contains(p.uri.replacingOccurrences(of: "ipp://", with: "")) })
                 }
                 await shutDown(manager)
-                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+                await finish(ok)
             }
             if let command = value("--run-in-guest") {
                 let manager = VMManager()
                 guard await start(manager, configuration(folder: folderURL, guest: guest)),
                       let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else {
-                    print("FAILED"); exit(1)
+                    await finish(false)
                 }
                 try? await Task.sleep(for: .seconds(10))
                 let out = guest == .windows
@@ -714,7 +718,7 @@ enum SaveResumeTestJob {
                 let manager = VMManager()
                 guard await start(manager, configuration(folder: folderURL, guest: guest)),
                       let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else {
-                    print("FAILED"); exit(1)
+                    await finish(false)
                 }
                 try? await Task.sleep(for: .seconds(10))
                 let reply = try? await Task.detached(operation: { try GuestAgent.run([#"{"execute":"guest-get-fsinfo"}"#], socketPath: agent, timeout: 10) }).value.first
@@ -726,38 +730,37 @@ enum SaveResumeTestJob {
                 }
                 check("the system drive was found", drives.contains { $0.name == "/" || $0.name == "C:" })
                 await shutDown(manager)
-                print(ok ? "PASSED" : "FAILED"); exit(ok ? 0 : 1)
+                await finish(ok)
             }
             if arguments.contains("--test-ctl") {
                 let passed = await controlTest(folderURL, guest)
-                print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+                await finish(passed)
             }
             if arguments.contains("--test-linux-share") {
                 let passed = await linuxShare(folderURL, guest)
-                print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+                await finish(passed)
             }
             if arguments.contains("--test-guest-watch") {
                 let passed = await guestWatch(folderURL, guest)
-                print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+                await finish(passed)
             }
             if arguments.contains("--test-send-file") {
                 let passed = await sendFile(folderURL, guest)
-                print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+                await finish(passed)
             }
             if arguments.contains("--test-duplicate") {
                 let passed = await duplicate(folderURL, guest)
-                print(passed ? "PASSED" : "FAILED"); exit(passed ? 0 : 1)
+                await finish(passed)
             }
             if arguments.contains("--test-microphone") {
                 let heard = await microphone(folder: folderURL, guest: guest)
-                print(heard ? "PASSED" : "FAILED"); exit(heard ? 0 : 1)
+                await finish(heard)
             }
             if arguments.contains("--convert"), !(await convert(folder: folderURL, guest: guest)) {
-                print("FAILED"); exit(1)
+                await finish(false)
             }
             let ok = await run(folder: folderURL, guest: guest)
-            print(ok ? "PASSED" : "FAILED")
-            exit(ok ? 0 : 1)
+            await finish(ok)
         }
     }
 
@@ -765,6 +768,26 @@ enum SaveResumeTestJob {
     private static func check(_ what: String, _ passed: Bool) {
         print("   \(passed ? "yes" : "NO ")  \(what)")
         if !passed { ok = false }
+    }
+
+    /// Something this run couldn't check. The suite's summary shows it
+    /// beside the PASSED, so a pass doesn't claim it (2026-11-01 audit).
+    private static func notChecked(_ what: String) {
+        print("   NOT CHECKED  \(what)")
+    }
+
+    /// Every machine this test started, for `finish`.
+    private static var started: [VMManager] = []
+
+    /// The verdict, with nothing left running: a guard that gave up used to
+    /// leave QEMU holding the disk, and the next test on that machine then
+    /// failed too (2026-11-01 audit).
+    private static func finish(_ passed: Bool) async -> Never {
+        for manager in started where manager.state != .stopped { manager.forceStopVM() }
+        for session in MachineSessions.shared.sessions.values { session.forceStop() }
+        try? await Task.sleep(for: .seconds(2))
+        print(passed ? "PASSED" : "FAILED")
+        exit(passed ? 0 : 1)
     }
 
     private static func configuration(folder: URL, guest: GuestOS) -> VMConfiguration {
@@ -939,6 +962,8 @@ enum SaveResumeTestJob {
         try? server.run()
         defer { server.terminate() }
         try? await Task.sleep(for: .seconds(25))
+        // Only the script mounts it: this test also mounted it itself, so
+        // a script that failed still passed (2026-11-01 audit).
         print("== Mounting it as the user signs in would, and reading it")
         let out = await exec(agent, program: "/bin/sh", args: ["-c", """
             U=$(getent passwd 1000 | cut -d: -f1); UID_=1000
@@ -947,7 +972,6 @@ enum SaveResumeTestJob {
             systemctl is-active spice-webdavd 2>&1 | sed 's/^/webdavd: /'
             ss -ltn 2>/dev/null | grep -q ':9843' && echo "listening on 9843" || echo "not listening on 9843"
             runuser -u "$U" -- env XDG_RUNTIME_DIR=/run/user/$UID_ DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$UID_/bus HOME=/home/$U /bin/bash /usr/local/lib/avm/mount-mac-folder.sh
-            runuser -u "$U" -- env XDG_RUNTIME_DIR=/run/user/$UID_ DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$UID_/bus gio mount dav://localhost:9843/ 2>&1 | sed 's/^/gio: /'
             G="runuser -u $U -- env XDG_RUNTIME_DIR=/run/user/$UID_ DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$UID_/bus"
             $G gio cat dav://localhost:9843/hello.txt 2>&1
             echo "from the guest" | $G gio save dav://localhost:9843/back.txt 2>&1 && echo "wrote back"
@@ -1002,7 +1026,11 @@ enum SaveResumeTestJob {
     }
 
     private static func guestWatch(_ folder: URL, _ guest: GuestOS) async -> Bool {
-        // Off by default (2026-10-31); this test checks it, so it's on here.
+        // Off by default (2026-10-31); this test checks it, so it's on here,
+        // and put back: a test machine's run left it on for real machines
+        // (2026-11-01 audit).
+        let chosenBefore = UserDefaults.standard.object(forKey: GuestWatchSettings.pointBeforeUpdatesKey)
+        defer { UserDefaults.standard.set(chosenBefore, forKey: GuestWatchSettings.pointBeforeUpdatesKey) }
         UserDefaults.standard.set(true, forKey: GuestWatchSettings.pointBeforeUpdatesKey)
         // A fresh point every run: one from an earlier run under 20 hours
         // old would be kept, and the restart after a new point not tested.
@@ -1042,7 +1070,7 @@ enum SaveResumeTestJob {
             check("AVM said NVDA stopped", await waitForLog("NVDA stopped in", seconds: 120))
             check("NVDA is running again", await nvdaRunning())
         } else {
-            print("   skipped: no one is signed in to Windows (it's at the lock screen), and AVM restarts a screen reader only after sign-in")
+            notChecked("NVDA being restarted: no one is signed in to Windows (it's at the lock screen), and AVM restarts a screen reader only in a signed-in session")
         }
         print("== The before-updates check, at 5 minutes")
         let wait = 330 - Date().timeIntervalSince(started)
@@ -1350,6 +1378,7 @@ enum SaveResumeTestJob {
         // QEMU's exit reaches the manager through here, as a VMSession
         // sets it in the app.
         VMManager.shared = manager
+        started.append(manager)
         do {
             try await manager.startVM(configuration: configuration)
         } catch {

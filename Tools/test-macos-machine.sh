@@ -78,7 +78,8 @@ MINUTES=$(( ($(date +%s) - START + 59) / 60 ))
 if [ $CODE -eq 0 ]; then
     echo
     echo "PASSED in $MINUTES minutes."
-    if [ $KEEP -eq 1 ]; then echo "   The test machine is kept in $WORK"; else rm -rf "$WORK"; fi
+    # A --reuse folder is the caller's machine (2026-11-01 audit).
+    if [ $KEEP -eq 1 ] || [ -n "$REUSE" ]; then echo "   The test machine is kept in $WORK"; else rm -rf "$WORK"; fi
     command -v say >/dev/null && say "The macOS machine test passed." || true
 else
     echo

@@ -151,7 +151,9 @@ PY
     fi
     [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null && { qmp quit >/dev/null 2>&1 || kill "$QEMU_PID" 2>/dev/null || true; }
     [ -n "$TPM_PID" ] && kill "$TPM_PID" 2>/dev/null || true
-    if [ "$RESULT" = "0" ] && [ "$KEEP" = "0" ]; then
+    # A --reuse folder is the caller's machine, never this test's to delete
+    # (2026-11-01 audit).
+    if [ "$RESULT" = "0" ] && [ "$KEEP" = "0" ] && [ -z "$REUSE" ]; then
         rm -rf "$WORK"
     else
         echo "   The test machine is kept in $WORK"

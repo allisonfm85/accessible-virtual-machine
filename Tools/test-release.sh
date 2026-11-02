@@ -121,9 +121,14 @@ if [ $MACHINES = 1 ]; then
     if pgrep -x AVM >/dev/null; then
         check "AVM is quit (the suite would test a re-signed copy)" 1
     else
+        SUITE_LOG="$WORK/machines.txt"
         "$REPO_ROOT/Tools/run-all-tests.sh" --app "$APP" --only "windows-save windows-send windows-control debian-send debian-control debian-disk" \
-            ${OUT:+--out "$OUT"} < /dev/null | grep -E "^   (PASSED|FAILED|NO VERDICT|SKIPPED)"
-        check "they passed" "${PIPESTATUS[0]}"
+            ${OUT:+--out "$OUT"} < /dev/null > "$SUITE_LOG"
+        check "they passed" "$?"
+        grep -E "^   (PASSED|FAILED|NO VERDICT|TIMED OUT|SKIPPED)" "$SUITE_LOG"
+        # A skipped machine test isn't a tested release (2026-11-01 audit:
+        # with no test machines this said "ready to publish").
+        ! grep -q "^   SKIPPED" "$SUITE_LOG"; check "none of them was skipped" "$?"
     fi
 fi
 

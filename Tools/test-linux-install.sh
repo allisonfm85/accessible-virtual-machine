@@ -198,7 +198,9 @@ done
 for _ in $(seq 1 30); do kill -0 "$QEMU_PID" 2>/dev/null || break; sleep 10; done
 if kill -0 "$QEMU_PID" 2>/dev/null; then
     screenshot
-    info "The marker is written, but the installer hasn't powered off after 5 minutes (screen.png)."
+    # AVM waits for this power-off to finish an install (2026-11-01 audit:
+    # it was a note, and the test still passed).
+    fail "The marker is written, but the installer hasn't powered off after 5 minutes." "See $WORK/screen.png."
 else
     info "The installer powered off, as AVM expects."
 fi
@@ -253,9 +255,9 @@ s=$(loginctl list-sessions --no-legend | awk '$3=="avmtest"{print $1; exit}')
 [ -n "$s" ] && echo "session $(loginctl show-session "$s" -p Type --value)" || echo "session none"
 pgrep -x spice-vdagent >/dev/null && echo "spice-vdagent running" || echo "spice-vdagent not running"
 grep -h "^XKB[LV]" /etc/default/keyboard 2>/dev/null
-# [o]rca: this script's own command line holds the word, and pgrep -f
-# matched itself (2026-10-26, code audit), so Orca always "ran".
-ps -eo args | grep -q "[o]rca" && echo "orca running" || echo "orca not running"
+# The process's own name: this script's command line holds the word, so
+# matching arguments found itself and Orca always "ran" (2026-11-01 audit).
+ps -eo comm= | grep -qx orca && echo "orca running" || echo "orca not running"
 """
 pid = call("guest-exec", {"path": "/bin/sh", "arg": ["-c", script], "capture-output": True})["pid"]
 for _ in range(20):
@@ -307,6 +309,8 @@ PY
     done
 fi
 info "the clipboard agent is running: $CLIPBOARD"
+# Copy and paste, and the mouse, depend on it (2026-11-01 audit: PASSED without).
+[ "$CLIPBOARD" = "yes" ] || { screenshot; fail "The clipboard agent isn't running after sign-in." "See $WORK/screen.png."; }
 # Fedora's SELinux policy keeps the guest agent from listing processes
 # (2026-10-26), so there it's reported, not required.
 if ! echo "$DESKTOP" | grep -q "orca running"; then
@@ -320,5 +324,5 @@ fi
 RESULT=0
 ELAPSED=$(( ($(date +%s) - START) / 60 ))
 echo; echo "PASSED: $GUEST installed in $ELAPSED minutes."
-[ "$CLIPBOARD" = "yes" ] || echo "   (but the clipboard agent isn't running; see above)"
+[ "$SELINUX_GUEST" = "0" ] || echo "   NOT CHECKED  the sign-in and Orca running: SELinux hides them from the guest agent."
 command -v say >/dev/null && say "The $GUEST install test passed." || true

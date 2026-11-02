@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # avm-own-copy.sh
 # AVM — Accessible Virtual Machine
 #

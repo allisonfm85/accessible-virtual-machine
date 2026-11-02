@@ -203,7 +203,11 @@ enum MacTestJob {
             // Application Support alike, run from a shell or opened by
             // Launch Services, with the machine in Setup Assistant.
             // The Mac being locked, it seems (2026-10-30, see the resume
-            // below), not Setup Assistant: a note, not a failure.
+            // below), not Setup Assistant: a note, not a failure, when it
+            // is locked. Any other refusal fails: it said PASSED for every
+            // reason a save could fail (2026-11-01 audit).
+            guard FocusLockManager.screenIsLockedNow else { throw MacGuestError("The machine couldn't be saved, with the Mac unlocked.") }
+            print("   NOT CHECKED  saving and resuming: the Mac is locked")
             print("   note: couldn't save the machine (permission denied; is the Mac locked?); carrying on with the restore point steps")
             try await stop(machine)
         } else {
@@ -229,6 +233,7 @@ enum MacTestJob {
             // "permission denied" seen here, first taken for Setup
             // Assistant's. The app waits for the unlock (MacGuestRunner
             // resume); here, a note.
+            print("   NOT CHECKED  resuming: the Mac is locked")
             print("   note: the Mac is locked, and macOS doesn't resume a saved machine while it is; unlock it and run again to check this")
             try? FileManager.default.removeItem(at: files.savedState)
             machine = nil

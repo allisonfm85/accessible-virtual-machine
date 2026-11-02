@@ -279,6 +279,12 @@ if ! xcodebuild archive \
 fi
 info "Build log: $ARCHIVE_LOG"
 
+# Again now: an edit during the long archive went into the app but not into
+# the commit recorded above (2026-11-01 audit).
+if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal 2>/dev/null)" ] || [ "$(git -C "$REPO_ROOT" rev-parse HEAD)" != "$BUILT_COMMIT" ]; then
+    fail "The working tree changed during the archive." "Leave it alone while it builds, and build again."
+fi
+
 APP_IN_ARCHIVE="$ARCHIVE/Products/Applications/AVM.app"
 [ -d "$APP_IN_ARCHIVE" ] || fail "The archive has no AVM.app at $APP_IN_ARCHIVE."
 APP="$BUILD_DIR/AVM.app"

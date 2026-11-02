@@ -278,6 +278,13 @@ run_one() {
             done
             [ $waited -lt "$LIMIT" ] || status=124
             wait_for_quiet
+            # A test that failed or timed out can leave its QEMU holding the
+            # disk, and the next test on that machine then fails too
+            # (2026-11-01 audit). Only this test's machine.
+            if [ -n "$folder" ] && pkill -f "qemu-system.*$folder" 2>/dev/null; then
+                echo "   (a QEMU from this test was still running; stopped it)" >>"$log"
+                sleep 3
+            fi
             if [ $status = 124 ]; then verdict="TIMED OUT"
             elif grep -q "^PASSED" "$log" 2>/dev/null; then verdict=PASSED
             elif grep -q "^FAILED" "$log" 2>/dev/null; then verdict=FAILED
@@ -289,6 +296,10 @@ run_one() {
     if [ "$verdict" != PASSED ]; then
         detail="$(grep -E "^ *NO  " "$log" 2>/dev/null | sed 's/^ *NO  *//' | head -3 | tr '\n' ';' | sed 's/;$//')"
         FAILED=$((FAILED + 1))
+    fi
+    # A pass that left something out says what (2026-11-01 audit).
+    if [ "$verdict" = PASSED ]; then
+        detail="$(grep -E "^ *NOT CHECKED  " "$log" 2>/dev/null | sed 's/^ *NOT CHECKED  */not checked: /' | head -3 | tr '\n' ';' | sed 's/;$//')"
     fi
     printf '%s (%d s)\n' "$verdict" "$took"
     RESULTS+=("$name|$verdict|$took|$detail")
@@ -311,4 +322,5 @@ done
 total=$(( $(date +%s) - SUITE_START ))
 echo
 echo "$passed passed, $FAILED failed, $skipped skipped, in $((total / 60)) min $((total % 60)) s. Outputs: $OUT"
-[ $FAILED = 0 ]
+# Nothing run isn't a pass (2026-11-01 audit).
+[ $FAILED = 0 ] && [ "$passed" -gt 0 ]
