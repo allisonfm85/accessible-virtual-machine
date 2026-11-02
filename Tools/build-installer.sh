@@ -297,8 +297,9 @@ xattr -cr "$APP"
 
 step "Signing every binary with Developer ID"
 
-# QEMU gets the release entitlements (no library-validation exception,
-# 2026-10-26), as the app does, plus allow-jit.
+# QEMU gets only what it uses (2026-11-01 audit: it had all the app's): the
+# hypervisor, the microphone and camera, plus allow-jit. No library-validation
+# exception (2026-10-26).
 # Hardened runtime is new for QEMU here (notarization requires it on every
 # executable); allow-jit keeps QEMU's TCG code buffer working under it, so
 # a fallback from HVF can't crash at the first translated block.
@@ -306,6 +307,9 @@ QEMU_ENTITLEMENTS="$BUILD_DIR/qemu.entitlements"
 cp "$REPO_ROOT/AVM/AVM-Release.entitlements" "$QEMU_ENTITLEMENTS"
 /usr/libexec/PlistBuddy -c "Add :com.apple.security.cs.allow-jit bool true" "$QEMU_ENTITLEMENTS" 2>/dev/null || \
     /usr/libexec/PlistBuddy -c "Set :com.apple.security.cs.allow-jit true" "$QEMU_ENTITLEMENTS"
+for not_qemus in virtualization files.user-selected.read-write automation.apple-events; do
+    /usr/libexec/PlistBuddy -c "Delete :com.apple.security.$not_qemus" "$QEMU_ENTITLEMENTS"
+done
 
 is_macho() {
     case "$(file -b "$1")" in

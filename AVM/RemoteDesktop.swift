@@ -371,7 +371,7 @@ extension VMManager {
             if (try? await agentCall(["execute": "guest-ping"], timeout: 4)) != nil { break }
         }
         guard case .running = state else { return }
-        let mark = RemoteDesktop.mark(for: password)
+        let mark = RemoteDesktop.mark(for: password, like: configuration.remoteDesktopPasswordMark)
         let setPassword = configuration.remoteDesktopPasswordMark != mark
         switch await setUpRemoteDesktop(configuration: configuration, user: user, password: password, setPassword: setPassword) {
         case .ready(let words):

@@ -253,6 +253,9 @@ final class ControlServer {
             guard let path = request["path"] as? String, FileManager.default.isReadableFile(atPath: path) else {
                 return fail("That file can't be read.")
             }
+            guard SendToMachineService.mayRead(URL(fileURLWithPath: path), askedBy: "avmctl", machine: name) else {
+                return fail("That wasn't allowed on the Mac.")
+            }
             return await session.manager.sendFile(URL(fileURLWithPath: path))
                 ? ["ok": true, "message": "Sent \((path as NSString).lastPathComponent) to Downloads in \(name)."]
                 : fail("It wasn't sent; AVM said why.")

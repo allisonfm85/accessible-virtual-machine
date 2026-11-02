@@ -1086,7 +1086,7 @@ struct SettingsView: View {
             let password = remoteDesktopPassword.isEmpty ? (RemoteDesktop.password(for: id) ?? "") : remoteDesktopPassword
             // The account's password is set when it's new to this machine or
             // typed anew (2026-10-28); an existing account's is otherwise kept.
-            let mark = RemoteDesktop.mark(for: password)
+            let mark = RemoteDesktop.mark(for: password, like: updated.remoteDesktopPasswordMark)
             let setPassword = updated.remoteDesktopPasswordMark != mark
             Task { @MainActor in
                 if let oldPort, oldPort != port { await manager.stopForwardingRemoteDesktop(port: oldPort) }

@@ -40,9 +40,29 @@ final class SendToMachineService: NSObject {
             Announcer.shared.announce("\(skipped == 1 ? "A folder was" : "\(skipped) folders were") left out: only files can be sent.", tone: .info)
         }
         guard let machine = running.count == 1 ? running[0] : choose(from: running, count: files.count) else { return }
+        // Chosen in Finder, by a person; anything else can call a service too.
+        let fromFinder = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.finder"
+        let allowed = fromFinder ? files : files.filter { Self.mayRead($0, askedBy: "Another app", machine: machine.machineName) }
         Task {
-            for file in files { await machine.sendFile(file) }
+            for file in allowed { await machine.sendFile(file) }
         }
+    }
+
+    /// AVM reads the file with its own permissions, not the asker's, so
+    /// another program could use it to reach a folder macOS keeps from that
+    /// program (2026-11-01 audit). For those folders, the person says.
+    static func mayRead(_ file: URL, askedBy: String, machine: String) -> Bool {
+        let path = file.resolvingSymlinksInPath().path
+        let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().path
+        let kept = ["Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures"].map { "\(home)/\($0)/" }
+        guard path.hasPrefix("/Volumes/") || kept.contains(where: path.hasPrefix) else { return true }
+        let alert = NSAlert()
+        alert.messageText = "\(askedBy) wants to send \(file.lastPathComponent) to \(machine)."
+        alert.informativeText = "From \((path as NSString).deletingLastPathComponent). If you didn't ask for this, choose Don't Send."
+        alert.addButton(withTitle: "Don't Send")
+        alert.addButton(withTitle: "Send")
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertSecondButtonReturn
     }
 
     /// Which machine, when more than one runs: up to three by name.

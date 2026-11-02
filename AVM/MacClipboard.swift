@@ -77,11 +77,20 @@ final class MacClipboard {
         FileManager.default.createFile(atPath: file.path, contents: Data(text.utf8), attributes: [.posixPermissions: 0o600])
     }
 
+    private static let largestText = 16 * 1024 * 1024
+
     /// A plain file's text, or nil for anything else (a link especially).
     private func readPlain(_ file: URL) -> String? {
-        guard let type = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.type] as? FileAttributeType,
-              type == .typeRegular else { return nil }
-        return try? String(contentsOf: file, encoding: .utf8)
+        // From an open file, with a limit (2026-11-01 audit): checked and
+        // then read by name, the guest could swap it between, and a huge
+        // file hung AVM. O_NONBLOCK, so a pipe in its place can't block.
+        let fd = open(file.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { return nil }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size <= Self.largestText,
+              let data = try? handle.read(upToCount: Self.largestText) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     /// Copies password managers mark as secret or passing (the nspasteboard

@@ -4859,7 +4859,7 @@ extension VMManager {
                 owner = String(home[0])
                 folder = String(home[1]) + "/Downloads"
                 // Theirs, not root's, when it's made here (the agent is root).
-                _ = try await agentRun("/bin/sh", ["-c", "[ -d \"$1\" ] || { mkdir -p \"$1\" && chown \"$2:$2\" \"$1\"; }", "sh", folder, home[0].description])
+                _ = try await agentRun("/bin/sh", ["-c", "[ -d \"$1\" ] || { mkdir -p \"$1\" && chown -h \"$2:$2\" \"$1\"; }", "sh", folder, home[0].description])
             }
             let separator = windows ? "\\" : "/"
             // A name Windows can hold (2026-10-28, fourth audit): a Mac name
@@ -4903,7 +4903,7 @@ extension VMManager {
                 throw error
             }
             if let owner {
-                _ = try? await agentRun("/bin/chown", ["\(owner):\(owner)", target])
+                _ = try? await agentRun("/bin/chown", ["-h", "\(owner):\(owner)", target])
             }
             let landed = (target as NSString).lastPathComponent
             avmLog("sendFile: \(sent) bytes sent")

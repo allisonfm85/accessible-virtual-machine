@@ -151,9 +151,15 @@ final class WindowsApps {
     private func sync(machine: UUID, machineName: String, list: String) async {
         var open: [String: String] = [:]
         for line in list.split(separator: "\n") {
+            // Limits (2026-11-01 audit): this list is the guest's to write,
+            // and every line used to make an app on the Mac.
+            guard open.count < Self.mostOpenApps else {
+                AVMLog.write("Windows apps: \(machineName) listed more than \(Self.mostOpenApps) apps; the rest are left out", category: "WindowsApps")
+                break
+            }
             let parts = line.split(separator: "\t", maxSplits: 1).map(String.init)
-            guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { continue }
-            open[parts[0]] = parts[1]
+            guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty, parts[0].count <= 1024 else { continue }
+            open[parts[0]] = String(parts[1].prefix(120))
         }
         // Kept apps looked at once for all the new ones, not once an app.
         var pinned: [(url: URL, info: NSDictionary)]?
@@ -163,6 +169,29 @@ final class WindowsApps {
             if pinned == nil { pinned = self.pinnedBundles() }
             return await self.launchEntry(machine: machine, machineName: machineName, key: key, name: name,
                                           pinned: pinned ?? [], running: runningIDs)
+        }
+        pruneBundles(machine: machine, running: Self.runningBundleIDs())
+    }
+
+    private static let mostOpenApps = 64
+    private static let mostKeptBundles = 128
+
+    /// An app that closed keeps its bundle, to open quickly next time, so a
+    /// guest naming new apps forever filled the disk (2026-11-01 audit). Over
+    /// the limit, the ones not open go; each is made again if it's wanted.
+    /// Pinned ones live elsewhere.
+    private func pruneBundles(machine: UUID, running: Set<String>) {
+        guard let folder = try? AVMPaths.supportDirectory()
+            .appendingPathComponent("windows-apps", isDirectory: true)
+            .appendingPathComponent(machine.uuidString, isDirectory: true),
+              let bundles = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil),
+              bundles.count > Self.mostKeptBundles else { return }
+        let inUse = Set((entries[machine] ?? [:]).values.map(\.bundleID))
+        for url in bundles {
+            guard let id = NSDictionary(contentsOf: url.appendingPathComponent("Contents/Info.plist"))?["CFBundleIdentifier"] as? String,
+                  !running.contains(id), !inUse.contains(id) else { continue }
+            try? FileManager.default.removeItem(at: url)
+            built.remove(id)
         }
     }
 
@@ -258,7 +287,10 @@ final class WindowsApps {
     /// names alike, or two machines named alike, shared one bundle, and
     /// the second replaced the first).
     private static func freeURL(in folder: URL, title: String, machine: UUID, key: String) -> URL {
-        let safe = String(title.map { "/:".contains($0) ? "-" : $0 }).trimmingCharacters(in: .whitespaces)
+        // By scalar: by Character, "/" with a combining mark after it isn't
+        // "/", and the file system still sees the slash (2026-11-01 audit).
+        let cleaned = title.unicodeScalars.map { $0 == "/" || $0 == ":" || $0.value == 0 ? "-" : $0 }
+        let safe = String(String.UnicodeScalarView(cleaned)).trimmingCharacters(in: .whitespaces)
         let base = safe.isEmpty ? "Windows app" : safe
         var number = 1
         while true {

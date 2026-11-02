@@ -59,10 +59,17 @@ nonisolated enum RemoteDesktop {
     }
 
     /// A mark of a password, for remoteDesktopPasswordMark: not the
-    /// password, and not enough to find it.
-    static func mark(for password: String) -> String {
-        let digest = SHA256.hash(data: Data(("avm-remote-desktop:" + password).utf8))
-        return digest.prefix(12).map { String(format: "%02x", $0) }.joined()
+    /// password, and not enough to find it. Salted per machine, with the
+    /// salt of the mark it's compared with (2026-11-01 audit: one fixed
+    /// salt, so the same password marked alike everywhere and a list of
+    /// common passwords could be tried once for all). An old mark has no
+    /// salt: it differs, and the password is set again once.
+    static func mark(for password: String, like existing: String?) -> String {
+        let parts = existing?.split(separator: ".") ?? []
+        let salt = parts.count == 2 ? String(parts[0])
+            : (0..<16).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
+        let digest = HMAC<SHA256>.authenticationCode(for: Data(password.utf8), using: SymmetricKey(data: Data(salt.utf8)))
+        return salt + "." + digest.map { String(format: "%02x", $0) }.joined()
     }
 
     /// True when nothing on the Mac listens on the port at the address QEMU
