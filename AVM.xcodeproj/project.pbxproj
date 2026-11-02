@@ -555,7 +555,7 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				AVM_SYSROOT = "$(HOME)/Developer/sysroot-macos-arm64/sysroot-macOS-arm64";
+				AVM_SYSROOT = "$(HOME)/Developer/sysroot-3d/sysroot-macOS-arm64";
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
@@ -620,7 +620,7 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				AVM_SYSROOT = "$(HOME)/Developer/sysroot-macos-arm64/sysroot-macOS-arm64";
+				AVM_SYSROOT = "$(HOME)/Developer/sysroot-3d/sysroot-macOS-arm64";
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
@@ -677,7 +677,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				AVM_SYSROOT = "$(HOME)/Developer/sysroot-macos-arm64/sysroot-macOS-arm64";
+				AVM_SYSROOT = "$(HOME)/Developer/sysroot-3d/sysroot-macOS-arm64";
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = AVM/AVM.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
@@ -810,7 +810,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				AVM_SYSROOT = "$(HOME)/Developer/sysroot-macos-arm64/sysroot-macOS-arm64";
+				AVM_SYSROOT = "$(HOME)/Developer/sysroot-3d/sysroot-macOS-arm64";
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = "AVM/AVM-Release.entitlements";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";

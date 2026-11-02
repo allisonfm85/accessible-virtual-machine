@@ -30,7 +30,7 @@ extension VMManager {
         guard let path = captured,
               let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-            Announcer.shared.announce("\(machine)'s screen couldn't be described. Next: make sure it's running, then try again.", tone: .failure)
+            Announcer.shared.announce(screenNeedsWindowWords ?? "\(machine)'s screen couldn't be described. Next: make sure it's running, then try again.", tone: .failure)
             return
         }
         if UserDefaults.standard.bool(forKey: ClaudeDescribe.enabledKey), let key = ClaudeKey.load(), await mayUseClaude(for: machine) {

@@ -509,6 +509,12 @@ final class VMManager: ObservableObject {
     private(set) var drawsOnGPU = false
     /// The screen as PNG data, from the machine's display. VMView sets it.
     var gpuScreenshot: (() async -> Data?)?
+
+    /// What's said when there's no picture of a machine that draws on its
+    /// graphics chip: AVM reads that from its window (Windows3D.swift).
+    var screenNeedsWindowWords: String? {
+        drawsOnGPU ? "AVM reads \(machineName)'s screen from its window, as its graphics chip draws it. Next: open its window, then try again." : nil
+    }
     private var vmSocketDir: URL?
     /// The QEMU guest agent's socket (GuestAgent.swift), in vmSocketDir.
     var guestAgentSocketPath: String? { vmSocketDir?.appendingPathComponent("qga.sock").path }

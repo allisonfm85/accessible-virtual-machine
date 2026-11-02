@@ -52,7 +52,7 @@
 #   absolute path and the build phase rewrites exactly that prefix. The
 #   folder must therefore be named sysroot-macOS-arm64; UTM's sources and
 #   build folders go next to it. Default:
-#     ~/Developer/sysroot-macos-arm64/sysroot-macOS-arm64
+#     ~/Developer/sysroot-3d/sysroot-macOS-arm64
 #   Keep it out of folders synced by iCloud Drive or another File Provider
 #   (Documents, Desktop): they add file attributes that break code signing.
 #
@@ -93,8 +93,8 @@ PIP_PACKAGES="meson ninja six pyparsing pyyaml distlib setuptools packaging"
 # MARK: - Settings
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT="${AVM_SYSROOT:-$HOME/Developer/sysroot-macos-arm64/sysroot-macOS-arm64}"
-WINDOWS_3D=0
+OUT="${AVM_SYSROOT:-$HOME/Developer/sysroot-3d/sysroot-macOS-arm64}"
+WINDOWS_3D=1
 JOBS="$(sysctl -n hw.ncpu)"
 SPEAK=1
 SKIP_UTM=0
@@ -108,11 +108,11 @@ Usage: Tools/build-sysroot.sh [options]
 Options:
   --out PATH      Where to build the sysroot. The last folder must be named
                   sysroot-macOS-arm64. Default: $AVM_SYSROOT, or
-                  ~/Developer/sysroot-macos-arm64/sysroot-macOS-arm64
+                  ~/Developer/sysroot-3d/sysroot-macOS-arm64
   --jobs N        Parallel compile jobs (default: every core).
-  --windows-3d    Also build what Windows' DirectX needs: virglrenderer with
-                  Neptune, DXMT and LLVM 15 (2026-11-01). Experimental, and
-                  hours longer.
+  --no-windows-3d Leave out what Windows' DirectX needs: virglrenderer's
+                  Neptune, DXMT and LLVM 15, which take hours longer to build.
+                  AVM then offers no 3D graphics for Windows (2026-11-01).
   --tools-only    Skip the UTM build; rebuild the install tools and
                   re-check an existing sysroot.
   --mark-built    Record that the sysroot at --out was built from this
@@ -131,6 +131,7 @@ while [ $# -gt 0 ]; do
         --out)        OUT="$2"; shift 2 ;;
         --jobs)       JOBS="$2"; shift 2 ;;
         --windows-3d) WINDOWS_3D=1; shift ;;
+        --no-windows-3d) WINDOWS_3D=0; shift ;;
         --tools-only) SKIP_UTM=1; shift ;;
         --mark-built) MARK_BUILT=1; shift ;;
         --licenses-only) LICENSES_ONLY=1; shift ;;
@@ -196,7 +197,7 @@ PARENT="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$(d
 case "$PARENT/" in
     "$HOME/Documents/"*|"$HOME/Desktop/"*|"$HOME/Library/Mobile Documents/"*|"$HOME/Library/CloudStorage/"*)
         fail "$PARENT may be synced by iCloud Drive or another File Provider, which breaks code signing." \
-             "Pass --out with a folder outside Documents and Desktop, for example ~/Developer/sysroot-macos-arm64/sysroot-macOS-arm64." ;;
+             "Pass --out with a folder outside Documents and Desktop, for example ~/Developer/sysroot-3d/sysroot-macOS-arm64." ;;
 esac
 mkdir -p "$PARENT"
 PARENT="$(cd "$PARENT" && pwd)"
@@ -896,7 +897,7 @@ trap - EXIT
 echo
 echo "== Done. Sysroot:"
 echo "   $OUT"
-if [ "$OUT" != "$HOME/Developer/sysroot-macos-arm64/sysroot-macOS-arm64" ]; then
+if [ "$OUT" != "$HOME/Developer/sysroot-3d/sysroot-macOS-arm64" ]; then
     echo "   Build AVM with: Tools/build-installer.sh --sysroot \"$OUT\""
 else
     echo "   This is AVM's default AVM_SYSROOT, so Xcode and Tools/build-installer.sh find it as is."

@@ -324,5 +324,6 @@ fi
 RESULT=0
 ELAPSED=$(( ($(date +%s) - START) / 60 ))
 echo; echo "PASSED: $GUEST installed in $ELAPSED minutes."
-[ "$SELINUX_GUEST" = "0" ] || echo "   NOT CHECKED  the sign-in and Orca running: SELinux hides them from the guest agent."
+echo "$DESKTOP" | grep -q "orca running" || echo "   NOT CHECKED  Orca running: SELinux hides it from the guest agent."
+echo "$DESKTOP" | grep -q "session none" && echo "   NOT CHECKED  the sign-in: SELinux hides it from the guest agent."
 command -v say >/dev/null && say "The $GUEST install test passed." || true

@@ -116,7 +116,7 @@ enum SaveResumeTestJob {
                 || arguments.contains("--test-duplicate") || arguments.contains("--test-send-file")
                 || arguments.contains("--test-linux-share") || arguments.contains("--test-ctl")
                 || arguments.contains("--test-disk-info") || arguments.contains("--run-in-guest")
-                || arguments.contains("--test-printers") || arguments.contains("--test-camera") || arguments.contains("--test-3d") || arguments.contains("--test-camera-save")
+                || arguments.contains("--test-printers") || arguments.contains("--test-camera") || arguments.contains("--test-3d") || arguments.contains("--test-windows-3d") || arguments.contains("--test-camera-save")
                 || arguments.contains("--test-screen-readers") || arguments.contains("--test-hid-bridge")
                 || arguments.contains("--test-background") || arguments.contains("--test-monitors")
                 || arguments.contains("--test-agent-shutdown") || arguments.contains("--test-remote-desktop")
@@ -592,6 +592,9 @@ enum SaveResumeTestJob {
                 await shutDown(manager)
                 await finish(ok)
             }
+            if arguments.contains("--test-windows-3d") {
+                await finish(await windows3D(folderURL))
+            }
             if arguments.contains("--test-3d") {
                 let manager = VMManager()
                 var config = configuration(folder: folderURL, guest: guest)
@@ -942,6 +945,90 @@ enum SaveResumeTestJob {
         check("it shut down", MachineSessions.shared.session(for: config.id) == nil)
         let unknown = await run(["status", "No Such Machine"])
         check("an unknown machine is refused", !unknown.ok && unknown.out.contains("no virtual machine called"))
+        return ok
+    }
+
+    /// Windows' DirectX as a person turns it on (2026-11-01), on a clone of
+    /// the machine, so the machine itself doesn't get the driver: AVM puts
+    /// the driver in, Windows has it after a restart at the feature levels
+    /// DXMT gives, and with 3D off again the same Windows still starts.
+    private static func windows3D(_ folder: URL) async -> Bool {
+        guard VMManager.supportsWindows3D else {
+            check("this build has Windows 3D (Tools/build-sysroot.sh --windows-3d)", false)
+            return false
+        }
+        let clone = folder.deletingLastPathComponent().appendingPathComponent(folder.lastPathComponent + "-3d-\(UUID().uuidString.prefix(8))")
+        let copy = Process()
+        copy.executableURL = URL(fileURLWithPath: "/bin/cp")
+        copy.arguments = ["-c", "-R", folder.path, clone.path]
+        try? copy.run()
+        copy.waitUntilExit()
+        defer { try? FileManager.default.removeItem(at: clone) }
+        var config = configuration(folder: clone, guest: .windows)
+        config.gpu3D = true
+        let manager = VMManager()
+        guard await start(manager, config), let agent = manager.guestAgentSocketPath,
+              await waitForAgent(agent, seconds: 600) else {
+            check("the machine started and answers", false); await shutDown(manager); return false
+        }
+        check("it draws on the graphics chip", manager.drawsOnGPU)
+        print("== AVM installing the driver, as the first start with 3D on does")
+        var installed = false
+        for _ in 0..<60 where !installed {
+            try? await Task.sleep(for: .seconds(10))
+            installed = (await exec(agent, program: "pnputil.exe", args: ["/enum-devices", "/class", "Display"]) ?? "").contains("VirtIO GPU 3D")
+        }
+        check("Windows has the 3D driver", installed)
+        guard installed else { await shutDown(manager); return false }
+        print("== Restarting, which takes several minutes the first time")
+        _ = await exec(agent, program: "shutdown.exe", args: ["/r", "/t", "0"])
+        try? await Task.sleep(for: .seconds(45))
+        let back = await waitForAgent(agent, seconds: 900)
+        check("it came back from the restart", back)
+        guard back else { await shutDown(manager); return false }
+        try? await Task.sleep(for: .seconds(30))
+        // dxdiag gives feature levels only in a signed-in session, so this
+        // signs in, on the clone only, with a password made here and never
+        // printed: the test install's account has one nobody kept.
+        var tasks = await exec(agent, program: "tasklist.exe", args: ["/fo", "csv", "/nh"]) ?? ""
+        if !tasks.lowercased().contains("explorer.exe") {
+            let password = "T" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(16).lowercased() + "x1"
+            _ = await exec(agent, program: "net.exe", args: ["user", "avmtest", password])
+            _ = try? await manager.sendQMPCommand("send-key", arguments: ["keys": [["type": "qcode", "data": "spc"]]])
+            try? await Task.sleep(for: .seconds(4))
+            _ = await manager.typeText(password + "\n")
+            for _ in 0..<16 where !tasks.lowercased().contains("explorer.exe") {
+                try? await Task.sleep(for: .seconds(15))
+                tasks = await exec(agent, program: "tasklist.exe", args: ["/fo", "csv", "/nh"]) ?? ""
+            }
+        }
+        check("signed in, on the 3D driver", tasks.lowercased().contains("explorer.exe"))
+        try? await Task.sleep(for: .seconds(45))
+        tasks = await exec(agent, program: "tasklist.exe", args: ["/fo", "csv", "/nh"]) ?? ""
+        check("NVDA runs alongside it", tasks.lowercased().contains("nvda.exe"))
+        let report = #"C:\ProgramData\AVM\dx.txt"#
+        _ = await exec(agent, program: "schtasks.exe", args: ["/create", "/f", "/tn", "dx3d", "/tr", "cmd /c dxdiag /t \(report)", "/sc", "once", "/st", "23:59", "/it", "/ru", "avmtest"])
+        _ = await exec(agent, program: "schtasks.exe", args: ["/run", "/tn", "dx3d"])
+        var levels = ""
+        for _ in 0..<18 where !levels.contains("11_1") {
+            try? await Task.sleep(for: .seconds(10))
+            levels = await exec(agent, program: "findstr.exe", args: ["/c:Card name", "/c:Feature Levels", report]) ?? ""
+        }
+        print(levels.split(whereSeparator: \.isNewline).map { "   machine: " + $0.trimmingCharacters(in: .whitespaces) }.joined(separator: "\n"))
+        check("DirectX runs on the 3D driver", levels.contains("VirtIO GPU 3D"))
+        check("at feature level 11_1", levels.contains("11_1"))
+        // No window here, so there's no display to read a GPU's picture from.
+        check("with no window, Read Screen says it can't, not a black screen", await manager.captureScreendump() == nil)
+        await shutDown(manager)
+        print("== With 3D off again")
+        config.gpu3D = nil
+        let plain = VMManager()
+        guard await start(plain, config), let agent2 = plain.guestAgentSocketPath,
+              await waitForAgent(agent2, seconds: 900) else {
+            check("Windows starts with 3D off and the driver left in", false); await shutDown(plain); return false
+        }
+        check("Windows starts with 3D off and the driver left in", true)
+        await shutDown(plain)
         return ok
     }
 

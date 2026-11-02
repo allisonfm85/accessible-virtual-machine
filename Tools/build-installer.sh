@@ -45,7 +45,7 @@ set -euo pipefail
 # MARK: - Settings
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SYSROOT="${AVM_SYSROOT:-$HOME/Developer/sysroot-macos-arm64/sysroot-macOS-arm64}"
+SYSROOT="${AVM_SYSROOT:-$HOME/Developer/sysroot-3d/sysroot-macOS-arm64}"
 IDENTITY="${AVM_SIGN_IDENTITY:-}"
 TEAM_ID="${AVM_TEAM_ID:-}"
 NOTARY_PROFILE="${AVM_NOTARY_PROFILE:-}"
@@ -65,7 +65,7 @@ Usage: Tools/build-installer.sh [options]
 
 Options:
   --sysroot PATH          UTM sysroot (default: $AVM_SYSROOT, or
-                          ~/Developer/sysroot-macos-arm64/sysroot-macOS-arm64)
+                          ~/Developer/sysroot-3d/sysroot-macOS-arm64)
   --identity NAME         Signing identity, e.g. "Developer ID Application:
                           Name (TEAMID)". Default: $AVM_SIGN_IDENTITY, or the
                           first Developer ID Application identity found.
@@ -150,7 +150,7 @@ SYSROOT="$(cd "$SYSROOT" && pwd -P)"
 # The build phase splits library paths on spaces, so a sysroot path with one
 # silently skips the rewrite (2026-10-25, code audit).
 case "$SYSROOT" in
-    *" "*) fail "The sysroot path has a space in it: $SYSROOT" "Move the sysroot to a path without spaces, such as ~/Developer/sysroot-macos-arm64/sysroot-macOS-arm64." ;;
+    *" "*) fail "The sysroot path has a space in it: $SYSROOT" "Move the sysroot to a path without spaces, such as ~/Developer/sysroot-3d/sysroot-macOS-arm64." ;;
 esac
 # Everything the build phase stages. It only warns when one is missing, so
 # a gap would otherwise ship: no TPM, no install tools, no Secure Boot.

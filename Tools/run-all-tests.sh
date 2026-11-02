@@ -133,6 +133,7 @@ add "debian agent shutdown"            debian   "--test-agent-shutdown"
 add "debian remote desktop"            debian   "--test-remote-desktop"
 add "debian two machines"              debian2  "--test-two-machines"
 add "debian 3d"                        debian   "--test-3d"
+add "windows 3d"                       windows  "--test-windows-3d"
 # The core tests, on every other Linux (2026-10-31). Fedora's used to be
 # disk info alone, its machine on NVMe (no Save there) and its agent kept
 # from running programs by SELinux; whatever still fails there says so.

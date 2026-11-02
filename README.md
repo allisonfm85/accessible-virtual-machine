@@ -524,7 +524,7 @@ release, for no more than the cost of the copy.
 Building requires Xcode on Apple Silicon, the UTM sysroot, and macOS 13
 Ventura or later as the deployment target. The sysroot location is one
 build setting, `AVM_SYSROOT`. It defaults to
-`$(HOME)/Developer/sysroot-macos-arm64/sysroot-macOS-arm64`. Keep the
+`$(HOME)/Developer/sysroot-3d/sysroot-macOS-arm64`. Keep the
 sysroot there and the project builds as is. Keep it somewhere else and
 override the setting, either in Xcode's build settings or on the
 command line with `xcodebuild AVM_SYSROOT=/your/path`.

@@ -61,20 +61,29 @@ extension VMManager {
         if devices.contains("VirtIO GPU 3D") { return }
         Announcer.shared.announce("Installing the 3D graphics driver in \(machine).", tone: .info)
         let folder = #"C:\ProgramData\AVM\viogpu3d"#
-        do {
-            _ = try await agentRun("cmd.exe", ["/c", "mkdir", folder], limit: .seconds(30))
-            for file in files {
-                try await copyToGuest(file, to: folder + "\\" + file.lastPathComponent)
+        // Three tries (2026-11-01, the test job): just after Windows starts
+        // its agent can miss an answer, and one miss said to turn 3D off.
+        var lastError: Error?
+        for attempt in 1...3 {
+            if Task.isCancelled { return }
+            do {
+                _ = try await agentRun("cmd.exe", ["/c", "if not exist \(folder) mkdir \(folder)"], limit: .seconds(30))
+                for file in files {
+                    try await copyToGuest(file, to: folder + "\\" + file.lastPathComponent)
+                }
+                let out = try await agentRun("pnputil.exe", ["/add-driver", folder + #"\viogpu3d.inf"#, "/install"], limit: .seconds(180))
+                guard out.contains("Driver package installed on device") || out.contains("Added driver packages:  1") else {
+                    throw AVMError.qmpCommandFailed(out.trimmingCharacters(in: .whitespacesAndNewlines))
+                }
+                AVMLog.write("AVM: Windows 3D — driver installed in \(machine)")
+                Announcer.shared.announce("\(machine)'s 3D graphics driver is installed. Next: restart \(machine) to use it. The first restart can take several minutes.", tone: .success)
+                return
+            } catch {
+                lastError = error
+                AVMLog.write("AVM: Windows 3D — try \(attempt) didn't finish: \(error.localizedDescription)")
+                try? await Task.sleep(for: .seconds(30))
             }
-            let out = try await agentRun("pnputil.exe", ["/add-driver", folder + #"\viogpu3d.inf"#, "/install"], limit: .seconds(180))
-            guard out.contains("Driver package installed on device") || out.contains("Added driver packages:  1") else {
-                throw AVMError.qmpCommandFailed(out.trimmingCharacters(in: .whitespacesAndNewlines))
-            }
-            AVMLog.write("AVM: Windows 3D — driver installed in \(machine)")
-            Announcer.shared.announce("\(machine)'s 3D graphics driver is installed. Next: restart \(machine) to use it. The first restart can take several minutes.", tone: .success)
-        } catch {
-            AVMLog.write("AVM: Windows 3D — driver not installed: \(error.localizedDescription)")
-            Announcer.shared.announce("\(machine)'s 3D graphics driver couldn't be installed. Reason: \(error.localizedDescription) Next: turn 3D Graphics off in its Settings, or restart \(machine) to try again.", tone: .failure)
         }
+        Announcer.shared.announce("\(machine)'s 3D graphics driver couldn't be installed. Reason: \(lastError?.localizedDescription ?? "unknown") Next: turn 3D Graphics off in its Settings, or try starting it again.", tone: .failure)
     }
 }

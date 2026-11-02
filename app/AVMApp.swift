@@ -407,7 +407,7 @@ struct AVMApp: App {
                             return
                         }
                         guard let text = await manager.readScreenText() else {
-                            Announcer.shared.announce("\(manager.machineName)'s screen couldn't be read. Next: make sure it's running, then try again.", tone: .failure)
+                            Announcer.shared.announce(manager.screenNeedsWindowWords ?? "\(manager.machineName)'s screen couldn't be read. Next: make sure it's running, then try again.", tone: .failure)
                             return
                         }
                         AVMLog.write("AVM: Read Screen — \(text.split(separator: "\n").count) line(s) read.")
