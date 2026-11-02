@@ -43,12 +43,22 @@ extension VMManager {
     }
 
     /// Types `text` into the machine. Returns how many characters were
-    /// typed and how many had no key, or nil when it couldn't type at all.
-    func typeText(_ text: String) async -> (typed: Int, skipped: Int)? {
-        guard case .running = state else { return nil }
+    /// typed, how many had no key, and whether it stopped before the end, or
+    /// nil when it couldn't type at all. One at a time: two ran together,
+    /// mixing their keys, and a stop or failure part way read as success
+    /// (2026-11-01 audit).
+    func typeText(_ text: String) async -> (typed: Int, skipped: Int, stopped: Bool)? {
+        guard case .running = state, !isTypingText else { return nil }
+        isTypingText = true
+        typingStopAsked = false
+        defer { isTypingText = false }
         var typed = 0
         var skipped = 0
         for character in text {
+            guard case .running = state, !typingStopAsked else {
+                AVMLog.write("AVM: Type Clipboard — stopped after \(typed) characters")
+                return (typed, skipped, true)
+            }
             guard let key = Self.usKey(for: character) else {
                 skipped += 1
                 continue
@@ -61,13 +71,13 @@ extension VMManager {
                 typed += 1
             } catch {
                 AVMLog.write("AVM: Type Clipboard — stopped after \(typed) characters: \(error.localizedDescription)")
-                return typed == 0 ? nil : (typed, skipped)
+                return typed == 0 ? nil : (typed, skipped, true)
             }
             // A moment between keys, so a slow screen or a sign-in box
             // doesn't drop any.
             try? await Task.sleep(for: .milliseconds(15))
         }
         AVMLog.write("AVM: Type Clipboard — typed \(typed) characters, \(skipped) without a key")
-        return (typed, skipped)
+        return (typed, skipped, false)
     }
 }

@@ -191,7 +191,6 @@ enum ReleaseNotes {
         guard last != current else { return }
         // A moment for the machine list to load.
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            defaults.set(current, forKey: seenKey)
             let notes: [ReleaseNote]
             if let last {
                 notes = since(last)
@@ -200,7 +199,10 @@ enum ReleaseNotes {
             } else {
                 notes = []
             }
-            guard !notes.isEmpty else { return }
+            guard !notes.isEmpty else {
+                defaults.set(current, forKey: seenKey)
+                return
+            }
             AVMLog.write("AVM: updated from \(last ?? "an earlier version") to \(current); showing what's new")
             showWhenOnTheMac(notes)
         }
@@ -217,6 +219,9 @@ enum ReleaseNotes {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showWhenOnTheMac(notes) }
             return
         }
+        // Seen once shown (2026-11-01 audit): marked earlier, quitting with
+        // the keyboard in a machine lost them.
+        UserDefaults.standard.set(current, forKey: seenKey)
         show(notes)
     }
 

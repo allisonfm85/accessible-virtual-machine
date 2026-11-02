@@ -273,10 +273,18 @@ final class MacInstaller: NSObject, URLSessionDownloadDelegate {
         lastSpokenGB = 0
         downloadDestination = cached
         let session = URLSession(configuration: .default, delegate: self, delegateQueue: .main)
-        return try await withCheckedThrowingContinuation { cont in
+        let got: URL = try await withCheckedThrowingContinuation { cont in
             downloadContinuation = cont
             session.downloadTask(with: latest.url).resume()
         }
+        // Older installers go once a newer one is here (2026-11-01 audit):
+        // each is 15 to 26 GB, and nothing removed them.
+        for old in (try? fm.contentsOfDirectory(at: Self.cacheFolder, includingPropertiesForKeys: nil)) ?? []
+        where old.pathExtension == "ipsw" && old.lastPathComponent != got.lastPathComponent {
+            AVMLog.write("AVM: macOS — removing the older installer \(old.lastPathComponent)")
+            try? fm.removeItem(at: old)
+        }
+        return got
     }
 
     // URLSessionDownloadDelegate, on the main queue.

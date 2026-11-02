@@ -154,6 +154,9 @@ final class Announcer {
     /// while "Mac keyboard on" is still being spoken.
     var isSpeaking: Bool { synthesizer.isSpeaking || Date() < voiceOverBusyUntil }
 
+    /// The system voice, when VoiceOver isn't speaking for AVM.
+    func stopSystemVoice() { synthesizer.stopSpeaking(at: .immediate) }
+
     /// Lets what's being said finish, up to `seconds`, before AVM exits
     /// (2026-10-26, code audit): the last outcomes of a quit ("…is saved",
     /// a USB device given back) were cut off as the process ended.

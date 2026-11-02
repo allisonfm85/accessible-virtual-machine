@@ -601,6 +601,21 @@ final class VMManager: ObservableObject {
     /// Scoped strictly to this VM's UUID — every orphan's argv contains the UUID
     /// via its disk path and socket paths — so starting one VM never kills an
     /// unrelated VM that happens to be running.
+    /// Machines still running from before AVM last closed: they're invisible
+    /// to it, so they're mentioned at launch (2026-11-01 audit).
+    nonisolated static func hasOrphanedQEMU(_ vmID: UUID) -> Bool {
+        let pgrep = Process()
+        pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        pgrep.arguments = ["-f", "qemu-system-aarch64.*\(vmID.uuidString)"]
+        let pipe = Pipe()
+        pgrep.standardOutput = pipe
+        pgrep.standardError = FileHandle.nullDevice
+        guard (try? pgrep.run()) != nil else { return false }
+        pgrep.waitUntilExit()
+        let text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        return text.split(whereSeparator: \.isNewline).compactMap { Int32($0) }.contains(where: isOrphaned)
+    }
+
     private func reapOrphanedQEMU(for vmID: UUID) {
         let uuid = vmID.uuidString
 
@@ -637,6 +652,8 @@ final class VMManager: ObservableObject {
             appendConsole("AVM: Found orphaned QEMU (pid \(pid)) from a previous run — terminating it.\n")
             kill(pid, SIGKILL)
         }
+        // Said aloud (2026-11-01 audit): this is a power cut for that machine.
+        Announcer.shared.announce("This machine was still running from before AVM last closed, so AVM had to stop it, as a power cut would, to start it again.", tone: .failure)
 
         usleep(500_000)
     }
@@ -3442,6 +3459,11 @@ final class VMManager: ObservableObject {
     /// The running machine's system (2026-10-30, GuestStatus.swift).
     var runningGuestOS: GuestOS? { activeConfiguration?.guestOS }
     var runningMachineID: UUID? { activeConfiguration?.id }
+    /// Type Clipboard is at work (TypeText.swift); asking again stops it.
+    var isTypingText = false
+    var typingStopAsked = false
+    /// Repair for AVM is waiting for a password (GuestRepair.swift).
+    var isRepairing = false
     /// The running machine's id, for code outside that follows it.
     var machineID: UUID? { activeConfiguration?.id }
 

@@ -78,7 +78,7 @@ final class MachineArchiveController: ObservableObject {
             refuse("AVM can't find \(name)'s folder. Reason: \(error.localizedDescription)", log: "no folder for '\(name)'")
             return
         }
-        if let problem = MachineArchive.exportProblem(for: config, vmDirectory: dir) {
+        if let problem = MachineArchive.exportProblemNow(for: config, vmDirectory: dir) {
             refuse("\(problem) Nothing was exported.", log: "'\(name)' can't be exported now")
             return
         }
@@ -202,7 +202,7 @@ final class MachineArchiveController: ObservableObject {
             refuse("AVM can't find \(name)'s folder. Reason: \(error.localizedDescription)", log: "no folder for '\(name)'")
             return
         }
-        if let problem = MachineArchive.exportProblem(for: config, vmDirectory: dir) {
+        if let problem = MachineArchive.exportProblemNow(for: config, vmDirectory: dir) {
             refuse(problem.replacingOccurrences(of: "export", with: "duplicate") + " Nothing was duplicated.", log: "'\(name)' can't be duplicated now")
             return
         }
@@ -465,5 +465,16 @@ nonisolated private final class ProgressTicker: @unchecked Sendable {
         Task { @MainActor in
             Announcer.shared.announce(words, tone: .info)
         }
+    }
+}
+
+extension MachineArchive {
+    /// With what the logic alone can't see: one running from before AVM
+    /// closed has a disk that's changing (2026-11-01 audit).
+    static func exportProblemNow(for configuration: VMConfiguration, vmDirectory dir: URL) -> String? {
+        if VMManager.hasOrphanedQEMU(configuration.id) {
+            return "\(configuration.name) is still running from before AVM last closed. Next: start it, then shut it down."
+        }
+        return exportProblem(for: configuration, vmDirectory: dir)
     }
 }

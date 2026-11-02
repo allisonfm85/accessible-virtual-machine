@@ -26,7 +26,7 @@ enum Tour {
                  tryIt: nil),
         TourStep(title: "Your machines",
                  text: "Command-Shift-L opens the Virtual Machines list. Each machine's name is a heading, so VO-Command-H moves from one to the next.",
-                 tryIt: "Press Command-Shift-L, then come back to this window with Command-Tab."),
+                 tryIt: "Press Command-Shift-L, then come back to this window with Command-Grave, the key above Tab."),
         TourStep(title: "Making a machine",
                  text: "In the list, Command-S opens the Setup Wizard. Download Windows 11 gets Windows from Microsoft; Download Linux offers Ubuntu, Debian, Fedora, Kali Linux, AlmaLinux, Rocky Linux and openSUSE. AVM installs it and answers every question, and the screen reader is on when it's done.",
                  tryIt: nil),
@@ -61,7 +61,12 @@ enum Tour {
                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
         panel.title = "AVM Tour"
         panel.isReleasedWhenClosed = false
-        panel.contentView = NSHostingView(rootView: TourView { window?.close() })
+        // Closing it stops the system voice too; with VoiceOver off there
+        // was no stopping a long step (2026-11-01 audit).
+        panel.contentView = NSHostingView(rootView: TourView {
+            Announcer.shared.stopSystemVoice()
+            window?.close()
+        })
         panel.center()
         window = panel
         NSApp.activate(ignoringOtherApps: true)

@@ -78,6 +78,9 @@ nonisolated enum GuestAgent {
 
         var wait = timeval(tv_sec: Int(timeout), tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, socklen_t(MemoryLayout<timeval>.size))
+        // Writes too (2026-11-01 audit): with a hung guest the socket fills,
+        // and Send File blocked for good, holding up Shut Down.
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &wait, socklen_t(MemoryLayout<timeval>.size))
 
         var pending = Data()
         func readLine() throws -> String {

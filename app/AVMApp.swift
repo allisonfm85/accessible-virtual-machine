@@ -481,13 +481,22 @@ struct AVMApp: App {
                             Announcer.shared.announce("The clipboard has no text to type.", tone: .info)
                             return
                         }
-                        Announcer.shared.announce("Typing \(text.count) characters into \(manager.machineName).", tone: .info)
+                        guard !manager.isTypingText else {
+                            manager.typingStopAsked = true
+                            Announcer.shared.announce("Stopping the typing.", tone: .info)
+                            return
+                        }
+                        Announcer.shared.announce("Typing \(text.count) characters into \(manager.machineName). Press Command-Shift-V again to stop.", tone: .info)
                         guard let result = await manager.typeText(text) else {
                             Announcer.shared.announce("The clipboard couldn't be typed into \(manager.machineName). Next: make sure it's running, then try again.", tone: .failure)
                             return
                         }
                         let skipped = result.skipped == 0 ? "" : " \(result.skipped) had no key on a US keyboard and were left out."
-                        Announcer.shared.announce("Typed \(result.typed) characters.\(skipped)", tone: result.skipped == 0 ? .success : .info)
+                        if result.stopped {
+                            Announcer.shared.announce("It stopped after \(result.typed) of \(text.count) characters.\(skipped)", tone: .failure)
+                        } else {
+                            Announcer.shared.announce("Typed \(result.typed) characters.\(skipped)", tone: result.skipped == 0 ? .success : .info)
+                        }
                     }
                 }
                 .keyboardShortcut("v", modifiers: [.command, .shift])
@@ -734,6 +743,13 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
             if !testRun { WindowsApps.shared.start() }
             // What's New, once after an update (2026-10-30, AVMUpdater.swift).
             if !testRun { ReleaseNotes.showIfUpdated() }
+            if !testRun {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    for config in VMStore.shared?.configurations ?? [] where config.guestOS != .macOS && VMManager.hasOrphanedQEMU(config.id) {
+                        Announcer.shared.announce("\(config.name) is still running from before AVM last closed, and AVM can't reach it. Starting it stops it, as a power cut would.", tone: .failure)
+                    }
+                }
+            }
             // Run in the background and the second display (2026-10-28).
             BackgroundMode.shared.start()
             // Permissions (2026-10-30, Permissions.swift): the window opens

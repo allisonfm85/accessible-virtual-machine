@@ -102,17 +102,24 @@ final class WindowsAutoDownloader: NSObject, ObservableObject {
         lastTenth = 0
         phase = .finding
         Announcer.shared.announce(spokenProgress, tone: .info)
-        Task {
+        job = Task {
             do {
                 try await find()
             } catch {
+                guard !Task.isCancelled else { return }
                 fail("AVM couldn't get Windows from Microsoft. Reason: \(error.localizedDescription) Check the Mac's internet connection, then try again.")
             }
         }
     }
 
+    /// What's finding, checking or building (2026-11-01 audit): Cancel left
+    /// it running, on through the steps it announces.
+    private var job: Task<Void, Never>?
+
     func cancel() {
         guard isBusy else { return }
+        job?.cancel()
+        job = nil
         task?.cancel()
         task = nil
         session?.invalidateAndCancel()
@@ -152,10 +159,12 @@ final class WindowsAutoDownloader: NSObject, ObservableObject {
                                                appropriateFor: Self.downloads, create: true)
         self.work = work
         let (cab, _) = try await URLSession.shared.download(from: Self.catalogURL)
+        try Task.checkCancellation()
         let cabFile = work.appendingPathComponent("products.cab")
         try FileManager.default.moveItem(at: cab, to: cabFile)
         // macOS's tar (libarchive) opens Microsoft's cabinet files.
         try await Self.run("/usr/bin/tar", ["-xf", cabFile.path, "-C", work.path])
+        try Task.checkCancellation()
         let xml = try Data(contentsOf: work.appendingPathComponent("products.xml"))
         guard let chosen = Self.choose(from: xml, language: Self.macLanguageCode) else {
             throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "Microsoft's catalog has no Windows 11 for ARM in it."])
@@ -233,7 +242,7 @@ final class WindowsAutoDownloader: NSObject, ObservableObject {
             fail("AVM couldn't keep the download. Reason: \(error.localizedDescription)")
             return
         }
-        Task { await verifyAndBuild(esd, offer: offer, work: work) }
+        job = Task { await verifyAndBuild(esd, offer: offer, work: work) }
     }
 
     private func verifyAndBuild(_ esd: URL, offer: Offer, work: URL) async {
@@ -246,6 +255,7 @@ final class WindowsAutoDownloader: NSObject, ObservableObject {
             while let chunk = try? handle.read(upToCount: 8 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
             return hasher.finalize().map { String(format: "%02x", $0) }.joined()
         }.value
+        guard !Task.isCancelled else { return }
         guard sha1 == offer.sha1 else {
             fail("The download didn't match Microsoft's checksum, so AVM deleted it. Try again.")
             return
@@ -258,6 +268,7 @@ final class WindowsAutoDownloader: NSObject, ObservableObject {
             Announcer.shared.announce("Windows 11 for ARM is ready: \(iso.lastPathComponent), in Downloads. It's chosen as the installer.", tone: .success)
             onReady?(iso)
         } catch {
+            guard !Task.isCancelled else { return }
             fail("AVM couldn't make the Windows installer. Reason: \(error.localizedDescription)")
         }
     }
@@ -269,13 +280,14 @@ final class WindowsAutoDownloader: NSObject, ObservableObject {
         let tree = work.appendingPathComponent("tree")
         let sources = tree.appendingPathComponent("sources")
         try FileManager.default.createDirectory(at: tree, withIntermediateDirectories: true)
-        func step(_ words: String) {
+        func step(_ words: String) throws {
+            try Task.checkCancellation()
             phase = .building(words)
             Announcer.shared.announce(words, tone: .info)
         }
-        step("Making the Windows installer: unpacking Windows Setup.")
+        try step("Making the Windows installer: unpacking Windows Setup.")
         try await Self.run(wimlib, ["apply", esd.path, "1", tree.path])
-        step("Making the Windows installer: its startup image.")
+        try step("Making the Windows installer: its startup image.")
         try await Self.run(wimlib, ["export", esd.path, "2", sources.appendingPathComponent("boot.wim").path, "--compress=LZX"])
         try await Self.run(wimlib, ["export", esd.path, "3", sources.appendingPathComponent("boot.wim").path, "--boot"])
         // The editions: every image after the three of Setup.
@@ -284,16 +296,18 @@ final class WindowsAutoDownloader: NSObject, ObservableObject {
             .flatMap { Int($0.split(separator: ":").last?.trimmingCharacters(in: .whitespaces) ?? "") } ?? 3
         guard count > 3 else { throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "The download has no editions of Windows in it."]) }
         for index in 4...count {
-            step("Making the Windows installer: edition \(index - 3) of \(count - 3). This takes a few minutes.")
+            try step("Making the Windows installer: edition \(index - 3) of \(count - 3). This takes a few minutes.")
             try await Self.run(wimlib, ["export", esd.path, "\(index)", sources.appendingPathComponent("install.wim").path, "--compress=LZX"])
         }
-        step("Making the Windows installer: the disc image.")
+        try step("Making the Windows installer: the disc image.")
         let label = "CCCOMA_A64FRE_\(offer.languageCode.uppercased())_DV9"
         let iso = Self.freeName(in: Self.downloads, "Windows 11 ARM64 \(offer.languageCode).iso")
         try await Self.run("/usr/bin/hdiutil", ["makehybrid", "-o", iso.path, tree.path, "-udf", "-iso", "-joliet",
                                                  "-udf-volume-name", label, "-iso-volume-name", label, "-joliet-volume-name", label,
                                                  "-eltorito-boot", tree.appendingPathComponent("efi/microsoft/boot/efisys.bin").path,
                                                  "-no-emul-boot"])
+        if Task.isCancelled { try? FileManager.default.removeItem(at: iso) }
+        try Task.checkCancellation()
         return iso
     }
 

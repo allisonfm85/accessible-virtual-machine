@@ -47,6 +47,10 @@ extension VMManager {
     /// Virtual Machine > Repair for AVM.
     func repairForAVM() async {
         let machine = machineName
+        guard !isRepairing else {
+            Announcer.shared.announce("\(machine)'s repair is waiting for your password already.", tone: .info)
+            return
+        }
         guard Self.mayNeedRepair(runningGuestOS) else {
             Announcer.shared.announce("Only Fedora, AlmaLinux, Rocky Linux and openSUSE machines need this repair.", tone: .info)
             return
@@ -66,15 +70,21 @@ extension VMManager {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
+        isRepairing = true
+        defer { isRepairing = false }
         Announcer.shared.announce("Typing the repair in \(machine).", tone: .info)
+        // Escape first: a password box still open from an earlier try would
+        // otherwise take the command as its password (2026-11-01 audit).
+        _ = try? await sendQMPCommand("send-key", arguments: ["keys": [["type": "qcode", "data": "esc"]]])
+        try? await Task.sleep(for: .seconds(1))
         // GNOME's Run a Command box, then the command.
         _ = try? await sendQMPCommand("send-key", arguments: ["keys": [["type": "qcode", "data": "alt"], ["type": "qcode", "data": "f2"]], "hold-time": 200])
         try? await Task.sleep(for: .seconds(3))
-        guard await typeText(Self.repairCommand + "\n") != nil else {
+        guard let typed = await typeText(Self.repairCommand + "\n"), !typed.stopped, typed.skipped == 0 else {
             Announcer.shared.announce("The repair command couldn't be typed into \(machine). Next: make sure it's running, then try again.", tone: .failure)
             return
         }
-        Announcer.shared.announce("\(machine) is asking for your password. Press Command-Shift-E, type your password for \(machine), and press Return. AVM checks when the repair is done.", tone: .info)
+        Announcer.shared.announce("\(machine) should be asking for your password now; AVM can't see it from here. Press Command-Shift-E, type your password for \(machine), and press Return. AVM checks when the repair is done.", tone: .info)
         AVMLog.write("AVM: Repair — command typed in \(machine); waiting for the password")
         // Up to three minutes for the password.
         for _ in 0..<60 {
@@ -84,6 +94,7 @@ extension VMManager {
                 return
             }
         }
+        _ = try? await sendQMPCommand("send-key", arguments: ["keys": [["type": "qcode", "data": "esc"]]])
         Announcer.shared.announce("\(machine) isn't repaired yet. Next: make sure \(machine) is signed in and unlocked, on its desktop, then choose Repair again.", tone: .failure)
     }
 

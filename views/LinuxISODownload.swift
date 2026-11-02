@@ -168,17 +168,24 @@ final class LinuxISODownloader: NSObject, ObservableObject {
         lastTenth = 0
         phase = .finding
         Announcer.shared.announce("Finding \(chosen.title)'s current installer.", tone: .info)
-        Task {
+        job = Task {
             do {
                 try await find()
             } catch {
+                guard !Task.isCancelled else { return }
                 fail("AVM couldn't find \(chosen.title)'s installer. Reason: \(error.localizedDescription) Check the Mac's internet connection, then try again.")
             }
         }
     }
 
+    /// What's finding or checking the file (2026-11-01 audit): Cancel left
+    /// it running, and a cancelled download could carry on and be chosen.
+    private var job: Task<Void, Never>?
+
     func cancel() {
         guard isBusy else { return }
+        job?.cancel()
+        job = nil
         task?.cancel()
         task = nil
         session?.invalidateAndCancel()
@@ -195,9 +202,26 @@ final class LinuxISODownloader: NSObject, ObservableObject {
 
     // MARK: Finding the file and its checksum
 
+    /// The distribution's folder and what it lists. Fedora's pinned release
+    /// moves to the archive some time after the next one is out (2026-11-01
+    /// audit), and then the newest release stands in for it.
+    private func folderAndListing() async throws -> (URL, String) {
+        let pinned = distribution.folder
+        do {
+            return (pinned, try await Self.text(at: pinned))
+        } catch where distribution == .fedora && !Task.isCancelled {
+            let releases = URL(string: "https://dl.fedoraproject.org/pub/fedora/linux/releases/")!
+            let numbers = Self.matches(#"[0-9]+(?=/")"#, in: try await Self.text(at: releases)).compactMap(Int.init)
+            guard let newest = numbers.max() else { throw error }
+            let folder = releases.appendingPathComponent("\(newest)/Everything/aarch64/iso/")
+            AVMLog.write("Linux download: Fedora's usual folder didn't answer; using release \(newest)")
+            return (folder, try await Self.text(at: folder))
+        }
+    }
+
     private func find() async throws {
-        let folder = distribution.folder
-        let listing = try await Self.text(at: folder)
+        let (folder, listing) = try await folderAndListing()
+        try Task.checkCancellation()
         let names = Self.matches(distribution.filePattern, in: listing)
         guard let name = names.max(by: { $0.compare($1, options: .numeric) == .orderedAscending }) else {
             throw CocoaError(.fileNoSuchFile, userInfo: [NSLocalizedDescriptionKey: "Its folder lists no installer."])
@@ -206,6 +230,7 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             throw CocoaError(.fileNoSuchFile, userInfo: [NSLocalizedDescriptionKey: "Its folder lists no checksums."])
         }
         let sums = try await Self.text(at: folder.appendingPathComponent(sumsName))
+        try Task.checkCancellation()
         guard let hash = Self.hash(of: name, in: sums) else {
             throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "Its checksum list has no line for \(name)."])
         }
@@ -297,7 +322,7 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             fail("AVM couldn't put the download in Downloads. Reason: \(error.localizedDescription)")
             return
         }
-        Task { await verify(destination, alreadyThere: false) }
+        job = Task { await verify(destination, alreadyThere: false) }
     }
 
     private func verify(_ file: URL, alreadyThere: Bool) async {
@@ -313,14 +338,22 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             }
             return hasher.finalize().map { String(format: "%02x", $0) }.joined()
         }.value
+        guard !Task.isCancelled else { return }
         guard actual == expectedHash else {
             if alreadyThere {
-                // An old or broken copy: downloaded afresh in its place.
+                // An old or broken copy: downloaded afresh in its place. One
+                // that can't be removed would be found and checked again
+                // forever (2026-11-01 audit).
                 AVMLog.write("Linux download: the copy in Downloads didn't match; downloading it again")
-                try? FileManager.default.removeItem(at: file)
+                do {
+                    try FileManager.default.removeItem(at: file)
+                } catch {
+                    fail("\(file.lastPathComponent) in Downloads didn't match the checksum \(distribution.title) publishes, and AVM couldn't remove it. Next: move it to the Trash, then try again.")
+                    return
+                }
                 phase = .finding
-                Task {
-                    do { try await find() } catch { fail("AVM couldn't download \(distribution.title). Reason: \(error.localizedDescription)") }
+                job = Task {
+                    do { try await find() } catch { guard !Task.isCancelled else { return }; fail("AVM couldn't download \(distribution.title). Reason: \(error.localizedDescription)") }
                 }
             } else {
                 try? FileManager.default.removeItem(at: file)
@@ -329,8 +362,8 @@ final class LinuxISODownloader: NSObject, ObservableObject {
             return
         }
         phase = .finished(file)
-        AVMLog.write("Linux download: \(file.lastPathComponent) checked against its published SHA-256")
-        Announcer.shared.announce("\(distribution.title) is downloaded and checked: \(file.lastPathComponent), in Downloads. It's chosen as the installer.", tone: .success)
+        AVMLog.write("Linux download: \(file.lastPathComponent) matches the SHA-256 published beside it")
+        Announcer.shared.announce("\(distribution.title) is downloaded, and its checksum shows it arrived undamaged: \(file.lastPathComponent), in Downloads. It's chosen as the installer.", tone: .success)
         onReady?(file)
     }
 }

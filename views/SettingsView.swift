@@ -705,6 +705,10 @@ struct SettingsView: View {
     @State private var windowsKeyboardName: String?
     @State private var windowsKeyboardAppleISO = false
     @State private var windowsAppsInCommandTab = true
+    /// Set by a person, so a choice equal to the default is kept when the
+    /// keyboard changes (2026-11-01 audit: it was stored as no choice).
+    @State private var inCommandTabChosen = false
+    @State private var windowsAppsInCommandTabChosen = false
     @State private var trackpadAndMouseOn = true
     @State private var inCommandTab = true
 
@@ -715,7 +719,7 @@ struct SettingsView: View {
             Text("Command-Tab")
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
-            Toggle("This machine in Command-Tab", isOn: $inCommandTab)
+            Toggle("This machine in Command-Tab", isOn: Binding(get: { inCommandTab }, set: { inCommandTab = $0; inCommandTabChosen = true }))
                 .accessibilityHint("While it runs, it's in your Mac's Command-Tab list under its own name. Switching to it puts your keyboard in it.")
             Text("While it runs, the machine is an app in Command-Tab, and in the Dock, named for it. Switch to it and your keyboard goes straight in. Changes take effect at once.")
                 .font(.caption)
@@ -747,7 +751,7 @@ struct SettingsView: View {
             Text("Windows Apps on the Mac")
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
-            Toggle("Windows apps in Command-Tab", isOn: $windowsAppsInCommandTab)
+            Toggle("Windows apps in Command-Tab", isOn: Binding(get: { windowsAppsInCommandTab }, set: { windowsAppsInCommandTab = $0; windowsAppsInCommandTabChosen = true }))
                 .accessibilityHint("Each app open in \(guest) is in your Mac's Command-Tab list. Switch to one, then press Command-Shift-E to type in it.")
             Text("Each app open in \(guest) is an app in Command-Tab, and in the Dock, while it's open. Switch to one and press Command-Shift-E: it comes forward and your keyboard goes into \(guest). AVM puts a small helper in \(guest) for this.")
                 .font(.caption)
@@ -786,8 +790,8 @@ struct SettingsView: View {
                 // unless they were chosen before.
                 let saved = vmStore.configurations.first { $0.id == configuration.id }
                 let byDefault = VMConfiguration.inCommandTabByDefault(keyboard: id)
-                if saved?.inCommandTab == nil { inCommandTab = byDefault }
-                if saved?.windowsAppsInCommandTab == nil { windowsAppsInCommandTab = byDefault }
+                if saved?.inCommandTab == nil, !inCommandTabChosen { inCommandTab = byDefault }
+                if saved?.windowsAppsInCommandTab == nil, !windowsAppsInCommandTabChosen { windowsAppsInCommandTab = byDefault }
             }
             if windowsKeyboardID != nil {
                 Toggle("It's an Apple keyboard with a § key (ISO)", isOn: $windowsKeyboardAppleISO)
@@ -1515,11 +1519,11 @@ struct SettingsView: View {
             updated.windowsKeyboardID = windowsKeyboardID
             updated.windowsKeyboardName = windowsKeyboardID == nil ? nil : windowsKeyboardName
             updated.windowsKeyboardAppleISO = windowsKeyboardID != nil && windowsKeyboardAppleISO ? true : nil
-            // Stored only when it differs from the default for this keyboard choice.
+            // Stored when it differs from the default for this keyboard choice, or was chosen.
             let commandTabDefault = VMConfiguration.inCommandTabByDefault(keyboard: windowsKeyboardID)
-            updated.windowsAppsInCommandTab = windowsAppsInCommandTab == commandTabDefault ? nil : windowsAppsInCommandTab
+            updated.windowsAppsInCommandTab = windowsAppsInCommandTab == commandTabDefault && !windowsAppsInCommandTabChosen && saved.windowsAppsInCommandTab == nil ? nil : windowsAppsInCommandTab
             updated.trackpadAndMouseOff = trackpadAndMouseOn ? nil : true
-            updated.inCommandTab = inCommandTab == commandTabDefault ? nil : inCommandTab
+            updated.inCommandTab = inCommandTab == commandTabDefault && !inCommandTabChosen && saved.inCommandTab == nil ? nil : inCommandTab
             updated.displayID = displayID
             updated.displayName = displayID == nil ? nil : displayName
             let remoteDesktopWasOn = saved.remoteDesktopOn

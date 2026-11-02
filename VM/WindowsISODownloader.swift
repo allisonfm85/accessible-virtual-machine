@@ -193,6 +193,9 @@ final class WindowsISODownloader: ObservableObject {
     private func watch() async {
         var stableSince: Date? = nil
         var lastSize: Int64 = -1
+        var partialSize: Int64 = -1
+        var partialMoved = Date()
+        var stallSaid = false
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
@@ -205,6 +208,16 @@ final class WindowsISODownloader: ObservableObject {
 
             if let partial {
                 report(size: Self.size(of: partial))
+                // A stalled download said nothing (2026-11-01 audit).
+                let now = Self.size(of: partial)
+                if now != partialSize {
+                    partialSize = now
+                    partialMoved = Date()
+                    stallSaid = false
+                } else if !stallSaid, Date().timeIntervalSince(partialMoved) >= 300 {
+                    stallSaid = true
+                    Announcer.shared.announce("The Windows download hasn't moved in five minutes. Next: check the download in your browser, and the Mac's internet connection.", tone: .info)
+                }
                 stableSince = nil
                 continue
             }
@@ -317,7 +330,12 @@ final class WindowsISODownloader: ObservableObject {
             // audit): a file matching nothing Microsoft publishes may be
             // a corrupt download, and sounded exactly like a verified one.
             let verified = verdict.hasPrefix("It matches")
-            if inBackground, let onReady {
+            // One that matches none of Microsoft's checksums isn't chosen for
+            // the user (2026-11-01 audit): it may be a damaged download.
+            let mismatch = !verified && !verdict.hasPrefix("AVM couldn't read")
+            if mismatch {
+                Announcer.shared.announce("\(iso.lastPathComponent) finished. \(verdict) AVM didn't choose it. If you trust it, choose Use This Installer.", tone: .failure)
+            } else if inBackground, let onReady {
                 onReady(iso)
                 Announcer.shared.announce("\(iso.lastPathComponent) is ready. \(verdict) AVM chose it as the installer; choose Create Virtual Machine when you're ready.", tone: verified ? .success : .info)
             } else {
