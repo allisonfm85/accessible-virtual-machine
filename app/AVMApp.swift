@@ -79,6 +79,7 @@ struct AVMApp: App {
         WindowsDownloadJob.runIfAsked()
         LinuxDownloadJob.runIfAsked()
         MacTestJob.runIfAsked()
+        UpdateTestJob.runIfAsked()
         KeyboardTestJob.runIfAsked()
         KeyboardTestJob.playAudioIfAsked()
         KeyboardTestJob.serveFolderIfAsked()

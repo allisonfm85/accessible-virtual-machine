@@ -2197,4 +2197,26 @@ final class OpenSUSEInstallTests: XCTestCase {
         let sums = "33916688227949b0691502ed35f10329ce0047a7312239573bb99a93ce941f82  \(name)\n"
         XCTAssertEqual(LinuxISODownloader.hash(of: name, in: sums), "33916688227949b0691502ed35f10329ce0047a7312239573bb99a93ce941f82")
     }
+
+    // The tour's keys are real ones (2026-11-01): it's read out to people
+    // learning AVM, and a key that doesn't exist loses them.
+    func testEveryKeyTheTourNamesIsInTheMenus() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let tour = try String(contentsOf: root.appendingPathComponent("AVM/Tour.swift"), encoding: .utf8)
+        var sources = ""
+        for folder in ["app", "views", "AVM"] {
+            for name in try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent(folder).path) where name.hasSuffix(".swift") {
+                sources += try String(contentsOf: root.appendingPathComponent(folder).appendingPathComponent(name), encoding: .utf8)
+            }
+        }
+        let keys = try NSRegularExpression(pattern: "Command-(Option-)?Shift-([A-Z])\\b")
+        let found = keys.matches(in: tour, range: NSRange(tour.startIndex..., in: tour))
+        XCTAssertGreaterThan(found.count, 5)
+        for match in found {
+            let option = match.range(at: 1).location != NSNotFound
+            let letter = (tour as NSString).substring(with: match.range(at: 2)).lowercased()
+            let shortcut = "keyboardShortcut(\"\(letter)\", modifiers: [.command, \(option ? ".option, " : "").shift])"
+            XCTAssertTrue(sources.contains(shortcut), "the tour names a key no menu has: \(shortcut)")
+        }
+    }
 }

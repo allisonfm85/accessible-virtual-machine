@@ -45,7 +45,8 @@ extension VMManager {
     }
 
     /// Virtual Machine > Repair for AVM.
-    func repairForAVM() async {
+    /// `askFirst` false only for its test (--test-repair).
+    func repairForAVM(askFirst: Bool = true) async {
         let machine = machineName
         guard !isRepairing else {
             Announcer.shared.announce("\(machine)'s repair is waiting for your password already.", tone: .info)
@@ -63,12 +64,14 @@ extension VMManager {
             await finishRepair(machine)
             return
         }
-        let alert = NSAlert()
-        alert.messageText = "Repair \(machine) for AVM?"
-        alert.informativeText = "\(machine) was installed by an older AVM, so it can't receive files or set up Remote Desktop. AVM will type one command in \(machine), and \(machine) will ask for your password. \(machine) must be signed in, on its desktop."
-        alert.addButton(withTitle: "Repair")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if askFirst {
+            let alert = NSAlert()
+            alert.messageText = "Repair \(machine) for AVM?"
+            alert.informativeText = "\(machine) was installed by an older AVM, so it can't receive files or set up Remote Desktop. AVM will type one command in \(machine), and \(machine) will ask for your password. \(machine) must be signed in, on its desktop."
+            alert.addButton(withTitle: "Repair")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
 
         isRepairing = true
         defer { isRepairing = false }

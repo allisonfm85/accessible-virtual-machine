@@ -67,7 +67,9 @@ final class AVMUpdater: ObservableObject {
 
     /// `starting` false for the accessibility audit (2026-10-30), which
     /// shows AVM's Settings without checking for updates or asking to.
-    init(starting: Bool = true) {
+    /// Nor for any test run (2026-11-01): --test-update has its own updater,
+    /// and the others have no business checking.
+    init(starting: Bool = !CommandLine.arguments.contains { $0.hasPrefix("--test-") }) {
         controller = SPUStandardUpdaterController(
             startingUpdater: starting,
             updaterDelegate: announcer,
