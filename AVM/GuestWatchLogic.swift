@@ -16,6 +16,8 @@ nonisolated enum GuestWatchSettings {
     /// AVM's updates held while the keyboard is in a machine whose screen
     /// reader is running, and said when it comes back (Announcer, 2026-10-31).
     static let holdWhileInMachineKey = "AVMHoldUpdatesInMachine"
+    /// Off by default: each new machine gets the saved screen reader setup.
+    static let useSavedSetupKey = "AVMUseSavedScreenReaderSetup"
 
     /// On unless turned off, except the restore point before updates: off
     /// until turned on (2026-10-31). Twice in tests, Windows didn't come

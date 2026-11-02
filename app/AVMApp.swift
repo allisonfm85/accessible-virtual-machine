@@ -461,6 +461,26 @@ struct AVMApp: App {
                 .keyboardShortcut("c", modifiers: [.command, .option, .shift])
                 .disabled(!activity.isRunning)
 
+                // A screen reader's setup, between machines (2026-11-01,
+                // ScreenReaderSetup.swift).
+                Button("Save Screen Reader Setup") {
+                    Task { @MainActor in await VMManager.shared?.saveScreenReaderSetup() }
+                }
+                .disabled(!activity.isRunning)
+                Button("Apply Saved Screen Reader Setup…") {
+                    Task { @MainActor in
+                        guard let manager = VMManager.shared else { return }
+                        let alert = NSAlert()
+                        alert.messageText = "Put your saved screen reader setup in \(manager.machineName)?"
+                        alert.informativeText = "Its screen reader stops and starts again with your saved settings and add-ons. What it has now is kept beside them, in a folder ending before-avm."
+                        alert.addButton(withTitle: "Apply")
+                        alert.addButton(withTitle: "Cancel")
+                        guard alert.runModal() == .alertFirstButtonReturn else { return }
+                        await manager.applyScreenReaderSetup()
+                    }
+                }
+                .disabled(!activity.isRunning)
+
                 Button("Repair \(focusLock.guestName) for AVM…") {
                     Task { @MainActor in
                         guard let manager = VMManager.shared else { return }

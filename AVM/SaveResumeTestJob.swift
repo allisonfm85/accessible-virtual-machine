@@ -609,6 +609,9 @@ enum SaveResumeTestJob {
             if arguments.contains("--test-machine-check") {
                 await finish(await machineCheck(folderURL, guest))
             }
+            if arguments.contains("--test-sr-setup") {
+                await finish(await screenReaderSetup(folderURL, guest))
+            }
             if arguments.contains("--test-windows-3d") {
                 await finish(await windows3D(folderURL))
             }
@@ -1179,6 +1182,74 @@ enum SaveResumeTestJob {
         await manager.checkThisMachine(configuration: config)
         let second = log().components(separatedBy: "\n").last { $0.contains("said (") && $0.contains("Save test") && !$0.contains("Checking") } ?? ""
         check("it says so, with what to do", second.contains("shared folder service isn't running") && second.contains("Next:"))
+        await shutDown(manager)
+        return ok
+    }
+
+    /// Screen reader setup (2026-11-01): saved from a machine, changed there,
+    /// put back, with what was there kept. On a clone, into a test folder: a
+    /// person's own saved setup isn't touched.
+    private static func screenReaderSetup(_ folder: URL, _ guest: GuestOS) async -> Bool {
+        let clone = folder.deletingLastPathComponent().appendingPathComponent(folder.lastPathComponent + "-sr-\(UUID().uuidString.prefix(8))")
+        let copy = Process()
+        copy.executableURL = URL(fileURLWithPath: "/bin/cp")
+        copy.arguments = ["-c", "-R", folder.path, clone.path]
+        try? copy.run()
+        copy.waitUntilExit()
+        defer { try? FileManager.default.removeItem(at: clone) }
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent("avm-sr-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: support) }
+        let manager = VMManager()
+        guard await start(manager, configuration(folder: clone, guest: guest)), let agent = manager.guestAgentSocketPath,
+              await waitForAgent(agent, seconds: 600) else {
+            check("the machine started and answers", false); await shutDown(manager); return false
+        }
+        // In Windows, someone has to be signed in for NVDA's folder.
+        if guest == .windows {
+            var tasks = await exec(agent, program: "tasklist.exe", args: ["/fo", "csv", "/nh"]) ?? ""
+            if !tasks.lowercased().contains("explorer.exe") {
+                let password = "T" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(16).lowercased() + "x1"
+                _ = await exec(agent, program: "net.exe", args: ["user", "avmtest", password])
+                // The agent answers before the sign-in screen can take keys, so
+                // it's tried again each minute.
+                for _ in 0..<6 where !tasks.lowercased().contains("explorer.exe") {
+                    try? await Task.sleep(for: .seconds(30))
+                    _ = try? await manager.sendQMPCommand("send-key", arguments: ["keys": [["type": "qcode", "data": "spc"]]])
+                    try? await Task.sleep(for: .seconds(4))
+                    _ = await manager.typeText(password + "\n")
+                    try? await Task.sleep(for: .seconds(30))
+                    tasks = await exec(agent, program: "tasklist.exe", args: ["/fo", "csv", "/nh"]) ?? ""
+                }
+            }
+            check("someone is signed in", tasks.lowercased().contains("explorer.exe"))
+            // NVDA writes its settings folder a little after it starts.
+            try? await Task.sleep(for: .seconds(45))
+        } else {
+            try? await Task.sleep(for: .seconds(30))
+        }
+        func inGuest(_ windowsScript: String, _ linuxScript: String) async -> String {
+            guest == .windows
+                ? await exec(agent, program: "powershell.exe", args: ["-NoProfile", "-Command", "$u=(Get-CimInstance Win32_ComputerSystem).UserName.Split('\\')[-1]; $d=\"C:\\Users\\$u\\AppData\\Roaming\\nvda\"; " + windowsScript]) ?? ""
+                : await exec(agent, program: "/bin/sh", args: ["-c", "U=$(getent passwd 1000 | cut -d: -f1); D=/home/$U/.local/share/orca; " + linuxScript]) ?? ""
+        }
+        AVMPaths.supportDirectoryOverride = support
+        defer { AVMPaths.supportDirectoryOverride = nil }
+        print("== Saving, with a marker in its settings")
+        _ = await inGuest("Set-Content \"$d\\avm-marker.txt\" saved", "runuser -u \"$U\" -- sh -c \"mkdir -p $D && echo saved > $D/avm-marker.txt\"")
+        await manager.saveScreenReaderSetup()
+        let file = try? VMManager.screenReaderSetupFile(windows: guest == .windows)
+        let size = file.flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.size] as? Int } ?? 0
+        check("the setup is on the Mac (\(size) bytes)", size > 0)
+        print("== Changed in the machine, then applied")
+        _ = await inGuest("Remove-Item \"$d\\avm-marker.txt\"; Set-Content \"$d\\avm-other.txt\" other", "rm -f $D/avm-marker.txt; runuser -u \"$U\" -- sh -c \"echo other > $D/avm-other.txt\"")
+        check("it applied", await manager.applyScreenReaderSetup())
+        let after = await inGuest("if (Test-Path \"$d\\avm-marker.txt\") { 'marker-back' }; if (Test-Path \"$d-before-avm\\avm-other.txt\") { 'other-kept' }; if (Test-Path \"$d\\nvda.ini\") { 'ini' }",
+                                  "[ -f $D/avm-marker.txt ] && echo marker-back; [ -f $D-before-avm/avm-other.txt ] && echo other-kept; [ \"$(stat -c %U $D/avm-marker.txt)\" = \"$U\" ] && echo owned")
+        print("   \(after.split(whereSeparator: \.isNewline).joined(separator: ", "))")
+        check("the saved settings are back", after.contains("marker-back"))
+        check("what was there is kept beside them", after.contains("other-kept"))
+        check(guest == .windows ? "its settings file is there" : "they're the user's own", after.contains(guest == .windows ? "ini" : "owned"))
         await shutDown(manager)
         return ok
     }

@@ -119,6 +119,9 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// crackle): SoundSmoothness's raw value; nil: balanced. Read it
     /// through soundSmoothness.
     var soundBuffer: String?
+    /// Being installed with "use my saved screen reader setup" on: put in once
+    /// someone first signs in (ScreenReaderSetup.swift).
+    var wantsSavedScreenReaderSetup: Bool?
     /// Which ear this machine's sound goes to (2026-11-01, the user's request:
     /// its screen reader in one ear and VoiceOver in the other): "left" or
     /// "right"; nil for both. Windows and Linux: QEMU's patch

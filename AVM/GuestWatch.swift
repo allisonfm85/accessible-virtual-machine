@@ -52,6 +52,14 @@ extension VMManager {
         if installed, configuration.usesWindows3D, Self.supportsWindows3D {
             Task { [weak self] in await self?.installWindows3DDriverIfNeeded(machine: configuration.name) }
         }
+        // A saved screen reader setup for a machine AVM is installing
+        // (2026-11-01, ScreenReaderSetup.swift): noted now, put in at the
+        // first sign-in, on a later start.
+        if !installed, UserDefaults.standard.bool(forKey: GuestWatchSettings.useSavedSetupKey),
+           var stored = VMStore.shared?.configurations.first(where: { $0.id == configuration.id }) {
+            stored.wantsSavedScreenReaderSetup = true
+            VMStore.shared?.save(stored)
+        }
         guestWatchTask = Task { [weak self] in
             var lastThumb: [UInt8]?
             var said = Set<String>()
@@ -145,6 +153,14 @@ extension VMManager {
                         Announcer.shared.announce("\(machine) is moving again.", tone: .info)
                     case .none: break
                     }
+                }
+
+                if installed, tick % 4 == 1, processes?.signedIn == true,
+                   VMStore.shared?.configurations.first(where: { $0.id == configuration.id })?.wantsSavedScreenReaderSetup == true,
+                   var stored = VMStore.shared?.configurations.first(where: { $0.id == configuration.id }) {
+                    stored.wantsSavedScreenReaderSetup = nil
+                    VMStore.shared?.save(stored)
+                    if self.hasSavedScreenReaderSetup { await self.applyScreenReaderSetup() }
                 }
 
                 // A screen reader that stopped.
