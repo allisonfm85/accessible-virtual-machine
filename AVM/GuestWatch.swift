@@ -68,6 +68,12 @@ extension VMManager {
             let started = Date()
             defer { try? FileManager.default.removeItem(at: picture) }
             var lastBoot: String?
+            // Whether a screen reader runs, kept through one failed listing
+            // (2026-11-01, audit): a slow tasklist read the whole screen over
+            // NVDA, and a machine restarting stayed marked as having one.
+            var readerRunning = false
+            var failedListings = 0
+            defer { Announcer.readerRunningIn.remove(machine) }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(4))
                 guard let self, !Task.isCancelled else { return }
@@ -82,6 +88,14 @@ extension VMManager {
                         : try? await self.agentRun("/bin/sh", ["-c", "cat /proc/sys/kernel/random/boot_id; ps -eo comm"], limit: .seconds(20))
                     processes = listing.map { GuestProcesses.parse($0, windows: windows) }
                     agentAnswered = listing != nil
+                    if let processes {
+                        failedListings = 0
+                        readerRunning = !processes.screenReaders.isEmpty
+                    } else {
+                        failedListings += 1
+                        if failedListings >= 2 { readerRunning = false }
+                    }
+                    if readerRunning { Announcer.readerRunningIn.insert(machine) } else { Announcer.readerRunningIn.remove(machine) }
                     agentEverAnswered = agentEverAnswered || agentAnswered
                     // Restarted between two listings (2026-10-31): with the
                     // restore point fixed, Windows was back in under 16
@@ -113,11 +127,14 @@ extension VMManager {
                         if !now.screenReaders.isEmpty { restartedReader = false }
                     }
                     // Seen before and gone for two checks, about half a minute.
-                    if let reader = readersSeen.sorted().first, missingChecks == 2 {
+                    // A reader with no start key (Narrator, Orca outside
+                    // GNOME) got "starting it again didn't work" with nothing
+                    // tried (2026-11-01, audit); turned off on purpose, as a rule.
+                    if let reader = readersSeen.sorted().first, missingChecks == 2, Self.screenReaderKeys(reader, gnome: now.gnome) != nil {
                         if !restartedReader, await self.startScreenReader(reader, gnome: now.gnome) {
                             restartedReader = true
                             AVMLog.write("AVM: GuestWatch — \(reader) stopped in \(machine); its shortcut key sent")
-                            Announcer.shared.announce("\(reader) stopped in \(machine), so AVM started it again.", tone: .info)
+                            Announcer.shared.announce("\(reader) stopped in \(machine), so AVM started it again.", tone: .info, routine: true)
                         } else {
                             AVMLog.write("AVM: GuestWatch — \(reader) still not running in \(machine)")
                             Announcer.shared.announce("\(reader) isn't running in \(machine), and starting it again didn't work. \(Self.readerHelp(reader))", tone: .failure)
@@ -138,10 +155,6 @@ extension VMManager {
                 // An installed machine whose agent never answers may have
                 // none at all, and a screen reader AVM can't see: there,
                 // only the first 3 minutes (start-up screens) are read.
-                let readerRunning = !(processes?.screenReaders.isEmpty ?? true)
-                if processes != nil {
-                    if readerRunning { Announcer.readerRunningIn.insert(machine) } else { Announcer.readerRunningIn.remove(machine) }
-                }
                 let canTell = !installed || agentEverAnswered || Date().timeIntervalSince(started) < 180
                 if GuestWatchSettings.isOn(GuestWatchSettings.speakScreenKey), !readerRunning, canTell,
                    (try? await self.sendQMPCommand("screendump", arguments: ["filename": picture.path, "format": "ppm"])) != nil,
@@ -156,9 +169,9 @@ extension VMManager {
                         if !fresh.isEmpty, self.state == .running {
                             AVMLog.write("AVM: GuestWatch — \(fresh.count) new line(s) on \(machine)'s screen said")
                             if windows && ScreenChange.isStopScreen(lines) {
-                                Announcer.shared.announce("\(machine) stopped with an error. On its screen: \(lines.joined(separator: ". "))", tone: .failure)
+                                Announcer.shared.announce("\(machine) stopped with an error. On its screen: \(lines.joined(separator: ". "))", tone: .failure, logAs: "\(machine) stopped with an error; its screen was read out.")
                             } else {
-                                Announcer.shared.announce("On \(machine)'s screen: \(fresh.joined(separator: ". "))", tone: .info)
+                                Announcer.shared.announce("On \(machine)'s screen: \(fresh.joined(separator: ". "))", tone: .info, routine: true, logAs: "\(fresh.count) new line(s) on \(machine)'s screen")
                             }
                         }
                     }
@@ -193,15 +206,18 @@ extension VMManager {
         }
     }
 
+    private nonisolated static func screenReaderKeys(_ reader: String, gnome: Bool) -> [String]? {
+        switch reader {
+        case "NVDA": return ["ctrl", "alt", "n"]
+        case "JAWS": return ["ctrl", "alt", "j"]
+        case "Orca" where gnome: return ["meta_l", "alt", "s"]
+        default: return nil
+        }
+    }
+
     /// The screen reader's own shortcut to start it, pressed in the machine.
     private func startScreenReader(_ reader: String, gnome: Bool) async -> Bool {
-        let keys: [String]
-        switch reader {
-        case "NVDA": keys = ["ctrl", "alt", "n"]
-        case "JAWS": keys = ["ctrl", "alt", "j"]
-        case "Orca" where gnome: keys = ["meta_l", "alt", "s"]
-        default: return false
-        }
+        guard let keys = Self.screenReaderKeys(reader, gnome: gnome) else { return false }
         let sent = (try? await sendQMPCommand("send-key", arguments: ["keys": keys.map { ["type": "qcode", "data": $0] }])) != nil
         guard sent else { return false }
         // Started: its process within 20 seconds.

@@ -123,10 +123,15 @@ nonisolated final class RFBClient {
 
     /// Types text as key presses, Shift held for capitals and the US
     /// layout's shifted symbols.
+    /// Throws at a character with no key here (2026-11-01, audit): skipping
+    /// it typed "contrasea1" for a password of "contraseña1", in both fields,
+    /// so macOS took it and the user was locked out.
     func type(_ text: String) throws {
         let shifted = Set("~!@#$%^&*()_+{}|:\"<>?")
         for character in text {
-            guard let scalar = character.unicodeScalars.first, scalar.isASCII else { continue }
+            guard character.unicodeScalars.count == 1, let scalar = character.unicodeScalars.first, scalar.isASCII else {
+                throw RFBUntypable()
+            }
             let needsShift = character.isUppercase || shifted.contains(character)
             try press(UInt32(scalar.value), with: needsShift ? [Self.shift] : [])
         }
@@ -254,4 +259,9 @@ nonisolated final class RFBClient {
     private static func uint16(_ v: UInt16) -> Data { Data([UInt8(v >> 8), UInt8(v & 0xff)]) }
     private static func uint32(_ v: UInt32) -> Data { Data([UInt8(v >> 24), UInt8((v >> 16) & 0xff), UInt8((v >> 8) & 0xff), UInt8(v & 0xff)]) }
     private static func int32(_ v: Int32) -> Data { uint32(UInt32(bitPattern: v)) }
+}
+
+/// A character the macOS setup can't type.
+struct RFBUntypable: LocalizedError {
+    var errorDescription: String? { "that text has a character AVM can't type into macOS's setup" }
 }

@@ -932,6 +932,18 @@ final class DebianInstallTests: XCTestCase {
         XCTAssertFalse(GuestOS.macOS.isLinux)
     }
 
+    /// Audit, 2026-11-01: a screen reader or a failed install, and a layout
+    /// YAML can't mistake for a boolean.
+    func testInstallScriptsCheckOrcaAndQuoteTheLayout() {
+        let account = UbuntuAccount(realName: "A", userName: "a", passwordHash: "$6$x$y", signInAutomatically: true, keyboardLayout: "no", keyboardVariant: "mac")
+        let script = UbuntuInstallPipeline.setupScript(account: account)
+        let orca = script.range(of: "[ -x $T/usr/bin/orca ]")
+        let marker = script.range(of: "AVMDONE.TAG")
+        XCTAssertNotNil(orca); XCTAssertNotNil(marker)
+        if let orca, let marker { XCTAssertLessThan(orca.lowerBound, marker.lowerBound) }
+        XCTAssertFalse(MachineFileCopier.isTransient("mac-setup.json") == false, "its password never travels")
+    }
+
     /// With its own keyboard, Windows stays out of Command-Tab unless chosen.
     func testAWindowsKeyboardKeepsCommandTabTheMacs() {
         var c = VMConfiguration(name: "W", cpuCount: 2, ramSizeGB: 4, diskSizeGB: 64, diskImagePath: "/tmp/x")
@@ -1733,12 +1745,11 @@ final class GuestWatchTests: XCTestCase {
 
     /// AVM's updates wait only while the keyboard is in a machine whose screen reader runs.
     func testUpdatesWaitForTheMachinesScreenReader() {
-        XCTAssertTrue(Announcer.holds(.info, keyboardIn: "PC", readerRunningIn: ["PC"], settingOn: true))
-        XCTAssertFalse(Announcer.holds(.failure, keyboardIn: "PC", readerRunningIn: ["PC"], settingOn: true), "problems are said at once")
-        XCTAssertFalse(Announcer.holds(.leaveGuest, keyboardIn: "PC", readerRunningIn: ["PC"], settingOn: true))
-        XCTAssertFalse(Announcer.holds(.info, keyboardIn: "PC", readerRunningIn: [], settingOn: true), "no screen reader: AVM is the only voice")
-        XCTAssertFalse(Announcer.holds(.info, keyboardIn: nil, readerRunningIn: ["PC"], settingOn: true))
-        XCTAssertFalse(Announcer.holds(.info, keyboardIn: "PC", readerRunningIn: ["PC"], settingOn: false))
+        XCTAssertTrue(Announcer.holds(routine: true, keyboardIn: "PC", readerRunningIn: ["PC"], settingOn: true))
+        XCTAssertFalse(Announcer.holds(routine: false, keyboardIn: "PC", readerRunningIn: ["PC"], settingOn: true), "only what a caller marks routine waits")
+        XCTAssertFalse(Announcer.holds(routine: true, keyboardIn: "PC", readerRunningIn: [], settingOn: true), "no screen reader: AVM is the only voice")
+        XCTAssertFalse(Announcer.holds(routine: true, keyboardIn: nil, readerRunningIn: ["PC"], settingOn: true))
+        XCTAssertFalse(Announcer.holds(routine: true, keyboardIn: "PC", readerRunningIn: ["PC"], settingOn: false))
         XCTAssertNil(Announcer.heldSummary([], machine: "PC"))
         XCTAssertEqual(Announcer.heldSummary(["A.", "B."], machine: "PC"), "While you were in PC: A. B.")
         XCTAssertEqual(Announcer.heldSummary((1...7).map { "\($0)." }, machine: "PC"), "While you were in PC: 3. 4. 5. 6. 7. And 2 earlier.")
@@ -2015,9 +2026,12 @@ final class EnterpriseInstallTests: XCTestCase {
         let marker = try XCTUnwrap(rocky.range(of: "AVMDONE.TAG"))
         XCTAssertLessThan(filter.lowerBound, marker.lowerBound)
         XCTAssertTrue(rocky.contains("(typepermissive virt_qemu_ga_t)"), "and SELinux lets it")
-        let webdav = try XCTUnwrap(rocky.range(of: "rpm --import https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-10"), "Rocky gets AlmaLinux's shared folder service")
+        let webdav = try XCTUnwrap(rocky.range(of: "avm_rocky_webdav || echo"), "Rocky gets AlmaLinux's shared folder service")
         XCTAssertLessThan(webdav.lowerBound, marker.lowerBound)
-        XCTAssertTrue(rocky.contains("rpm -K /tmp/$f | grep -q 'signatures OK'"))
+        // A failed check stops it: a function that returns, not `( set -e ) ||`.
+        XCTAssertTrue(rocky.contains("rpm -K \"/tmp/$f\" | grep -q 'signatures OK' || return 1"))
+        XCTAssertFalse(rocky.contains("( set -e"))
+        XCTAssertTrue(rocky.contains(UbuntuInstallPipeline.rockyKeySHA256), "AlmaLinux's key is pinned")
         XCTAssertFalse(alma.contains("RPM-GPG-KEY-AlmaLinux-10"), "AlmaLinux has its own")
         // The setup script keeps the distribution's dconf profile.
         XCTAssertTrue(rocky.contains("grep -qx 'system-db:local' /etc/dconf/profile/user") ||

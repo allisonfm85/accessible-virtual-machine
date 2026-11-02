@@ -773,6 +773,14 @@ final class VMManager: ObservableObject {
 
         let imgPath = runtimeDir.appendingPathComponent("autounattend.img").path
         guard FileManager.default.fileExists(atPath: imgPath) else {
+            // Seen installed, with Windows on the disk, and the volume gone
+            // (2026-11-01, audit: deleted by hand or a partial restore): the
+            // next Start would have rebuilt the media and erased Windows with
+            // no question. A reinstall has already swapped in an empty disk.
+            if configuration.installMarkerSeen == true, diskLooksInstalled(runtimeDir: runtimeDir) {
+                avmLog("checkInstallCompleteMarker: no autounattend.img, but seen installed with a full disk; treating as installed")
+                return true
+            }
             avmLog("checkInstallCompleteMarker: no autounattend.img yet — fresh VM, normal install path")
             // A reinstall took the volume with it (2026-10-28): what AVM saw
             // on it before is forgotten, so an interrupted reinstall starts
@@ -3433,6 +3441,7 @@ final class VMManager: ObservableObject {
     var machineName: String { activeConfiguration?.name ?? GuestOS.windows.displayName }
     /// The running machine's system (2026-10-30, GuestStatus.swift).
     var runningGuestOS: GuestOS? { activeConfiguration?.guestOS }
+    var runningMachineID: UUID? { activeConfiguration?.id }
     /// The running machine's id, for code outside that follows it.
     var machineID: UUID? { activeConfiguration?.id }
 
@@ -4885,7 +4894,7 @@ extension VMManager {
                     let tenth = size > 50_000_000 ? sent * 10 / max(size, 1) : 0
                     if tenth > lastTenth, tenth < 10 {
                         lastTenth = tenth
-                        Announcer.shared.announce("Sending \(name), \(tenth * 10) percent.", tone: .info)
+                        if !Announcer.isHoldingRoutineLines { Announcer.shared.announce("Sending \(name), \(tenth * 10) percent.", tone: .info) }
                     }
                 }
                 _ = try await agentCall(["execute": "guest-file-close", "arguments": ["handle": guestHandle]])

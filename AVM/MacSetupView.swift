@@ -179,6 +179,20 @@ struct MacSetupView: View {
                 return
             }
         }
+        // AVM types these into macOS's setup, and only plain letters, numbers
+        // and symbols can be typed (2026-11-01, audit). Accents come off a
+        // name; a password stays exactly what the user knows, or isn't used.
+        if autoSetup {
+            guard password.canBeConverted(to: .ascii) else {
+                Announcer.shared.announce("AVM can only type plain letters, numbers and symbols into macOS's setup, and your password has other characters. Next: choose a password without them, or turn off Set up macOS for me.", tone: .failure)
+                return
+            }
+            fullName = fullName.applyingTransform(.stripDiacritics, reverse: false) ?? fullName
+            guard fullName.canBeConverted(to: .ascii) else {
+                Announcer.shared.announce("AVM can only type plain letters into macOS's setup, and your full name has other characters. Next: write it with plain letters, or turn off Set up macOS for me.", tone: .failure)
+                return
+            }
+        }
         ramSizeGB = min(ramSizeGB, maxMemoryGB)
         let id = UUID()
         var config = VMConfiguration(id: id, name: trimmed, cpuCount: cpuCount, ramSizeGB: ramSizeGB,

@@ -70,7 +70,12 @@ enum MacAutoSetup {
 
     static func save(_ answers: MacSetupAnswers, files: MacGuestFiles) throws {
         let data = try JSONEncoder().encode(answers)
-        try data.write(to: files.setupAnswers, options: .atomic)
+        // Owner-only from the start (2026-11-01, audit): it holds a password,
+        // and written first, then limited, it was readable for a moment.
+        let fd = open(files.setupAnswers.path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { throw CocoaError(.fileWriteNoPermission) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        try handle.write(contentsOf: data)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: files.setupAnswers.path)
     }
 

@@ -343,11 +343,15 @@ final class Announcer {
     //
     // With the keyboard in a machine whose own screen reader is talking,
     // VoiceOver reading AVM's updates talks over it, both in one pair of
-    // headphones or one hearing aid. So routine updates (.info) wait, and
-    // are said when the keyboard comes back to the Mac; failures, outcomes
-    // and the keyboard's own sounds are said at once. While no screen
-    // reader runs in the machine (Setup, a restart), nothing waits: AVM's
-    // screen reading is the only voice then.
+    // headphones or one hearing aid. So lines marked routine wait, and are
+    // said when the keyboard comes back to the Mac. While no screen reader
+    // runs in the machine (Setup, a restart), nothing waits: AVM's screen
+    // reading is the only voice then.
+    //
+    // Opt-in (2026-11-01, audit): this first held every .info line, about 200
+    // of them, and caught the spoken quit question, "another window took the
+    // keyboard", disk-nearly-full warnings and answers to what the user had
+    // just asked. Only callers that mean routine say so.
 
     /// The machine the keyboard is in (FocusLockManager), or nil.
     nonisolated(unsafe) static var keyboardIn: String?
@@ -357,9 +361,32 @@ final class Announcer {
     private var heldIn: String?
 
     /// Whether a line waits until the keyboard is back on the Mac.
-    nonisolated static func holds(_ tone: Tone, keyboardIn machine: String?, readerRunningIn running: Set<String>, settingOn: Bool) -> Bool {
-        guard settingOn, case .info = tone, let machine else { return false }
+    nonisolated static func holds(routine: Bool, keyboardIn machine: String?, readerRunningIn running: Set<String>, settingOn: Bool) -> Bool {
+        guard routine, settingOn, let machine else { return false }
         return running.contains(machine)
+    }
+
+    private static var holdSettingOn: Bool {
+        UserDefaults.standard.object(forKey: GuestWatchSettings.holdWhileInMachineKey) as? Bool ?? true
+    }
+
+    /// A routine line would wait now. Progress lines, stale by the time
+    /// they'd be said, ask this and skip themselves.
+    static var isHoldingRoutineLines: Bool {
+        holds(routine: true, keyboardIn: keyboardIn, readerRunningIn: readerRunningIn, settingOn: holdSettingOn)
+    }
+
+    /// The Mac itself took the keyboard back (sleep, a locked screen), so
+    /// the lines that waited stay until someone can hear them (2026-11-01,
+    /// audit): FocusLockManager calls sayHeldLines when the Mac is back.
+    nonisolated(unsafe) static var keepHeldLines = false
+
+    func sayHeldLines() {
+        Self.keepHeldLines = false
+        guard let machine = heldIn, let summary = Self.heldSummary(held, machine: machine) else { return }
+        held = []; heldIn = nil
+        AVMLog.write("AVM: said the \(summary.count) characters that waited")
+        speak(summary)
     }
 
     /// What's said for the lines that waited: the newest few, in order.
@@ -374,7 +401,12 @@ final class Announcer {
     /// system voice. Every tone enqueues behind whatever is speaking, so
     /// nothing is cut off or silently eaten. See INTERRUPTION POLICY in
     /// the header (revised 2026-10-18).
-    func announce(_ message: String, tone: Tone) {
+    ///
+    /// `routine`: it may wait while a machine's screen reader talks.
+    /// `logAs`: what the log says instead of the words, for text read off a
+    /// machine's screen (2026-11-01, audit: a password or document shown
+    /// there reached the log that Report a Problem sends).
+    func announce(_ message: String, tone: Tone, routine: Bool = false, logAs: String? = nil) {
         // The accessibility audit (AccessibilityAudit.swift, 2026-10-26)
         // opens AVM's screens with no one at them; their announcements are
         // kept quiet so it never talks over the user's own VoiceOver.
@@ -382,14 +414,13 @@ final class Announcer {
         // In the log as well (2026-10-26, code audit): the log's header
         // promises spoken announcements, and a failure said without its own
         // log line was missing from every diagnostic report.
-        if Self.holds(tone, keyboardIn: Self.keyboardIn, readerRunningIn: Self.readerRunningIn,
-                      settingOn: UserDefaults.standard.object(forKey: GuestWatchSettings.holdWhileInMachineKey) as? Bool ?? true) {
-            AVMLog.write("AVM: held while in \(Self.keyboardIn ?? "?") (\(tone)) — \(message)")
+        if routine, Self.isHoldingRoutineLines {
+            AVMLog.write("AVM: held while in \(Self.keyboardIn ?? "?") (\(tone)) — \(logAs ?? message)")
             held.append(message)
             heldIn = Self.keyboardIn
             return
         }
-        AVMLog.write("AVM: said (\(tone)) — \(message)")
+        AVMLog.write("AVM: said (\(tone)) — \(logAs ?? message)")
         switch tone {
         case .enterGuest: Self.enterSound?.play()
         case .leaveGuest: Self.leaveSound?.play()
@@ -398,11 +429,7 @@ final class Announcer {
 
         speak(message)
         // Back on the Mac: what waited.
-        if case .leaveGuest = tone, let machine = heldIn, let summary = Self.heldSummary(held, machine: machine) {
-            held = []; heldIn = nil
-            AVMLog.write("AVM: said (held) — \(summary)")
-            speak(summary)
-        }
+        if case .leaveGuest = tone, !Self.keepHeldLines { sayHeldLines() }
     }
 
     private func speak(_ message: String) {

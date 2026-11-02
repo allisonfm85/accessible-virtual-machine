@@ -145,7 +145,7 @@ struct AppPreferencesView: View {
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
             Toggle("Hold AVM's updates while a machine's screen reader talks", isOn: $holdWhileInMachine)
-            Text("While your keyboard is in a machine and its screen reader is running, AVM's routine updates wait instead of talking over it, and AVM says them when you come back to the Mac. Problems are still said at once.")
+            Text("While your keyboard is in a machine and its screen reader is running, AVM's routine updates, such as new text on its screen, wait instead of talking over it, and AVM says them when you come back to the Mac. Anything you asked for, and anything that needs you, is said at once.")
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
             Toggle("Take a restore point before updates", isOn: $pointBeforeUpdates)

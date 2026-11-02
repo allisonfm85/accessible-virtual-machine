@@ -25,7 +25,9 @@ extension VMManager {
     /// Virtual Machine > Describe Screen.
     func describeScreen() async {
         let machine = machineName
-        guard let path = await captureScreendump(),
+        let captured = await captureScreendump()
+        defer { if let captured { try? FileManager.default.removeItem(atPath: captured) } }
+        guard let path = captured,
               let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
             Announcer.shared.announce("\(machine)'s screen couldn't be described. Next: make sure it's running, then try again.", tone: .failure)
@@ -37,7 +39,7 @@ extension VMManager {
                 switch await Self.askClaude(png: png, apiKey: key) {
                 case .description(let text):
                     AVMLog.write("AVM: Describe Screen — described by Claude")
-                    Announcer.shared.announce(text, tone: .info)
+                    Announcer.shared.announce(text, tone: .info, logAs: "Claude's description of the screen")
                     return
                 case .declined:
                     Announcer.shared.announce("Claude didn't describe this screen. Here is the Mac's description.", tone: .info)
@@ -48,20 +50,23 @@ extension VMManager {
         }
         let text = await Task.detached(priority: .userInitiated) { Self.describeOnDevice(image) }.value
         AVMLog.write("AVM: Describe Screen — described on the Mac")
-        Announcer.shared.announce(text, tone: .info)
+        Announcer.shared.announce(text, tone: .info, logAs: "the Mac's description of the screen")
     }
 
     /// Asks once per machine before its screen goes to Claude.
     private func mayUseClaude(for machine: String) async -> Bool {
+        // By the machine's id, not its name (2026-11-01, audit): a new machine
+        // with the same name would have inherited the answer.
+        let id = runningMachineID?.uuidString ?? machine
         var allowed = Set(UserDefaults.standard.stringArray(forKey: ClaudeDescribe.allowedMachinesKey) ?? [])
-        if allowed.contains(machine) { return true }
+        if allowed.contains(id) { return true }
         let alert = NSAlert()
         alert.messageText = "Send \(machine)'s screen to Claude?"
         alert.informativeText = "Describe Screen can send a picture of \(machine)'s screen to Anthropic's Claude for a fuller description. Whatever is on the screen goes with it. Choose Use the Mac Only to describe it without anything leaving your Mac."
         alert.addButton(withTitle: "Send, and Don't Ask Again for \(machine)")
         alert.addButton(withTitle: "Use the Mac Only")
         guard alert.runModal() == .alertFirstButtonReturn else { return false }
-        allowed.insert(machine)
+        allowed.insert(id)
         UserDefaults.standard.set(Array(allowed), forKey: ClaudeDescribe.allowedMachinesKey)
         return true
     }

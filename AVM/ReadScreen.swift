@@ -22,6 +22,9 @@ extension VMManager {
     /// The text on the machine's screen now, or nil when there's no picture.
     func readScreenText() async -> String? {
         guard let path = await captureScreendump() else { return nil }
+        // Nothing kept, as the header says (2026-11-01, audit: it stayed
+        // beside the machine until the next read).
+        defer { try? FileManager.default.removeItem(atPath: path) }
         return await Task.detached(priority: .userInitiated) {
             Self.recognizeText(inPicture: URL(fileURLWithPath: path))
         }.value

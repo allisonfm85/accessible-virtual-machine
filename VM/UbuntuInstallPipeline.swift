@@ -827,7 +827,7 @@ nonisolated final class UbuntuInstallPipeline {
           version: 1
           interactive-sections: []
           locale: en_US.UTF-8
-          keyboard: {layout: \(account.keyboardLayout ?? "us")\(account.keyboardVariant.map { ", variant: \($0)" } ?? "")}
+          keyboard: {layout: \(yamlQuoted(account.keyboardLayout ?? "us"))\(account.keyboardVariant.map { ", variant: \(yamlQuoted($0))" } ?? "")}
           timezone: \(yamlQuoted(timeZone))
           source: {id: ubuntu-desktop}
           identity:
@@ -1041,6 +1041,10 @@ nonisolated final class UbuntuInstallPipeline {
         # The UNATTEND volume stays attached for the marker; keep it out of
         # the desktop's drive list (and out of Orca's announcements).
         echo 'ENV{ID_FS_LABEL}=="UNATTEND", ENV{UDISKS_IGNORE}="1"' > $T/etc/udev/rules.d/99-avm-unattend.rules
+        # A screen reader or nothing (2026-11-01, audit): a package that failed
+        # and an installer that went on must not end in "installed, Orca will
+        # speak", on a machine that can't. set -e reports it as a failure.
+        [ -x $T/usr/bin/orca ]
         # The install-complete marker, last: Ubuntu is on the disk.
         mkdir -p /run/avm-unattend
         mount -t vfat /dev/disk/by-label/UNATTEND /run/avm-unattend || exit 1
@@ -1813,19 +1817,36 @@ nonisolated final class UbuntuInstallPipeline {
     // repository, used for this install only. The newest of each is taken
     // from AlmaLinux's folder. A failure leaves Rocky without a shared
     // folder, as before, and doesn't stop the install.
+    // A function, not a subshell (2026-11-01, audit): `( set -e; ... ) || x`
+    // ignores set -e, so a failed signature check went on to install. Each
+    // step now stops it; the key is pinned, as it came from the same server
+    // as the packages, and removed after.
+    static let rockyKeySHA256 = "de57c3c0a2dcde88ff5b894e74335f55a0ec074815f36d472270d937c16f077b"
     static let rockyWebDAV = """
         # The shared folder's service, which Rocky doesn't package: AlmaLinux's,
         # signature-checked (see AVM's source).
-        ( set -e
+        avm_rocky_webdav() {
           B=https://repo.almalinux.org/almalinux/10/AppStream/aarch64/os/Packages
-          rpm --import https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-10
-          L=$(curl -fsSL "$B/" | grep -o -E 'href="(libphodav|spice-webdavd)-[0-9][^"]*[.]aarch64[.]rpm"' | sed 's/href="//; s/"$//' | sort -V | awk -F- '{n=$1; if ($1=="spice") n=$1"-"$2; last[n]=$0} END {for (k in last) print last[k]}')
-          [ "$(echo "$L" | grep -c .)" = 2 ]
-          for f in $L; do curl -fsSL -o /tmp/$f "$B/$f"; rpm -K /tmp/$f | grep -q 'signatures OK'; done
-          dnf install -y -q --enablerepo=devel $(for f in $L; do echo /tmp/$f; done)
-          rm -f /tmp/libphodav-*.rpm /tmp/spice-webdavd-*.rpm
+          K=/tmp/avm-alma10.key
+          curl -fsSL -o "$K" https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux-10 || return 1
+          [ "$(sha256sum "$K" | cut -d' ' -f1)" = \(rockyKeySHA256) ] || return 1
+          BEFORE=$(rpm -q gpg-pubkey | sort)
+          rpm --import "$K" || return 1
+          L=$(curl -fsSL "$B/" | grep -o -E 'href="(libphodav|spice-webdavd)-[0-9][A-Za-z0-9._+-]*[.]aarch64[.]rpm"' | sed 's/href="//; s/"$//' | sort -V | awk -F- '{n=$1; if ($1=="spice") n=$1"-"$2; last[n]=$0} END {for (k in last) print last[k]}')
+          [ "$(echo "$L" | grep -c .)" = 2 ] || return 1
+          for f in $L; do
+            curl -fsSL -o "/tmp/$f" "$B/$f" || return 1
+            rpm -K "/tmp/$f" | grep -q 'signatures OK' || return 1
+          done
+          dnf install -y -q --enablerepo=devel $(for f in $L; do echo "/tmp/$f"; done) || return 1
+          rm -f /tmp/libphodav-*.rpm /tmp/spice-webdavd-*.rpm "$K"
+          # AlmaLinux's key was for these two packages only.
+          for key in $(rpm -q gpg-pubkey); do
+            case "$BEFORE" in *"$key"*) ;; *) rpm -e "$key" || true ;; esac
+          done
           rpm -q spice-webdavd >/dev/null
-        ) || echo "AVM: the shared folder's service couldn't be installed from AlmaLinux"
+        }
+        avm_rocky_webdav || echo "AVM: the shared folder's service couldn't be installed from AlmaLinux"
 
         """
 

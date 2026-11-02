@@ -198,6 +198,7 @@ class FocusLockManager: ObservableObject {
                     guard let self, self.isLocked else { return }
                     AVMLog.write("AVM: FocusLock — \(note.name.rawValue) while locked; unlocking.")
                     self.droppedBySystem = self.guestName
+                    Announcer.keepHeldLines = true
                     self.unlock(bringListForward: false)
                 }
             })
@@ -217,6 +218,7 @@ class FocusLockManager: ObservableObject {
                 }
                 AVMLog.write("AVM: FocusLock — the screen locked while locked; unlocking.")
                 self.droppedBySystem = self.guestName
+                Announcer.keepHeldLines = true
                 self.unlock(bringListForward: false)
             }
         })
@@ -251,6 +253,7 @@ class FocusLockManager: ObservableObject {
         // At the lock screen still (a wake before the unlock): the unlock says it.
         if Self.screenIsLockedNow { return }
         droppedBySystem = nil
+        Announcer.shared.sayHeldLines()
         // Only about a machine still running (2026-10-29, sixth audit): one
         // that shut itself down meanwhile was named, with a key that did
         // nothing.

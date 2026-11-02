@@ -411,7 +411,7 @@ struct AVMApp: App {
                             return
                         }
                         AVMLog.write("AVM: Read Screen — \(text.split(separator: "\n").count) line(s) read.")
-                        Announcer.shared.announce(text.isEmpty ? "No text on \(manager.machineName)'s screen." : text, tone: .info)
+                        Announcer.shared.announce(text.isEmpty ? "No text on \(manager.machineName)'s screen." : text, tone: .info, logAs: "Read Screen's text")
                     }
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
