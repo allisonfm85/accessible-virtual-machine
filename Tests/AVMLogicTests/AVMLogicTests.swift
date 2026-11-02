@@ -2271,6 +2271,23 @@ final class OpenSUSEInstallTests: XCTestCase {
         XCTAssertEqual(BackupSchedule.oldOnes(in: names, base: "A", ext: "avmvm"), ["A backup 2026-01-01 0000.avmvm"])
     }
 
+    /// IPv6 follows the Mac for Windows; a router's own addresses don't count.
+    func testIPv6FollowsTheMac() {
+        func bytes(_ text: String) -> [UInt8] {
+            var address = in6_addr()
+            XCTAssertEqual(inet_pton(AF_INET6, text, &address), 1)
+            return withUnsafeBytes(of: address) { Array($0) }
+        }
+        XCTAssertTrue(MacIPv6.isGlobal(bytes("2606:4700:4700::1111")))
+        XCTAssertTrue(MacIPv6.isGlobal(bytes("3fff::1")))
+        for local in ["fd52:2559:81bd::1", "fe80::1", "::1", "fec0::2", "ff02::1", "::"] {
+            XCTAssertFalse(MacIPv6.isGlobal(bytes(local)), local)
+        }
+        XCTAssertEqual(MacIPv6.netdev(windows: true, macHasIPv6: false), "user,id=net0,ipv6=off")
+        XCTAssertEqual(MacIPv6.netdev(windows: true, macHasIPv6: true), "user,id=net0")
+        XCTAssertEqual(MacIPv6.netdev(windows: false, macHasIPv6: false), "user,id=net0")
+    }
+
     /// Control and the arrows: on by default, off when turned off, and not
     /// in the way once moved to other keys.
     func testMacSpacesShortcuts() {

@@ -2649,7 +2649,15 @@ final class VMManager: ObservableObject {
         // in-app across sessions.
         // Remote Desktop (2026-10-28, RemoteDesktop.swift): a port on the
         // Mac forwarded to the machine's 3389, for the Windows App.
-        var netdev = "user,id=net0"
+        // IPv6 for Windows only where the Mac has it (2026-11-02, the user's report
+        // of slow networking): Windows tries QEMU's IPv6 first, and on a network
+        // without it every new connection to a site with IPv6 waited about 200 ms
+        // for IPv4. Measured with curl: 250 ms to connect, 45 ms with it off.
+        // Linux prefers IPv4 here, so it's left on. Looked at when the machine
+        // starts: QEMU can't change it while running.
+        let macHasIPv6 = MacIPv6.isReachable
+        if configuration.guestOS == .windows { avmLog("buildQEMUArguments: the Mac \(macHasIPv6 ? "has" : "has no") IPv6 route") }
+        var netdev = MacIPv6.netdev(windows: configuration.guestOS == .windows, macHasIPv6: macHasIPv6)
         if configuration.remoteDesktopOn, let port = configuration.remoteDesktopPort {
             netdev += ",hostfwd=\(RemoteDesktop.forwardingRule(for: configuration, port: port))"
             avmLog("buildQEMUArguments: Remote Desktop forwarded from the Mac's port \(port)")

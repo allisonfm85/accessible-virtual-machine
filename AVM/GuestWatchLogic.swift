@@ -278,6 +278,40 @@ nonisolated enum MacSpacesShortcuts {
     }
 }
 
+/// Whether the Mac can reach the IPv6 internet, and QEMU's network line from it.
+nonisolated enum MacIPv6 {
+    /// A global address, 2000::/3. A router's own fd00:: addresses aren't one:
+    /// a Mac can have those with an ISP that has no IPv6.
+    static func isGlobal(_ address: [UInt8]) -> Bool {
+        address.count == 16 && address[0] & 0xE0 == 0x20
+    }
+
+    /// Connecting a UDP socket sends nothing: it only asks for a route, and
+    /// which of the Mac's addresses that route would use.
+    static var isReachable: Bool {
+        let fd = socket(AF_INET6, SOCK_DGRAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var target = sockaddr_in6()
+        target.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+        target.sin6_family = sa_family_t(AF_INET6)
+        target.sin6_port = in_port_t(53).bigEndian
+        guard inet_pton(AF_INET6, "2606:4700:4700::1111", &target.sin6_addr) == 1 else { return false }
+        let size = socklen_t(MemoryLayout<sockaddr_in6>.size)
+        let connected = withUnsafePointer(to: &target) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, size) } }
+        guard connected == 0 else { return false }
+        var local = sockaddr_in6()
+        var length = size
+        let named = withUnsafeMutablePointer(to: &local) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) } }
+        guard named == 0 else { return false }
+        return isGlobal(withUnsafeBytes(of: local.sin6_addr) { Array($0) })
+    }
+
+    static func netdev(windows: Bool, macHasIPv6: Bool) -> String {
+        windows && !macHasIPv6 ? "user,id=net0,ipv6=off" : "user,id=net0"
+    }
+}
+
 /// When a machine's automatic backup is due, and which old ones go.
 nonisolated enum BackupSchedule {
     static let folderKey = "AVMBackupFolder"
