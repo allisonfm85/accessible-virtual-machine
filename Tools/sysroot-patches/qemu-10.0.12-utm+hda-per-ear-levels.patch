@@ -1,0 +1,124 @@
+AVM: each ear's level for a machine's sound, set live
+
+hda-audio gets two properties, avm-left and avm-right, 0 to 100, default 100.
+qom-set changes them while the machine runs, and they scale what the guest's
+own mixer asks for, so AVM can put a machine's sound in one ear (2026-11-01,
+the user's request), with VoiceOver in the other, at any point from boot on.
+They aren't migrated: AVM sets them again after a resume. A voice opened
+anew has the default volume, so a chosen ear is set again after a format
+change. At both ears full nothing changes: the guest's mixer is treated as it
+always was.
+
+--- a/hw/audio/hda-codec.c
++++ b/hw/audio/hda-codec.c
+@@ -28,6 +28,7 @@
+ #include "audio/audio.h"
+ #include "trace.h"
+ #include "qom/object.h"
++#include "qapi/visitor.h"
+ 
+ /* -------------------------------------------------------------------------- */
+ 
+@@ -188,6 +189,10 @@
+     uint32_t debug;
+     bool     mixer;
+     bool     use_timer;
++
++    /* AVM: this machine's level in each ear, 0 to 100, set live by qom-set. */
++    uint8_t  avm_left;
++    uint8_t  avm_right;
+ };
+ 
+ static inline uint32_t hda_bytes_per_second(HDAAudioStream *st)
+@@ -466,6 +471,8 @@
+         return;
+     }
+     if (st->output) {
++        left = left * st->state->avm_left / 100;
++        right = right * st->state->avm_right / 100;
+         AUD_set_volume_out(st->voice.out, muted, left, right);
+     } else {
+         AUD_set_volume_in(st->voice.in, muted, left, right);
+@@ -503,6 +510,13 @@
+         st->voice.in = AUD_open_in(&st->state->card, st->voice.in,
+                                    st->node->name, st, cb, &st->as);
+     }
++    /*
++     * AVM: a voice opened anew has the default volume, so a format change lost
++     * a chosen ear. At both ears full, as it stays for everyone else.
++     */
++    if (st->output && (st->state->avm_left < 100 || st->state->avm_right < 100)) {
++        hda_audio_set_amp(st);
++    }
+ }
+ 
+ static void hda_audio_command(HDACodecDevice *hda, uint32_t nid, uint32_t data)
+@@ -898,8 +912,50 @@
+     }
+ 
+     hda_audio_init(hda, desc, errp);
++}
++
++static void hda_audio_get_level(Object *obj, Visitor *v, const char *name,
++                                void *opaque, Error **errp)
++{
++    HDAAudioState *a = HDA_AUDIO(obj);
++    uint8_t value = strcmp(name, "avm-left") ? a->avm_right : a->avm_left;
++
++    visit_type_uint8(v, name, &value, errp);
+ }
+ 
++static void hda_audio_set_level(Object *obj, Visitor *v, const char *name,
++                                void *opaque, Error **errp)
++{
++    HDAAudioState *a = HDA_AUDIO(obj);
++    uint8_t value;
++    int i;
++
++    if (!visit_type_uint8(v, name, &value, errp)) {
++        return;
++    }
++    if (value > 100) {
++        value = 100;
++    }
++    if (strcmp(name, "avm-left")) {
++        a->avm_right = value;
++    } else {
++        a->avm_left = value;
++    }
++    for (i = 0; i < ARRAY_SIZE(a->st); i++) {
++        if (a->st[i].output) {
++            hda_audio_set_amp(&a->st[i]);
++        }
++    }
++}
++
++static void hda_audio_instance_init(Object *obj)
++{
++    HDAAudioState *a = HDA_AUDIO(obj);
++
++    a->avm_left = 100;
++    a->avm_right = 100;
++}
++
+ static void hda_audio_base_class_init(ObjectClass *klass, void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+@@ -912,12 +968,17 @@
+     device_class_set_legacy_reset(dc, hda_audio_reset);
+     dc->vmsd = &vmstate_hda_audio;
+     device_class_set_props(dc, hda_audio_properties);
++    object_class_property_add(klass, "avm-left", "uint8", hda_audio_get_level,
++                              hda_audio_set_level, NULL, NULL);
++    object_class_property_add(klass, "avm-right", "uint8", hda_audio_get_level,
++                              hda_audio_set_level, NULL, NULL);
+ }
+ 
+ static const TypeInfo hda_audio_info = {
+     .name          = TYPE_HDA_AUDIO,
+     .parent        = TYPE_HDA_CODEC_DEVICE,
+     .instance_size = sizeof(HDAAudioState),
++    .instance_init = hda_audio_instance_init,
+     .class_init    = hda_audio_base_class_init,
+     .abstract      = true,
+ };

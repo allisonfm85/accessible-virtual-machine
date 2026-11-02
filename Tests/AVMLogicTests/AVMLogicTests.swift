@@ -2219,4 +2219,19 @@ final class OpenSUSEInstallTests: XCTestCase {
             XCTAssertTrue(sources.contains(shortcut), "the tour names a key no menu has: \(shortcut)")
         }
     }
+
+    func testSoundLevelsFollowTheEarAndVolume() {
+        var config = VMConfiguration(name: "T", cpuCount: 2, ramSizeGB: 4, diskSizeGB: 64, diskImagePath: "/t/disk.qcow2")
+        XCTAssertEqual(config.soundLevels.left, 100)
+        XCTAssertEqual(config.soundLevels.right, 100)
+        config.soundEarChoice = "left"
+        config.soundVolume = 40
+        XCTAssertEqual(config.soundLevels.left, 40)
+        XCTAssertEqual(config.soundLevels.right, 0)
+        config.soundEarChoice = "right"
+        config.soundVolume = 900
+        XCTAssertEqual(config.soundLevels.left, 0)
+        XCTAssertEqual(config.soundLevels.right, 100)
+    }
+
 }

@@ -119,6 +119,13 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// crackle): SoundSmoothness's raw value; nil: balanced. Read it
     /// through soundSmoothness.
     var soundBuffer: String?
+    /// Which ear this machine's sound goes to (2026-11-01, the user's request:
+    /// its screen reader in one ear and VoiceOver in the other): "left" or
+    /// "right"; nil for both. Windows and Linux: QEMU's patch
+    /// hda-per-ear-levels applies it, live.
+    var soundEarChoice: String?
+    /// This machine's volume, 0 to 100; nil for 100.
+    var soundVolume: Int?
 
     /// The Mac output this machine plays through (2026-10-30,
     /// SoundOutputDevices.swift), by its Core Audio unique ID, and its name
@@ -292,6 +299,12 @@ extension VMConfiguration {
     var sharesClipboard: Bool { shareClipboard ?? true }
     var sharesMicrophone: Bool { shareMicrophone == true }
     var soundSmoothness: SoundSmoothness { soundBuffer.flatMap(SoundSmoothness.init(rawValue:)) ?? .balanced }
+    var soundEar: SoundEar { soundEarChoice.flatMap(SoundEar.init(rawValue:)) ?? .both }
+    /// Each ear's level, 0 to 100.
+    var soundLevels: (left: Int, right: Int) {
+        let volume = max(0, min(100, soundVolume ?? 100))
+        return (soundEar == .right ? 0 : volume, soundEar == .left ? 0 : volume)
+    }
     var brailleFollowsBack: Bool { brailleFollowThrough != "ask" }
     /// The shared folder, if one is chosen and is a folder right now (an
     /// unplugged drive shares nothing rather than failing the start).
@@ -638,6 +651,22 @@ nonisolated enum SpiceAudioPipeline {
 /// key-to-speech with Orca (VMManager's SOUND note): 2.5 ms x 2 was 389 ms,
 /// 5 ms x 2 430 ms. Smallest crackled in Windows on a tester's Mac
 /// (2026-10-28), so the middle one is the default.
+enum SoundEar: String, CaseIterable, Identifiable {
+    case both
+    case left
+    case right
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .both: return "Both ears"
+        case .left: return "Left ear only"
+        case .right: return "Right ear only"
+        }
+    }
+}
+
 enum SoundSmoothness: String, CaseIterable, Identifiable {
     case fastest
     case balanced

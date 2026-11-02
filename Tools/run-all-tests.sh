@@ -152,6 +152,7 @@ add "tour"                             none     "--test-tour"
 add "debian finder send"               debian   "--test-finder-send"
 add "windows finder send"              windows  "--test-finder-send"
 add "fedora repair"                    fedora   "--test-repair"
+add "debian sound in one ear"           debian   "sound-ear"
 add "screen reader downloads"          downloads "--test-screen-readers"
 
 wanted() {
@@ -260,6 +261,11 @@ run_one() {
             (cd "$REPO_ROOT" && swift test --scratch-path "$CACHE/swiftpm" >"$log" 2>"$err")
             status=$?
             if grep -qE "Executed [0-9]+ tests, with [0-9]+ test(s)? skipped and 0 failures|Executed [0-9]+ tests, with 0 failures" "$log" && [ $status = 0 ]; then verdict=PASSED; else verdict=FAILED; fi
+            ;;
+        sound-ear)
+            python3 -I "$REPO_ROOT/Tools/test-sound-ear.py" --app "$APP" --vm "$(machine_for debian)" >"$log" 2>"$err"
+            status=$?
+            if grep -q "^PASSED" "$log" && [ $status = 0 ]; then verdict=PASSED; else verdict=FAILED; fi
             ;;
         update)
             "$REPO_ROOT/Tools/test-update.sh" --app "$APP" --out "$OUT" >"$log" 2>"$err"

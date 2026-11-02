@@ -1560,6 +1560,9 @@ final class VMManager: ObservableObject {
         state = .running
         appendConsole("AVM: VM is running.\n")
         beginQMPEventMonitoring()
+        // Before the guest makes a sound, and after a resume too: QEMU doesn't
+        // save these.
+        await applySoundLevels(configuration)
         // An UNATTEND drive a snapshot was taken with comes out once it has
         // carried on (2026-10-29), as a plain Start leaves it out after Setup.
         if resumePlan != nil, !configuration.guestOS.isLinux, unattendInSession, !setupStillRunning(runtimeDir: runtimeDir) {
@@ -2783,7 +2786,7 @@ final class VMManager: ObservableObject {
         args += ["-audiodev", "coreaudio,id=avmaudio,out.frequency=48000,out.buffer-length=\(output.microseconds),out.buffer-count=\(output.count),timer-period=1250,\(microphone)\(outputDevice)"]
         avmLog("buildQEMUArguments: sound \(configuration.soundSmoothness.rawValue), \(output.microseconds) us x \(output.count)")
         args += ["-device", "intel-hda"]
-        args += ["-device", "hda-duplex,audiodev=avmaudio,use-timer=off"]
+        args += ["-device", "hda-duplex,id=avmhda,audiodev=avmaudio,use-timer=off"]
 
         args += [
             "-device", "virtio-serial-pci",
@@ -3520,6 +3523,24 @@ final class VMManager: ObservableObject {
     var typingStopAsked = false
     /// Repair for AVM is waiting for a password (GuestRepair.swift).
     var isRepairing = false
+    private var soundLevelsChanged = false
+
+    /// This machine's level in each ear, now.
+    func applySoundLevels(_ configuration: VMConfiguration) async {
+        guard configuration.guestOS != .macOS else { return }
+        let levels = configuration.soundLevels
+        // Nothing to do at both ears full, as QEMU starts, unless it's been
+        // changed this run.
+        guard levels != (100, 100) || soundLevelsChanged else { return }
+        soundLevelsChanged = levels != (100, 100)
+        for (name, value) in [("avm-left", levels.left), ("avm-right", levels.right)] {
+            do {
+                _ = try await sendQMPCommand("qom-set", arguments: ["path": "/machine/peripheral/avmhda", "property": name, "value": value])
+            } catch {
+                avmLog("applySoundLevels: \(name): \(error)")
+            }
+        }
+    }
     /// The running machine's id, for code outside that follows it.
     var machineID: UUID? { activeConfiguration?.id }
 

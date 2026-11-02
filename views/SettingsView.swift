@@ -154,6 +154,8 @@ struct SettingsView: View {
     @State private var shareClipboard = true
     @State private var shareMicrophone = false
     @State private var soundSmoothness: SoundSmoothness = .balanced
+    @State private var soundEar: SoundEar = .both
+    @State private var soundVolume = 100.0
     @State private var soundOutputUID: String?
     @State private var soundOutputName: String?
     @State private var soundOutputs: [SoundOutputDevices.Device] = []
@@ -422,6 +424,25 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            // One ear, and this machine's volume (2026-11-01). macOS machines
+            // run in Apple's framework, which has no such control.
+            if configuration.guestOS != .macOS {
+                Picker("Hear \(guest) in", selection: $soundEar) {
+                    ForEach(SoundEar.allCases) { choice in
+                        Text(choice.title).tag(choice)
+                    }
+                }
+                .choicePopUp("Puts this machine's sound in one ear, so its screen reader and VoiceOver don't talk over each other. It changes as soon as you save, even while \(guest) is running.")
+                Slider(value: $soundVolume, in: 0...100, step: 5) {
+                    Text("\(guest)'s volume")
+                }
+                .accessibilityValue("\(Int(soundVolume)) percent")
+                .accessibilityHint("This machine's sound only. It changes as soon as you save.")
+                Text("With headphones, choose one ear here, then keep VoiceOver in the other, with VoiceOver Audio Split or your Mac's sound balance.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             // Sound Output (2026-10-30, SoundOutputDevices.swift).
             Picker("Sound Output", selection: $soundOutputUID) {
                 Text("Same as the Mac").tag(String?.none)
@@ -1299,6 +1320,8 @@ struct SettingsView: View {
         shareClipboard = saved.sharesClipboard
         shareMicrophone = saved.sharesMicrophone
         soundSmoothness = saved.soundSmoothness
+        soundEar = saved.soundEar
+        soundVolume = Double(saved.soundVolume ?? 100)
         soundOutputUID = saved.soundOutputUID
         soundOutputName = saved.soundOutputName
         isTemplate = saved.isATemplate
@@ -1513,6 +1536,8 @@ struct SettingsView: View {
             updated.shareClipboard = shareClipboard ? nil : false
             updated.shareMicrophone = shareMicrophone ? true : nil
             updated.soundBuffer = soundSmoothness == .balanced ? nil : soundSmoothness.rawValue
+            updated.soundEarChoice = soundEar == .both ? nil : soundEar.rawValue
+            updated.soundVolume = Int(soundVolume) == 100 ? nil : Int(soundVolume)
             updated.soundOutputUID = soundOutputUID
             updated.soundOutputName = soundOutputUID == nil ? nil : soundOutputName
             updated.isTemplate = isTemplate ? true : nil
@@ -1568,6 +1593,10 @@ struct SettingsView: View {
                 }
             }
             vmStore.save(updated)
+            // Its sound too (2026-11-01).
+            if let manager = MachineSessions.shared.session(for: updated.id)?.manager {
+                Task { await manager.applySoundLevels(updated) }
+            }
             // A running VM follows the clipboard setting straight away.
             AVMPasteboard.shared.refreshEnabled()
             // And its display (2026-10-28).
