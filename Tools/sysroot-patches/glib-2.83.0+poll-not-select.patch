@@ -1,0 +1,149 @@
+AVM: g_poll on macOS has no limit on files
+
+The select() emulation ignores any fd of 1024 or above, so QEMU's main loop
+stopped hearing connections once a machine had opened enough of them. It now
+uses macOS's poll(), and kqueue above OPEN_MAX entries, which poll() refuses.
+
+--- a/glib/gpoll.c
++++ b/glib/gpoll.c
+@@ -61,7 +61,11 @@
+ /* The poll() emulation on OS/X doesn't handle fds=NULL, nfds=0,
+  * so we prefer our own poll emulation.
+  */
+-#if defined(_POLL_EMUL_H_) || defined(BROKEN_POLL)
++/* AVM (2026-11-02): macOS's poll() on sockets and pipes, which is all AVM's
++ * processes watch. The select() emulation ignores any fd of 1024 or above, so
++ * a machine with many connections open stopped being heard.
++ */
++#if defined(_POLL_EMUL_H_) || (defined(BROKEN_POLL) && !defined(__APPLE__))
+ #undef HAVE_POLL
+ #endif
+ 
+@@ -70,6 +74,11 @@
+ #include <unistd.h>
+ #endif /* G_OS_UNIX */
+ #include <errno.h>
++#ifdef __APPLE__
++#include <string.h>
++#include <sys/event.h>
++#include <sys/syslimits.h>
++#endif
+ 
+ #ifdef G_OS_WIN32
+ #include <windows.h>
+@@ -88,6 +97,104 @@
+ 
+ #ifdef HAVE_POLL
+ 
++#ifdef __APPLE__
++/* AVM (2026-11-02): macOS's poll() refuses more than OPEN_MAX entries, EINVAL,
++ * and a main loop that gets that spins with nothing heard. Above that, the same
++ * answer from kqueue. One fd can be listed twice, so results go through a table
++ * by fd. An entry asking for neither read nor write isn't watched.
++ */
++static gint
++avm_poll_many (GPollFD *fds, guint nfds, gint timeout)
++{
++  struct kevent *changes = NULL;
++  struct kevent *events = NULL;
++  int *head = NULL, *next = NULL;
++  int kq, maxfd = -1, count = 0, got, saved, ready = 0;
++  guint i;
++
++  for (i = 0; i < nfds; i++)
++    {
++      fds[i].revents = 0;
++      if (fds[i].fd > maxfd)
++        maxfd = fds[i].fd;
++    }
++  kq = kqueue ();
++  if (kq < 0)
++    return -1;
++  changes = malloc (sizeof (struct kevent) * nfds * 2);
++  events = malloc (sizeof (struct kevent) * nfds * 2);
++  head = malloc (sizeof (int) * (maxfd + 1));
++  next = malloc (sizeof (int) * nfds);
++  if (changes == NULL || events == NULL || head == NULL || next == NULL)
++    {
++      errno = ENOMEM;
++      ready = -1;
++      goto out;
++    }
++  memset (head, 0xff, sizeof (int) * (maxfd + 1));
++  for (i = 0; i < nfds; i++)
++    {
++      int fd = fds[i].fd;
++      if (fd < 0)
++        continue;
++      next[i] = head[fd];
++      head[fd] = (int) i;
++      if (fds[i].events & G_IO_IN)
++        EV_SET (&changes[count++], fd, EVFILT_READ, EV_ADD | EV_RECEIPT, 0, 0, NULL);
++      if (fds[i].events & G_IO_OUT)
++        EV_SET (&changes[count++], fd, EVFILT_WRITE, EV_ADD | EV_RECEIPT, 0, 0, NULL);
++    }
++  {
++    struct timespec now = { 0, 0 };
++    struct timespec wait = { timeout / 1000, (timeout % 1000) * 1000000L };
++    gboolean bad = FALSE;
++    int n, j;
++
++    got = kevent (kq, changes, count, events, count, &now);
++    if (got < 0)
++      {
++        ready = -1;
++        goto out;
++      }
++    for (n = 0; n < got; n++)
++      if ((events[n].flags & EV_ERROR) && events[n].data != 0)
++        {
++          for (j = head[events[n].ident]; j >= 0; j = next[j])
++            fds[j].revents |= events[n].data == EBADF ? G_IO_NVAL : G_IO_ERR;
++          bad = TRUE;
++        }
++    got = kevent (kq, NULL, 0, events, count, (bad || timeout == 0) ? &now : timeout < 0 ? NULL : &wait);
++    if (got < 0)
++      {
++        ready = -1;
++        goto out;
++      }
++    for (n = 0; n < got; n++)
++      for (j = head[events[n].ident]; j >= 0; j = next[j])
++        {
++          if (events[n].filter == EVFILT_READ && (fds[j].events & G_IO_IN))
++            fds[j].revents |= G_IO_IN;
++          if (events[n].filter == EVFILT_WRITE && (fds[j].events & G_IO_OUT))
++            fds[j].revents |= G_IO_OUT;
++          if (events[n].flags & EV_EOF)
++            fds[j].revents |= G_IO_HUP;
++        }
++  }
++  for (i = 0; i < nfds; i++)
++    if (fds[i].revents != 0)
++      ready++;
++out:
++  saved = errno;
++  free (changes);
++  free (events);
++  free (head);
++  free (next);
++  close (kq);
++  errno = saved;
++  return ready;
++}
++#endif
++
+ /**
+  * g_poll:
+  * @fds: file descriptors to poll
+@@ -123,6 +230,10 @@
+ 	guint    nfds,
+ 	gint     timeout)
+ {
++#ifdef __APPLE__
++  if (nfds > OPEN_MAX)
++    return avm_poll_many (fds, nfds, timeout);
++#endif
+   return poll ((struct pollfd *)fds, nfds, timeout);
+ }
+ 

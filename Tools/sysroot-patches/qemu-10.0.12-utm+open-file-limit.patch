@@ -1,0 +1,39 @@
+AVM: QEMU may open as many files as this Mac lets one process have
+
+Each guest connection is a file in QEMU, and OPEN_MAX stopped new ones at 10240.
+It's read from kern.maxfilesperproc each start, and said on stderr. It needs
+glib's g_poll patch: macOS's poll() refuses more than OPEN_MAX.
+
+--- a/os-posix.c
++++ b/os-posix.c
+@@ -29,6 +29,9 @@
+ #include <pwd.h>
+ #include <grp.h>
+ #include <libgen.h>
++#ifdef CONFIG_DARWIN
++#include <sys/sysctl.h>
++#endif
+ 
+ #include "qemu/error-report.h"
+ #include "qemu/log.h"
+@@ -271,6 +274,20 @@
+     }
+ 
+ #ifdef CONFIG_DARWIN
++    /* AVM: as many files as this Mac lets one process have, since each guest
++     * connection is a file here. glib's g_poll takes over above OPEN_MAX. */
++    {
++        int most = 0;
++        size_t size = sizeof(most);
++        if (sysctlbyname("kern.maxfilesperproc", &most, &size, NULL, 0) == 0 &&
++            most > OPEN_MAX) {
++            nofile.rlim_cur = (rlim_t)most < nofile.rlim_max ? (rlim_t)most : nofile.rlim_max;
++            if (setrlimit(RLIMIT_NOFILE, &nofile) == 0) {
++                fprintf(stderr, "AVM: open file limit %llu\n", (unsigned long long)nofile.rlim_cur);
++                return;
++            }
++        }
++    }
+     nofile.rlim_cur = OPEN_MAX < nofile.rlim_max ? OPEN_MAX : nofile.rlim_max;
+ #else
+     nofile.rlim_cur = nofile.rlim_max;
