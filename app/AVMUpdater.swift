@@ -15,7 +15,7 @@
 //   - Feed: SUFeedURL in Info.plist → appcast.xml at the repo root on main,
 //     served via raw.githubusercontent.com (repo is the host; a release is
 //     a commit). raw caching means a new release can take ~5 minutes to
-//     become visible — harmless for launch-time checks.
+//     become visible. UpdatePoll looks at it every 15 minutes (2026-11-02).
 //   - Signing: SUPublicEDKey in Info.plist. The private key lives in the
 //     login Keychain with a file backup in iCloud Drive/AVM-keys. It NEVER
 //     enters the repo.
@@ -64,6 +64,7 @@ final class AVMUpdater: ObservableObject {
 
     /// Sparkle holds its delegate weakly, so the updater keeps it.
     private let announcer = UpdateAnnouncer()
+    private var poll: UpdatePoll?
 
     /// `starting` false for the accessibility audit (2026-10-30), which
     /// shows AVM's Settings without checking for updates or asking to.
@@ -77,6 +78,11 @@ final class AVMUpdater: ObservableObject {
         )
         controller.updater.publisher(for: \.canCheckForUpdates)
             .assign(to: &$canCheckForUpdates)
+        guard starting, let feed = (Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String).flatMap(URL.init) else { return }
+        let updater = controller.updater
+        let poll = UpdatePoll(feed: feed, every: UpdatePoll.interval, updater: updater)
+        announcer.found = { build in poll.offered = max(poll.offered ?? 0, build) }
+        self.poll = poll
     }
 
     /// Menu-invoked check. Shows Sparkle's standard UI in every outcome,
@@ -88,7 +94,7 @@ final class AVMUpdater: ObservableObject {
         controller.checkForUpdates(nil)
     }
 
-    /// Sparkle's own daily check, for AVM's Settings (2026-10-30). Sparkle
+    /// Automatic checks, Sparkle's and UpdatePoll's, for AVM's Settings (2026-10-30). Sparkle
     /// keeps the choice in AVM's defaults.
     var checksAutomatically: Bool {
         get { controller.updater.automaticallyChecksForUpdates }
@@ -97,6 +103,53 @@ final class AVMUpdater: ObservableObject {
             controller.updater.automaticallyChecksForUpdates = newValue
             AVMLog.write("AVM: Settings — check for updates automatically \(newValue ? "on" : "off")")
         }
+    }
+}
+
+/// A new version within about 15 minutes (2026-11-02, the user's request).
+/// Sparkle won't check more often than hourly, and a check that finds what the
+/// user has already put off opens its window again, so AVM looks at the feed
+/// itself, with the file's ETag so an unchanged feed costs almost nothing, and
+/// asks Sparkle once per new version. Sparkle's own check still reminds daily.
+/// A push isn't possible with a feed on GitHub, which also caches it for up to
+/// 5 minutes. Off when automatic checks are off.
+@MainActor
+final class UpdatePoll {
+    static let interval: TimeInterval = 15 * 60
+    var offered: Int?
+    private let feed: URL
+    private let updater: SPUUpdater
+    private var etag: String?
+    private var task: Task<Void, Never>?
+
+    init(feed: URL, every interval: TimeInterval, updater: SPUUpdater) {
+        self.feed = feed
+        self.updater = updater
+        task = Task { [weak self] in
+            // Soon after opening too: Sparkle's first check waits out its day.
+            try? await Task.sleep(for: .seconds(min(interval, 60)))
+            while !Task.isCancelled {
+                await self?.look()
+                try? await Task.sleep(for: .seconds(interval))
+            }
+        }
+    }
+
+    private func look() async {
+        guard updater.automaticallyChecksForUpdates, updater.canCheckForUpdates else { return }
+        var request = URLRequest(url: feed, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 60)
+        if let etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let text = String(data: data, encoding: .utf8) else { return }
+        etag = http.value(forHTTPHeaderField: "ETag")
+        let current = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String).flatMap(Int.init) ?? 0
+        let newest = UpdateFeed.newestBuild(in: text, channels: UpdateChannels.allowed)
+        guard UpdateFeed.shouldOffer(newest: newest, current: current, offered: offered),
+              updater.canCheckForUpdates else { return }
+        offered = newest
+        AVMLog.write("AVM: Updates — the feed has build \(newest ?? 0); asking Sparkle.")
+        updater.checkForUpdatesInBackground()
     }
 }
 
@@ -125,9 +178,14 @@ final class UpdateAnnouncer: NSObject, SPUUpdaterDelegate {
         Self.relaunchingForUpdate = true
     }
 
+    /// What was found, so UpdatePoll doesn't ask about it again.
+    @MainActor var found: ((Int) -> Void)?
+
     nonisolated func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
         let version = item.displayVersionString
+        let build = Int(item.versionString)
         Task { @MainActor in
+            if let build { found?(build) }
             let inGuest = FocusLockManager.shared?.isLocked ?? false
             AVMLog.write("AVM: Updates — found version \(version).")
             Announcer.shared.announce(

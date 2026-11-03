@@ -116,7 +116,7 @@ struct AppPreferencesView: View {
             Toggle("Check for updates automatically", isOn: Binding(
                 get: { updater.checksAutomatically },
                 set: { updater.checksAutomatically = $0 }))
-            Text("AVM looks for a new version when it opens and once a day, and asks before installing one.")
+            Text("AVM looks for a new version when it opens and every 15 minutes, and asks before installing one.")
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
             Toggle("Get new versions early, as a tester", isOn: $earlyUpdates)

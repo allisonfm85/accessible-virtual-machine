@@ -23,6 +23,7 @@ enum UpdateTestJob {
     private static var driver: Driver?
     private static var delegate: Delegate?
     private static var updater: SPUUpdater?
+    private static var poll: UpdatePoll?
 
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
         guard arguments.contains(flag) else { return }
@@ -43,7 +44,15 @@ enum UpdateTestJob {
             }
             print("   yes  Sparkle started")
             fflush(stdout)
-            updater.checkForUpdates()
+            // --poll SECONDS (2026-11-02): as a running copy finds it, not as a
+            // person asking.
+            if let seconds = arguments.firstIndex(of: "--poll").flatMap({ arguments.indices.contains($0 + 1) ? TimeInterval(arguments[$0 + 1]) : nil }),
+               let url = feed.flatMap(URL.init) ?? (Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String).flatMap(URL.init) {
+                updater.automaticallyChecksForUpdates = true
+                self.poll = UpdatePoll(feed: url, every: seconds, updater: updater)
+            } else {
+                updater.checkForUpdates()
+            }
             // A slow network isn't a failure; this long is.
             try? await Task.sleep(for: .seconds(1200))
             print("   NO   the update finished within 20 minutes")
@@ -65,7 +74,7 @@ enum UpdateTestJob {
         private func failed(_ line: String) -> Never { print("   NO   \(line)"); print("FAILED"); fflush(stdout); exit(1) }
 
         func show(_ request: SPUUpdatePermissionRequest, reply: @escaping (SUUpdatePermissionResponse) -> Void) {
-            reply(SUUpdatePermissionResponse(automaticUpdateChecks: false, sendSystemProfile: false))
+            reply(SUUpdatePermissionResponse(automaticUpdateChecks: CommandLine.arguments.contains("--poll"), sendSystemProfile: false))
         }
         func showUserInitiatedUpdateCheck(cancellation: @escaping () -> Void) {}
         func showUpdateFound(with appcastItem: SUAppcastItem, state: SPUUserUpdateState, reply: @escaping (SPUUserUpdateChoice) -> Void) {

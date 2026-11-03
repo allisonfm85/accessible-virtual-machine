@@ -102,6 +102,30 @@ nonisolated enum AVMKeysInMachine {
     }
 }
 
+// MARK: - The update feed
+
+nonisolated enum UpdateFeed {
+    /// The newest build the feed offers this copy: an early item only with its
+    /// channel allowed.
+    static func newestBuild(in feed: String, channels: Set<String>) -> Int? {
+        feed.components(separatedBy: "<item>").dropFirst().compactMap { item -> Int? in
+            if let channel = between("<sparkle:channel>", "</sparkle:channel>", in: item), !channels.contains(channel) { return nil }
+            return between("<sparkle:version>", "</sparkle:version>", in: item).flatMap(Int.init)
+        }.max()
+    }
+
+    /// Once per version: after that, Sparkle's own reminder has it.
+    static func shouldOffer(newest: Int?, current: Int, offered: Int?) -> Bool {
+        guard let newest else { return false }
+        return newest > max(current, offered ?? 0)
+    }
+
+    private static func between(_ open: String, _ close: String, in text: String) -> String? {
+        guard let start = text.range(of: open), let end = text.range(of: close, range: start.upperBound..<text.endIndex) else { return nil }
+        return String(text[start.upperBound..<end.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 // MARK: - A changed screen
 
 nonisolated enum ScreenChange {

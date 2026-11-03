@@ -8,7 +8,7 @@
 # signature and install it over the copy; then checks what's there. Run it
 # after publishing, or give it a feed that names a release to try beforehand.
 #
-#   Tools/test-update.sh [--app PATH] [--feed URL] [--early] [--out FOLDER]
+#   Tools/test-update.sh [--app PATH] [--feed URL] [--early] [--poll SECONDS] [--out FOLDER]
 #
 # Downloads the whole update, about 100 MB. Touches nothing outside its folder.
 
@@ -20,11 +20,13 @@ APP="$CACHE/dd-check/Build/Products/Debug/AVM.app"
 FEED=""
 OUT=""
 EARLY=()
+POLL=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --app) APP="$2"; shift 2 ;;
         --feed) FEED="$2"; shift 2 ;;
         --early) EARLY=(-AVMEarlyUpdates YES); shift ;;
+        --poll) POLL=(--poll "$2" -SUAutomaticallyUpdate NO); shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 64 ;;
     esac
@@ -46,7 +48,7 @@ codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign "${IDEN
 echo "== The copy says it's 0.0.1, signed by ${IDENTITY:-nobody}"
 
 LOG="${OUT:-$WORK}/update-job.txt"
-"$COPY/Contents/MacOS/AVM" --test-update ${FEED:+--feed "$FEED"} ${EARLY[@]+"${EARLY[@]}"} > "$LOG" 2>/dev/null &
+"$COPY/Contents/MacOS/AVM" --test-update ${FEED:+--feed "$FEED"} ${POLL[@]+"${POLL[@]}"} ${EARLY[@]+"${EARLY[@]}"} > "$LOG" 2>/dev/null &
 JOB=$!
 INSTALLED=""
 for _ in $(seq 1 240); do

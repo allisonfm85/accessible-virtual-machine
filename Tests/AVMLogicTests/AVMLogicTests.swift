@@ -1787,6 +1787,24 @@ final class GuestWatchTests: XCTestCase {
         XCTAssertFalse(AVMKeysInMachine.isControlMoving(keyCode: 0, modifiers: [.control]))
     }
 
+    func testTheFeedsNewestBuild() {
+        let feed = """
+        <channel><!-- <sparkle:version>99</sparkle:version> --><item><sparkle:channel>early</sparkle:channel><sparkle:version>48</sparkle:version></item>
+        <item><sparkle:version>47</sparkle:version></item><item><sparkle:version>46</sparkle:version></item></channel>
+        """
+        XCTAssertEqual(UpdateFeed.newestBuild(in: feed, channels: []), 47)
+        XCTAssertEqual(UpdateFeed.newestBuild(in: feed, channels: ["early"]), 48)
+        XCTAssertNil(UpdateFeed.newestBuild(in: "not a feed", channels: []))
+    }
+
+    func testEachVersionIsOfferedOnce() {
+        XCTAssertTrue(UpdateFeed.shouldOffer(newest: 48, current: 47, offered: nil))
+        XCTAssertFalse(UpdateFeed.shouldOffer(newest: 47, current: 47, offered: nil))
+        XCTAssertFalse(UpdateFeed.shouldOffer(newest: 48, current: 47, offered: 48))
+        XCTAssertTrue(UpdateFeed.shouldOffer(newest: 49, current: 47, offered: 48))
+        XCTAssertFalse(UpdateFeed.shouldOffer(newest: nil, current: 47, offered: nil))
+    }
+
     func testStopScreenIsRecognised() {
         XCTAssertTrue(ScreenChange.isStopScreen(["Your device ran into a problem and needs to restart.", "Stop code: CRITICAL_PROCESS_DIED"]))
         XCTAssertFalse(ScreenChange.isStopScreen(["Your device ran into a problem"]))
