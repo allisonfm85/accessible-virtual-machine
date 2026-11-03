@@ -79,6 +79,9 @@ final class WindowsApps {
     private var helperReady: [UUID: Int] = [:]
     private var installing: Set<UUID> = []
     private var timer: Timer?
+    private var lastList: [UUID: String] = [:]
+    private var listWait: [UUID: TimeInterval] = [:]
+    private var nextListRead: [UUID: Date] = [:]
     private var ticking = false
     private var built: Set<String> = []
     private var requestNumber = 0
@@ -142,7 +145,14 @@ final class WindowsApps {
                     guard await ensureHelper(manager, machine: id) else { continue }
                 }
                 guard listed.contains(id) else { continue }
+                // Each read is three lines in Windows' Application log, 61 a
+                // minute (2026-11-02). Every 3 s while the list moves, easing
+                // to every 12 s while it doesn't.
+                if let next = nextListRead[id], Date() < next { continue }
                 guard let list = try? await Self.readGuestFile(manager, Self.guestFolder + #"\apps\running.txt"#) else { continue }
+                listWait[id] = list == lastList[id] ? min((listWait[id] ?? 3) * 2, 12) : 3
+                lastList[id] = list
+                nextListRead[id] = Date().addingTimeInterval((listWait[id] ?? 3) - 0.5)
                 await sync(machine: id, machineName: session.configuration.name, list: list)
             }
         }
