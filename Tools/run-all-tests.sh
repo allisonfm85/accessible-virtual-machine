@@ -133,6 +133,8 @@ add "debian background mode"           debian   "--test-background"
 add "debian agent shutdown"            debian   "--test-agent-shutdown"
 add "debian remote desktop"            debian   "--test-remote-desktop"
 add "debian two machines"              debian2  "--test-two-machines"
+# 20 minutes, so only when asked for: --only stress.
+[ -z "$ONLY" ] || add "stress two machines"              debian2  "--test-stress"
 add "debian 3d"                        debian   "--test-3d"
 add "windows 3d"                       windows  "--test-windows-3d"
 # The core tests, on every other Linux (2026-10-31). Fedora's used to be

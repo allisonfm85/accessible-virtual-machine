@@ -83,6 +83,12 @@
 // temporary AVM folder (the user's machine list is never opened), then
 // runs the original and the copy at once, and deletes the copy.
 //
+// --test-stress (2026-11-02): two Linux machines through MachineSessions for 20
+// minutes (AVM_STRESS_MINUTES), with their processors, disks and connections
+// busy, and one paused and carried on every 5 minutes as Mac sleep does. Each
+// minute both must answer, with nothing from the health check. A real Mac sleep
+// isn't in it. Only when named with --only.
+//
 // --test-two-machines: both machines run at once through MachineSessions
 // (with no windows): each answers, each is the current machine in turn,
 // shutting the first down leaves the second running and current, and the
@@ -115,7 +121,7 @@ enum SaveResumeTestJob {
     static let flag = "--test-save-resume"
 
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
-        guard arguments.contains(flag) || arguments.contains("--test-microphone") || arguments.contains("--test-two-machines") || arguments.contains("--test-blue-screen")
+        guard arguments.contains(flag) || arguments.contains("--test-microphone") || arguments.contains("--test-two-machines") || arguments.contains("--test-stress") || arguments.contains("--test-blue-screen")
                 || arguments.contains("--test-duplicate") || arguments.contains("--test-send-file")
                 || arguments.contains("--test-linux-share") || arguments.contains("--test-ctl")
                 || arguments.contains("--test-disk-info") || arguments.contains("--run-in-guest")
@@ -191,6 +197,11 @@ enum SaveResumeTestJob {
             let folderURL = URL(fileURLWithPath: folder, isDirectory: true)
             if arguments.contains("--test-blue-screen") {
                 await finish(await blueScreen(folderURL))
+            }
+            if arguments.contains("--test-stress"), let second = value("--vm2") {
+                let guest2 = GuestOS(rawValue: value("--guest2") ?? "windows") ?? .windows
+                let passed = await stress(folderURL, guest, URL(fileURLWithPath: second, isDirectory: true), guest2)
+                await finish(passed)
             }
             if arguments.contains("--test-two-machines"), let second = value("--vm2") {
                 let guest2 = GuestOS(rawValue: value("--guest2") ?? "windows") ?? .windows
@@ -1654,6 +1665,65 @@ enum SaveResumeTestJob {
         check("AVM said Windows stopped with an error", said)
         check("the machine answers again", await waitForAgent(agent, seconds: 600))
         await shutDown(manager)
+        return ok
+    }
+
+    private static func stress(_ folderA: URL, _ guestA: GuestOS, _ folderB: URL, _ guestB: GuestOS) async -> Bool {
+        var configA = configuration(folder: folderA, guest: guestA)
+        configA.name = "Machine A"
+        var configB = configuration(folder: folderB, guest: guestB)
+        configB.name = "Machine B"
+        let minutes = ProcessInfo.processInfo.environment["AVM_STRESS_MINUTES"].flatMap(Int.init) ?? 20
+        let machines = MachineSessions.shared
+        let a = machines.start(configA, vmStore: nil, focusLock: nil)
+        let b = machines.start(configB, vmStore: nil, focusLock: nil)
+        for _ in 0..<600 where !(a.vmState == .running && b.vmState == .running) {
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        guard a.vmState == .running, b.vmState == .running,
+              let agentA = a.manager.guestAgentSocketPath, let agentB = b.manager.guestAgentSocketPath,
+              await waitForAgent(agentA, seconds: 300), await waitForAgent(agentB, seconds: 300) else {
+            check("both are running and answer", false)
+            return false
+        }
+        check("both are running and answer", true)
+        let started = Date()
+        let load = #"""
+            for n in 1 2; do nohup sh -c 'while :; do :; done' >/dev/null 2>&1 & done
+            nohup sh -c 'while :; do dd if=/dev/urandom of=/tmp/avm-stress bs=1M count=200 2>/dev/null; sync; done' >/dev/null 2>&1 &
+            nohup bash -c 'while :; do for n in {1..20}; do (exec 3<>/dev/tcp/1.1.1.1/80 && printf "HEAD / HTTP/1.0\r\n\r\n" >&3 && timeout 10 cat <&3 >/dev/null) & done; wait; sleep 1; done' >/dev/null 2>&1 &
+            command -v bash
+            """#
+        for agent in [agentA, agentB] {
+            check("the load started", await exec(agent, program: "/bin/sh", args: ["-c", load])?.contains("bash") == true)
+        }
+        var quiet = true, answered = true, peak: UInt64 = 0
+        for minute in 1...minutes {
+            try? await Task.sleep(for: .seconds(60))
+            if minute % 5 == 0 {
+                _ = try? await a.manager.sendQMPCommand("stop", arguments: [:])
+                try? await Task.sleep(for: .seconds(20))
+                _ = try? await a.manager.sendQMPCommand("cont", arguments: [:])
+            }
+            for (name, manager, agent) in [("A", a.manager, agentA), ("B", b.manager, agentB)] {
+                let reading = manager.healthReading(since: started)
+                let warnings = MachineHealth(reading).warnings.map(\.kind)
+                let answers = await waitForAgent(agent, seconds: 90)
+                peak = max(peak, reading.memoryBytes)
+                print("   minute \(minute), \(name): \(reading.openFiles) files, \(reading.memoryBytes >> 20) MB, \(answers ? "answers" : "NO ANSWER")\(warnings.isEmpty ? "" : ", warnings: \(warnings)")")
+                fflush(stdout)
+                quiet = quiet && warnings.isEmpty
+                answered = answered && answers
+            }
+        }
+        check("both answered every minute", answered)
+        check("the health check stayed quiet, no faults", quiet)
+        print("   the most memory one QEMU used: \(peak >> 20) MB")
+        for agent in [agentA, agentB] {
+            _ = await exec(agent, program: "/bin/sh", args: ["-c", "rm -f /tmp/avm-stress"])
+        }
+        try? await a.stopGracefully()
+        try? await b.stopGracefully()
         return ok
     }
 
