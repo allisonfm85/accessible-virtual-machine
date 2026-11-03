@@ -790,6 +790,13 @@ final class SPICEKeyCaptureView: MTKView {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard let coordinator, coordinator.isLocked else { return false }
+        // CONTROL WITH THE MOVING KEYS (2026-11-02, the user's report): Control-Fn-
+        // Right is Control-End in Windows and the end of a document, but the Mac's
+        // Window menu has Fn-Control-arrows for tiling, and the menu got it first.
+        if AVMKeysInMachine.isControlMoving(keyCode: event.keyCode, modifiers: event.modifierFlags) {
+            coordinator.handleKey(event: event, pressed: true)
+            return true
+        }
         // COMMAND COMBOS ONLY (2026-09-26, macOS 27, MEASURED): everything
         // below treats an event here as a Command (Windows-key) combination
         // and sends it as a TAP. On macOS 27 the Caps Lock courier (F19) also

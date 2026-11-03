@@ -86,6 +86,13 @@ nonisolated enum AVMKeysInMachine {
     private static let plain: Set<UInt16> = [31, 34, 9, 2]      // O, I, V, D
     private static let withOption: Set<UInt16> = [31, 34, 8]    // O, I, C
 
+    /// Control with an arrow, Home, End, Page Up or Page Down, and no Command:
+    /// the machine's, not the Mac's Window menu.
+    static func isControlMoving(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
+        modifiers.contains(.control) && !modifiers.contains(.command) && movingKeys.contains(keyCode)
+    }
+    private static let movingKeys: Set<UInt16> = [123, 124, 125, 126, 115, 119, 116, 121]
+
     static func isAVMs(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
         switch modifiers.intersection([.control, .command, .option, .shift]) {
         case [.command, .shift]: return plain.contains(keyCode)

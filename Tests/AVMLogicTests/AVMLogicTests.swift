@@ -1778,6 +1778,15 @@ final class GuestWatchTests: XCTestCase {
         XCTAssertFalse(AVMKeysInMachine.isAVMs(keyCode: 8, modifiers: [.command, .shift]))
     }
 
+    func testControlWithMovingKeysGoesToTheMachine() {
+        XCTAssertTrue(AVMKeysInMachine.isControlMoving(keyCode: 119, modifiers: [.control, .function]), "Control-Fn-Right, Control-End")
+        XCTAssertTrue(AVMKeysInMachine.isControlMoving(keyCode: 124, modifiers: [.control, .function]))
+        XCTAssertTrue(AVMKeysInMachine.isControlMoving(keyCode: 115, modifiers: [.control, .shift, .function]))
+        XCTAssertFalse(AVMKeysInMachine.isControlMoving(keyCode: 119, modifiers: [.function]))
+        XCTAssertFalse(AVMKeysInMachine.isControlMoving(keyCode: 124, modifiers: [.control, .command, .function]), "the Windows key's own")
+        XCTAssertFalse(AVMKeysInMachine.isControlMoving(keyCode: 0, modifiers: [.control]))
+    }
+
     func testStopScreenIsRecognised() {
         XCTAssertTrue(ScreenChange.isStopScreen(["Your device ran into a problem and needs to restart.", "Stop code: CRITICAL_PROCESS_DIED"]))
         XCTAssertFalse(ScreenChange.isStopScreen(["Your device ran into a problem"]))
