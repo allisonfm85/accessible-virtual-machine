@@ -1,0 +1,22 @@
+AVM: say what a data abort with no instruction information was
+
+QEMU stops on assert(isv) when a guest touches device memory with an instruction
+HVF can't describe. It happened once on a Windows machine with 3D on, and nothing
+said where. This says where before it stops. It doesn't fix the crash.
+
+--- a/target/arm/hvf/hvf.c
++++ b/target/arm/hvf/hvf.c
+@@ -2684,6 +2684,13 @@
+             break;
+         }
+ 
++        if (!isv) {
++            error_report("AVM: data abort with no instruction information: pc=0x%llx va=0x%llx pa=0x%llx syndrome=0x%llx",
++                         (unsigned long long)env->pc,
++                         (unsigned long long)hvf_exit->exception.virtual_address,
++                         (unsigned long long)hvf_exit->exception.physical_address,
++                         (unsigned long long)syndrome);
++        }
+         assert(isv);
+ 
+         if (iswrite) {
