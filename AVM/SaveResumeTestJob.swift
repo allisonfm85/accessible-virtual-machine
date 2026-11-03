@@ -1174,6 +1174,16 @@ enum SaveResumeTestJob {
         print("== Frozen")
         _ = try? await manager.sendQMPCommand("stop", arguments: nil)
         check("AVM says it looks stuck", await waitForLog("looks stuck", seconds: 180))
+        check("it saved what the machine was doing", await waitForLog("-stuck.log", seconds: 60))
+        if let line = log().components(separatedBy: "\n").last(where: { $0.contains("-stuck.log") }),
+           let name = line.components(separatedBy: " ").last,
+           let saved = AVMLog.currentLogURL().flatMap({ try? String(contentsOf: $0.deletingLastPathComponent().appendingPathComponent(name), encoding: .utf8) }) {
+            check("the file has every processor's registers, twice", saved.components(separatedBy: "PC=").count > 2 && saved.contains("look 2"))
+            check("and QEMU's threads", saved.contains("hvf_cpu_thread_fn"))
+            check("and no user name", !saved.contains(NSUserName()))
+        } else {
+            check("the file can be read", false)
+        }
         print("== Moving again")
         _ = try? await manager.sendQMPCommand("cont", arguments: nil)
         check("AVM says it's moving again", await waitForLog("is moving again", seconds: 120))

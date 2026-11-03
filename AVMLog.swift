@@ -386,7 +386,13 @@ nonisolated final class AVMLog: @unchecked Sendable {
     private func prune(in dir: URL) {
         let fm = FileManager.default
         guard let all = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
-        let logs = all.filter { $0.hasPrefix("avm-") && $0.hasSuffix(".log") }.sorted()
+        // What a stuck machine was doing (GuestWatch) has its own count: with only
+        // three logs kept, two starts of AVM would lose it (2026-11-02).
+        let stuck = all.filter { $0.hasPrefix("avm-") && $0.hasSuffix("-stuck.log") }.sorted()
+        for name in stuck.dropLast(5) {
+            try? fm.removeItem(at: dir.appendingPathComponent(name))
+        }
+        let logs = all.filter { $0.hasPrefix("avm-") && $0.hasSuffix(".log") && !$0.hasSuffix("-stuck.log") }.sorted()
         let keep = max(filesKept - 1, 0)
         guard logs.count > keep else { return }
         for name in logs.prefix(logs.count - keep) {

@@ -147,6 +147,7 @@ extension VMManager {
                     switch stuck.look(agentAnswered: agentAnswered, screenChanged: changed) {
                     case .stuck:
                         AVMLog.write("AVM: GuestWatch — \(machine) looks stuck")
+                        Task { await self.saveStuckState(machine: machine) }
                         Announcer.shared.announce("\(machine) looks stuck: for \(Int(stuck.limit / 60)) minutes it hasn't answered AVM, and its screen hasn't changed. Next: press Command-Shift-R to reset it, or wait if it's doing something long.", tone: .failure)
                     case .alive:
                         AVMLog.write("AVM: GuestWatch — \(machine) is moving again")
@@ -341,6 +342,59 @@ extension VMManager {
         } catch {
             AVMLog.write("AVM: GuestWatch — restore point before updates failed: \(error.localizedDescription)")
             return .notPossible
+        }
+    }
+
+    // MARK: - What a stuck machine was doing
+
+    /// A freeze leaves nothing behind once it's force-stopped (2026-11-02: Windows
+    /// froze with no dump, no fault and nothing to go on). So the moment AVM calls
+    /// a machine stuck: its processors twice, ten seconds apart, which shows
+    /// whether they're moving, and what QEMU's threads are doing. Named as AVM's
+    /// logs are, so Report a Problem sends it and it sorts by date when the oldest
+    /// go. Registers and call stacks, no screen text.
+    func saveStuckState(machine: String) async {
+        guard let folder = AVMLog.currentLogURL()?.deletingLastPathComponent() else { return }
+        var text = "AVM: state of \(machine) when it looked stuck, \(Date())\n"
+        for round in 1...2 {
+            if round == 2 { try? await Task.sleep(for: .seconds(10)) }
+            text += "\n== Registers, look \(round)\n"
+            for command in ["info status", "info registers -a"] {
+                do {
+                    let answer = try await sendQMPCommand("human-monitor-command", arguments: ["command-line": command])
+                    text += "\(answer as? String ?? "(no text)")\n"
+                } catch {
+                    text += "\(command): QEMU didn't answer: \(error.localizedDescription)\n"
+                }
+            }
+        }
+        let pid = qemuPID
+        let threads = await Task.detached { () -> String in
+            guard pid > 0 else { return "QEMU isn't running.\n" }
+            let file = FileManager.default.temporaryDirectory.appendingPathComponent("avm-stuck-\(UUID().uuidString).txt")
+            defer { try? FileManager.default.removeItem(at: file) }
+            let sample = Process()
+            sample.executableURL = URL(fileURLWithPath: "/usr/bin/sample")
+            sample.arguments = [String(pid), "3", "-file", file.path]
+            sample.standardOutput = FileHandle.nullDevice
+            sample.standardError = FileHandle.nullDevice
+            guard (try? sample.run()) != nil else { return "sample didn't start.\n" }
+            let stop = DispatchWorkItem { sample.terminate() }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 30, execute: stop)
+            sample.waitUntilExit()
+            stop.cancel()
+            return (try? String(contentsOf: file, encoding: .utf8)) ?? "sample left nothing.\n"
+        }.value
+        text += "\n== QEMU's threads\n\(threads)"
+        let stamp = DateFormatter()
+        stamp.locale = Locale(identifier: "en_US_POSIX")
+        stamp.dateFormat = "yyyy-MM-dd-HHmmss"
+        let url = folder.appendingPathComponent("avm-\(stamp.string(from: Date()))-stuck.log")
+        do {
+            try AVMLog.sanitize(text).write(to: url, atomically: true, encoding: .utf8)
+            AVMLog.write("AVM: GuestWatch — saved what \(machine) was doing to \(url.lastPathComponent)")
+        } catch {
+            AVMLog.write("AVM: GuestWatch — couldn't save what \(machine) was doing: \(error.localizedDescription)")
         }
     }
 }
