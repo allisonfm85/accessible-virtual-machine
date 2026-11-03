@@ -18,7 +18,8 @@
 //     2. NEVER TRUNCATED. data.write(to:) ran only when the file did not
 //        exist, so every launch since the file was first created appended to
 //        the same one, forever, with no reset. Fixed by one file per launch,
-//        last three kept.
+//        last ten kept (three until 2026-11-02: a few starts of AVM lost a
+//        freeze's log).
 //     3. UTC TIMESTAMPS. "\(Date())" renders +0000, so the file read four
 //        hours off the wall clock and four hours off the unified log. A
 //        tester saying "it froze around 10:15" would find nothing near 10:15.
@@ -143,7 +144,7 @@ nonisolated final class AVMLog: @unchecked Sendable {
     /// more (2026-10-31): the suite starts an AVM for every test, and with
     /// three kept, a longer test running beside it lost the log it was
     /// still writing, and reading, within minutes.
-    private var filesKept: Int { Self.logDirectoryOverride == nil ? 3 : 30 }
+    private var filesKept: Int { Self.logDirectoryOverride == nil ? 10 : 30 }
 
     // MARK: State — touched ONLY on `queue`.
     private let queue = DispatchQueue(label: "com.alllisonmeloy.AVM.filelog", qos: .utility)
@@ -386,8 +387,8 @@ nonisolated final class AVMLog: @unchecked Sendable {
     private func prune(in dir: URL) {
         let fm = FileManager.default
         guard let all = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
-        // What a stuck machine was doing (GuestWatch) has its own count: with only
-        // three logs kept, two starts of AVM would lose it (2026-11-02).
+        // What a stuck machine was doing (GuestWatch) has its own count, so
+        // several starts of AVM don't lose it (2026-11-02).
         let stuck = all.filter { $0.hasPrefix("avm-") && $0.hasSuffix("-stuck.log") }.sorted()
         for name in stuck.dropLast(5) {
             try? fm.removeItem(at: dir.appendingPathComponent(name))
