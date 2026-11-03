@@ -5,6 +5,7 @@
 // machine's process list says is running, and whether its screen changed. Apart from the loop, so the logic tests
 // reach it.
 
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -72,6 +73,25 @@ nonisolated struct GuestProcesses: Equatable {
             }
         }
         return found
+    }
+}
+
+// MARK: - AVM's keys with the keyboard in a machine
+
+/// AVM's menu keys that answer or act from the Mac (2026-11-02): with the keyboard
+/// in a machine, the screens that need Read Screen are right there, and these
+/// reached Windows as Windows-Shift keys instead. Only these: the rest of Command
+/// is still the machine's Windows key.
+nonisolated enum AVMKeysInMachine {
+    private static let plain: Set<UInt16> = [31, 34, 9, 2]      // O, I, V, D
+    private static let withOption: Set<UInt16> = [31, 34, 8]    // O, I, C
+
+    static func isAVMs(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
+        switch modifiers.intersection([.control, .command, .option, .shift]) {
+        case [.command, .shift]: return plain.contains(keyCode)
+        case [.command, .option, .shift]: return withOption.contains(keyCode)
+        default: return false
+        }
     }
 }
 

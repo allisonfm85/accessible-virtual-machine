@@ -813,6 +813,12 @@ final class SPICEKeyCaptureView: MTKView {
             coordinator.returnToMac()
             return true
         }
+        // AVM'S KEYS, IN THE WINDOW TOO (2026-11-02, the user's request): Read
+        // Screen and the like, which reached the guest as Windows-Shift keys.
+        if AVMKeysInMachine.isAVMs(keyCode: event.keyCode, modifiers: event.modifierFlags) {
+            if !event.isARepeat { coordinator.holdAVMKey(event) }
+            return true
+        }
         // Command combos (e.g. Ctrl+Cmd+Return for Narrator) are delivered here,
         // NOT to keyDown — and AppKit never delivers a matching keyUp while
         // Command is held. We forward the press; the stuck-key flush in
@@ -1084,6 +1090,7 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
 
     private var lockCancellable: AnyCancellable?
     private var previousModifiers: NSEvent.ModifierFlags = []
+    private var heldAVMKey: NSEvent?
     private var capsLockEngaged: Bool = false
 
     // VIEWPORT SCALING (issue #3): the guest size most recently applied to
@@ -1472,6 +1479,17 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         focusLock.unlock()
     }
 
+    /// One of AVM's keys, pressed with the keyboard in the machine. The guest
+    /// already has its modifiers down, so Windows would open Start when Command
+    /// comes up alone; an unused key in between stops that, as any key does.
+    /// The menu item waits for the modifiers to come up, so Type Clipboard's
+    /// keys don't arrive as Windows-Shift keys.
+    func holdAVMKey(_ event: NSEvent) {
+        heldAVMKey = event
+        input?.send(.press, code: Int32(0x5A))
+        input?.send(.release, code: Int32(0x5A))
+    }
+
     func handleCommandComboTap(event: NSEvent) {
         guard isLocked, let input else {
             NSLog("AVM: combo tap gated — locked=\(isLocked), input=\(input != nil ? "present" : "nil")")
@@ -1619,6 +1637,7 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     func handleFlagsChanged(event: NSEvent) {
         guard isLocked, let input else {
             previousModifiers = event.modifierFlags
+            heldAVMKey = nil
             return
         }
 
@@ -1675,6 +1694,11 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         }
 
         previousModifiers = flags
+
+        if let key = heldAVMKey, flags.intersection([.control, .command, .option, .shift]).isEmpty {
+            heldAVMKey = nil
+            NSApp.mainMenu?.performKeyEquivalent(with: key)
+        }
     }
 
     // MARK: - Mouse input (issue #4 — see MOUSE INPUT in the file header)

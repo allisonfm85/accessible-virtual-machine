@@ -1769,6 +1769,15 @@ final class GuestWatchTests: XCTestCase {
         XCTAssertNil(GuestProcesses.parse("COMMAND\nsystemd\n", windows: false).boot)
     }
 
+    func testOnlyAVMsKeysStayOutOfTheMachine() {
+        XCTAssertTrue(AVMKeysInMachine.isAVMs(keyCode: 31, modifiers: [.command, .shift]))
+        XCTAssertTrue(AVMKeysInMachine.isAVMs(keyCode: 31, modifiers: [.command, .shift, .capsLock]))
+        XCTAssertTrue(AVMKeysInMachine.isAVMs(keyCode: 8, modifiers: [.command, .option, .shift]))
+        XCTAssertFalse(AVMKeysInMachine.isAVMs(keyCode: 31, modifiers: [.command]), "Windows-O still goes to the machine")
+        XCTAssertFalse(AVMKeysInMachine.isAVMs(keyCode: 1, modifiers: [.command, .shift]), "Windows-Shift-S still goes to the machine")
+        XCTAssertFalse(AVMKeysInMachine.isAVMs(keyCode: 8, modifiers: [.command, .shift]))
+    }
+
     func testStopScreenIsRecognised() {
         XCTAssertTrue(ScreenChange.isStopScreen(["Your device ran into a problem and needs to restart.", "Stop code: CRITICAL_PROCESS_DIED"]))
         XCTAssertFalse(ScreenChange.isStopScreen(["Your device ran into a problem"]))

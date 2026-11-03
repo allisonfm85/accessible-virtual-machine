@@ -575,6 +575,11 @@ of this is AVM.
 
 ### AVM's own commands (Mac side)
 
+These work with your keyboard on the Mac or in the machine: Command-Shift-O,
+Command-Option-Shift-O, Command-Shift-I, Command-Option-Shift-I,
+Command-Option-Shift-C, Command-Shift-V and Command-Shift-D. The others need your
+keyboard back on the Mac, since Command is the Windows key in a machine.
+
 - **Command-Shift-S** starts the virtual machine. Your keyboard is in
   Windows automatically once the machine's view appears.
 - **Command-Shift-E** is Enter Windows. It returns the keyboard to a
