@@ -2271,6 +2271,20 @@ final class OpenSUSEInstallTests: XCTestCase {
         XCTAssertEqual(BackupSchedule.oldOnes(in: names, base: "A", ext: "avmvm"), ["A backup 2026-01-01 0000.avmvm"])
     }
 
+    func testMachineHealthWarnsBeforeTheLimit() {
+        func reading(files: Int = 600, memory: UInt64 = 32, faults: Int = 0) -> MachineHealth.Reading {
+            MachineHealth.Reading(openFiles: files, fileLimit: 10000, memoryBytes: memory << 30, macMemoryBytes: 64 << 30, faults: faults)
+        }
+        XCTAssertTrue(MachineHealth(reading()).warnings.isEmpty)
+        XCTAssertTrue(MachineHealth(reading()).words.contains("nothing wrong"))
+        XCTAssertEqual(MachineHealth(reading(files: 7999)).warnings, [])
+        XCTAssertEqual(MachineHealth(reading(files: 8000)).warnings.map(\.kind), ["files"])
+        XCTAssertEqual(MachineHealth(reading(memory: 58)).warnings.map(\.kind), ["memory"])
+        XCTAssertEqual(MachineHealth(reading(faults: 1)).warnings.map(\.kind), ["faults"])
+        XCTAssertTrue(MachineHealth(reading(faults: 1)).words.contains("Next:"))
+        XCTAssertTrue(MachineHealth(MachineHealth.Reading(openFiles: 5, fileLimit: 0, memoryBytes: 1, macMemoryBytes: 0, faults: 0)).warnings.isEmpty)
+    }
+
     /// IPv6 follows the Mac for Windows; a router's own addresses don't count.
     func testIPv6FollowsTheMac() {
         func bytes(_ text: String) -> [UInt8] {

@@ -278,6 +278,41 @@ nonisolated enum MacSpacesShortcuts {
     }
 }
 
+/// How a running QEMU is doing on the Mac, and what's worth saying about it.
+nonisolated struct MachineHealth: Sendable {
+    struct Reading: Sendable {
+        var openFiles: Int
+        var fileLimit: Int
+        var memoryBytes: UInt64
+        var macMemoryBytes: UInt64
+        var faults: Int
+    }
+    struct Warning: Equatable, Sendable {
+        let kind: String
+        let words: String
+    }
+    let warnings: [Warning]
+
+    init(_ reading: Reading) {
+        var found: [Warning] = []
+        if reading.fileLimit > 0, reading.openFiles * 10 >= reading.fileLimit * 8 {
+            found.append(Warning(kind: "files", words: "it's near the most connections and files your Mac allows it, \(reading.openFiles) of \(reading.fileLimit). New connections may fail. Next: close what's using the network in it, or restart it."))
+        }
+        if reading.macMemoryBytes > 0, reading.memoryBytes * 10 >= reading.macMemoryBytes * 9 {
+            found.append(Warning(kind: "memory", words: "it's using nearly all your Mac's memory. Next: shut it down and give it less, in its Settings."))
+        }
+        if reading.faults > 0 {
+            found.append(Warning(kind: "faults", words: "the program that runs it, QEMU, has reported a fault since it started. It may stop working. Next: save your work, and choose Report a Problem in the Help menu."))
+        }
+        warnings = found
+    }
+
+    /// For Check This Machine.
+    var words: String {
+        warnings.isEmpty ? "AVM's own health check found nothing wrong." : "AVM's own health check: " + warnings.map(\.words).joined(separator: " ")
+    }
+}
+
 /// Whether the Mac can reach the IPv6 internet, and QEMU's network line from it.
 nonisolated enum MacIPv6 {
     /// A global address, 2000::/3. A router's own fd00:: addresses aren't one:

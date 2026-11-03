@@ -56,7 +56,42 @@ extension VMManager {
         // Said beside the result, not as a problem with the machine: someone
         // may want the shortcuts for Spaces.
         let mac = Self.macTakesControlArrows ? " " + MacSpacesShortcuts.words(machine: machine) : ""
-        Announcer.shared.announce(result.words(machine: machine) + mac, tone: result.problems.isEmpty ? .success : .failure)
+        let reading = healthReading(since: startedAt ?? Date())
+        let health = MachineHealth(reading)
+        AVMLog.write("AVM: Check This Machine — QEMU has \(reading.openFiles) of \(reading.fileLimit) files open, \(reading.memoryBytes >> 20) MB, \(reading.faults) fault(s)")
+        Announcer.shared.announce(result.words(machine: machine) + " " + health.words + mac, tone: result.problems.isEmpty && health.warnings.isEmpty ? .success : .failure)
+    }
+
+    /// How QEMU is doing right now, from the outside: nothing here asks QEMU, so
+    /// it answers when QEMU can't.
+    func healthReading(since: Date) -> MachineHealth.Reading {
+        let pid = Int32(qemuPID)
+        var openFiles = 0
+        if pid > 0 {
+            let bytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+            if bytes > 0 {
+                var list = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(bytes) / MemoryLayout<proc_fdinfo>.stride)
+                let got = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &list, bytes)
+                openFiles = Int(got) / MemoryLayout<proc_fdinfo>.stride
+            }
+        }
+        var memory: UInt64 = 0
+        var usage = rusage_info_v4()
+        let asked = withUnsafeMutablePointer(to: &usage) {
+            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V4, $0) }
+        }
+        if pid > 0, asked == 0 { memory = usage.ri_resident_size }
+        // As QEMU's patch does: this Mac's limit for one process, or OPEN_MAX.
+        var most: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        let limit = sysctlbyname("kern.maxfilesperproc", &most, &size, nil, 0) == 0 && most > 10240 ? Int(most) : 10240
+        let reports = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports")
+        let names = (try? FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        let faults = names.filter { url in
+            url.lastPathComponent.contains("qemu-system-aarch64")
+                && ((try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) > since
+        }.count
+        return MachineHealth.Reading(openFiles: openFiles, fileLimit: limit, memoryBytes: memory, macMemoryBytes: ProcessInfo.processInfo.physicalMemory, faults: faults)
     }
 
     /// True while the Mac's shortcuts for Spaces hold Control and the arrows.

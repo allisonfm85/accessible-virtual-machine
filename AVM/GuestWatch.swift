@@ -79,6 +79,7 @@ extension VMManager {
             var agentEverAnswered = false
             var stuck = StuckWatch(limit: Self.stuckLimit)
             var stuckThumb: [UInt8]?
+            var healthSaid = Set<String>()
             let started = Date()
             defer { try? FileManager.default.removeItem(at: picture) }
             var lastBoot: String?
@@ -127,6 +128,17 @@ extension VMManager {
                         agentLostAt = nil
                     } else if agentLostAt == nil {
                         agentLostAt = Date()
+                    }
+                }
+
+                // QEMU's own health (2026-11-02): each minute, and each warning
+                // once a run, so what's running out is said before it fails.
+                if tick % 15 == 0 {
+                    let reading = self.healthReading(since: started)
+                    for warning in MachineHealth(reading).warnings where !healthSaid.contains(warning.kind) {
+                        healthSaid.insert(warning.kind)
+                        AVMLog.write("AVM: GuestWatch — \(machine): \(warning.kind), \(reading.openFiles) of \(reading.fileLimit) files, \(reading.memoryBytes >> 20) MB")
+                        Announcer.shared.announce("\(machine): \(warning.words)", tone: .failure)
                     }
                 }
 

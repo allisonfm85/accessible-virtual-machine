@@ -1206,6 +1206,10 @@ enum SaveResumeTestJob {
         let first = log().components(separatedBy: "\n").last { $0.contains("said (") && $0.contains("Save test") && !$0.contains("Checking") } ?? ""
         print("   it said: \(first.suffix(400))")
         check("it reports that it's answering", first.contains("answering"))
+        let reading = manager.healthReading(since: Date())
+        print("   QEMU: \(reading.openFiles) of \(reading.fileLimit) files, \(reading.memoryBytes >> 20) MB")
+        check("the health check reads QEMU", reading.openFiles > 50 && reading.fileLimit >= 10240 && reading.memoryBytes > 1 << 20)
+        check("it says what the health check found", first.contains("health check"))
         let taken = VMManager.macTakesControlArrows
         print("   the Mac's Spaces shortcuts hold Control and the arrows: \(taken)")
         check("it speaks of the Mac's Control-arrow shortcuts only if they're on", first.contains("Control-Right Arrow") == taken)
