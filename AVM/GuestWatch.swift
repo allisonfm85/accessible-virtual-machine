@@ -5,11 +5,10 @@
 // see (2026-10-31, the user's request), one loop per machine, from Start
 // to Stop:
 //
-//   - Screen changes said: while no screen reader runs in the machine
-//     (Setup, a restart, a boot error, a blue screen), new text on its
-//     screen is read out by itself, as Read Screen reads it on request.
-//     A screen reader running there does the reading instead, so this
-//     stays quiet then.
+//   - The screen isn't read out by itself (2026-11-02, the user's request:
+//     it was annoying). Read Screen, Command-Shift-O, reads it when asked.
+//     One exception, when Windows has stopped answering: a blue screen, said
+//     as what it is, since nothing else says it for 10 minutes.
 //   - A screen reader that stopped: one that ran in this session and no
 //     longer does is started again with its desktop shortcut key
 //     (Control-Alt-N for NVDA, Control-Alt-J for JAWS, Super-Alt-S for
@@ -22,8 +21,7 @@
 //     the machine then doesn't come back from a restart for 20 minutes,
 //     the user is told how to go back.
 //
-// Each can be turned off in AVM's Settings, General. The screen is never
-// kept or logged; only how many lines were said.
+// Each can be turned off in AVM's Settings, General.
 
 import AppKit
 import CoreGraphics
@@ -61,9 +59,8 @@ extension VMManager {
             VMStore.shared?.save(stored)
         }
         guestWatchTask = Task { [weak self] in
-            var lastThumb: [UInt8]?
-            var said = Set<String>()
             var processes: GuestProcesses?
+            var toldStopScreen = false
             var agentAnswered = false
             var tick = 0
             var readersSeen = Set<String>()
@@ -76,7 +73,6 @@ extension VMManager {
             var pointThisRun = false
             var toldNoComeBack = false
             var toldDevices = false
-            var agentEverAnswered = false
             var stuck = StuckWatch(limit: Self.stuckLimit)
             var stuckThumb: [UInt8]?
             var healthSaid = Set<String>()
@@ -111,7 +107,6 @@ extension VMManager {
                         if failedListings >= 2 { readerRunning = false }
                     }
                     if readerRunning { Announcer.readerRunningIn.insert(machine) } else { Announcer.readerRunningIn.remove(machine) }
-                    agentEverAnswered = agentEverAnswered || agentAnswered
                     // Restarted between two listings (2026-10-31): with the
                     // restore point fixed, Windows was back in under 16
                     // seconds, every listing answered, and "back" was never said.
@@ -155,6 +150,17 @@ extension VMManager {
                        let thumb = ScreenChange.thumbnail(of: image) {
                         changed = stuckThumb.map { ScreenChange.isNewScreen($0, thumb) } ?? true
                         stuckThumb = thumb
+                        if windows, changed, !toldStopScreen {
+                            let lines = await Task.detached(priority: .utility) { ScreenText.lines(in: image)?.map(\.text) }.value ?? []
+                            if ScreenChange.isStopScreen(lines), self.state == .running {
+                                toldStopScreen = true
+                                AVMLog.write("AVM: GuestWatch — \(machine) stopped with an error, a blue screen")
+                                Announcer.shared.announce("\(machine) stopped with an error. On its screen: \(lines.joined(separator: ". "))", tone: .failure, logAs: "\(machine) stopped with an error")
+                            }
+                        }
+                    }
+                    if agentAnswered {
+                        toldStopScreen = false
                     }
                     switch stuck.look(agentAnswered: agentAnswered, screenChanged: changed) {
                     case .stuck:
@@ -209,35 +215,6 @@ extension VMManager {
                             ? "No screen reader was running in \(machine), so AVM started \(reader)."
                             : "No screen reader is running in \(machine). \(Self.readerHelp(reader))", tone: .info)
                     }
-                }
-
-                // New text on the screen, while no screen reader reads it.
-                // An installed machine whose agent never answers may have
-                // none at all, and a screen reader AVM can't see: there,
-                // only the first 3 minutes (start-up screens) are read.
-                let canTell = !installed || agentEverAnswered || Date().timeIntervalSince(started) < 180
-                if GuestWatchSettings.isOn(GuestWatchSettings.speakScreenKey), !readerRunning, canTell,
-                   await self.screenPicture(to: picture.path),
-                   let source = CGImageSourceCreateWithURL(picture as CFURL, nil),
-                   let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
-                   let thumb = ScreenChange.thumbnail(of: image) {
-                    if lastThumb == nil || ScreenChange.isNewScreen(lastThumb!, thumb) {
-                        lastThumb = thumb
-                        let lines = await Task.detached(priority: .utility) { ScreenText.lines(in: image)?.map(\.text) }.value ?? []
-                        let fresh = ScreenChange.newLines(lines, after: said)
-                        said = Set(lines.map(ScreenChange.key))
-                        if !fresh.isEmpty, self.state == .running {
-                            AVMLog.write("AVM: GuestWatch — \(fresh.count) new line(s) on \(machine)'s screen said")
-                            if windows && ScreenChange.isStopScreen(lines) {
-                                Announcer.shared.announce("\(machine) stopped with an error. On its screen: \(lines.joined(separator: ". "))", tone: .failure, logAs: "\(machine) stopped with an error; its screen was read out.")
-                            } else {
-                                Announcer.shared.announce("On \(machine)'s screen: \(fresh.joined(separator: ". "))", tone: .info, routine: true, logAs: "\(fresh.count) new line(s) on \(machine)'s screen")
-                            }
-                        }
-                    }
-                } else if readerRunning {
-                    lastThumb = nil
-                    said = []
                 }
 
                 // A restore point when updates are waiting: the first look

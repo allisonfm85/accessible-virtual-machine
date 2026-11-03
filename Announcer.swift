@@ -348,8 +348,8 @@ final class Announcer {
     // VoiceOver reading AVM's updates talks over it, both in one pair of
     // headphones or one hearing aid. So lines marked routine wait, and are
     // said when the keyboard comes back to the Mac. While no screen reader
-    // runs in the machine (Setup, a restart), nothing waits: AVM's screen
-    // reading is the only voice then.
+    // runs in the machine (Setup, a restart), nothing waits: AVM is the only
+    // voice then.
     //
     // Opt-in (2026-11-01, audit): this first held every .info line, about 200
     // of them, and caught the spoken quit question, "another window took the

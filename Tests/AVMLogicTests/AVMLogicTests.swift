@@ -1769,12 +1769,6 @@ final class GuestWatchTests: XCTestCase {
         XCTAssertNil(GuestProcesses.parse("COMMAND\nsystemd\n", windows: false).boot)
     }
 
-    func testCountersAndRepeatsAreSaidOnce() {
-        let said = Set(["Working on updates 23%"].map(ScreenChange.key))
-        XCTAssertEqual(ScreenChange.newLines(["Working on updates 24%", "Don't turn off your computer", "5", "Don't turn off your computer"], after: said),
-                       ["Don't turn off your computer"])
-    }
-
     func testStopScreenIsRecognised() {
         XCTAssertTrue(ScreenChange.isStopScreen(["Your device ran into a problem and needs to restart.", "Stop code: CRITICAL_PROCESS_DIED"]))
         XCTAssertFalse(ScreenChange.isStopScreen(["Your device ran into a problem"]))

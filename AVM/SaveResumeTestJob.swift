@@ -70,7 +70,10 @@
 // --test-guest-watch (2026-10-31, GuestWatch.swift), Windows with NVDA:
 // NVDA ended in the machine is started again and said; the before-updates
 // check runs at 5 minutes (a restore point if updates wait, else a note);
-// a restart's screens are read out while no screen reader runs.
+// a restart's screens aren't read out by themselves.
+//
+// --test-blue-screen: Windows crashed on purpose with NtRaiseHardError (taskkill
+// can't end its protected processes); AVM says so, and it comes back.
 //
 // --test-send-file: sends a 3 MB file of random bytes (three pieces) to
 // the machine's Downloads, twice, and checks both arrive whole, the second
@@ -112,7 +115,7 @@ enum SaveResumeTestJob {
     static let flag = "--test-save-resume"
 
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
-        guard arguments.contains(flag) || arguments.contains("--test-microphone") || arguments.contains("--test-two-machines")
+        guard arguments.contains(flag) || arguments.contains("--test-microphone") || arguments.contains("--test-two-machines") || arguments.contains("--test-blue-screen")
                 || arguments.contains("--test-duplicate") || arguments.contains("--test-send-file")
                 || arguments.contains("--test-linux-share") || arguments.contains("--test-ctl")
                 || arguments.contains("--test-disk-info") || arguments.contains("--run-in-guest")
@@ -186,6 +189,9 @@ enum SaveResumeTestJob {
         let guest = GuestOS(rawValue: value("--guest") ?? "windows") ?? .windows
         Task { @MainActor in
             let folderURL = URL(fileURLWithPath: folder, isDirectory: true)
+            if arguments.contains("--test-blue-screen") {
+                await finish(await blueScreen(folderURL))
+            }
             if arguments.contains("--test-two-machines"), let second = value("--vm2") {
                 let guest2 = GuestOS(rawValue: value("--guest2") ?? "windows") ?? .windows
                 let passed = await twoMachines(folderURL, guest, URL(fileURLWithPath: second, isDirectory: true), guest2)
@@ -1481,11 +1487,11 @@ enum SaveResumeTestJob {
         check("the before-updates check ran", checked)
         let taken = log().contains("before-updates check for") && log().contains("check for \(manager.machineName): taken")
         print("   \(taken ? "a restore point was taken" : "no restore point: \(log().components(separatedBy: "before-updates check for").last?.split(separator: "\n").first ?? "")")")
-        print("== A restart's screens read out")
+        print("== A restart, with nothing read out by itself")
         let before = log().count
         _ = await exec(agent, program: "shutdown.exe", args: ["/r", "/t", "0"])
-        check("new screen text was said during the restart", await waitForLog("new line(s) on", seconds: 240, after: before))
         check("the machine answers again", await waitForAgent(agent, seconds: 600))
+        check("no screen text was said during the restart", !String(log().dropFirst(before)).contains("'s screen said"))
         if taken { check("AVM said it's back after the restart", await waitForLog("is back after its restart", seconds: 60)) }
         await shutDown(manager)
         return ok
@@ -1620,6 +1626,34 @@ enum SaveResumeTestJob {
         MachineDisplays.placeOpening(window, for: config)
         check("one that isn't connected leaves the window be", window.frame == before && MachineDisplays.chosenScreen(config) == nil)
         check("and isn't moved to when the monitors change", !MachineDisplays.displaysChanged(window, for: config))
+        return ok
+    }
+
+    private static func blueScreen(_ folder: URL) async -> Bool {
+        let manager = VMManager()
+        guard await start(manager, configuration(folder: folder, guest: .windows)),
+              let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else {
+            check("the machine started and answers", false); await shutDown(manager); return false
+        }
+        func log() -> String { AVMLog.currentLogURL().flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? "" }
+        // Let GuestWatch see a first screen, as it would on any start.
+        try? await Task.sleep(for: .seconds(30))
+        let crash = #"""
+            Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class C{[DllImport("ntdll.dll")]public static extern uint RtlAdjustPrivilege(int p,bool e,bool t,out bool o);[DllImport("ntdll.dll")]public static extern uint NtRaiseHardError(uint s,uint n,uint m,IntPtr a,uint o,out uint r);}'
+            $o=$false;$r=0;[void][C]::RtlAdjustPrivilege(19,$true,$false,[ref]$o);[void][C]::NtRaiseHardError([uint32]3221225506,0,0,[IntPtr]::Zero,6,[ref]$r)
+            """#
+        let before = log().count
+        // Encoded, as its quotes don't survive a command line.
+        let encoded = crash.data(using: .utf16LittleEndian)?.base64EncodedString() ?? ""
+        Task.detached { _ = await exec(agent, program: "powershell.exe", args: ["-NoProfile", "-EncodedCommand", encoded]) }
+        var said = false
+        for _ in 0..<240 where !said {
+            said = log().dropFirst(before).contains("a blue screen")
+            if !said { try? await Task.sleep(for: .seconds(1)) }
+        }
+        check("AVM said Windows stopped with an error", said)
+        check("the machine answers again", await waitForAgent(agent, seconds: 600))
+        await shutDown(manager)
         return ok
     }
 

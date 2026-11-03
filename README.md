@@ -51,10 +51,6 @@ below), **Keyboard** (Caps Lock as the screen reader key in Windows) and
 While a Windows or Linux machine runs, AVM watches it, each part on
 unless turned off in **Watching Machines**:
 
-- **Screen changes are said** while no screen reader runs in the
-  machine: during Windows Setup, a restart, a boot error or a blue
-  screen, new text on its screen is read out, as Read Screen reads it.
-  Once NVDA, JAWS, Narrator or Orca is running, AVM stays quiet.
 - **A screen reader that stops is started again** with its own start key
   (Control-Alt-N for NVDA, Control-Alt-J for JAWS, Super-Alt-S for Orca
   in GNOME), and the Windows screen reader chosen at setup is started if

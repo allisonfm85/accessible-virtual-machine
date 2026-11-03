@@ -593,8 +593,8 @@ of this is AVM.
   (under Quick Actions or Services) does the same for the selected
   files.
 - While no screen reader runs in the machine (Setup, a restart, a blue
-  screen), AVM reads new text on its screen by itself. If NVDA or JAWS
-  stops, AVM presses its start key in Windows and tells you. Both can be
+  screen), press Command-Shift-O to hear its screen. If NVDA or JAWS
+  stops, AVM presses its start key in Windows and tells you. That can be
   turned off in AVM's Settings (Command-Comma), Watching Machines. The
   restore point before updates is there too, off unless you turn it on:
   in testing, Windows sometimes didn't come back from the restart after

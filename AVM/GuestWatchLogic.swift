@@ -2,15 +2,13 @@
 // AVM — Accessible Virtual Machine
 //
 // What GuestWatch.swift decides from (2026-10-31): its settings, what a
-// machine's process list says is running, and whether its screen changed
-// and which lines on it are new. Apart from the loop, so the logic tests
+// machine's process list says is running, and whether its screen changed. Apart from the loop, so the logic tests
 // reach it.
 
 import CoreGraphics
 import Foundation
 
 nonisolated enum GuestWatchSettings {
-    static let speakScreenKey = "AVMSpeakScreenChanges"
     static let restartReaderKey = "AVMRestartStoppedScreenReader"
     static let pointBeforeUpdatesKey = "AVMRestorePointBeforeUpdates"
     /// AVM's updates held while the keyboard is in a machine whose screen
@@ -77,7 +75,7 @@ nonisolated struct GuestProcesses: Equatable {
     }
 }
 
-// MARK: - New text on the screen
+// MARK: - A changed screen
 
 nonisolated enum ScreenChange {
     /// A screen as 64 by 36 grey levels, enough to tell a new page from a
@@ -103,25 +101,7 @@ nonisolated enum ScreenChange {
         return moved > a.count / 50
     }
 
-    /// A line as compared: lower case, letters only, so "Working on
-    /// updates 23%" and "... 24%" are the same line, said once.
-    static func key(_ line: String) -> String {
-        String(line.lowercased().unicodeScalars.filter { CharacterSet.letters.contains($0) })
-    }
-
-    /// The lines worth saying: new since the last screen said, and with
-    /// some words in them (not a lone digit or a stray mark).
-    static func newLines(_ lines: [String], after said: Set<String>) -> [String] {
-        var seen = Set<String>()
-        return lines.filter { line in
-            let k = key(line)
-            guard k.count >= 3, !said.contains(k), !seen.contains(k) else { return false }
-            seen.insert(k)
-            return true
-        }
-    }
-
-    /// Windows' stop screen, said as what it is.
+    /// Windows' stop screen.
     static func isStopScreen(_ lines: [String]) -> Bool {
         lines.contains { $0.localizedCaseInsensitiveContains("ran into a problem") }
             && lines.contains { $0.localizedCaseInsensitiveContains("stop code") }

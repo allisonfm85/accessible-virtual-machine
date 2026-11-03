@@ -37,7 +37,7 @@ enum Tour {
                  text: "A second keyboard, USB or Bluetooth, can type only into Windows. Choose it in the Windows machine's Settings, under Devices, Keyboard for Windows. Your Mac's keyboard stays with the Mac and VoiceOver, and Windows stays out of Command-Tab.",
                  tryIt: nil),
         TourStep(title: "Hearing the screen",
-                 text: "While no screen reader runs in a machine, during Setup or a restart, AVM reads new text on its screen aloud. Command-Shift-O reads the whole screen at any time, and Command-Option-Shift-O describes what it looks like. Command-Shift-I says how the machine is doing.",
+                 text: "Command-Shift-O reads the machine's whole screen aloud at any time, such as during Setup or a restart, when no screen reader is running, and Command-Option-Shift-O describes what it looks like. Command-Shift-I says how the machine is doing.",
                  tryIt: "With a machine running, press Command-Shift-O."),
         TourStep(title: "Files, folders and the clipboard",
                  text: "Command-Shift-F sends a file from the Mac to the machine's Downloads folder; in Finder, Send to Virtual Machine in Quick Actions does the same. Command-Shift-V types the Mac's clipboard into the machine, even where pasting doesn't work. A shared folder, set in the machine's Settings under Sharing, is a folder on the Mac and in the machine at once.",

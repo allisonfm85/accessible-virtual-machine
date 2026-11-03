@@ -70,7 +70,6 @@ struct AppPreferencesView: View {
     var startCategory: PreferencesCategory?
 
     @State private var capsLockKey = CapsLockRemapper.shared.isEnabled
-    @AppStorage(GuestWatchSettings.speakScreenKey) private var speakScreen = true
     @AppStorage(GuestWatchSettings.restartReaderKey) private var restartReader = true
     @AppStorage(GuestWatchSettings.pointBeforeUpdatesKey) private var pointBeforeUpdates = false
     @AppStorage(GuestWatchSettings.holdWhileInMachineKey) private var holdWhileInMachine = true
@@ -139,10 +138,6 @@ struct AppPreferencesView: View {
     private var watching: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("While a Windows or Linux machine runs, AVM watches for what you'd otherwise need someone to see.")
-                .fixedSize(horizontal: false, vertical: true)
-            Toggle("Speak screen changes when no screen reader is running", isOn: $speakScreen)
-            Text("During Windows Setup, a restart, a boot error or a blue screen, nothing in the machine talks. AVM reads new text on its screen by itself, as Read Screen does, and stays quiet once NVDA, JAWS, Narrator or Orca is running.")
-                .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
             Toggle("Start a screen reader again when it stops", isOn: $restartReader)
             Text("If NVDA, JAWS or Orca stops in a machine, AVM presses its start key there: Control-Alt-N for NVDA, Control-Alt-J for JAWS, Super-Alt-S for Orca in GNOME. AVM also starts the screen reader you chose for Windows if it hasn't started a minute after you sign in.")
