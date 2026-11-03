@@ -2285,6 +2285,21 @@ final class OpenSUSEInstallTests: XCTestCase {
         XCTAssertTrue(MachineHealth(MachineHealth.Reading(openFiles: 5, fileLimit: 0, memoryBytes: 1, macMemoryBytes: 0, faults: 0)).warnings.isEmpty)
     }
 
+    func testQEMUNoiseGoesAndErrorsStay() {
+        XCTAssertTrue(QEMUStderrNoise.isHarmless("warn:  GetCurrentThread not implemented."))
+        XCTAssertTrue(QEMUStderrNoise.isHarmless("Nov  2 13:45:47  virgl_render_server[10416] <Debug>: npt: shared: exported blob_id=4"))
+        XCTAssertTrue(QEMUStderrNoise.isHarmless("Nov  2 13:13:26  virgl_render_server[6991] <Debug>: npt: failed to load D3D12CreateDevice: dlsym"))
+        XCTAssertFalse(QEMUStderrNoise.isHarmless("Nov  2 13:13:26  virgl_render_server[6991] <Debug>: npt: failed to map a blob"))
+        XCTAssertFalse(QEMUStderrNoise.isHarmless("virtio_gpu_virgl_process_cmd: ctrl 0x102, error 0x1203"))
+        XCTAssertFalse(QEMUStderrNoise.isHarmless("usb-camera: the Mac's camera went on"))
+        XCTAssertFalse(QEMUStderrNoise.isHarmless("AVM: open file limit 245760"))
+        XCTAssertNil(QEMUStderrNoise.filter("warn:  GetCurrentThread not implemented.\n").kept)
+        let mixed = QEMUStderrNoise.filter("warn:  SetThreadPriority not implemented.\nreal trouble\n")
+        XCTAssertEqual(mixed.kept, "real trouble\n")
+        XCTAssertEqual(mixed.dropped, 1)
+        XCTAssertEqual(QEMUStderrNoise.filter("real trouble").kept, "real trouble")
+    }
+
     /// IPv6 follows the Mac for Windows; a router's own addresses don't count.
     func testIPv6FollowsTheMac() {
         func bytes(_ text: String) -> [UInt8] {

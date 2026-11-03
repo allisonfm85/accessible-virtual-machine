@@ -2921,7 +2921,7 @@ final class VMManager: ObservableObject {
                 handle.readabilityHandler = nil
                 return
             }
-            if let raw = String(data: data, encoding: .utf8), let text = gate.admit(raw) {
+            if let raw = String(data: data, encoding: .utf8), let kept = QEMUStderrNoise.filter(raw).kept, let text = gate.admit(kept) {
                 avmLog("QEMU stderr: \(text)")
                 Task { @MainActor [weak self] in
                     self?.appendConsole("QEMU: \(text)")

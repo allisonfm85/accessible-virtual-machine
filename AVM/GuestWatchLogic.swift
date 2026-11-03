@@ -313,6 +313,37 @@ nonisolated struct MachineHealth: Sendable {
     }
 }
 
+/// QEMU's messages that say nothing's wrong (2026-11-02): a 3D session's log was
+/// nine tenths these. DXMT's unimplemented Windows calls and virglrenderer's
+/// debug lines, not its errors. Whole lines, so anything else still gets through.
+nonisolated enum QEMUStderrNoise {
+    private static let harmless = [
+        "warn:  GetCurrentThread not implemented", "warn:  SetThreadPriority not implemented",
+        "warn:  GetModuleHandle not implemented", "warn:  D3DKMTOpenAdapterFromLuid not implemented",
+        "warn:  Failed to open D3DKMT adapter", "warn:  D3D11Resource(tex2d): Unknown interface query",
+        "err:   Not implemented", "info:  ",
+    ]
+
+    static func isHarmless(_ line: String) -> Bool {
+        if harmless.contains(where: { line.hasPrefix($0) }) { return true }
+        guard line.contains("virgl_render_server["), line.contains("<Debug>:") else { return false }
+        let lower = line.lowercased()
+        if lower.contains("d3d12") { return true }
+        return !lower.contains("error") && !lower.contains("fail")
+    }
+
+    /// The chunk with its harmless lines out, and how many went. Nil when
+    /// nothing's left.
+    static func filter(_ chunk: String) -> (kept: String?, dropped: Int) {
+        let lines = chunk.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let kept = lines.filter { !isHarmless($0) }
+        let dropped = lines.count - kept.count
+        if dropped == 0 { return (chunk, 0) }
+        let text = kept.joined(separator: "\n")
+        return (text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text, dropped)
+    }
+}
+
 /// Whether the Mac can reach the IPv6 internet, and QEMU's network line from it.
 nonisolated enum MacIPv6 {
     /// A global address, 2000::/3. A router's own fd00:: addresses aren't one:
