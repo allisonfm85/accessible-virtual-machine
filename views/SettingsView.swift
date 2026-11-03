@@ -1731,66 +1731,118 @@ enum SettingsCategory: String, CaseIterable, Identifiable, SettingsCategoryItem 
 /// toolbar". VO-Shift-Down goes into it, VO-Left and VO-Right go through
 /// its buttons, and VO-Space chooses one; the one showing is "selected".
 /// Command-1, Command-2 and on choose them from anywhere in Settings.
-struct SettingsCategoryBar<Category: SettingsCategoryItem>: View {
+///
+/// AppKit's buttons, not SwiftUI's (2026-11-03, the user's report that VoiceOver
+/// didn't always find the categories): a SwiftUI toolbar in a hosting view of its
+/// own had no children when its window opened and gained them a moment later with
+/// nothing telling VoiceOver, so what it found depended on when it looked. These
+/// exist before the window does, and stay the same objects.
+struct SettingsCategoryBar<Category: SettingsCategoryItem>: NSViewRepresentable {
     @Binding var selection: Category
     let categories: [Category]
 
-    var body: some View {
-        AccessibilityToolbar(label: "Categories") {
-            HStack(spacing: 4) {
-                ForEach(Array(categories.enumerated()), id: \.element) { index, category in
-                    Button { selection = category } label: {
-                        VStack(spacing: 3) {
-                            Image(systemName: category.symbol)
-                                .font(.title2)
-                                .accessibilityHidden(true)
-                            Text(category.title)
-                                .font(.caption)
-                        }
-                        .frame(minWidth: 84)
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 4)
-                        .background(selection == category ? Color.accentColor.opacity(0.18) : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 6))
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(category.title)
-                    .accessibilityAddTraits(selection == category ? .isSelected : [])
-                    // Said, too: "General, selected, button".
-                    .accessibilityValue(selection == category ? "selected" : "")
-                    .accessibilityHint("Shows the \(category.title) settings. Command-\(index + 1).")
-                    .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
-                }
+    func makeNSView(context: Context) -> CategoryToolbar {
+        CategoryToolbar(items: categories.map { ($0.title, $0.symbol) })
+    }
+
+    func updateNSView(_ toolbar: CategoryToolbar, context: Context) {
+        toolbar.choose = { selection = categories[$0] }
+        toolbar.selectedIndex = categories.firstIndex(of: selection)
+    }
+
+    /// Its width and height are the buttons', whatever the window offers.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: CategoryToolbar, context: Context) -> CGSize? {
+        nsView.fittingSize
+    }
+}
+
+/// SwiftUI has no toolbar role for a view, and a sheet has no window toolbar, so
+/// this view says it.
+final class CategoryToolbar: NSStackView {
+    var choose: ((Int) -> Void)?
+    var selectedIndex: Int? {
+        didSet {
+            guard selectedIndex != oldValue else { return }
+            for case let (index, button as CategoryButton) in arrangedSubviews.enumerated() {
+                button.isChosen = index == selectedIndex
             }
         }
-        .fixedSize()
-    }
-}
-
-/// SwiftUI content VoiceOver meets as a toolbar, with its own name.
-/// SwiftUI has no toolbar role for a view, and a sheet has no window
-/// toolbar, so the hosting view says it.
-struct AccessibilityToolbar<Content: View>: NSViewRepresentable {
-    let label: String
-    @ViewBuilder let content: () -> Content
-
-    func makeNSView(context: Context) -> ToolbarHostingView<Content> {
-        let view = ToolbarHostingView(rootView: content())
-        view.toolbarLabel = label
-        return view
     }
 
-    func updateNSView(_ view: ToolbarHostingView<Content>, context: Context) {
-        view.rootView = content()
+    init(items: [(title: String, symbol: String)]) {
+        super.init(frame: .zero)
+        orientation = .horizontal
+        spacing = 4
+        for (index, item) in items.enumerated() {
+            let button = CategoryButton(title: item.title, symbol: item.symbol, number: index + 1)
+            button.target = self
+            button.action = #selector(chosen(_:))
+            button.tag = index
+            addArrangedSubview(button)
+        }
     }
-}
 
-final class ToolbarHostingView<Content: View>: NSHostingView<Content> {
-    var toolbarLabel = ""
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func chosen(_ sender: NSButton) { choose?(sender.tag) }
+
     override func isAccessibilityElement() -> Bool { true }
-    /// Not "dimmed": a hosting view reads as disabled otherwise.
+    /// Not "dimmed".
     override func isAccessibilityEnabled() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .toolbar }
-    override func accessibilityLabel() -> String? { toolbarLabel }
+    override func accessibilityLabel() -> String? { "Categories" }
+}
+
+final class CategoryButton: NSButton {
+    var isChosen = false {
+        didSet {
+            guard isChosen != oldValue else { return }
+            chosenCell.isChosen = isChosen
+            needsDisplay = true
+            NSAccessibility.post(element: chosenCell, notification: .valueChanged)
+        }
+    }
+
+    private let chosenCell = CategoryButtonCell()
+
+    init(title: String, symbol: String, number: Int) {
+        super.init(frame: .zero)
+        cell = chosenCell
+        self.title = title
+        image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(textStyle: .title2))
+        imagePosition = .imageAbove
+        isBordered = false
+        font = .preferredFont(forTextStyle: .caption1)
+        keyEquivalent = String(number)
+        keyEquivalentModifierMask = .command
+        setAccessibilityHelp("Shows the \(title) settings. Command-\(number).")
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var intrinsicContentSize: NSSize {
+        let size = super.intrinsicContentSize
+        return NSSize(width: max(84, size.width + 8), height: size.height + 12)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if isChosen {
+            NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
+            NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
+        }
+        super.draw(dirtyRect)
+    }
+
+}
+
+/// What VoiceOver reads of a button is its cell: its title, not what its picture
+/// is of. Said, too: "General, selected, button".
+final class CategoryButtonCell: NSButtonCell {
+    var isChosen = false
+    override func accessibilityLabel() -> String? { title }
+    override func accessibilityValue() -> Any? { isChosen ? "selected" : "" }
+    override func isAccessibilitySelected() -> Bool { isChosen }
 }
