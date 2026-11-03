@@ -547,6 +547,12 @@ struct AVMApp: App {
                 .keyboardShortcut("f", modifiers: [.command, .shift])
                 .disabled(!activity.isRunning)
 
+                // Install Apps (2026-11-03, InstallApps.swift).
+                Button("Install Apps…") {
+                    DashboardCommand.post(.avmInstallApps, object: nil)
+                }
+                .disabled(!activity.isRunning)
+
                 Button("Attach USB Device…") {
                     AVMLog.write("AVM: Attach USB Device menu — posting request to ContentView.", category: "USBHelper")
                     DashboardCommand.post(.avmAttachUSBFromMenu, object: nil)
@@ -896,7 +902,7 @@ enum DashboardCommand {
         // next one waited, out of sight and unsaid, until it was closed.
         // Only the commands that always open one (seventh audit): Detach
         // with one device and Reclaim with nothing to reclaim just speak.
-        let opensWindow: Set<Notification.Name> = [.avmAttachUSBFromMenu, .avmBluetoothDevices, .avmMachineDevices]
+        let opensWindow: Set<Notification.Name> = [.avmAttachUSBFromMenu, .avmBluetoothDevices, .avmMachineDevices, .avmInstallApps]
         if opensWindow.contains(name), MainWindowCloseGuard.hasOpenSheet {
             Announcer.shared.announce("A window is open in AVM's list. Close it, then choose the command again.", tone: .info)
             MainWindowCloseGuard.bringMainWindowForward()

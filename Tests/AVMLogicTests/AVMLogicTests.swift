@@ -1787,6 +1787,77 @@ final class GuestWatchTests: XCTestCase {
         XCTAssertFalse(AVMKeysInMachine.isControlMoving(keyCode: 0, modifiers: [.control]))
     }
 
+    func testWindowsAppInstallerChosenFromItsManifest() {
+        let yaml = """
+        PackageIdentifier: Example.App
+        InstallerType: nullsoft
+        Scope: machine
+        InstallerSwitches:
+          Silent: /S /Quiet
+        InstallerSuccessCodes:
+        - 777
+        Installers:
+        - Architecture: x64
+          InstallerUrl: https://example.com/x64.exe
+          InstallerSha256: \(String(repeating: "a", count: 64))
+        - Architecture: arm64
+          InstallerUrl: https://example.com/arm64.exe
+          InstallerSha256: \(String(repeating: "b", count: 64))
+          AppsAndFeaturesEntries:
+          - DisplayName: Example
+            InstallerType: portable
+        ManifestType: installer
+        """
+        let found = WindowsAppManifest.installer(yaml: yaml)
+        XCTAssertEqual(found?.url.lastPathComponent, "arm64.exe")
+        XCTAssertEqual(found?.type, "nullsoft", "not the entry's own list's")
+        XCTAssertEqual(found?.arguments, "/S /Quiet")
+        XCTAssertEqual(found?.sha256, String(repeating: "B", count: 64))
+        XCTAssertEqual(found?.successCodes, [0, 3010, 1641, 777])
+    }
+
+    func testWindowsAppInstallersThatWontDo() {
+        let sha = String(repeating: "a", count: 64)
+        func yaml(type: String, scope: String = "machine", link: String = "https://example.com/a.exe", arch: String = "x64", sum: String? = nil) -> String {
+            "Installers:\n- Architecture: \(arch)\n  InstallerType: \(type)\n  Scope: \(scope)\n  InstallerUrl: \(link)\n  InstallerSha256: \(sum ?? sha)\n"
+        }
+        XCTAssertNotNil(WindowsAppManifest.installer(yaml: yaml(type: "wix")))
+        XCTAssertEqual(WindowsAppManifest.installer(yaml: yaml(type: "inno"))?.arguments, "/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS")
+        XCTAssertNil(WindowsAppManifest.installer(yaml: yaml(type: "portable")))
+        XCTAssertNil(WindowsAppManifest.installer(yaml: yaml(type: "exe")), "no silent switch known")
+        XCTAssertNil(WindowsAppManifest.installer(yaml: yaml(type: "msi", scope: "user")), "SYSTEM has no one's profile to install for")
+        XCTAssertNil(WindowsAppManifest.installer(yaml: yaml(type: "msi", link: "http://example.com/a.msi")))
+        XCTAssertNil(WindowsAppManifest.installer(yaml: yaml(type: "msi", sum: "abc")))
+        XCTAssertNil(WindowsAppManifest.installer(yaml: yaml(type: "msi", arch: "arm")))
+    }
+
+    func testWindowsAppOutcomes() {
+        XCTAssertEqual(WindowsAppManifest.outcome(of: "noise\r\nAVM-INSTALL ok 0\r\n"), .installed(restartNeeded: false))
+        XCTAssertEqual(WindowsAppManifest.outcome(of: "AVM-INSTALL ok 3010"), .installed(restartNeeded: true))
+        XCTAssertEqual(WindowsAppManifest.outcome(of: "AVM-INSTALL failed 1603"), .failed(code: 1603))
+        XCTAssertEqual(WindowsAppManifest.outcome(of: "AVM-INSTALL checksum"), .checksum)
+        XCTAssertEqual(WindowsAppManifest.outcome(of: "AVM-INSTALL download"), .download)
+        XCTAssertEqual(WindowsAppManifest.outcome(of: "powershell said something else"), .noAnswer)
+    }
+
+    func testWindowsAppScriptQuotesAndChecks() {
+        let installer = WindowsAppInstaller(url: URL(string: "https://example.com/o'brien.msi")!, sha256: "ABC", type: "msi", arguments: "/qn", successCodes: [0, 3010])
+        let script = WindowsAppManifest.script(installer)
+        XCTAssertTrue(script.contains("o''brien"))
+        XCTAssertTrue(script.contains("-ne 'ABC'"))
+        XCTAssertTrue(script.contains("@(0,3010)"))
+    }
+
+    func testWindowsAppsListedInWindows() {
+        let git = WindowsApp.all.first { $0.name == "Git" }!
+        XCTAssertTrue(git.isListed(in: ["Git"]))
+        XCTAssertFalse(git.isListed(in: ["GitHub Desktop"]))
+        let python = WindowsApp.all.first { $0.name == "Python" }!
+        XCTAssertTrue(python.isListed(in: ["Python 3.13.17 (64-bit)"]))
+        XCTAssertEqual(python.manifestFolder, "manifests/p/Python/Python/3/13")
+        XCTAssertEqual(WindowsApp.all.first { $0.name == "Notepad++" }?.manifestFolder, "manifests/n/Notepad++/Notepad++")
+    }
+
     func testTheFeedsNewestBuild() {
         let feed = """
         <channel><!-- <sparkle:version>99</sparkle:version> --><item><sparkle:channel>early</sparkle:channel><sparkle:version>48</sparkle:version></item>

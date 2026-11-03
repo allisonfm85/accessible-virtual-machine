@@ -40,6 +40,7 @@ let package = Package(
                 "VM/UbuntuInstallPipeline.swift",
                 "AVMUSBHelper/StreamSocketCheck.swift",
                 "AVM/ScreenReaderInstallers.swift",
+                "AVM/WindowsAppList.swift",
                 "AVM/WindowsRegion.swift",
                 "AVM/WindowsSetupAnswers.swift",
                 "AVM/GuestAgent.swift",

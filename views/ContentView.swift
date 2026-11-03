@@ -34,6 +34,8 @@ extension Notification.Name {
     /// Return Devices to Mac… (2026-10-29, MachineDevicesView.swift), in
     /// place of Detach USB Device….
     static let avmMachineDevices = Notification.Name("avmMachineDevices")
+    /// The Virtual Machine menu's Install Apps (2026-11-03, InstallApps.swift).
+    static let avmInstallApps = Notification.Name("avmInstallApps")
 
     /// Posted by the Virtual Machine menu's "Speak Status" item
     /// (Cmd-Shift-I, 2026-10-25). ContentView answers because the active
@@ -269,6 +271,7 @@ struct ContentView: View {
         .sheet(item: $devicesWindow) { request in
             MachineDevicesView(machine: request.machine)
         }
+        .modifier(InstallAppsCommand())
         .sheet(item: $usbPicker) { request in
             USBDevicePickerView(mode: request.mode, devices: request.devices, machine: request.machine)
         }

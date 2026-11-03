@@ -575,6 +575,9 @@ of this is AVM.
 
 ### AVM's own commands (Mac side)
 
+- **Install Apps…**, in the Virtual Machine menu, installs apps you tick from a
+  list into a running Windows machine, one at a time with no questions.
+
 These work with your keyboard on the Mac or in the machine: Command-Shift-O,
 Command-Option-Shift-O, Command-Shift-I, Command-Option-Shift-I,
 Command-Option-Shift-C, Command-Shift-V and Command-Shift-D. The others need your

@@ -72,6 +72,10 @@
 // check runs at 5 minutes (a restore point if updates wait, else a note);
 // a restart's screens aren't read out by themselves.
 //
+// --test-install-apps (2026-11-03, InstallApps.swift): every app on the list has
+// an installer in today's manifests, and 7-Zip (AVM_INSTALL_APPS: names, or "all")
+// really installs in Windows and is listed there. Use a copy of a machine for "all".
+//
 // --test-blue-screen: Windows crashed on purpose with NtRaiseHardError (taskkill
 // can't end its protected processes); AVM says so, and it comes back.
 //
@@ -121,7 +125,7 @@ enum SaveResumeTestJob {
     static let flag = "--test-save-resume"
 
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
-        guard arguments.contains(flag) || arguments.contains("--test-microphone") || arguments.contains("--test-two-machines") || arguments.contains("--test-stress") || arguments.contains("--test-blue-screen")
+        guard arguments.contains(flag) || arguments.contains("--test-microphone") || arguments.contains("--test-two-machines") || arguments.contains("--test-stress") || arguments.contains("--test-blue-screen") || arguments.contains("--test-install-apps")
                 || arguments.contains("--test-duplicate") || arguments.contains("--test-send-file")
                 || arguments.contains("--test-linux-share") || arguments.contains("--test-ctl")
                 || arguments.contains("--test-disk-info") || arguments.contains("--run-in-guest")
@@ -195,6 +199,9 @@ enum SaveResumeTestJob {
         let guest = GuestOS(rawValue: value("--guest") ?? "windows") ?? .windows
         Task { @MainActor in
             let folderURL = URL(fileURLWithPath: folder, isDirectory: true)
+            if arguments.contains("--test-install-apps") {
+                await finish(await installApps(folderURL))
+            }
             if arguments.contains("--test-blue-screen") {
                 await finish(await blueScreen(folderURL))
             }
@@ -1637,6 +1644,39 @@ enum SaveResumeTestJob {
         MachineDisplays.placeOpening(window, for: config)
         check("one that isn't connected leaves the window be", window.frame == before && MachineDisplays.chosenScreen(config) == nil)
         check("and isn't moved to when the monitors change", !MachineDisplays.displaysChanged(window, for: config))
+        return ok
+    }
+
+    private static func installApps(_ folder: URL) async -> Bool {
+        print("== Every app has an installer today")
+        for app in WindowsApp.all {
+            let found = await InstallApps.latestInstaller(app)
+            print("   \(app.name): \(found.map { "\($0.type), \($0.url.host ?? "?"), \($0.url.lastPathComponent), \($0.arguments)" } ?? "none")")
+            fflush(stdout)
+            check("\(app.name) has one", found != nil)
+        }
+        let manager = VMManager()
+        guard await start(manager, configuration(folder: folder, guest: .windows)),
+              let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else {
+            check("the machine started and answers", false)
+            print("   its screen: \(await manager.readScreenText() ?? "(no picture)")")
+            await shutDown(manager); return false
+        }
+        let asked = ProcessInfo.processInfo.environment["AVM_INSTALL_APPS"] ?? "7-Zip"
+        let apps = asked == "all" ? WindowsApp.all : WindowsApp.all.filter { asked.contains($0.name) }
+        let before = await InstallApps.shared.installed(in: manager)
+        check("it can see what's installed", before != nil)
+        let wanted = apps.filter { before?.contains($0) != true }
+        print("== Installing \(wanted.map(\.name).joined(separator: ", "))")
+        fflush(stdout)
+        let done = await InstallApps.shared.install(wanted, in: manager)
+        for app in wanted { check("\(app.name) installed and is listed", done.contains(app)) }
+        // The test machine goes back as it was, for what this test put there.
+        if asked == "7-Zip", wanted.count == 1 {
+            let remove = "Start-Process 'C:\\Program Files\\7-Zip\\Uninstall.exe' -ArgumentList '/S' -Wait"
+            _ = await exec(agent, program: "powershell.exe", args: ["-NoProfile", "-Command", remove])
+        }
+        await shutDown(manager)
         return ok
     }
 

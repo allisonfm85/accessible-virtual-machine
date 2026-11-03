@@ -72,7 +72,7 @@ nonisolated enum ScreenReaderInstallers {
     // MARK: Finding the newest version
 
     private static let api = "https://api.github.com/repos/microsoft/winget-pkgs/contents/"
-    private static let raw = "https://raw.githubusercontent.com/microsoft/winget-pkgs/master/"
+    static let raw = "https://raw.githubusercontent.com/microsoft/winget-pkgs/master/"
 
     private static let nvAccessFeed = "https://api.nvaccess.org/nvdaUpdateCheck?versionType=stable"
 
@@ -119,7 +119,7 @@ nonisolated enum ScreenReaderInstallers {
     }
 
     /// The highest numbered release folder (release candidates skipped).
-    private static func newestFolder(_ path: String) async throws -> String {
+    static func newestFolder(_ path: String) async throws -> String {
         let data = try await fetch(api + path)
         guard let entries = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             throw ScreenReaderInstallerError.download("winget's listing for \(path) wasn't readable")
@@ -414,7 +414,7 @@ nonisolated enum ScreenReaderInstallers {
         return data
     }
 
-    private static func text(_ url: String) async throws -> String {
+    static func text(_ url: String) async throws -> String {
         String(decoding: try await fetch(url), as: UTF8.self)
     }
 }
