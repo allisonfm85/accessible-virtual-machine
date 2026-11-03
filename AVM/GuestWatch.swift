@@ -160,7 +160,7 @@ extension VMManager {
                     case .stuck:
                         AVMLog.write("AVM: GuestWatch — \(machine) looks stuck")
                         Task { await self.saveStuckState(machine: machine) }
-                        Announcer.shared.announce("\(machine) looks stuck: for \(Int(stuck.limit / 60)) minutes it hasn't answered AVM, and its screen hasn't changed. Next: press Command-Shift-R to reset it, or wait if it's doing something long.", tone: .failure)
+                        Announcer.shared.announce("\(machine) looks stuck: for \(Int(stuck.limit / 60)) minutes it hasn't answered AVM, and its screen hasn't changed. Next: press Command-Shift-R to reset it, or wait if it's doing something long.\(configuration.usesWindows3D ? " 3D graphics is on, which is experimental in Windows. If this keeps happening, turn it off in its Settings." : "")", tone: .failure)
                     case .alive:
                         AVMLog.write("AVM: GuestWatch — \(machine) is moving again")
                         Announcer.shared.announce("\(machine) is moving again.", tone: .info)

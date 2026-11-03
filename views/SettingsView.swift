@@ -510,10 +510,10 @@ struct SettingsView: View {
     private var gpuSection: some View {
         if (configuration.guestOS.isLinux && VMManager.supports3D) || (configuration.guestOS == .windows && VMManager.supportsWindows3D) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("3D Graphics")
+                Text(configuration.guestOS == .windows ? "3D Graphics (Experimental)" : "3D Graphics")
                     .font(.headline)
                     .accessibilityAddTraits(.isHeader)
-                Toggle("Draw \(guest) with your Mac's graphics chip", isOn: $gpu3D)
+                Toggle("Draw \(guest) with your Mac's graphics chip\(configuration.guestOS == .windows ? ", experimental" : "")", isOn: $gpu3D)
                     .disabled(isRunning)
                     .accessibilityHint(isRunning ? timingSentence : "When on, \(guest)'s desktop and 3D apps use your Mac's GPU")
                 if configuration.guestOS == .windows {
@@ -1622,7 +1622,7 @@ struct SettingsView: View {
                 let dir = URL(fileURLWithPath: updated.diskImagePath).deletingLastPathComponent()
                 do {
                     _ = try await RestorePoints.create(vmDirectory: dir, label: "Before 3D graphics", secureBoot: updated.usesSecureBoot, diskBus: updated.diskBus)
-                    Announcer.shared.announce("Restore point saved: Before 3D graphics. The 3D graphics driver goes in the next time \(updated.name) starts.", tone: .info)
+                    Announcer.shared.announce("3D graphics in Windows is experimental, and \(updated.name) may freeze or stop with it on. Restore point saved: Before 3D graphics. The 3D graphics driver goes in the next time \(updated.name) starts.", tone: .info)
                 } catch {
                     Announcer.shared.announce("The restore point before 3D graphics couldn't be taken, so 3D graphics stays off. Reason: \(error.localizedDescription)", tone: .failure)
                     updated.gpu3D = nil

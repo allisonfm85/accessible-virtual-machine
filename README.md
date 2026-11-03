@@ -397,6 +397,10 @@ agent it installs with Windows, and tells you. A machine you paused
 yourself stays paused. Windows installed by an older AVM has no guest
 agent, so its clock catches up at its next time sync.
 
+## 3D graphics in Windows
+
+3D graphics in Windows is experimental. It lets apps that use Direct3D 11 draw with your Mac's graphics chip, through the same driver as UTM. It's off unless you turn it on in a machine's Settings, and a machine with it on may freeze or stop, so don't turn it on for a machine you rely on. AVM takes a restore point first. It does little for a screen reader user unless an app needs DirectX 11.
+
 ## Sound
 
 Each machine's Settings has a Sound choice. Balanced is the default.
