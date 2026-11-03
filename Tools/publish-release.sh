@@ -11,6 +11,9 @@
 #   Tools/publish-release.sh            publish build/installer's release
 #   Tools/publish-release.sh --draft    make a draft GitHub release instead,
 #                                       and leave appcast.xml alone
+#   Tools/publish-release.sh --early    a prerelease, offered only to copies with
+#                                       "Get new versions early" on, until
+#                                       Tools/promote-release.sh <version>
 #
 # Needs the GitHub CLI (gh), signed in with access to this repository.
 
@@ -25,7 +28,9 @@ REPO_SLUG="${AVM_REPO:-allisonfm85/accessible-virtual-machine}"
 FEED_BRANCH="${AVM_FEED_BRANCH:-main}"
 OUT_DIR="$REPO_ROOT/build/installer"
 DRAFT=0
+EARLY=0
 [ "${1:-}" = "--draft" ] && DRAFT=1
+[ "${1:-}" = "--early" ] && EARLY=1
 
 fail() {
     echo "FAILED: $1"
@@ -111,6 +116,7 @@ read -r answer
 
 DRAFT_FLAG=()
 [ "$DRAFT" = "1" ] && DRAFT_FLAG=(--draft)
+[ "$EARLY" = "1" ] && DRAFT_FLAG=(--prerelease)
 if [ "$EXISTING" = "1" ]; then
     gh release upload "v$VERSION" "$DMG" "$ZIP" --repo "$REPO_SLUG" --clobber || fail "gh could not replace the release's files."
     if [ "$DRAFT" = "0" ]; then
@@ -136,9 +142,12 @@ if [ "$DRAFT" = "1" ]; then
 fi
 
 # Newest first: the entry goes right after the feed's comment block.
-python3 - "$REPO_ROOT/appcast.xml" "$ITEM" <<'PY'
+python3 - "$REPO_ROOT/appcast.xml" "$ITEM" "$EARLY" <<'PY'
 import sys
 feed, item = sys.argv[1], open(sys.argv[2]).read()
+if sys.argv[3] == "1":
+    assert "<sparkle:shortVersionString>" in item
+    item = item.replace("<sparkle:shortVersionString>", "<sparkle:channel>early</sparkle:channel>\n            <sparkle:shortVersionString>", 1)
 text = open(feed).read()
 anchor = "<language>en</language>\n"
 i = text.find("-->", text.find(anchor))
@@ -152,5 +161,9 @@ git -C "$REPO_ROOT" commit -q -m "Appcast: add v$VERSION entry" -- appcast.xml \
     || fail "The release v$VERSION is public, but the feed entry couldn't be committed." "Commit appcast.xml yourself and push it, so installed copies are offered $VERSION."
 git -C "$REPO_ROOT" push -q \
     || fail "The release v$VERSION is public, but the feed couldn't be pushed." "Run git push yourself (pull first if main moved), so installed copies are offered $VERSION."
-echo "Update feed updated and pushed. Installed copies of AVM will be offered $VERSION."
+if [ "$EARLY" = "1" ]; then
+    echo "Update feed updated and pushed. Only copies with early updates on will be offered $VERSION. For everyone: Tools/promote-release.sh $VERSION"
+else
+    echo "Update feed updated and pushed. Installed copies of AVM will be offered $VERSION."
+fi
 command -v say >/dev/null && say "AVM $VERSION is published." || true

@@ -75,6 +75,7 @@ struct AppPreferencesView: View {
     @AppStorage(GuestWatchSettings.pointBeforeUpdatesKey) private var pointBeforeUpdates = false
     @AppStorage(GuestWatchSettings.holdWhileInMachineKey) private var holdWhileInMachine = true
     @AppStorage(GuestWatchSettings.useSavedSetupKey) private var useSavedSetup = false
+    @AppStorage(UpdateChannels.earlyKey) private var earlyUpdates = false
     @AppStorage(ClaudeDescribe.enabledKey) private var describeWithClaude = false
     @State private var claudeKeyText = ""
 
@@ -119,6 +120,8 @@ struct AppPreferencesView: View {
             Text("AVM looks for a new version when it opens and once a day, and asks before installing one.")
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
+            Toggle("Get new versions early, as a tester", isOn: $earlyUpdates)
+                .accessibilityHint("New versions reach you about a day before everyone else, so they've been through less testing")
             HStack {
                 Button("Check for Updates Now") { updater.checkForUpdates() }
                     .disabled(!updater.canCheckForUpdates)

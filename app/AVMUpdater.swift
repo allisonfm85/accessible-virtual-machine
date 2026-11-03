@@ -102,6 +102,12 @@ final class AVMUpdater: ObservableObject {
 
 /// Says that an update was found and where its window is (header).
 final class UpdateAnnouncer: NSObject, SPUUpdaterDelegate {
+    /// Testers get a release first (2026-11-02): one marked early in the feed is
+    /// offered only to copies with this on, until Tools/promote-release.sh.
+    nonisolated func allowedChannels(for updater: SPUUpdater) -> Set<String> {
+        UpdateChannels.allowed
+    }
+
     /// The helper exits before the new AVM starts (2026-10-28, code
     /// review): it used to keep running for its idle grace period, and
     /// the new AVM talked to it.

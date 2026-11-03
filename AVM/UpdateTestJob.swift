@@ -55,6 +55,7 @@ enum UpdateTestJob {
         let feed: String?
         init(feed: String?) { self.feed = feed }
         func feedURLString(for updater: SPUUpdater) -> String? { feed }
+        func allowedChannels(for updater: SPUUpdater) -> Set<String> { UpdateChannels.allowed }
         func updaterShouldRelaunchApplication(_ updater: SPUUpdater) -> Bool { false }
     }
 

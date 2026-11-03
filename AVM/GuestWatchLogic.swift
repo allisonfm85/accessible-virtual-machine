@@ -278,6 +278,14 @@ nonisolated enum MacSpacesShortcuts {
     }
 }
 
+/// Which of the feed's early releases this copy of AVM takes.
+nonisolated enum UpdateChannels {
+    static let earlyKey = "AVMEarlyUpdates"
+    static var allowed: Set<String> {
+        UserDefaults.standard.bool(forKey: earlyKey) ? ["early"] : []
+    }
+}
+
 /// How a running QEMU is doing on the Mac, and what's worth saying about it.
 nonisolated struct MachineHealth: Sendable {
     struct Reading: Sendable {
