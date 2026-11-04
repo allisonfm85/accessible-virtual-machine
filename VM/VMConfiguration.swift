@@ -250,6 +250,13 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// true: the disk has grown and Windows' drive C hasn't taken the new space
     /// yet; the next Start does it through the guest agent (MachineDrives.swift).
     var extendDriveC: Bool?
+    /// The second drive's size in gigabytes, nil with none. Its file is
+    /// secondDriveFileName in the machine's folder.
+    var secondDriveGB: Int?
+    /// true until the guest has made the second drive ready to use.
+    var secondDriveNeedsFormat: Bool?
+    static let secondDriveFileName = "drive2.qcow2"
+
     // MARK: - Templates (2026-10-27)
 
     /// true: a template, kept as it is; its row offers New Machine from

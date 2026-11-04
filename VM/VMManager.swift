@@ -1606,7 +1606,8 @@ final class VMManager: ObservableObject {
         if installComplete, configuration.diskBusSwitch != nil {
             Task { [weak self] in await self?.continueDiskSwitch(configuration: configuration) }
         }
-        if installComplete, configuration.extendDriveC == true {
+        if installComplete, configuration.extendDriveC == true || configuration.secondDriveNeedsFormat == true
+            || (configuration.secondDriveGB != nil && configuration.guestOS.isLinux) {
             Task { [weak self] in await self?.finishDiskChanges(configuration: configuration) }
         }
 
@@ -2576,6 +2577,9 @@ final class VMManager: ObservableObject {
                 "-device", disk
             ]
         }
+        // Never during an install (2026-11-03): Setup's answer file names its disk
+        // by number, and a second one must not be in the way.
+        if !attachInstallMedia { args += secondDriveArguments(configuration: configuration) }
 
         // REINSTALL GUARD: attachInstallMedia is false when the install-complete
         // marker (AVMDONE.TAG) was found on the UNATTEND volume — Windows is on
@@ -4526,7 +4530,7 @@ extension VMManager {
         do {
             let node = try await diskNodeName()
             try await runQMPJob("snapshot-save", id: "avm-point",
-                                arguments: ["tag": tag, "vmstate": node, "devices": [node]])
+                                arguments: ["tag": tag, "vmstate": node, "devices": try await snapshotDevices(node)])
         } catch {
             RestorePoints.removeFolder(vmDirectory: runtimeDir, tag: tag)
             throw error
@@ -4593,7 +4597,7 @@ extension VMManager {
         do {
             let node = try await diskNodeName()
             try await runQMPJob("snapshot-save", id: "avm-save",
-                                arguments: ["tag": QEMUSavedState.tag, "vmstate": node, "devices": [node]])
+                                arguments: ["tag": QEMUSavedState.tag, "vmstate": node, "devices": try await snapshotDevices(node)])
         } catch {
             avmLog("saveStateAndStop: save failed: \(error.localizedDescription)")
             // A save QEMU finished after AVM gave up would be carried on
@@ -4601,7 +4605,7 @@ extension VMManager {
             if let node = try? await diskNodeName() {
                 _ = try? await sendQMPCommand("job-dismiss", arguments: ["id": "avm-save"])
                 try? await runQMPJob("snapshot-delete", id: "avm-unsave",
-                                     arguments: ["tag": QEMUSavedState.tag, "devices": [node]], limit: .seconds(120))
+                                     arguments: ["tag": QEMUSavedState.tag, "devices": try await snapshotDevices(node)], limit: .seconds(120))
             }
             // snapshot-save lets a running machine go again by itself; a
             // paused one stays paused. A QEMU that died during the save was
@@ -4657,7 +4661,7 @@ extension VMManager {
         do {
             node = try await diskNodeName()
             try await runQMPJob("snapshot-load", id: "avm-load",
-                                arguments: ["tag": plan.tag, "vmstate": node, "devices": [node]])
+                                arguments: ["tag": plan.tag, "vmstate": node, "devices": try await snapshotDevices(node)])
             _ = try await sendQMPCommand("cont", arguments: nil)
             avmLog("resumeSavedState: carried on in \(String(format: "%.1f", Date().timeIntervalSince(started))) s")
             carriedOn = true
@@ -4701,7 +4705,7 @@ extension VMManager {
         if plan.isSavedState, !node.isEmpty {
             do {
                 try await runQMPJob("snapshot-delete", id: "avm-delete",
-                                    arguments: ["tag": QEMUSavedState.tag, "devices": [node]])
+                                    arguments: ["tag": QEMUSavedState.tag, "devices": try await snapshotDevices(node)])
                 try? fm.removeItem(at: marker)
             } catch {
                 avmLog("resumeSavedState: couldn't delete the saved state (\(error.localizedDescription)); the marker makes the next Start delete it")

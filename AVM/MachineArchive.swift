@@ -338,7 +338,8 @@ enum MachineArchive {
     static func diskProblem(package: URL, config: VMConfiguration) async -> String? {
         guard config.guestOS != .macOS else { return nil }
         let shown = package.lastPathComponent
-        let disk = package.appendingPathComponent(diskFileName(for: config))
+        // The second drive is opened the same way (2026-11-03).
+        for disk in [package.appendingPathComponent(diskFileName(for: config)), RestorePoints.secondDrive(package)].compactMap({ $0 }) {
         guard let output = try? await RestorePoints.qemuImg(["info", "--output=json", "-U", "-f", "qcow2", disk.path]),
               let json = try? JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any] else {
             return "\(shown)'s disk isn't one AVM can read, so nothing was imported. It may be damaged. Next: export the machine again."
@@ -346,6 +347,7 @@ enum MachineArchive {
         let data = (json["format-specific"] as? [String: Any])?["data"] as? [String: Any]
         if json["backing-filename"] != nil || json["full-backing-filename"] != nil || data?["data-file"] != nil {
             return "\(shown)'s disk depends on a file outside the package, which a machine AVM exported never does, so nothing was imported. If someone sent you this package, don't use it."
+        }
         }
         return nil
     }
@@ -355,6 +357,7 @@ enum MachineArchive {
     /// it can't be, the loaded marker makes that Start delete it instead.
     static func dropSavedState(in folder: URL, config: VMConfiguration) async {
         guard config.guestOS != .macOS else { return }
+        await RestorePoints.deleteFromSecondDrive(QEMUSavedState.tag, vmDirectory: folder)
         let disk = folder.appendingPathComponent(diskFileName(for: config))
         guard await QEMUSavedState.snapshotTags(disk: disk)?.contains(QEMUSavedState.tag) != false else { return }
         _ = try? await RestorePoints.qemuImg(["snapshot", "-d", QEMUSavedState.tag, disk.path])

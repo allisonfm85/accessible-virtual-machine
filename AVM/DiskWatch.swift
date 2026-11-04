@@ -65,6 +65,7 @@ nonisolated enum DiskWatch {
             let type = (fs["type"] as? String ?? "").lowercased()
             if ["cdfs", "udf", "iso9660", "tmpfs", "squashfs", "vfat"].contains(type) { return nil }
             if mount == "/" { return Drive(name: "/", used: used, total: total) }
+            if mount == linuxSecondDrive { return Drive(name: mount, used: used, total: total) }
             // "C:\\" on Windows.
             if mount.count <= 3, mount.dropFirst().hasPrefix(":") {
                 return Drive(name: String(mount.prefix(2)).uppercased(), used: used, total: total)
@@ -92,7 +93,8 @@ nonisolated enum DiskWatch {
     static func guestWords(machine: String, drive: Drive) -> String {
         let percent = Int((drive.fraction * 100).rounded())
         let left = max(0, (drive.total - drive.used) / gigabyte)
-        let which = drive.name == "/" ? "\(machine)'s disk" : "\(machine)'s \(drive.name) drive"
+        let which = drive.name == "/" ? "\(machine)'s disk"
+            : drive.name == linuxSecondDrive ? "\(machine)'s second drive" : "\(machine)'s \(drive.name) drive"
         return "\(which) is \(percent) percent full, with \(left) gigabytes left. Next: delete files in \(machine), or make its disk larger in Settings while it's shut down."
     }
 
@@ -100,30 +102,38 @@ nonisolated enum DiskWatch {
 
     /// Where those figures are kept, in the machine's folder.
     static let usageFileName = "disk-usage.json"
+    /// Where a Linux machine's second drive is mounted.
+    static let linuxSecondDrive = "/mnt/avm-data"
 
     /// The Disk column: what's used when AVM has heard, or the size it was given.
     /// A stopped machine's figures are from when it last ran, and say so.
-    static func tableCell(drives: [Drive], sizeGB: Int, running: Bool) -> (shown: String, spoken: String) {
+    static func tableCell(drives: [Drive], sizeGB: Int, secondDriveGB: Int?, running: Bool) -> (shown: String, spoken: String) {
         func gb(_ bytes: Int64) -> Int64 { (bytes + gigabyte / 2) / gigabyte }
+        func second(_ drive: Drive) -> String { drive.name == linuxSecondDrive ? "second drive" : drive.name }
         var shown: [String] = []
         var spoken: [String] = []
         // The one the machine starts from first: Windows may name D: before C:.
         func isFirst(_ drive: Drive) -> Bool { drive.name == "/" || drive.name == "C:" }
         for drive in drives.filter(isFirst) + drives.filter({ !isFirst($0) }) {
             let first = isFirst(drive)
-            shown.append("\(first ? "" : "\(drive.name) ")\(gb(drive.used)) of \(gb(drive.total)) GB\(first ? " used" : "")")
-            spoken.append("\(first ? "" : "\(drive.name), ")\(gb(drive.used)) of \(gb(drive.total)) gigabytes\(first ? " used" : "")")
+            shown.append("\(first ? "" : "\(second(drive)) ")\(gb(drive.used)) of \(gb(drive.total)) GB\(first ? " used" : "")")
+            spoken.append("\(first ? "" : "\(second(drive)), ")\(gb(drive.used)) of \(gb(drive.total)) gigabytes\(first ? " used" : "")")
         }
         if shown.isEmpty {
             shown.append("\(sizeGB) GB")
             spoken.append("\(sizeGB) gigabytes")
+        }
+        // A drive the guest hasn't reported yet.
+        if let secondDriveGB, drives.count < 2 {
+            shown.append("second drive \(secondDriveGB) GB")
+            spoken.append("second drive, \(secondDriveGB) gigabytes")
         }
         let old = !running && !drives.isEmpty
         return (shown.joined(separator: ", ") + (old ? " (last run)" : ""),
                 spoken.joined(separator: ", ") + (old ? ", when it last ran" : ""))
     }
 
-    // MARK: Growing, inside the guest
+    // MARK: Growing and adding, inside the guest
 
     /// Drive C takes all the space after it. It says "extended", or "same" when
     /// there's nothing to take, then the size in gigabytes.
@@ -136,9 +146,53 @@ nonisolated enum DiskWatch {
     "$word|$([math]::Round((Get-Partition -DriveLetter C).Size / 1GB))"
     """
 
+    /// Only ever an empty disk of exactly this size, that isn't the one Windows
+    /// started from. Formatted before it gets a letter, so Windows doesn't offer
+    /// to format it. It says "ready" and the letter, "already" for a drive that
+    /// has been made ready, or "nodisk".
+    static func formatWindowsDriveScript(sizeGB: Int) -> String {
+        """
+        $ErrorActionPreference = 'Stop'
+        $size = \(Int64(sizeGB) * gigabyte)
+        $disks = @(Get-Disk | Where-Object { $_.Size -eq $size -and -not $_.IsBoot -and -not $_.IsSystem })
+        $empty = @($disks | Where-Object { $_.PartitionStyle -eq 'RAW' })
+        if ($empty.Count -ne 1) { if ($disks.Count -ge 1) { 'already' } else { 'nodisk' }; exit }
+        $disk = $empty[0]
+        if ($disk.IsOffline) { Set-Disk -Number $disk.Number -IsOffline $false }
+        if ($disk.IsReadOnly) { Set-Disk -Number $disk.Number -IsReadOnly $false }
+        Initialize-Disk -Number $disk.Number -PartitionStyle GPT
+        $part = New-Partition -DiskNumber $disk.Number -UseMaximumSize
+        $null = Format-Volume -Partition $part -FileSystem NTFS -NewFileSystemLabel 'Second Drive' -Confirm:$false
+        Add-PartitionAccessPath -DiskNumber $disk.Number -PartitionNumber $part.PartitionNumber -AssignDriveLetter
+        "ready|$((Get-Partition -DiskNumber $disk.Number -PartitionNumber $part.PartitionNumber).DriveLetter)"
+        """
+    }
+
+    /// The disk QEMU named. Formatted only when AVM hasn't made it ready yet, and
+    /// only if nothing is on it. Mounted at every Start: a restore point from before
+    /// the drive puts back an /etc/fstab that doesn't name it (Windows finds it by
+    /// itself). Everyone may use it, as the account in the machine isn't known here.
+    static func linuxDriveScript(format: Bool) -> String {
+        """
+        d=$(ls /dev/disk/by-id/virtio-avmdisk1 /dev/disk/by-id/nvme-*avmdisk1 2>/dev/null | head -1)
+        [ -n "$d" ] || { echo nodisk; exit 0; }
+        word=already
+        if ! blkid "$d" >/dev/null 2>&1; then
+            \(format ? #"mkfs.ext4 -q -L AVMData "$d" || { echo failed; exit 0; }; word=ready"# : "echo failed; exit 0")
+        fi
+        mkdir -p \(linuxSecondDrive)
+        uuid=$(blkid -s UUID -o value "$d")
+        grep -q ' \(linuxSecondDrive) ' /etc/fstab || echo "UUID=$uuid \(linuxSecondDrive) ext4 defaults,nofail 0 2" >> /etc/fstab
+        grep -q ' \(linuxSecondDrive) ' /proc/mounts || mount \(linuxSecondDrive) || { echo failed; exit 0; }
+        chmod 1777 \(linuxSecondDrive)
+        command -v restorecon >/dev/null && restorecon -R \(linuxSecondDrive)
+        echo "$word|\(linuxSecondDrive)"
+        """
+    }
+
     /// A script's last line that says something, split at the bar.
     static func answer(_ output: String) -> (word: String, detail: String)? {
-        let words = ["extended", "same"]
+        let words = ["extended", "same", "ready", "already", "nodisk", "failed"]
         guard let line = output.split(whereSeparator: \.isNewline).map({ $0.trimmingCharacters(in: .whitespaces) })
             .last(where: { line in words.contains { line == $0 || line.hasPrefix($0 + "|") } }) else { return nil }
         let parts = line.split(separator: "|", maxSplits: 1).map(String.init)

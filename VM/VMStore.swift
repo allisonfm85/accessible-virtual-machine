@@ -569,10 +569,12 @@ nonisolated enum RestorePoints {
         let tag = newTag()
         _ = try await qemuImg(["snapshot", "-c", tag, disk(dir).path])
         do {
+            if let second = secondDrive(dir) { _ = try await qemuImg(["snapshot", "-c", tag, second.path]) }
             try writeFolder(vmDirectory: dir, tag: tag, label: label, secureBoot: secureBoot, diskBus: diskBus)
         } catch {
             // Half a restore point is worse than none: take the snapshot back.
             _ = try? await qemuImg(["snapshot", "-d", tag, disk(dir).path])
+            if let second = secondDrive(dir) { _ = try? await qemuImg(["snapshot", "-d", tag, second.path]) }
             throw error
         }
         AVMLog.write("AVM: RestorePoints — created \(tag).")
@@ -663,11 +665,19 @@ nonisolated enum RestorePoints {
         }
         await beforeRollback()
         _ = try await qemuImg(["snapshot", "-a", point.tag, disk(dir).path])
+        // The second drive goes back with it (2026-11-03), if it was there then. A
+        // point from before it leaves it as it is, and can't carry on with open
+        // apps: that memory has no second drive, and QEMU wouldn't load it.
+        var secondDriveWasThere = true
+        if let second = secondDrive(dir) {
+            secondDriveWasThere = await QEMUSavedState.snapshotTags(disk: second)?.contains(point.tag) == true
+            if secondDriveWasThere { _ = try await qemuImg(["snapshot", "-a", point.tag, second.path]) }
+        }
         // With memory (2026-10-27): the next Start loads it and carries on
         // from that moment (QEMUSavedState.resumeTag). Without, any note
         // left by an earlier restore goes.
         let resume = dir.appendingPathComponent(QEMUSavedState.resumeFile)
-        if point.withMemory {
+        if point.withMemory, secondDriveWasThere {
             try point.tag.write(to: resume, atomically: true, encoding: .utf8)
         } else {
             try? fm.removeItem(at: resume)
@@ -694,8 +704,22 @@ nonisolated enum RestorePoints {
     static func delete(_ point: RestorePoint, vmDirectory dir: URL) async throws {
         guard isOwnTag(point.tag) else { throw RestorePointError.tool("The restore point's name isn't one AVM made, so it wasn't deleted.") }
         _ = try await qemuImg(["snapshot", "-d", point.tag, disk(dir).path])
+        await deleteFromSecondDrive(point.tag, vmDirectory: dir)
         try? FileManager.default.removeItem(at: dir.appendingPathComponent(folderName).appendingPathComponent(point.tag))
         AVMLog.write("AVM: RestorePoints — deleted \(point.tag).")
+    }
+
+    /// The machine's second drive, if it has one.
+    static func secondDrive(_ dir: URL) -> URL? {
+        let url = dir.appendingPathComponent(VMConfiguration.secondDriveFileName)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// A snapshot gone from the second drive, if it's there. One that's left costs
+    /// space, and a saved state's name would be in the way of the next save.
+    static func deleteFromSecondDrive(_ tag: String, vmDirectory dir: URL) async {
+        guard let second = secondDrive(dir), await QEMUSavedState.snapshotTags(disk: second)?.contains(tag) == true else { return }
+        _ = try? await qemuImg(["snapshot", "-d", tag, second.path])
     }
 
     private static func disk(_ dir: URL) -> URL {

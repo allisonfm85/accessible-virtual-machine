@@ -1490,16 +1490,39 @@ final class DiskWatchTests: XCTestCase {
     func testTheDashboardSaysHowFull() {
         let c = DiskWatch.Drive(name: "C:", used: 120 * gb, total: 403 * gb)
         let d = DiskWatch.Drive(name: "D:", used: 5 * gb, total: 500 * gb)
-        XCTAssertEqual(DiskWatch.tableCell(drives: [], sizeGB: 404, running: false).shown, "404 GB")
-        XCTAssertEqual(DiskWatch.tableCell(drives: [c], sizeGB: 404, running: true).shown, "120 of 403 GB used")
-        XCTAssertEqual(DiskWatch.tableCell(drives: [c], sizeGB: 404, running: false).spoken, "120 of 403 gigabytes used, when it last ran")
-        XCTAssertEqual(DiskWatch.tableCell(drives: [d, c], sizeGB: 404, running: true).shown, "120 of 403 GB used, D: 5 of 500 GB")
+        XCTAssertEqual(DiskWatch.tableCell(drives: [], sizeGB: 404, secondDriveGB: nil, running: false).shown, "404 GB")
+        XCTAssertEqual(DiskWatch.tableCell(drives: [c], sizeGB: 404, secondDriveGB: nil, running: true).shown, "120 of 403 GB used")
+        XCTAssertEqual(DiskWatch.tableCell(drives: [c], sizeGB: 404, secondDriveGB: nil, running: false).spoken, "120 of 403 gigabytes used, when it last ran")
+        XCTAssertEqual(DiskWatch.tableCell(drives: [d, c], sizeGB: 404, secondDriveGB: 500, running: true).shown, "120 of 403 GB used, D: 5 of 500 GB")
+        XCTAssertEqual(DiskWatch.tableCell(drives: [c], sizeGB: 404, secondDriveGB: 500, running: true).shown, "120 of 403 GB used, second drive 500 GB")
+    }
+
+    func testTheSecondDriveIsWatchedOnLinuxToo() {
+        let reply: [[String: Any]] = [["mountpoint": "/", "type": "ext4", "total-bytes": 64 * gb, "used-bytes": gb],
+                                      ["mountpoint": DiskWatch.linuxSecondDrive, "type": "ext4", "total-bytes": 20 * gb, "used-bytes": gb],
+                                      ["mountpoint": "/home/other", "type": "ext4", "total-bytes": 20 * gb, "used-bytes": gb]]
+        XCTAssertEqual(DiskWatch.drives(fromFsinfo: reply).map(\.name), ["/", DiskWatch.linuxSecondDrive])
+    }
+
+    func testOnlyAnEmptyDiskOfTheRightSizeIsFormatted() {
+        let script = DiskWatch.formatWindowsDriveScript(sizeGB: 20)
+        XCTAssertTrue(script.contains("$size = 21474836480"))
+        XCTAssertTrue(script.contains("$_.PartitionStyle -eq 'RAW'"))
+        XCTAssertTrue(script.contains("-not $_.IsBoot"))
+        XCTAssertTrue(DiskWatch.linuxDriveScript(format: true).contains(#"if ! blkid "$d""#))
+        XCTAssertFalse(DiskWatch.linuxDriveScript(format: false).contains("mkfs"), "only a drive AVM hasn't made ready")
     }
 
     func testWhatAGuestScriptSaid() {
         XCTAssertEqual(DiskWatch.answer("noise\r\nextended|414\r\n")?.word, "extended")
-        XCTAssertEqual(DiskWatch.answer("same|64\n")?.detail, "64")
-        XCTAssertNil(DiskWatch.answer("extending something\n"))
+        XCTAssertEqual(DiskWatch.answer("ready|E\n")?.detail, "E")
+        XCTAssertEqual(DiskWatch.answer("already\n")?.word, "already")
+        XCTAssertNil(DiskWatch.answer("readying something\n"))
+    }
+
+    func testTheSecondDriveTravelsButTheFiguresDont() {
+        XCTAssertFalse(MachineArchive.exportSkips(VMConfiguration.secondDriveFileName))
+        XCTAssertTrue(MachineArchive.exportSkips(DiskWatch.usageFileName))
     }
 
     private let gb = DiskWatch.gigabyte

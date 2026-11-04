@@ -274,7 +274,7 @@ extension VMManager {
     /// in use).
     func deleteRunningRestorePoint(_ point: RestorePoint, runtimeDir: URL) async throws {
         let node = try await diskNodeName()
-        try await runQMPJob("snapshot-delete", id: "avm-point-delete", arguments: ["tag": point.tag, "devices": [node]])
+        try await runQMPJob("snapshot-delete", id: "avm-point-delete", arguments: ["tag": point.tag, "devices": try await snapshotDevices(node)])
         RestorePoints.removeFolder(vmDirectory: runtimeDir, tag: point.tag)
     }
 

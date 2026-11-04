@@ -87,6 +87,11 @@
 // temporary AVM folder (the user's machine list is never opened), then
 // runs the original and the copy at once, and deletes the copy.
 //
+// --test-machine-drives (2026-11-03, MachineDrives.swift): on a copy of a machine,
+// as it changes the disk. A restore point with memory, then the disk grown and a
+// second drive added: drive C takes the space, the drive is made ready, and a save,
+// a newer restore point and the older one each leave it as they should.
+//
 // --test-stress (2026-11-02): two Linux machines through MachineSessions for 20
 // minutes (AVM_STRESS_MINUTES), with their processors, disks and connections
 // busy, and one paused and carried on every 5 minutes as Mac sleep does. Each
@@ -125,7 +130,7 @@ enum SaveResumeTestJob {
     static let flag = "--test-save-resume"
 
     static func runIfAsked(arguments: [String] = CommandLine.arguments) {
-        guard arguments.contains(flag) || arguments.contains("--test-microphone") || arguments.contains("--test-two-machines") || arguments.contains("--test-stress") || arguments.contains("--test-blue-screen") || arguments.contains("--test-install-apps")
+        guard arguments.contains(flag) || arguments.contains("--test-microphone") || arguments.contains("--test-two-machines") || arguments.contains("--test-stress") || arguments.contains("--test-blue-screen") || arguments.contains("--test-machine-drives") || arguments.contains("--test-install-apps")
                 || arguments.contains("--test-duplicate") || arguments.contains("--test-send-file")
                 || arguments.contains("--test-linux-share") || arguments.contains("--test-ctl")
                 || arguments.contains("--test-disk-info") || arguments.contains("--run-in-guest")
@@ -201,6 +206,9 @@ enum SaveResumeTestJob {
             let folderURL = URL(fileURLWithPath: folder, isDirectory: true)
             if arguments.contains("--test-install-apps") {
                 await finish(await installApps(folderURL))
+            }
+            if arguments.contains("--test-machine-drives") {
+                await finish(await machineDrives(folderURL, guest))
             }
             if arguments.contains("--test-blue-screen") {
                 await finish(await blueScreen(folderURL))
@@ -1705,6 +1713,138 @@ enum SaveResumeTestJob {
         check("AVM said Windows stopped with an error", said)
         check("the machine answers again", await waitForAgent(agent, seconds: 600))
         await shutDown(manager)
+        return ok
+    }
+
+    private static func machineDrives(_ folder: URL, _ guest: GuestOS) async -> Bool {
+        var config = configuration(folder: folder, guest: guest)
+        let windows = guest == .windows
+        func drives(_ agent: String) async -> [DiskWatch.Drive] {
+            let reply = try? await Task.detached(operation: { try GuestAgent.run([#"{"execute":"guest-get-fsinfo"}"#], socketPath: agent, timeout: 10) }).value.first
+            let json = reply.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+            return DiskWatch.drives(fromFsinfo: json?["return"])
+        }
+        func isFirst(_ drive: DiskWatch.Drive) -> Bool { drive.name == "C:" || drive.name == "/" }
+        /// The second drive's path for a file, once the guest shows it.
+        func secondDrive(_ agent: String) async -> String? {
+            for _ in 0..<120 {
+                if let drive = await drives(agent).first(where: { !isFirst($0) }) { return drive.name }
+                try? await Task.sleep(for: .seconds(2))
+            }
+            return nil
+        }
+        func write(_ agent: String, _ place: String, _ name: String) async {
+            if windows {
+                _ = await exec(agent, program: "cmd.exe", args: ["/c", "echo avm> \(place)\\\(name)"])
+            } else {
+                _ = await exec(agent, program: "/bin/sh", args: ["-c", "echo avm > \(place)/\(name); sync"])
+            }
+        }
+        func has(_ agent: String, _ place: String, _ name: String) async -> Bool {
+            let out = windows
+                ? await exec(agent, program: "cmd.exe", args: ["/c", "if exist \(place)\\\(name) (echo yes) else (echo no)"])
+                : await exec(agent, program: "/bin/sh", args: ["-c", "[ -e \(place)/\(name) ] && echo yes || echo no"])
+            return out?.contains("yes") == true
+        }
+
+        print("== A restore point from before the second drive")
+        var manager = VMManager()
+        guard await start(manager, config), let firstAgent = manager.guestAgentSocketPath, await waitForAgent(firstAgent, seconds: 300) else {
+            check("the machine started and answers", false); await shutDown(manager); return false
+        }
+        let before = await drives(firstAgent).first(where: isFirst)
+        check("it has one drive at first", await drives(firstAgent).count == 1)
+        let older = try? await manager.createRunningRestorePoint(label: "Before the drive")
+        check("the older point was made", older != nil)
+        await shutDown(manager)
+
+        print("== The disk grown and a second drive added")
+        let disk = URL(fileURLWithPath: config.diskImagePath)
+        let newSize = (try? await RestorePoints.diskSizeGB(vmDirectory: folder)).map { $0 + 10 } ?? 74
+        if windows {
+            try? await VMManager().growDiskImage(at: disk.path, toGB: newSize)
+            config.diskSizeGB = newSize
+            config.extendDriveC = true
+        }
+        let file = folder.appendingPathComponent(VMConfiguration.secondDriveFileName)
+        try? await VMManager().createDiskImage(at: file.path, sizeGB: 20)
+        config.secondDriveGB = 20
+        config.secondDriveNeedsFormat = true
+
+        manager = VMManager()
+        guard await start(manager, config), let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300),
+              let place = await secondDrive(agent) else {
+            check("the second drive appeared", false); await shutDown(manager); return false
+        }
+        check("the second drive appeared", true)
+        print("   it is \(place)")
+        let shown = await drives(agent)
+        for drive in shown { print("   \(drive.name): \(drive.used >> 30) of \(drive.total >> 30) GB") }
+        check("it's about 20 GB", shown.first { !isFirst($0) }.map { abs(($0.total >> 30) - 20) <= 2 } == true)
+        if windows, let before {
+            var grown = false
+            for _ in 0..<60 where !grown {
+                grown = await drives(agent).first(where: isFirst).map { $0.total > before.total + 8 << 30 } == true
+                if !grown { try? await Task.sleep(for: .seconds(2)) }
+            }
+            check("drive C took the new space", grown)
+        }
+        let cell = DiskWatch.tableCell(drives: await drives(agent), sizeGB: config.diskSizeGB, secondDriveGB: 20, running: true)
+        print("   the dashboard would say: \(cell.shown)")
+        print("   VoiceOver would say: \(cell.spoken)")
+        config.extendDriveC = nil
+        config.secondDriveNeedsFormat = nil
+        await write(agent, place, "avm-first.txt")
+        check("it can be written", await has(agent, place, "avm-first.txt"))
+
+        print("== A restore point with memory, and a save")
+        guard let newer = try? await manager.createRunningRestorePoint(label: "With the drive") else {
+            check("the newer point was made", false); await shutDown(manager); return false
+        }
+        check("the newer point is on both disks", await QEMUSavedState.snapshotTags(disk: file)?.contains(newer.tag) != false)
+        await write(agent, place, "avm-second.txt")
+        check("it saved with its apps", await manager.saveStateAndStop())
+        check("the save is on the second drive too", await QEMUSavedState.snapshotTags(disk: file)?.contains(QEMUSavedState.tag) == true)
+        manager = VMManager()
+        guard await start(manager, config), let agent2 = manager.guestAgentSocketPath, await waitForAgent(agent2, seconds: 300) else {
+            check("it carried on", false); await shutDown(manager); return false
+        }
+        let firstFile = await has(agent2, place, "avm-first.txt")
+        let secondFile = await has(agent2, place, "avm-second.txt")
+        check("it carried on, with both files", firstFile && secondFile)
+        try? await Task.sleep(for: .seconds(5))
+        await shutDown(manager)
+        check("the save is gone from the second drive", await QEMUSavedState.snapshotTags(disk: file)?.contains(QEMUSavedState.tag) == false)
+
+        print("== The newer point restored: the second drive goes back with it")
+        try? await RestorePoints.restore(newer, vmDirectory: folder, currentSecureBoot: config.usesSecureBoot)
+        manager = VMManager()
+        guard await start(manager, config), let agent3 = manager.guestAgentSocketPath, await waitForAgent(agent3, seconds: 300) else {
+            check("it carried on from the point", false); await shutDown(manager); return false
+        }
+        check("the file from before the point is there", await has(agent3, place, "avm-first.txt"))
+        check("the file from after it is gone", await !has(agent3, place, "avm-second.txt"))
+        await write(agent3, place, "avm-third.txt")
+        await shutDown(manager)
+
+        if let older {
+            print("== The older point restored: the second drive stays as it is")
+            try? await RestorePoints.restore(older, vmDirectory: folder, currentSecureBoot: config.usesSecureBoot)
+            let note = folder.appendingPathComponent(QEMUSavedState.resumeFile)
+            check("it won't load memory that had no second drive", !FileManager.default.fileExists(atPath: note.path))
+            config.diskSizeGB = (try? await RestorePoints.diskSizeGB(vmDirectory: folder)) ?? config.diskSizeGB
+            manager = VMManager()
+            guard await start(manager, config), let agent4 = manager.guestAgentSocketPath, await waitForAgent(agent4, seconds: 300) else {
+                check("it started", false); await shutDown(manager); return false
+            }
+            let place4 = await secondDrive(agent4)
+            print("   it is \(place4 ?? "not there")")
+            if let place4 { check("the drive's newest file is still there", await has(agent4, place4, "avm-third.txt")) } else { check("the drive is still there", false) }
+            await shutDown(manager)
+            try? await RestorePoints.delete(older, vmDirectory: folder)
+        }
+        try? await RestorePoints.delete(newer, vmDirectory: folder)
+        check("the point went from the second drive too", await QEMUSavedState.snapshotTags(disk: file)?.contains(newer.tag) == false)
         return ok
     }
 

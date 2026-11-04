@@ -142,6 +142,8 @@ struct SettingsView: View {
     @State private var cpuCount: Int = 4
     @State private var ramSizeGB: Int = 8
     @State private var diskSizeGB: Int = 64
+    @State private var addSecondDrive = false
+    @State private var secondDriveSize = 100
     @State private var validationErrors: [String] = []
     @State private var isSaving = false
     @State private var saveMessage: String? = nil
@@ -355,8 +357,45 @@ struct SettingsView: View {
                         .accessibilityHint("Adjust with arrow keys. The disk can grow but never shrink. Minimum \(currentDiskGB) GB, maximum \(diskGrowthCeilingGB) GB. \(diskGrowthFollowUp)")
                 }
             }
+
+            if configuration.guestOS != .macOS { secondDriveControls }
         }
         .padding(.horizontal)
+    }
+
+    /// A second drive (2026-11-03, MachineDrives.swift). It takes only what's used
+    /// of the Mac's space, as the first disk does.
+    @ViewBuilder
+    private var secondDriveControls: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Second Drive")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+            let most = max(0, diskGrowthCeilingGB - currentDiskGB)
+            if let size = saved.secondDriveGB {
+                Text("\(size) GB. It goes back with restore points, and it's copied with this machine. It can't be removed yet, except by deleting the machine.")
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if isRunning {
+                Text("Stop \(guest) to add a second drive.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if most < 10 {
+                Text("There isn't enough free space on your Mac to add a second drive.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Toggle("Add a second drive", isOn: $addSecondDrive)
+                    .accessibilityHint("\(guest) gets a new, empty drive the next time it starts. It can't be removed yet, except by deleting the machine.")
+                if addSecondDrive {
+                    Text("Size: \(secondDriveSize) GB")
+                        .accessibilityLabel("Size: \(secondDriveSize) gigabytes")
+                    Stepper(value: $secondDriveSize, in: 10...most, step: 10) { Text("Second drive size in gigabytes") }
+                        .labelsHidden()
+                        .accessibilityHint("Adjust with arrow keys. Minimum 10 GB, maximum \(most) GB.")
+                }
+            }
+        }
     }
 
     /// Printers (2026-10-27).
@@ -1466,7 +1505,10 @@ struct SettingsView: View {
         // asked first, and the saved session let go of, so the next Start is
         // a plain start, not a failed resume. A larger disk can't take a
         // snapshot along anyway.
-        let changesMachine = cpuCount != saved.cpuCount || ramSizeGB != saved.ramSizeGB || growTo != nil
+        // Asked for, and not already there.
+        let newSecondDrive: Int? = !isRunning && addSecondDrive && saved.secondDriveGB == nil && configuration.guestOS != .macOS
+            ? min(secondDriveSize, max(10, diskGrowthCeilingGB - currentDiskGB)) : nil
+        let changesMachine = cpuCount != saved.cpuCount || ramSizeGB != saved.ramSizeGB || growTo != nil || newSecondDrive != nil
             || secureBoot != saved.usesSecureBoot || shareMicrophone != saved.sharesMicrophone
             || shareCamera != saved.sharesCamera || gpu3D != (saved.gpu3D == true)
         var discardSaved: VMConfiguration?
@@ -1493,7 +1535,7 @@ struct SettingsView: View {
         }
 
         // The disk can't grow on a drive that isn't connected (2026-10-25).
-        if growTo != nil, configuration.storageIsMissing {
+        if growTo != nil || newSecondDrive != nil, configuration.storageIsMissing {
             let message = "\(configuration.storageMissingMessage) Nothing was saved."
             validationErrors = [message]
             Announcer.shared.announce(message, tone: .failure)
@@ -1546,6 +1588,22 @@ struct SettingsView: View {
                     return
                 }
             }
+            if let newSecondDrive {
+                do {
+                    let file = try vmStore.vmDirectoryURL(for: configuration).appendingPathComponent(VMConfiguration.secondDriveFileName)
+                    // A file left by a save that never finished has nothing on it.
+                    if !FileManager.default.fileExists(atPath: file.path) {
+                        try await VMManager().createDiskImage(at: file.path, sizeGB: newSecondDrive)
+                    }
+                } catch {
+                    let message = "The second drive could not be made. Nothing else was saved. \(error.localizedDescription)"
+                    validationErrors = [message]
+                    Announcer.shared.announce(message, tone: .failure)
+                    isSaving = false
+                    return
+                }
+            }
+
             // The firmware switch comes after the disk, which may already have
             // grown, so a failed switch still saves everything else and says
             // exactly what didn't change.
@@ -1571,6 +1629,10 @@ struct SettingsView: View {
                 if let folder = try? vmStore.vmDirectoryURL(for: configuration) {
                     DiskUsage.shared.forget(machine: configuration.id, folder: folder)
                 }
+            }
+            if let newSecondDrive {
+                updated.secondDriveGB = newSecondDrive
+                updated.secondDriveNeedsFormat = true
             }
             updated.shareClipboard = shareClipboard ? nil : false
             updated.shareMicrophone = shareMicrophone ? true : nil
@@ -1657,7 +1719,9 @@ struct SettingsView: View {
 
             let message: String
             if let growTo {
-                message = savedDiskMessage(growTo)
+                message = savedDiskMessage(growTo) + (newSecondDrive == nil ? "" : " The second drive is ready the next time it starts.")
+            } else if newSecondDrive != nil {
+                message = "Settings saved. The second drive is ready the next time \(guest) starts."
             } else if isRunning {
                 // Not "restart" (sixth audit): a restart inside the machine
                 // keeps the same virtual hardware.

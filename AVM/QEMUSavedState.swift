@@ -136,6 +136,7 @@ nonisolated enum QEMUSavedState {
                     }
                 }
                 _ = try? await RestorePoints.qemuImg(["snapshot", "-d", tag, disk.path])
+                await RestorePoints.deleteFromSecondDrive(tag, vmDirectory: runtimeDir)
                 // The marker goes only once the saved state has (2026-10-28,
                 // code review): otherwise the Start after next loads it.
                 if await snapshotTags(disk: disk)?.contains(tag) != false {
@@ -168,6 +169,7 @@ nonisolated enum QEMUSavedState {
         if await snapshotTags(disk: disk)?.contains(tag) != false {
             _ = try? await RestorePoints.qemuImg(["snapshot", "-d", tag, disk.path])
         }
+        await RestorePoints.deleteFromSecondDrive(tag, vmDirectory: dir)
         // The hint and marker go only once the saved state has
         // (2026-10-28, fourth audit).
         guard await snapshotTags(disk: disk)?.contains(tag) == false else {
