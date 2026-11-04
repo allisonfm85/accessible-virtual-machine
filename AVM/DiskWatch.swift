@@ -122,4 +122,26 @@ nonisolated enum DiskWatch {
         return (shown.joined(separator: ", ") + (old ? " (last run)" : ""),
                 spoken.joined(separator: ", ") + (old ? ", when it last ran" : ""))
     }
+
+    // MARK: Growing, inside the guest
+
+    /// Drive C takes all the space after it. It says "extended", or "same" when
+    /// there's nothing to take, then the size in gigabytes.
+    static let extendDriveCScript = """
+    $ErrorActionPreference = 'Stop'
+    Update-Disk -Number (Get-Partition -DriveLetter C).DiskNumber
+    $max = (Get-PartitionSupportedSize -DriveLetter C).SizeMax
+    $now = (Get-Partition -DriveLetter C).Size
+    if ($max -gt $now + 16MB) { Resize-Partition -DriveLetter C -Size $max; $word = 'extended' } else { $word = 'same' }
+    "$word|$([math]::Round((Get-Partition -DriveLetter C).Size / 1GB))"
+    """
+
+    /// A script's last line that says something, split at the bar.
+    static func answer(_ output: String) -> (word: String, detail: String)? {
+        let words = ["extended", "same"]
+        guard let line = output.split(whereSeparator: \.isNewline).map({ $0.trimmingCharacters(in: .whitespaces) })
+            .last(where: { line in words.contains { line == $0 || line.hasPrefix($0 + "|") } }) else { return nil }
+        let parts = line.split(separator: "|", maxSplits: 1).map(String.init)
+        return (parts[0], parts.count > 1 ? parts[1] : "")
+    }
 }

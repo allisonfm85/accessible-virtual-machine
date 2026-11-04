@@ -1606,6 +1606,9 @@ final class VMManager: ObservableObject {
         if installComplete, configuration.diskBusSwitch != nil {
             Task { [weak self] in await self?.continueDiskSwitch(configuration: configuration) }
         }
+        if installComplete, configuration.extendDriveC == true {
+            Task { [weak self] in await self?.finishDiskChanges(configuration: configuration) }
+        }
 
         // Tap Enter across the boot window to satisfy Windows' "Press any key to
         // boot from CD or DVD..." prompt (REQUIRED — see startBootKeypressTask).
@@ -4769,6 +4772,18 @@ extension VMManager {
         }
     }
 
+    /// A change to the saved machine and the running one's copy (MachineDrives.swift).
+    func storeDiskChange(_ configuration: VMConfiguration, _ change: (inout VMConfiguration) -> Void) {
+        if var updated = VMStore.shared?.configurations.first(where: { $0.id == configuration.id }) {
+            change(&updated)
+            VMStore.shared?.save(updated)
+        }
+        if activeConfiguration?.id == configuration.id, var active = activeConfiguration {
+            change(&active)
+            activeConfiguration = active
+        }
+    }
+
     private func storeDiskSwitch(_ configuration: VMConfiguration, bus: String?, step: String?) {
         if var updated = VMStore.shared?.configurations.first(where: { $0.id == configuration.id }) {
             updated.diskBus = bus
@@ -4782,7 +4797,7 @@ extension VMManager {
         diskSwitchResult = step == "firstBoot" ? "ready" : (bus == "virtio" ? "switched" : "nvme")
     }
 
-    private func waitForGuestAgent(limit: Duration) async -> Bool {
+    func waitForGuestAgent(limit: Duration) async -> Bool {
         let clock = ContinuousClock()
         let deadline = clock.now + limit
         while clock.now < deadline {

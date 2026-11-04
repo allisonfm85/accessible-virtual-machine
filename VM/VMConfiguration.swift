@@ -245,6 +245,11 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// the machine doesn't come up. nil otherwise.
     var diskBusSwitch: String?
 
+    // MARK: - More disk (2026-11-03)
+
+    /// true: the disk has grown and Windows' drive C hasn't taken the new space
+    /// yet; the next Start does it through the guest agent (MachineDrives.swift).
+    var extendDriveC: Bool?
     // MARK: - Templates (2026-10-27)
 
     /// true: a template, kept as it is; its row offers New Machine from

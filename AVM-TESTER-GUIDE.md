@@ -575,7 +575,8 @@ of this is AVM.
 
 ### AVM's own commands (Mac side)
 
-- The dashboard's **Disk** column says how full each machine is.
+- The dashboard's **Disk** column says how full each machine is. A larger disk's
+  new space goes to drive C by itself at the next Windows start.
 
 - **Install Apps…**, in the Virtual Machine menu, installs apps you tick from a
   list into a running Windows machine, one at a time with no questions.

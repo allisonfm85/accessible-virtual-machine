@@ -101,13 +101,13 @@ struct SettingsView: View {
     private var diskGrowthFollowUp: String {
         configuration.guestOS.isLinux
             ? "After it grows, make \(configuration.guestOS.displayName)'s main partition larger to use the new space."
-            : "After it grows, After it grows, extend drive C inside Windows to use the new space."
+            : "After it grows, AVM gives drive C the new space the next time Windows starts."
     }
 
     private func savedDiskMessage(_ growTo: Int) -> String {
         configuration.guestOS.isLinux
             ? "Settings saved. The disk is now \(growTo) GB. The next time you start \(configuration.guestOS.displayName), make its main partition larger to use the new space."
-            : "Settings saved. The disk is now \(growTo) GB. The next time you start Windows, extend drive C to use the new space. The README explains how."
+            : "Settings saved. The disk is now \(growTo) GB. AVM gives drive C the new space the next time you start Windows."
     }
 
     /// When CPU and memory changes land, worded for this VM's state.
@@ -1567,6 +1567,7 @@ struct SettingsView: View {
             updated.ramSizeGB = ramSizeGB
             if let growTo {
                 updated.diskSizeGB = growTo
+                if updated.guestOS == .windows { updated.extendDriveC = true }
                 if let folder = try? vmStore.vmDirectoryURL(for: configuration) {
                     DiskUsage.shared.forget(machine: configuration.id, folder: folder)
                 }

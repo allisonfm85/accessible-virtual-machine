@@ -134,29 +134,12 @@ Windows starts running out of room, you can raise it.
    makes the disk larger, checks that it worked, and tells you the new
    size. A disk can grow but never shrink.
 
-Windows won't use the new space until you extend drive C:
+The next time Windows starts, AVM gives drive C the new space and tells you
+its new size. On Linux, make the main partition larger yourself.
 
-1. Start the virtual machine.
-2. Press Command-X, which Windows receives as Windows-X, then press A to
-   open Terminal (Admin). When Windows asks whether to allow changes,
-   press Option-Y, which Windows receives as Alt-Y.
-3. Type this command and press Enter. It prints nothing when it works.
-
-   ```
-   Resize-Partition -DriveLetter C -Size (Get-PartitionSupportedSize -DriveLetter C).SizeMax
-   ```
-
-4. To check, type this command and press Enter. It shows drive C's size
-   in gigabytes.
-
-   ```
-   [math]::Round((Get-Partition -DriveLetter C).Size / 1GB)
-   ```
-
-This works for virtual machines AVM created, because AVM puts drive C
-last on the disk. If you installed Windows some other way and the command
-reports an error, a recovery partition may be in the way. Please open an
-issue rather than deleting partitions yourself.
+If drive C can't take the space, AVM says so. A recovery partition may be in
+the way if you installed Windows some other way. Please open an issue rather
+than deleting partitions yourself.
 
 ## USB devices
 

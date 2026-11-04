@@ -1496,6 +1496,12 @@ final class DiskWatchTests: XCTestCase {
         XCTAssertEqual(DiskWatch.tableCell(drives: [d, c], sizeGB: 404, running: true).shown, "120 of 403 GB used, D: 5 of 500 GB")
     }
 
+    func testWhatAGuestScriptSaid() {
+        XCTAssertEqual(DiskWatch.answer("noise\r\nextended|414\r\n")?.word, "extended")
+        XCTAssertEqual(DiskWatch.answer("same|64\n")?.detail, "64")
+        XCTAssertNil(DiskWatch.answer("extending something\n"))
+    }
+
     private let gb = DiskWatch.gigabyte
 
     func testTheMacsDiskIsSpokenOnceAtEachThreshold() {
