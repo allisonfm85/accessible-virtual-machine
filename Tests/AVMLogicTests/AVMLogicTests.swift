@@ -1487,6 +1487,15 @@ final class SetupDrivesTests: XCTestCase {
 // MARK: - Disk space (2026-10-27)
 
 final class DiskWatchTests: XCTestCase {
+    func testTheDashboardSaysHowFull() {
+        let c = DiskWatch.Drive(name: "C:", used: 120 * gb, total: 403 * gb)
+        let d = DiskWatch.Drive(name: "D:", used: 5 * gb, total: 500 * gb)
+        XCTAssertEqual(DiskWatch.tableCell(drives: [], sizeGB: 404, running: false).shown, "404 GB")
+        XCTAssertEqual(DiskWatch.tableCell(drives: [c], sizeGB: 404, running: true).shown, "120 of 403 GB used")
+        XCTAssertEqual(DiskWatch.tableCell(drives: [c], sizeGB: 404, running: false).spoken, "120 of 403 gigabytes used, when it last ran")
+        XCTAssertEqual(DiskWatch.tableCell(drives: [d, c], sizeGB: 404, running: true).shown, "120 of 403 GB used, D: 5 of 500 GB")
+    }
+
     private let gb = DiskWatch.gigabyte
 
     func testTheMacsDiskIsSpokenOnceAtEachThreshold() {

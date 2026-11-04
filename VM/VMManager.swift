@@ -5073,6 +5073,7 @@ extension VMManager {
             var hostSpoken: Int64?
             var guestSpoken: Set<String> = []
             var minute = 0
+            var heardDrives = false
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard let self, !Task.isCancelled else { return }
@@ -5103,10 +5104,15 @@ extension VMManager {
                         ?? "\(machine) has paused: your Mac's disk is full. Next: free some space on your Mac, then choose Resume in \(machine)'s row.", tone: .failure)
                 }
 
-                if installed, minute % 5 == 0, self.state == .running, let path = self.guestAgentSocketPath,
+                // Each minute until it first answers, for the dashboard.
+                if installed, !heardDrives || minute % 5 == 0, self.state == .running, let path = self.guestAgentSocketPath,
                    let reply = try? await Task.detached(operation: { try GuestAgent.run([#"{"execute":"guest-get-fsinfo"}"#], socketPath: path, timeout: 10) }).value.first,
                    let json = try? JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any] {
                     let drives = DiskWatch.drives(fromFsinfo: json["return"])
+                    if !drives.isEmpty {
+                        heardDrives = true
+                        DiskUsage.shared.note(drives, machine: configuration.id, folder: runtimeDir)
+                    }
                     let guest = DiskWatch.guestWarnings(drives, spoken: guestSpoken)
                     guestSpoken = guest.spoken
                     for drive in guest.speak {

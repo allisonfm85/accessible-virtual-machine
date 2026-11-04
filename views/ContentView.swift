@@ -399,6 +399,7 @@ private struct DashboardContent: View {
     @EnvironmentObject var focusLock: FocusLockManager
     /// macOS machines' state for their rows (2026-10-26).
     @ObservedObject private var macGuest = MacGuestRunner.shared
+    @ObservedObject private var diskUsage = DiskUsage.shared
 
     /// Every running Windows or Linux machine; each row observes its own
     /// session (QEMUMachineRow), so it redraws as that machine changes.
@@ -575,14 +576,18 @@ private struct DashboardContent: View {
             status = stoppedStatus(config)
         }
         let drive = storageNote(config) ?? "This Mac"
+        // How full (2026-11-03, the user's request). A macOS machine has no agent to ask.
+        let disk = DiskWatch.tableCell(drives: config.guestOS == .macOS ? [] : diskUsage.drives(of: config),
+                                       sizeGB: config.diskSizeGB,
+                                       running: machines.session(for: config.id)?.isRunningOrPaused == true)
         return MachineTableRow(
             id: config.id,
             // "GB" shown, as seven columns share the dashboard's width;
             // "gigabytes" said (2026-10-30, TableLabelCell), as VoiceOver
             // reads "GB" unreliably.
             cells: [config.name, status, config.guestOS.displayName, "\(config.cpuCount)",
-                    "\(config.ramSizeGB) GB", "\(config.diskSizeGB) GB", drive],
-            spoken: [4: "\(config.ramSizeGB) gigabytes", 5: "\(config.diskSizeGB) gigabytes"],
+                    "\(config.ramSizeGB) GB", disk.shown, drive],
+            spoken: [4: "\(config.ramSizeGB) gigabytes", 5: disk.spoken],
             warning: config.storageIsMissing)
     }
 

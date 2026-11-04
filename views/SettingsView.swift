@@ -101,7 +101,7 @@ struct SettingsView: View {
     private var diskGrowthFollowUp: String {
         configuration.guestOS.isLinux
             ? "After it grows, make \(configuration.guestOS.displayName)'s main partition larger to use the new space."
-            : "After it grows, extend drive C inside Windows to use the new space."
+            : "After it grows, After it grows, extend drive C inside Windows to use the new space."
     }
 
     private func savedDiskMessage(_ growTo: Int) -> String {
@@ -1546,7 +1546,6 @@ struct SettingsView: View {
                     return
                 }
             }
-
             // The firmware switch comes after the disk, which may already have
             // grown, so a failed switch still saves everything else and says
             // exactly what didn't change.
@@ -1568,6 +1567,9 @@ struct SettingsView: View {
             updated.ramSizeGB = ramSizeGB
             if let growTo {
                 updated.diskSizeGB = growTo
+                if let folder = try? vmStore.vmDirectoryURL(for: configuration) {
+                    DiskUsage.shared.forget(machine: configuration.id, folder: folder)
+                }
             }
             updated.shareClipboard = shareClipboard ? nil : false
             updated.shareMicrophone = shareMicrophone ? true : nil

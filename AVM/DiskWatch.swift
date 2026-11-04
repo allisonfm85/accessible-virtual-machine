@@ -95,4 +95,31 @@ nonisolated enum DiskWatch {
         let which = drive.name == "/" ? "\(machine)'s disk" : "\(machine)'s \(drive.name) drive"
         return "\(which) is \(percent) percent full, with \(left) gigabytes left. Next: delete files in \(machine), or make its disk larger in Settings while it's shut down."
     }
+
+    // MARK: How full, on the dashboard (2026-11-03, the user's request)
+
+    /// Where those figures are kept, in the machine's folder.
+    static let usageFileName = "disk-usage.json"
+
+    /// The Disk column: what's used when AVM has heard, or the size it was given.
+    /// A stopped machine's figures are from when it last ran, and say so.
+    static func tableCell(drives: [Drive], sizeGB: Int, running: Bool) -> (shown: String, spoken: String) {
+        func gb(_ bytes: Int64) -> Int64 { (bytes + gigabyte / 2) / gigabyte }
+        var shown: [String] = []
+        var spoken: [String] = []
+        // The one the machine starts from first: Windows may name D: before C:.
+        func isFirst(_ drive: Drive) -> Bool { drive.name == "/" || drive.name == "C:" }
+        for drive in drives.filter(isFirst) + drives.filter({ !isFirst($0) }) {
+            let first = isFirst(drive)
+            shown.append("\(first ? "" : "\(drive.name) ")\(gb(drive.used)) of \(gb(drive.total)) GB\(first ? " used" : "")")
+            spoken.append("\(first ? "" : "\(drive.name), ")\(gb(drive.used)) of \(gb(drive.total)) gigabytes\(first ? " used" : "")")
+        }
+        if shown.isEmpty {
+            shown.append("\(sizeGB) GB")
+            spoken.append("\(sizeGB) gigabytes")
+        }
+        let old = !running && !drives.isEmpty
+        return (shown.joined(separator: ", ") + (old ? " (last run)" : ""),
+                spoken.joined(separator: ", ") + (old ? ", when it last ran" : ""))
+    }
 }
