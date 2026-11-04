@@ -1497,6 +1497,15 @@ final class DiskWatchTests: XCTestCase {
         XCTAssertEqual(DiskWatch.tableCell(drives: [c], sizeGB: 404, secondDriveGB: 500, running: true).shown, "120 of 403 GB used, second drive 500 GB")
     }
 
+    func testAMachineThatHasNeverSaidShowsWhatItTakesOnTheMac() {
+        XCTAssertEqual(DiskWatch.tableCell(drives: [], sizeGB: 514, secondDriveGB: nil, running: false, onMacBytes: 120 * gb).shown, "120 GB on this Mac, of 514 GB")
+        XCTAssertEqual(DiskWatch.tableCell(drives: [], sizeGB: 514, secondDriveGB: nil, running: false, onMacBytes: 120 * gb).spoken, "120 gigabytes on this Mac, of 514 gigabytes")
+        XCTAssertEqual(DiskWatch.tableCell(drives: [], sizeGB: 514, secondDriveGB: nil, running: false, onMacBytes: 1024).shown, "514 GB", "a new disk, with next to nothing on it")
+        XCTAssertEqual(DiskWatch.tableCell(drives: [], sizeGB: 514, secondDriveGB: nil, running: false, onMacBytes: nil).shown, "514 GB")
+        let c = DiskWatch.Drive(name: "C:", used: 100 * gb, total: 513 * gb)
+        XCTAssertEqual(DiskWatch.tableCell(drives: [c], sizeGB: 514, secondDriveGB: nil, running: false, onMacBytes: 120 * gb).shown, "100 of 513 GB used (last run)", "what the machine said comes first")
+    }
+
     func testTheSecondDriveIsWatchedOnLinuxToo() {
         let reply: [[String: Any]] = [["mountpoint": "/", "type": "ext4", "total-bytes": 64 * gb, "used-bytes": gb],
                                       ["mountpoint": DiskWatch.linuxSecondDrive, "type": "ext4", "total-bytes": 20 * gb, "used-bytes": gb],

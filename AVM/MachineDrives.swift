@@ -44,6 +44,19 @@ final class DiskUsage: ObservableObject {
         }
     }
 
+    /// What a machine's disks take on the Mac: only what has been written, as they
+    /// grow as they're used. Nil when they can't be read, such as on a drive that
+    /// isn't connected.
+    func onMacBytes(of configuration: VMConfiguration) -> Int64? {
+        func allocated(_ url: URL) -> Int64? {
+            (try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]))?.totalFileAllocatedSize.map(Int64.init)
+        }
+        guard !configuration.diskImagePath.isEmpty,
+              let disk = allocated(URL(fileURLWithPath: configuration.diskImagePath)) else { return nil }
+        let second = (try? configuration.directoryURL()).flatMap(RestorePoints.secondDrive).flatMap(allocated) ?? 0
+        return disk + second
+    }
+
     /// The disk changed size, so the figures are old.
     func forget(machine: UUID, folder: URL) {
         known[machine] = []

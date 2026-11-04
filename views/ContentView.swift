@@ -579,7 +579,8 @@ private struct DashboardContent: View {
         // How full (2026-11-03, the user's request). A macOS machine has no agent to ask.
         let disk = DiskWatch.tableCell(drives: config.guestOS == .macOS ? [] : diskUsage.drives(of: config),
                                        sizeGB: config.diskSizeGB, secondDriveGB: config.secondDriveGB,
-                                       running: machines.session(for: config.id)?.isRunningOrPaused == true)
+                                       running: machines.session(for: config.id)?.isRunningOrPaused == true,
+                                       onMacBytes: diskUsage.onMacBytes(of: config))
         return MachineTableRow(
             id: config.id,
             // "GB" shown, as seven columns share the dashboard's width;

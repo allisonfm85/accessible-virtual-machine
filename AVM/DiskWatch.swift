@@ -106,8 +106,11 @@ nonisolated enum DiskWatch {
     static let linuxSecondDrive = "/mnt/avm-data"
 
     /// The Disk column: what's used when AVM has heard, or the size it was given.
-    /// A stopped machine's figures are from when it last ran, and say so.
-    static func tableCell(drives: [Drive], sizeGB: Int, secondDriveGB: Int?, running: Bool) -> (shown: String, spoken: String) {
+    /// A stopped machine's figures are from when it last ran, and say so. A machine
+    /// that has never said (a macOS machine can't; 2026-11-03, the user's request)
+    /// shows what its disk takes on the Mac, which holds restore points too and
+    /// doesn't shrink when files are deleted, so it isn't called used.
+    static func tableCell(drives: [Drive], sizeGB: Int, secondDriveGB: Int?, running: Bool, onMacBytes: Int64? = nil) -> (shown: String, spoken: String) {
         func gb(_ bytes: Int64) -> Int64 { (bytes + gigabyte / 2) / gigabyte }
         func second(_ drive: Drive) -> String { drive.name == linuxSecondDrive ? "second drive" : drive.name }
         var shown: [String] = []
@@ -120,8 +123,13 @@ nonisolated enum DiskWatch {
             spoken.append("\(first ? "" : "\(second(drive)), ")\(gb(drive.used)) of \(gb(drive.total)) gigabytes\(first ? " used" : "")")
         }
         if shown.isEmpty {
-            shown.append("\(sizeGB) GB")
-            spoken.append("\(sizeGB) gigabytes")
+            if let onMacBytes, gb(onMacBytes) > 0 {
+                shown.append("\(gb(onMacBytes)) GB on this Mac, of \(sizeGB) GB")
+                spoken.append("\(gb(onMacBytes)) gigabytes on this Mac, of \(sizeGB) gigabytes")
+            } else {
+                shown.append("\(sizeGB) GB")
+                spoken.append("\(sizeGB) gigabytes")
+            }
         }
         // A drive the guest hasn't reported yet.
         if let secondDriveGB, drives.count < 2 {

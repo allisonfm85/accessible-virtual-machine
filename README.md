@@ -83,7 +83,10 @@ The **Virtual Machine** menu can also:
   public package list. What's already installed is marked.
 - **Speak Updates and Disk** (Command-Option-Shift-I): how full the
   machine's disk is and how many updates are waiting. The dashboard's Disk
-  column shows how full it is too, from when it last ran if it's shut down.
+  column shows how full it is too, from when it last ran if it's shut down. A
+  machine that hasn't said yet, and any macOS machine, shows what its disk takes
+  on your Mac instead. That also holds restore points, and doesn't shrink when you
+  delete files in the machine.
 
 A machine's Settings, under Display and Sound, has **Sound Output**: play
 the machine through its own output, headphones say, so its screen reader
