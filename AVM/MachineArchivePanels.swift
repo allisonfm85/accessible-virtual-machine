@@ -408,6 +408,16 @@ final class MachineArchiveController: ObservableObject {
             }.result
             switch result {
             case .success(let folder):
+                // Again on the copy (2026-11-05 audit): a package on a drive
+                // someone else controls could swap its disk between the check
+                // above and the copy, and QEMU would open a Mac file with AVM's
+                // rights. The copy is AVM's own, so it can't change now.
+                if let problem = await MachineArchive.diskProblem(package: folder, config: original) {
+                    try? FileManager.default.removeItem(at: folder)
+                    self.end()
+                    self.refuse(problem, log: "copied disk refused")
+                    return
+                }
                 await MachineArchive.dropSavedState(in: folder, config: original)
                 self.end()
                 self.finishImport(original, id: id, folder: folder, into: store)
