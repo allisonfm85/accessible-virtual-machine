@@ -758,6 +758,20 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// or .noAnswer once `limit` has passed, whichever comes first.
     private func ask<Value>(_ c: NSXPCConnection, within limit: TimeInterval,
                             _ call: (AVMUSBHelperProtocol, @escaping (Result<Value, USBHelperError>) -> Void) -> Void) async -> Result<Value, USBHelperError> {
+        let first = await askOnce(c, within: limit, call)
+        // Once more if the helper's idle exit cut the call (2026-11-05, second
+        // audit): a connection accepted as its 30 s timer fired was dropped,
+        // and the user heard "the helper didn't answer" for a microsecond race.
+        if case .failure(.xpc(let words)) = first, words.localizedCaseInsensitiveContains("interrupted") {
+            log("ask: the helper's connection was interrupted; asking once more")
+            try? await Task.sleep(for: .milliseconds(500))
+            return await askOnce(connect(), within: limit, call)
+        }
+        return first
+    }
+
+    private func askOnce<Value>(_ c: NSXPCConnection, within limit: TimeInterval,
+                                _ call: (AVMUSBHelperProtocol, @escaping (Result<Value, USBHelperError>) -> Void) -> Void) async -> Result<Value, USBHelperError> {
         await withCheckedContinuation { cont in
             let answer = HelperAnswer(cont)
             DispatchQueue.global().asyncAfter(deadline: .now() + limit) { answer.give(.failure(.noAnswer)) }
