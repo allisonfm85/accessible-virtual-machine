@@ -445,6 +445,15 @@ extension VMConfiguration {
         return path
     }
 
+    /// A folder iCloud syncs (2026-11-05, second audit): iCloud Drive, or
+    /// Desktop and Documents with their sync on. iCloud can evict a machine's
+    /// disk from such a folder to make room, and a Start then saw an empty
+    /// disk and reinstalled over it.
+    nonisolated static func isInICloud(_ url: URL) -> Bool {
+        if url.standardizedFileURL.path.contains("/Library/Mobile Documents/") { return true }
+        return (try? url.resourceValues(forKeys: [.isUbiquitousItemKey]).isUbiquitousItem) == true
+    }
+
     /// The name of the drive holding the VM, for speech: "Backup Drive".
     /// Read from the path when the drive isn't connected. nil for the
     /// Mac's own disk.

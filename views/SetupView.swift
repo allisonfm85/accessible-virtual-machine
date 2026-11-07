@@ -480,6 +480,10 @@ struct SetupView: View {
         panel.prompt = "Store Here"
         panel.message = "Choose a drive or folder to store this virtual machine in. Windows needs 64 gigabytes or more."
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        if VMConfiguration.isInICloud(url) {
+            Announcer.shared.announce("That folder is synced by iCloud, so AVM won't keep a virtual machine there: iCloud can move the machine's disk off this Mac to make room, and copies of it would upload as it runs. Next: choose a folder iCloud doesn't sync, or a drive.", tone: .failure)
+            return
+        }
         storageFolder = url
         // Keep the disk size within what the new drive can hold, and say so
         // when it changes (2026-10-29, sixth audit: lowered in silence).

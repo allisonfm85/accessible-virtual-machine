@@ -951,6 +951,18 @@ final class VMManager: ObservableObject {
         return (values?.totalFileAllocatedSize ?? 0) > 4 << 30
     }
 
+    /// A disk iCloud or another file provider has moved off this Mac
+    /// (2026-11-05, second audit): a big file with next to nothing allocated,
+    /// or one iCloud says isn't downloaded. diskLooksInstalled read it as
+    /// empty, and the start went down the install path and formatted it.
+    private func diskIsOffloaded(runtimeDir: URL) -> Bool {
+        let disk = runtimeDir.appendingPathComponent("disk.qcow2")
+        guard let values = try? disk.resourceValues(forKeys: [.fileSizeKey, .totalFileAllocatedSizeKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]) else { return false }
+        if values.isUbiquitousItem == true, let status = values.ubiquitousItemDownloadingStatus, status != .current { return true }
+        let logical = values.fileSize ?? 0, allocated = values.totalFileAllocatedSize ?? 0
+        return logical > 4 << 30 && allocated < logical / 100
+    }
+
     /// The UNATTEND volume's root listing, from the bundled mdir. nil when
     /// mdir can't be launched. Shared by the REINSTALL GUARD and the Ubuntu
     /// install-end check, so the mtools rules live in one place: inherit the
@@ -1378,6 +1390,9 @@ final class VMManager: ObservableObject {
         // skip the media build, do not attach install media, and do not start
         // the boot keypress task, so this start cannot re-enter Setup and let
         // the answer file wipe the installed disk.
+        if diskIsOffloaded(runtimeDir: runtimeDir) {
+            throw AVMError.refused("\(configuration.name)'s disk has been moved off this Mac by iCloud or another file provider, so AVM won't start it: starting would treat it as a new machine. Next: in Finder, download \(runtimeDir.path), then start it again, and keep machines out of folders iCloud syncs.")
+        }
         let installComplete = checkInstallCompleteMarker(configuration: configuration, runtimeDir: runtimeDir)
         // USB 2c: start-time devices wait for setup to finish (2026-10-18).
         installCompleteAtStart = installComplete
