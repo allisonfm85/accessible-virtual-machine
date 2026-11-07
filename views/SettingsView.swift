@@ -283,6 +283,7 @@ struct SettingsView: View {
             if configuration.guestOS != .macOS { saveWithAppsSection }
             restorePointsSection
             backupsSection
+            if configuration.guestOS != .macOS { diskCheckSection }
             if configuration.guestOS == .windows { reinstallSection }
         }
     }
@@ -631,6 +632,60 @@ struct SettingsView: View {
     }
 
     /// Automatic backups (2026-11-01, MachineBackups.swift).
+    /// qemu-img check on a stopped machine's disks (2026-11-05, second audit):
+    /// after a drive was pulled while the machine ran, the disk could be
+    /// unopenable with nothing in AVM to do about it.
+    @State private var checkingDisk = false
+    private var diskCheckSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Disk Check").font(.headline).accessibilityAddTraits(.isHeader)
+            Text("If \(guest) won't start after a drive was disconnected or your Mac lost power, AVM can check its disk and repair what it can.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Button(checkingDisk ? "Checking…" : "Check the Disk…") { checkDisk() }
+                .disabled(isRunning || checkingDisk || saved.storageIsMissing)
+                .accessibilityHint(isRunning ? "Stop \(guest) first." : "Checks the disk's structure and offers to repair it. The machine's files inside aren't read.")
+        }
+        .padding(.horizontal)
+    }
+
+    private func checkDisk() {
+        if MachineArchiveController.shared.refusesWhileBusy(saved) { return }
+        guard let dir = try? vmStore.vmDirectoryURL(for: saved) else { return }
+        var disks = [dir.appendingPathComponent("disk.qcow2")]
+        if let second = RestorePoints.secondDrive(dir) { disks.append(second) }
+        checkingDisk = true
+        Announcer.shared.announce("Checking \(saved.name)'s disk. This can take a few minutes.", tone: .info)
+        Task { @MainActor in
+            defer { checkingDisk = false }
+            for disk in disks {
+                let name = disk == disks.first ? "disk" : "second drive"
+                // Exit 0: fine. 1: couldn't check. 2: corrupt. 3: leaked clusters only.
+                let (status, output) = await RestorePoints.qemuImgStatus(["check", disk.path])
+                if status == 0 {
+                    Announcer.shared.announce("\(saved.name)'s \(name) is fine.", tone: .success)
+                    continue
+                }
+                if status == 1 {
+                    Announcer.shared.announce("\(saved.name)'s \(name) couldn't be checked. \(output.suffix(200))", tone: .failure)
+                    continue
+                }
+                if startedMeanwhile { Announcer.shared.announce("\(saved.name) started, so its disk wasn't repaired.", tone: .failure); return }
+                let alert = NSAlert()
+                alert.messageText = "Repair \(saved.name)'s \(name)?"
+                alert.informativeText = status == 3
+                    ? "The check found leaked space, which is harmless but wasted. Repairing it is safe."
+                    : "The check found damage. Repairing can recover the disk, but what was being written when the damage happened may be lost, and in rare cases the repair makes things worse. If you have a backup or restore point from before, that is the safer way back."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "Cancel")
+                alert.addButton(withTitle: "Repair")
+                guard alert.runModal() == .alertSecondButtonReturn, !startedMeanwhile else { continue }
+                let (fixed, words) = await RestorePoints.qemuImgStatus(["check", "-r", status == 3 ? "leaks" : "all", disk.path])
+                AVMLog.write("AVM: Disk check — repaired \(name) of '\(saved.name)': exit \(fixed)")
+                Announcer.shared.announce(fixed == 0 ? "\(saved.name)'s \(name) is repaired. Start it to see that it's well." : "The repair didn't finish. \(words.suffix(200)) Next: restore a backup or restore point.", tone: fixed == 0 ? .success : .failure)
+            }
+        }
+    }
+
     private var backupsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Automatic Backups")

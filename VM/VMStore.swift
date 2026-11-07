@@ -727,10 +727,33 @@ nonisolated enum RestorePoints {
     /// The disk's size in gigabytes (GiB, as qemu-img's "G" makes them).
     /// A restore point made before the disk grew puts the old size back.
     static func diskSizeGB(vmDirectory dir: URL) async throws -> Int {
-        let output = try await qemuImg(["info", "--output=json", disk(dir).path])
+        try await diskSizeGB(of: disk(dir))
+    }
+
+    static func diskSizeGB(of file: URL) async throws -> Int {
+        let output = try await qemuImg(["info", "--output=json", "-U", file.path])
         let json = try JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any]
         let bytes = (json?["virtual-size"] as? Double) ?? 0
         return Int((bytes / 1_073_741_824).rounded())
+    }
+
+    /// qemu-img's exit status and words, for commands whose status means
+    /// something (check: 0 fine, 1 couldn't, 2 corrupt, 3 leaks).
+    static func qemuImgStatus(_ arguments: [String]) async -> (Int32, String) {
+        guard let tool = Bundle.main.resourceURL?.appendingPathComponent("qemu-img"),
+              FileManager.default.isExecutableFile(atPath: tool.path) else { return (1, "qemu-img is missing from AVM.") }
+        return await Task.detached(priority: .userInitiated) { () -> (Int32, String) in
+            let process = Process()
+            process.executableURL = tool
+            process.arguments = arguments
+            let out = Pipe()
+            process.standardOutput = out
+            process.standardError = out
+            do { try process.run() } catch { return (1, error.localizedDescription) }
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return (process.terminationStatus, String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+        }.value
     }
 
     static func delete(_ point: RestorePoint, vmDirectory dir: URL) async throws {
