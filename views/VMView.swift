@@ -2054,6 +2054,16 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
     /// decision was made on. The decline path deliberately does not — a
     /// loser's size is irrelevant to the transform.
     private func considerForPrimarySlot(_ display: CSDisplay, event: String) {
+        // On the main thread (2026-11-05, second audit): this arrives on
+        // SPICE's thread and wrote primaryDisplay and manager.gpuScreenshot,
+        // which GuestWatch and Read Screen read on the main actor; a mode
+        // change could free the closure under them. The SPICE display calls
+        // below still go to CSMain. Two rapid wins keep their order: one
+        // queue, in turn.
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in self?.considerForPrimarySlot(display, event: event) }
+            return
+        }
         let pointerText = String(format: "0x%lx", UInt(bitPattern: Unmanaged.passUnretained(display).toOpaque()))
         let size = display.displaySize
         let area = size.width * size.height
@@ -2268,7 +2278,12 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
                     display.removeRenderer(rendererToDetach)
                 }
             }
-            primaryDisplay = nil
+            // Cleared on the main thread, where it's read (2026-11-05, second audit).
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.primaryDisplay === display else { return }
+                self.primaryDisplay = nil
+                self.manager?.gpuScreenshot = nil
+            }
             avmPublicLog("display destroyed — monitor \(display.monitorID) was the slot holder; renderer detach queued, slot cleared.")
         } else {
             let holderDescription: String
