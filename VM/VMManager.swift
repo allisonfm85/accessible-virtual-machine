@@ -4560,6 +4560,7 @@ extension VMManager {
         guard canSaveState, let configuration = activeConfiguration, let runtimeDir = vmRuntimeDir else {
             throw AVMError.refused("\(machineName) can't take a restore point while it runs.")
         }
+        try Self.checkRoomForMemory(of: configuration, in: runtimeDir, for: "a restore point")
         takingRestorePoint = true
         defer { takingRestorePoint = false }
         // Devices passed through go back to the Mac first, as for Save
@@ -4638,9 +4639,28 @@ extension VMManager {
         return await task.value
     }
 
+    /// Room for the machine's memory on the disk's volume (2026-11-05, second
+    /// audit): a with-memory point writes up to the RAM size into the qcow2,
+    /// and AVM takes some on its own; without room the save hit a full disk
+    /// part way and the machine paused "disk full".
+    nonisolated static func checkRoomForMemory(of configuration: VMConfiguration, in runtimeDir: URL, for what: String) throws {
+        guard let free = MachineFileCopier.availableBytes(at: runtimeDir) else { return }
+        let needed = UInt64(configuration.ramSizeGB) << 30 + (2 << 30)
+        if free < needed {
+            throw AVMError.refused("\(configuration.name) can't be saved for \(what): its drive has \(free >> 30) gigabytes free, and saving its memory needs about \(needed >> 30). Next: free some space there, or shut it down instead.")
+        }
+    }
+
     private func performSaveStateAndStop() async -> Bool {
         guard let configuration = activeConfiguration, let runtimeDir = vmRuntimeDir else { return false }
         let guest = configuration.name
+        do {
+            try Self.checkRoomForMemory(of: configuration, in: runtimeDir, for: "its open apps")
+        } catch {
+            Announcer.shared.announce(error.localizedDescription, tone: .failure)
+            avmLog("saveStateAndStop: \(error.localizedDescription)")
+            return false
+        }
         // A USB device passed through was added after the start; a fresh
         // QEMU wouldn't have it to load into, so it goes back to the Mac.
         for device in USBRedirectController.shared.devices(for: self) {
