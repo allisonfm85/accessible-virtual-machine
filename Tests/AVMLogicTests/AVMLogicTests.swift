@@ -1024,7 +1024,18 @@ final class MachineArchiveTests: XCTestCase {
                                      installISOPath: "/Users/someone/Downloads/Win11.iso",
                                      storageFolderPath: dir.path)
         config.secureBoot = true
+        // Windows is installed in it (2026-11-05, second audit): export refuses
+        // a machine still in setup, whose answer file is on the media.
+        config.installMarkerSeen = true
         return (config, dir)
+    }
+
+    func testExportRefusesWindowsStillInSetup() throws {
+        var (config, dir) = try installedWindows()
+        config.installMarkerSeen = nil
+        let problem = MachineArchive.exportProblem(for: config, vmDirectory: dir)
+        XCTAssertNotNil(problem)
+        XCTAssertTrue(problem?.contains("still being set up") == true, problem ?? "")
     }
 
     private func export(_ config: VMConfiguration, from dir: URL, includeRestorePoints: Bool = true) throws -> URL {
