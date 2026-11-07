@@ -28,7 +28,7 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
  system_ss.add(when: 'CONFIG_USB_STORAGE_BOT', if_true: files('dev-storage-bot.c'))
 --- /dev/null
 +++ b/hw/usb/dev-hid-bridge.c
-@@ -0,0 +1,550 @@
+@@ -0,0 +1,620 @@
 +/*
 + * USB HID bridge: a USB HID device whose reports come from outside QEMU
 + * (AVM, 2026-10-27)
@@ -60,6 +60,7 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +#include "hw/qdev-properties-system.h"
 +#include "hw/usb.h"
 +#include "migration/vmstate.h"
++#include "qemu/timer.h"
 +#include "chardev/char-fe.h"
 +#include "desc.h"
 +#include "qom/object.h"
@@ -70,6 +71,13 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +#define HB_FRAME_INPUT      1
 +#define HB_FRAME_OUTPUT     2
 +#define HB_FRAME_FEATURE    3
++/* A feature GET_REPORT (2026-11-05, second audit): the guest asks, QEMU
++ * sends the report ID as frame 4, the helper reads the report from the
++ * device and answers with frame 5. Without it a driver reading a device's
++ * capabilities through feature reports (HID braille, usage page 0x41)
++ * got a stall and could refuse the device. */
++#define HB_FRAME_FEATURE_GET   4
++#define HB_FRAME_FEATURE_REPLY 5
 +
 +#define HB_MAX_REPORT       1024
 +#define HB_MAX_DESCRIPTOR   4096
@@ -129,7 +137,38 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +    uint8_t out[HB_OUT_BYTES];
 +    size_t out_len;
 +    guint out_watch;
++
++    /* A feature GET_REPORT waiting for the helper's answer (frame 5) */
++    USBPacket *pending_get;
++    uint8_t *pending_data;
++    int pending_len;
++    QEMUTimer *pending_timer;
 +};
++
++/* Answers the waiting GET_REPORT: the report, or a stall with no data. */
++static void pending_get_done(USBHIDBridgeState *s, const uint8_t *data, size_t len)
++{
++    USBPacket *p = s->pending_get;
++    if (!p) {
++        return;
++    }
++    s->pending_get = NULL;
++    timer_del(s->pending_timer);
++    if (data && len > 0) {
++        size_t n = MIN((size_t)s->pending_len, len);
++        memcpy(s->pending_data, data, n);
++        p->actual_length = n;
++        p->status = USB_RET_SUCCESS;
++    } else {
++        p->status = USB_RET_STALL;
++    }
++    usb_packet_complete(&s->dev, p);
++}
++
++static void pending_get_timeout(void *opaque)
++{
++    pending_get_done(opaque, NULL, 0);
++}
 +
 +/* ---------------------------------------------------------------- */
 +
@@ -309,6 +348,8 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +        }
 +        if (s->rx[0] == HB_FRAME_INPUT) {
 +            queue_input(s, s->rx + 3, len);
++        } else if (s->rx[0] == HB_FRAME_FEATURE_REPLY) {
++            pending_get_done(s, s->rx + 3, len);
 +        }
 +        s->rx_len -= 3 + len;
 +        memmove(s->rx, s->rx + 3 + len, s->rx_len);
@@ -319,6 +360,7 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +{
 +    USBHIDBridgeState *s = opaque;
 +    if (event == CHR_EVENT_CLOSED) {
++        pending_get_done(s, NULL, 0);
 +        s->rx_len = 0;
 +        s->count = 0;
 +        s->sent = 0;
@@ -355,12 +397,25 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +        }
 +        break;
 +    case ClassInterfaceRequest | HID_GET_REPORT:
-+        /* Input: the last one with this ID. Feature: not known here. */
++        /* Input: the last one with this ID. */
 +        if ((value >> 8) == 1 && s->last_input.len &&
 +            (!s->report_ids || s->last_input.data[0] == (value & 0xff))) {
 +            size_t n = MIN((size_t)length, s->last_input.len);
 +            memcpy(data, s->last_input.data, n);
 +            p->actual_length = n;
++            return;
++        }
++        /* Feature: asked of the device through the helper, answered when
++         * frame 5 arrives, or stalled after a second. One at a time. */
++        if ((value >> 8) == 3 && length > 0 && !s->pending_get &&
++            qemu_chr_fe_backend_open(&s->chr)) {
++            uint8_t id = value & 0xff;
++            send_frame(s, HB_FRAME_FEATURE_GET, &id, 1);
++            s->pending_get = p;
++            s->pending_data = data;
++            s->pending_len = MIN(length, HB_MAX_REPORT);
++            timer_mod(s->pending_timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 1000);
++            p->status = USB_RET_ASYNC;
 +            return;
 +        }
 +        break;
@@ -420,9 +475,19 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +    p->status = USB_RET_STALL;
 +}
 +
++static void bridge_cancel_packet(USBDevice *dev, USBPacket *p)
++{
++    USBHIDBridgeState *s = USB_HID_BRIDGE(dev);
++    if (s->pending_get == p) {
++        s->pending_get = NULL;
++        timer_del(s->pending_timer);
++    }
++}
++
 +static void bridge_handle_reset(USBDevice *dev)
 +{
 +    USBHIDBridgeState *s = USB_HID_BRIDGE(dev);
++    pending_get_done(s, NULL, 0);
 +    s->count = 0;
 +    s->sent = 0;
 +}
@@ -430,6 +495,7 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +static void bridge_realize(USBDevice *dev, Error **errp)
 +{
 +    USBHIDBridgeState *s = USB_HID_BRIDGE(dev);
++    s->pending_timer = timer_new_ms(QEMU_CLOCK_REALTIME, pending_get_timeout, s);
 +
 +    if (!qemu_chr_fe_backend_connected(&s->chr)) {
 +        error_setg(errp, "usb-hid-bridge needs a chardev");
@@ -525,6 +591,9 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +static void bridge_unrealize(USBDevice *dev)
 +{
 +    USBHIDBridgeState *s = USB_HID_BRIDGE(dev);
++    pending_get_done(s, NULL, 0);
++    timer_free(s->pending_timer);
++    s->pending_timer = NULL;
 +    bridge_drop_out(s);
 +    qemu_chr_fe_deinit(&s->chr, false);
 +    g_free(s->rdesc);
@@ -562,6 +631,7 @@ controller's rumble). 3: a feature report, from the guest. GET_REPORT
 +    k->realize        = bridge_realize;
 +    k->unrealize      = bridge_unrealize;
 +    k->handle_reset   = bridge_handle_reset;
++    k->cancel_packet  = bridge_cancel_packet;
 +    k->handle_control = bridge_handle_control;
 +    k->handle_data    = bridge_handle_data;
 +}

@@ -348,6 +348,26 @@ final class BluetoothHold {
             let payload = Data(entry.buffer[(start + 3)..<(start + 3 + length)])
             entry.buffer.removeFirst(3 + length)
             guard !payload.isEmpty else { continue }
+            // Frame 4 (2026-11-05, second audit): the guest's feature GET_REPORT,
+            // its report ID in the one byte. The report goes back as frame 5;
+            // an empty one means the device didn't give it.
+            if type == 4 {
+                let reportID = CFIndex(payload[payload.startIndex])
+                entry.io.async { [weak self] in
+                    var report = [UInt8](repeating: 0, count: 1024)
+                    var length = CFIndex(report.count)
+                    let result = IOHIDDeviceGetReport(entry.device, kIOHIDReportTypeFeature, reportID, &report, &length)
+                    var bytes = result == kIOReturnSuccess && length > 0 ? Data(report[0..<Int(length)]) : Data()
+                    if !bytes.isEmpty, entry.usesReportIDs, reportID != 0, bytes.first != UInt8(truncatingIfNeeded: reportID) {
+                        bytes.insert(UInt8(truncatingIfNeeded: reportID), at: 0)
+                    }
+                    if result != kIOReturnSuccess {
+                        os_log("a feature report from the Bluetooth device failed: 0x%{public}x", log: log, type: .error, result)
+                    }
+                    guard let self, self.writeFrame(entry, type: 5, bytes) else { return }
+                }
+                continue
+            }
             guard type == 2 || type == 3 else { continue }
             let reportType = type == 3 ? kIOHIDReportTypeFeature : kIOHIDReportTypeOutput
             let reportID = entry.usesReportIDs ? CFIndex(payload[payload.startIndex]) : 0
