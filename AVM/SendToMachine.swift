@@ -51,11 +51,39 @@ final class SendToMachineService: NSObject {
     /// AVM reads the file with its own permissions, not the asker's, so
     /// another program could use it to reach a folder macOS keeps from that
     /// program (2026-11-01 audit). For those folders, the person says.
+    /// In a folder macOS keeps from other programs, or on another drive.
+    /// By the folders themselves, not their spelling (2026-11-05 audit):
+    /// /System/Volumes/Data/Users/… or "documents" in other letters named
+    /// the same folder and got no question. Each folder above the file is
+    /// compared, by drive and file number, with the protected ones.
+    static func isProtected(_ file: URL) -> Bool {
+        func identity(_ path: String) -> (dev: dev_t, ino: ino_t)? {
+            var info = stat()
+            return stat(path, &info) == 0 ? (info.st_dev, info.st_ino) : nil
+        }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let kept = ["Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures"]
+            .compactMap { identity("\(home)/\($0)") }
+        // ".." and links resolved first, so each step up is a real folder.
+        let file = file.resolvingSymlinksInPath().standardizedFileURL
+        guard let mine = identity(file.path) else { return true }
+        // Another drive than the Mac's own: an external disk, a share, a DMG.
+        // The boot volume or the home's (2026-11-05, second audit: a home on
+        // its own volume made every file on the boot disk ask).
+        if let system = identity(home), let root = identity("/"), mine.dev != system.dev, mine.dev != root.dev { return true }
+        var folder = file.deletingLastPathComponent()
+        for _ in 0..<64 {
+            if let id = identity(folder.path), kept.contains(where: { $0.dev == id.dev && $0.ino == id.ino }) { return true }
+            let up = folder.deletingLastPathComponent()
+            if up.path == folder.path { break }
+            folder = up
+        }
+        return false
+    }
+
     static func mayRead(_ file: URL, askedBy: String, machine: String) -> Bool {
         let path = file.resolvingSymlinksInPath().path
-        let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().path
-        let kept = ["Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures"].map { "\(home)/\($0)/" }
-        guard path.hasPrefix("/Volumes/") || kept.contains(where: path.hasPrefix) else { return true }
+        guard isProtected(file) else { return true }
         let alert = NSAlert()
         alert.messageText = "\(askedBy) wants to send \(file.lastPathComponent) to \(machine)."
         alert.informativeText = "From \((path as NSString).deletingLastPathComponent). If you didn't ask for this, choose Don't Send."
