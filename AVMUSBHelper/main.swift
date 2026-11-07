@@ -215,6 +215,9 @@ final class DeviceRegistry {
     private var entries: [AVMUSBDeviceIdentity: DeviceEntry] = [:]
     /// For the idle exit, which reads it inside queue.sync.
     var isEmpty: Bool { entries.isEmpty }
+    /// Devices attached by an account other than `uid` (2026-11-05, second
+    /// audit): a restart would yank them from that account's machine.
+    func hasEntries(notOwnedBy uid: uid_t) -> Bool { entries.values.contains { $0.ownerUID != uid } }
     /// Entries whose release never finished; kept so their streams'
     /// callbacks stay valid. The process exiting releases their devices.
     private var abandoned: [DeviceEntry] = []
@@ -554,6 +557,11 @@ final class HelperService: NSObject, AVMUSBHelperProtocol {
         guard let uid = connection?.effectiveUserIdentifier,
               SCDynamicStoreCopyConsoleUser(nil, &consoleUID, nil) != nil, consoleUID == uid else {
             os_log("restart refused: the asking user isn't at the screen", log: log, type: .default)
+            reply()
+            return
+        }
+        if registry.queue.sync(execute: { registry.hasEntries(notOwnedBy: uid) }) {
+            os_log("restart refused: another account has a device attached", log: log, type: .default)
             reply()
             return
         }
