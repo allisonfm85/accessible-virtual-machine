@@ -43,6 +43,10 @@ final class BluetoothHold {
         let inputSize: Int
         let usesReportIDs: Bool
         let ownerUID: uid_t
+        /// This device's own I/O (2026-11-05, second audit): a report to a
+        /// device out of range blocked for seconds, and on the one shared
+        /// queue every other device's relay and every hold and release waited.
+        let io = DispatchQueue(label: "bluetooth-io")
         init(id: String, device: IOHIDDevice, socket: Int32, owner: NSXPCConnection?, ownerUID: uid_t, inputSize: Int, usesReportIDs: Bool) {
             self.id = id
             self.device = device
@@ -286,9 +290,17 @@ final class BluetoothHold {
         if entry.usesReportIDs, reportID != 0, bytes.first != UInt8(truncatingIfNeeded: reportID) {
             bytes.insert(UInt8(truncatingIfNeeded: reportID), at: 0)
         }
-        guard writeFrame(entry, type: 1, bytes) else {
-            stop(entry, notify: true, detail: "the virtual machine closed its side")
-            return
+        write(entry, type: 1, bytes)
+    }
+
+    /// A frame to the machine, on the device's own queue; a failed write
+    /// stops the device on the main queue.
+    private func write(_ entry: Held, type: UInt8, _ payload: Data) {
+        entry.io.async { [weak self] in
+            guard let self, self.writeFrame(entry, type: type, payload) else {
+                self?.queue.async { self?.stop(entry, notify: true, detail: "the virtual machine closed its side") }
+                return
+            }
         }
     }
 
@@ -335,14 +347,17 @@ final class BluetoothHold {
             guard entry.buffer.count >= 3 + length else { return }
             let payload = Data(entry.buffer[(start + 3)..<(start + 3 + length)])
             entry.buffer.removeFirst(3 + length)
-            guard type == 2 || type == 3, !payload.isEmpty else { continue }
+            guard !payload.isEmpty else { continue }
+            guard type == 2 || type == 3 else { continue }
             let reportType = type == 3 ? kIOHIDReportTypeFeature : kIOHIDReportTypeOutput
             let reportID = entry.usesReportIDs ? CFIndex(payload[payload.startIndex]) : 0
-            payload.withUnsafeBytes { raw in
-                let result = IOHIDDeviceSetReport(entry.device, reportType, reportID,
-                                                  raw.bindMemory(to: UInt8.self).baseAddress!, payload.count)
-                if result != kIOReturnSuccess {
-                    os_log("a report to the Bluetooth device failed: 0x%{public}x", log: log, type: .error, result)
+            entry.io.async {
+                payload.withUnsafeBytes { raw in
+                    let result = IOHIDDeviceSetReport(entry.device, reportType, reportID,
+                                                      raw.bindMemory(to: UInt8.self).baseAddress!, payload.count)
+                    if result != kIOReturnSuccess {
+                        os_log("a report to the Bluetooth device failed: 0x%{public}x", log: log, type: .error, result)
+                    }
                 }
             }
         }
