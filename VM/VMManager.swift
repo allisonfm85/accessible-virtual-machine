@@ -2324,9 +2324,11 @@ final class VMManager: ObservableObject {
             avmLog("sampleQEMUCPUPercent: ps failed to launch: \(error)")
             return nil
         }
+        // Read before waiting, as everywhere else (2026-11-05, second audit).
+        let psData = pipe.fileHandleForReading.readDataToEndOfFile()
         ps.waitUntilExit()
         let out = String(
-            data: pipe.fileHandleForReading.readDataToEndOfFile(),
+            data: psData,
             encoding: .utf8
         ) ?? ""
         return Double(out.trimmingCharacters(in: .whitespacesAndNewlines))
