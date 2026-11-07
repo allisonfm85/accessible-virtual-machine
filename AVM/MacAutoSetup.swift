@@ -373,7 +373,7 @@ enum MacAutoSetup {
                         // typed into the name). The end first.
                         if replacing {
                             try client.press(0xff57)   // End
-                            for _ in 0..<40 { try client.press(RFBClient.backspace) }
+                            for _ in 0..<100 { try client.press(RFBClient.backspace) }
                         }
                         try client.type(text)
                     }
