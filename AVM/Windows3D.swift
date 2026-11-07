@@ -42,7 +42,9 @@ extension VMManager {
     }
 
     /// The driver, put into a running Windows machine the first time it runs
-    /// with 3D on. Its folder stays in C:\ProgramData\AVM\viogpu3d.
+    /// with 3D on. Its files are staged under C:\Windows\Temp, in a folder
+    /// only SYSTEM makes (2026-11-05, second audit: in ProgramData a standard
+    /// user could own the folder first and swap the driver).
     func installWindows3DDriverIfNeeded(machine: String) async {
         guard let source = Bundle.main.resourceURL?.appendingPathComponent("viogpu3d"),
               let files = try? FileManager.default.contentsOfDirectory(at: source, includingPropertiesForKeys: nil) else { return }
@@ -60,7 +62,7 @@ extension VMManager {
         let devices = (try? await agentRun("pnputil.exe", ["/enum-devices", "/class", "Display"], limit: .seconds(60))) ?? ""
         if devices.contains("VirtIO GPU 3D") { return }
         Announcer.shared.announce("Installing the 3D graphics driver in \(machine).", tone: .info)
-        let folder = #"C:\ProgramData\AVM\viogpu3d"#
+        let folder = #"C:\Windows\Temp\AVM-viogpu3d-"# + String(UUID().uuidString.prefix(8))
         // Three tries (2026-11-01, the test job): just after Windows starts
         // its agent can miss an answer, and one miss said to turn 3D off.
         var lastError: Error?

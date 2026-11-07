@@ -111,7 +111,7 @@ extension VMManager {
             }
             let inGuest = windows ? #"C:\ProgramData\AVM\sr-setup.zip"# : "/tmp/avm-sr-setup.tgz"
             if windows {
-                _ = try await agentRun("cmd.exe", ["/c", #"if not exist C:\ProgramData\AVM mkdir C:\ProgramData\AVM"#], limit: .seconds(30))
+                _ = try await agentRun("powershell.exe", ["-NoProfile", "-Command", WindowsApps.lockDownScript], limit: .seconds(60))
             }
             try await copyToGuest(file, to: inGuest)
             let out = windows

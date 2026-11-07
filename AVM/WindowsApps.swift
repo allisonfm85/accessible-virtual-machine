@@ -752,7 +752,20 @@ final class WindowsApps {
 
     /// Folders, with the apps folder writable by the signed-in user, who
     /// writes the list and the replies; the old helper stopped.
-    private static let prepareScript = #"""
+    /// C:\ProgramData\AVM owned by SYSTEM, with Users reading only
+    /// (2026-11-05, second audit): ProgramData lets any user create a folder
+    /// and own it, so a standard user who made AVM's first could swap what
+    /// SYSTEM then ran from it, or plant a DLL beside the helper. Applied to
+    /// everything inside too, before the one folder Users may write to.
+    static let lockDownScript = #"""
+        $avm = 'C:\ProgramData\AVM'
+        New-Item -ItemType Directory -Force $avm | Out-Null
+        icacls $avm /setowner '*S-1-5-18' /t /c /q | Out-Null
+        icacls $avm /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' /t /c /q | Out-Null
+        """#
+
+    private static let prepareScript = lockDownScript + #"""
+
         $ErrorActionPreference = 'Stop'
         New-Item -ItemType Directory -Force 'C:\ProgramData\AVM\bin','C:\ProgramData\AVM\apps' | Out-Null
         icacls 'C:\ProgramData\AVM\apps' /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Null

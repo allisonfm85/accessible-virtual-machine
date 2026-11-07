@@ -4895,11 +4895,14 @@ extension VMManager {
                 guard let source = bundledBinaryURL(named: "virtio")?.appendingPathComponent("viostor") else {
                     throw AVMError.binaryNotFound("virtio/viostor")
                 }
-                _ = try await agentRun("cmd.exe", ["/c", "mkdir C:\\ProgramData\\AVM\\viostor"])
+                // Under Windows\Temp, in a folder only SYSTEM makes (2026-11-05,
+                // second audit): in ProgramData a standard user could own it first.
+                let staging = "C:\\Windows\\Temp\\AVM-viostor-\(UUID().uuidString.prefix(8))"
+                _ = try await agentRun("cmd.exe", ["/c", "mkdir \(staging)"])
                 for name in ["viostor.inf", "viostor.sys", "viostor.cat"] {
-                    try await agentWrite(source.appendingPathComponent(name), to: "C:\\ProgramData\\AVM\\viostor\\\(name)")
+                    try await agentWrite(source.appendingPathComponent(name), to: "\(staging)\\\(name)")
                 }
-                let installed = try await agentRun("pnputil.exe", ["/add-driver", "C:\\ProgramData\\AVM\\viostor\\viostor.inf", "/install"])
+                let installed = try await agentRun("pnputil.exe", ["/add-driver", "\(staging)\\viostor.inf", "/install"])
                 avmLog("diskSwitch: pnputil said: \(installed.replacingOccurrences(of: "\r\n", with: " | "))")
                 let service = try await agentRun("reg.exe", ["query", "HKLM\\SYSTEM\\CurrentControlSet\\Services\\viostor", "/v", "Start"])
                 guard service.contains("0x0") else {
