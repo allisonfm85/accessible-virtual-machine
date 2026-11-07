@@ -334,9 +334,10 @@ final class KeyboardHold {
         HeldByHelper.taking.unlock()
         let context = Unmanaged.passUnretained(self).toOpaque()
         for device in opened {
-            IOHIDDeviceRegisterInputValueCallback(device, { context, _, _, value in
-                guard let context else { return }
-                Unmanaged<KeyboardHold>.fromOpaque(context).takeUnretainedValue().handle(value)
+            IOHIDDeviceRegisterInputValueCallback(device, { context, _, sender, value in
+                guard let context, let sender else { return }
+                let device = Unmanaged<IOHIDDevice>.fromOpaque(sender).takeUnretainedValue()
+                Unmanaged<KeyboardHold>.fromOpaque(context).takeUnretainedValue().handle(value, from: device)
             }, context)
             IOHIDDeviceRegisterRemovalCallback(device, { context, _, _ in
                 guard let context else { return }
@@ -405,7 +406,11 @@ final class KeyboardHold {
     /// On `queue`. Only page-7 key usages, 4 through 0xE7, and an Apple
     /// keyboard's Fn; the rest (rollover reports, other vendor usages) are
     /// dropped. Never logged.
-    private func handle(_ value: IOHIDValue) {
+    private func handle(_ value: IOHIDValue, from device: IOHIDDevice) {
+        // Only while this device is held (2026-11-05, second audit): after a
+        // release its callbacks still ran until the cancel handler closed it,
+        // and a key pressed then stayed down in the guest.
+        guard heldID != nil, held.contains(where: { $0 === device }) else { return }
         let element = IOHIDValueGetElement(value)
         let page = IOHIDElementGetUsagePage(element)
         let usage = Int(IOHIDElementGetUsage(element))
