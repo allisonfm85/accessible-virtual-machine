@@ -60,12 +60,19 @@ extension VMManager {
         let id = runningMachineID?.uuidString ?? machine
         var allowed = Set(UserDefaults.standard.stringArray(forKey: ClaudeDescribe.allowedMachinesKey) ?? [])
         if allowed.contains(id) { return true }
+        // Not asked with the keyboard in the machine (2026-11-05 audit): the
+        // question came up unheard there, and Return sent the screen.
+        if FocusLockManager.shared?.isLocked == true {
+            Announcer.shared.announce("To let Claude describe \(machine)'s screen, use Describe Screen once with the keyboard on the Mac: AVM asks first. Here is the Mac's description.", tone: .info)
+            return false
+        }
         let alert = NSAlert()
         alert.messageText = "Send \(machine)'s screen to Claude?"
         alert.informativeText = "Describe Screen can send a picture of \(machine)'s screen to Anthropic's Claude for a fuller description. Whatever is on the screen goes with it. Choose Use the Mac Only to describe it without anything leaving your Mac."
-        alert.addButton(withTitle: "Send, and Don't Ask Again for \(machine)")
+        // The Mac only first, so Return sends nothing (2026-11-05 audit).
         alert.addButton(withTitle: "Use the Mac Only")
-        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        alert.addButton(withTitle: "Send, and Don't Ask Again for \(machine)")
+        guard alert.runModal() == .alertSecondButtonReturn else { return false }
         allowed.insert(id)
         UserDefaults.standard.set(Array(allowed), forKey: ClaudeDescribe.allowedMachinesKey)
         return true
