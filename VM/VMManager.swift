@@ -732,6 +732,8 @@ final class VMManager: ObservableObject {
         if !configuration.isStoredElsewhere {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
+        // At every start, so machines made before this are private too.
+        try VMConfiguration.makePrivate(machineFolder: dir)
         avmLog("prepareRuntimeDirectory: \(dir.path)")
         return dir
     }
@@ -2400,6 +2402,7 @@ final class VMManager: ObservableObject {
     private func launchSwtpm(binaryURL: URL, socketPath: String, runtimeDir: URL) async throws {
         let tpmStateDir = runtimeDir.appendingPathComponent("tpm-state")
         try FileManager.default.createDirectory(at: tpmStateDir, withIntermediateDirectories: true)
+        chmod(tpmStateDir.path, 0o700)
 
         // swtpm splits its options on every comma and has no escape, so a
         // VM folder with a comma in its path (2026-10-25, code audit) gets

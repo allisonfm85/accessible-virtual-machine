@@ -898,6 +898,7 @@ struct SetupView: View {
         do {
             let vmDir = try VMConfiguration(id: vmID, storageFolderPath: storagePath).directoryURL()
             try FileManager.default.createDirectory(at: vmDir, withIntermediateDirectories: true)
+            try VMConfiguration.makePrivate(machineFolder: vmDir)
             diskPath = vmDir.appendingPathComponent("disk.qcow2").path
             // Only the hash is stored, owner-only, until the install media
             // is built (see UbuntuInstallPipeline.swift).

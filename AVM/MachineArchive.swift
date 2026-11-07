@@ -213,7 +213,8 @@ enum MachineArchive {
             try? fm.removeItem(at: parent.appendingPathComponent(leftover))
         }
         let partial = parent.appendingPathComponent(partialPrefix + UUID().uuidString, isDirectory: true)
-        try fm.createDirectory(at: partial, withIntermediateDirectories: false)
+        // Private, as the machine's own folder is (2026-11-05 audit).
+        try fm.createDirectory(at: partial, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         do {
             try MachineFileCopier.copy(plan, from: dir, to: partial, progress: progress)
             // The setup answers, without the password's encoding.
@@ -393,7 +394,7 @@ enum MachineArchive {
             try? fm.removeItem(at: container.appendingPathComponent(leftover))
         }
         let partial = container.appendingPathComponent(".importing-\(id.uuidString)", isDirectory: true)
-        try fm.createDirectory(at: partial, withIntermediateDirectories: false)
+        try fm.createDirectory(at: partial, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         do {
             try MachineFileCopier.copy(plan, from: package, to: partial, progress: progress)
             try fm.moveItem(at: partial, to: final)

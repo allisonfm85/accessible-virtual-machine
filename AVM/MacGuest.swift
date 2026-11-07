@@ -183,6 +183,7 @@ final class MacInstaller: NSObject, URLSessionDownloadDelegate {
         defer { Task { @MainActor in Self.running -= 1 } }
         let folder = try config.directoryURL()
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try VMConfiguration.makePrivate(machineFolder: folder)
         let files = MacGuestFiles(folder: folder)
 
         let imageURL = try await restoreImage(ipsw, diskGB: config.diskSizeGB)
@@ -409,6 +410,7 @@ final class MacGuestRunner: NSObject, ObservableObject, VZVirtualMachineDelegate
             return
         }
         do {
+            try VMConfiguration.makePrivate(machineFolder: try config.directoryURL())
             let files = MacGuestFiles(folder: try config.directoryURL())
             guard files.isInstalled else {
                 throw MacGuestError("macOS isn't installed in \(config.name). Next: delete it and make it again with New macOS Virtual Machine.")

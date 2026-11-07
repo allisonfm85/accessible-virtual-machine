@@ -380,6 +380,29 @@ extension VMConfiguration {
 
     var isStoredElsewhere: Bool { storageFolderPath != nil }
 
+    /// Only this account can open a machine's folder (2026-11-05 audit). In a
+    /// folder the user chose, it was 0755 with the disk and firmware settings
+    /// 0644, so every account on the Mac could read Windows' disk; machines
+    /// in Application Support were kept private only by the home folder. The
+    /// folder that holds machine folders in a chosen place must be this
+    /// account's: one another account made first (in /Users/Shared, say)
+    /// could rename or swap every machine in it.
+    nonisolated struct MachineFolderError: LocalizedError { let errorDescription: String? }
+
+    nonisolated static func makePrivate(machineFolder dir: URL) throws {
+        let parent = dir.deletingLastPathComponent()
+        // Only on the Mac's own volume (2026-11-05, second audit): on a share
+        // or a drive that keeps ownership, the uid is whoever made the folder
+        // on another computer, and machines that ran yesterday were refused.
+        if parent.lastPathComponent == "AVM Virtual Machines" {
+            var info = stat(), users = stat()
+            if lstat(parent.path, &info) == 0, stat("/Users", &users) == 0, info.st_dev == users.st_dev, info.st_uid != getuid() {
+                throw MachineFolderError(errorDescription: "The folder \(parent.path) belongs to another account on this Mac, so AVM won't keep machines in it. Next: move the machine to a folder of your own.")
+            }
+        }
+        chmod(dir.path, 0o700)
+    }
+
     /// True when the VM was stored in a folder of the user's choosing and
     /// that folder can't be found now: almost always an external drive
     /// that isn't connected. Start and Delete refuse, and say so.
