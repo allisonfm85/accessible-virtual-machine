@@ -2417,6 +2417,11 @@ final class OpenSUSEInstallTests: XCTestCase {
         let names = ["A backup 2026-01-01 0000.avmvm", "A backup 2026-01-03 0000.avmvm", "A backup 2026-01-02 0000.avmvm",
                      "A backup 2026-01-04 0000.avmvm", "AB backup 2020-01-01 0000.avmvm", "A.avmvm", "A backup notes.txt"]
         XCTAssertEqual(BackupSchedule.oldOnes(in: names, base: "A", ext: "avmvm"), ["A backup 2026-01-01 0000.avmvm"])
+        // Another machine named "Ubuntu backup" (2026-11-05 audit): its backups aren't Ubuntu's.
+        let shared = ["Ubuntu backup 2026-01-01 0000.avmvm", "Ubuntu backup 2026-01-02 0000.avmvm", "Ubuntu backup 2026-01-03 0000.avmvm",
+                      "Ubuntu backup backup 2026-01-01 0000.avmvm", "Ubuntu backup backup 2026-01-02 0000.avmvm", "Ubuntu backup backup 2026-01-03 0000.avmvm"]
+        XCTAssertEqual(BackupSchedule.oldOnes(in: shared, base: "Ubuntu", ext: "avmvm"), [])
+        XCTAssertEqual(BackupSchedule.oldOnes(in: shared + ["Ubuntu backup 2026-01-04 0000.avmvm"], base: "Ubuntu", ext: "avmvm"), ["Ubuntu backup 2026-01-01 0000.avmvm"])
     }
 
     func testMachineHealthWarnsBeforeTheLimit() {

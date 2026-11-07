@@ -443,8 +443,18 @@ nonisolated enum BackupSchedule {
     }
 
     /// Of a folder's names, this machine's backups past the newest `keep`.
+    /// Exactly "<base> backup yyyy-MM-dd HHmm.<ext>" (2026-11-05 audit): a
+    /// prefix alone took "Ubuntu backup backup …", another machine's, for
+    /// Ubuntu's, and as those sorted last, Ubuntu's own were the ones removed.
+    /// The caller also checks each package's machine id, for two names that
+    /// become the same base.
     static func oldOnes(in names: [String], base: String, ext: String, keep: Int = BackupSchedule.keep) -> [String] {
-        let mine = names.filter { $0.hasPrefix("\(base) backup ") && $0.hasSuffix(".\(ext)") }.sorted()
+        let shape = Array("dddd-dd-dd dddd")
+        let mine = names.filter { name in
+            guard name.hasPrefix("\(base) backup "), name.hasSuffix(".\(ext)") else { return false }
+            let middle = Array(name.dropFirst(base.count + " backup ".count).dropLast(ext.count + 1))
+            return middle.count == shape.count && zip(middle, shape).allSatisfy { c, s in s == "d" ? c.isASCII && c.isNumber : c == s }
+        }.sorted()
         return Array(mine.dropLast(keep))
     }
 }
