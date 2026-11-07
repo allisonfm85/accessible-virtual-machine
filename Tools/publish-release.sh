@@ -119,8 +119,19 @@ DRAFT_FLAG=()
 [ "$EARLY" = "1" ] && DRAFT_FLAG=(--prerelease)
 if [ "$EXISTING" = "1" ]; then
     gh release upload "v$VERSION" "$DMG" "$ZIP" --repo "$REPO_SLUG" --clobber || fail "gh could not replace the release's files."
+    # A draft's commit is this build's (2026-11-05 audit): a draft has no tag
+    # yet, so the tag check above passed, and publishing tagged the commit the
+    # draft was first made from, not the one these files were built from.
+    IS_DRAFT="$(gh release view "v$VERSION" --repo "$REPO_SLUG" --json isDraft --jq .isDraft)" || fail "gh could not read the release."
+    if [ "$IS_DRAFT" = "true" ]; then
+        gh release edit "v$VERSION" --repo "$REPO_SLUG" --target "$BUILT" >/dev/null || fail "gh could not point the draft release at ${BUILT:0:7}."
+    fi
     if [ "$DRAFT" = "0" ]; then
-        gh release edit "v$VERSION" --repo "$REPO_SLUG" --draft=false >/dev/null || fail "gh could not publish the draft release."
+        # --early here too (2026-11-05 audit): finishing a draft made an early
+        # build GitHub's Latest release, the one the website links to.
+        EDIT_FLAGS=(--draft=false)
+        [ "$EARLY" = "1" ] && EDIT_FLAGS+=(--prerelease --latest=false)
+        gh release edit "v$VERSION" --repo "$REPO_SLUG" "${EDIT_FLAGS[@]}" >/dev/null || fail "gh could not publish the draft release."
     fi
     echo "Release v$VERSION updated."
 else
