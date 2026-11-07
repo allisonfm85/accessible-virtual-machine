@@ -175,7 +175,7 @@
         <RunSynchronousCommand wcm:action="add">
           <Order>4</Order>
           <Description>AVM: install SPICE vdagent from UNATTEND volume</Description>
-          <Path>cmd /c for %d in (C D E F G H I J K L) do @if exist %d:\VDAGENT.MSI powershell -nop -ep bypass -f "%SystemRoot%\Setup\AVM\AVMRUN.PS1" 2 msiexec "/i %d:\VDAGENT.MSI /qn /norestart /L*v %d:\VDAGENT.LOG"</Path>
+          <Path>cmd /c for %d in (C D E F G H I J K L) do @if exist %d:\VDAGENT.MSI powershell -nop -ep bypass -f "%SystemRoot%\Setup\AVM\AVMRUN.PS1" 2 msiexec "/i %d:\VDAGENT.MSI /qn /norestart /L* %SystemRoot%\Temp\AVM-VDAGENT.LOG"</Path>
         </RunSynchronousCommand>
         <!-- AVM SCREEN READERS (2026-10-26). The pipeline's Stage 3 puts the
              installers the user chose in AVMSR\ on the install DVD, after
