@@ -332,10 +332,17 @@ final class WindowsAutoDownloader: NSObject, ObservableObject {
         try step("Making the Windows installer: the disc image.")
         let label = "CCCOMA_A64FRE_\(offer.languageCode.uppercased())_DV9"
         let iso = Self.freeName(in: Self.downloads, "Windows 11 ARM64 \(offer.languageCode).iso")
-        try await Self.run("/usr/bin/hdiutil", ["makehybrid", "-o", iso.path, tree.path, "-udf", "-iso", "-joliet",
-                                                 "-udf-volume-name", label, "-iso-volume-name", label, "-joliet-volume-name", label,
-                                                 "-eltorito-boot", tree.appendingPathComponent("efi/microsoft/boot/efisys.bin").path,
-                                                 "-no-emul-boot"])
+        do {
+            try await Self.run("/usr/bin/hdiutil", ["makehybrid", "-o", iso.path, tree.path, "-udf", "-iso", "-joliet",
+                                                     "-udf-volume-name", label, "-iso-volume-name", label, "-joliet-volume-name", label,
+                                                     "-eltorito-boot", tree.appendingPathComponent("efi/microsoft/boot/efisys.bin").path,
+                                                     "-no-emul-boot"])
+        } catch {
+            // Not left half-written under a normal name (2026-11-05, second
+            // audit): the next try then made "… 2.iso" beside it.
+            try? FileManager.default.removeItem(at: iso)
+            throw error
+        }
         if Task.isCancelled { try? FileManager.default.removeItem(at: iso) }
         try Task.checkCancellation()
         return iso
