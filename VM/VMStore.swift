@@ -2,6 +2,7 @@
 // AVM — Accessible Virtual Machine
 
 import Foundation
+import AppKit
 import Combine
 
 // MARK: - Orphaned VM directory (2026-08-15, Reclaim Disk Space)
@@ -639,6 +640,12 @@ nonisolated enum RestorePoints {
         guard point.secureBoot == currentSecureBoot else {
             throw RestorePointError.secureBootMismatch(madeWithSecureBoot: point.secureBoot)
         }
+        // Still on the disk (2026-11-05 audit): a list read earlier could name a
+        // point since deleted, and beforeRollback had let go of a saved session
+        // before qemu-img refused.
+        guard await QEMUSavedState.snapshotTags(disk: disk(dir))?.contains(point.tag) != false else {
+            throw RestorePointError.tool("That restore point isn't on the disk any more, so nothing was changed.")
+        }
         // ORDER (2026-10-26, code audit): this used to delete the live
         // firmware settings and TPM, then copy the saved ones, after the
         // disk was already rolled back; a failed copy (a full disk) left a
@@ -720,6 +727,58 @@ nonisolated enum RestorePoints {
     static func deleteFromSecondDrive(_ tag: String, vmDirectory dir: URL) async {
         guard let second = secondDrive(dir), await QEMUSavedState.snapshotTags(disk: second)?.contains(tag) == true else { return }
         _ = try? await qemuImg(["snapshot", "-d", tag, second.path])
+    }
+
+    /// A new name for a restore point (2026-11-05). Only its label file
+    /// changes, so it works while the machine runs too.
+    static func rename(_ point: RestorePoint, to label: String, vmDirectory dir: URL) throws {
+        guard isOwnTag(point.tag) else { throw RestorePointError.tool("The restore point's name isn't one AVM made.") }
+        let folder = dir.appendingPathComponent(folderName).appendingPathComponent(point.tag)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try label.write(to: folder.appendingPathComponent("label.txt"), atomically: true, encoding: .utf8)
+        } catch {
+            throw RestorePointError.tool("The new name could not be saved: \(error.localizedDescription)")
+        }
+        // Named by the user, it's theirs (2026-11-05 audit): AVM's tidy-up marks
+        // go, or the point was still deleted two restores later.
+        for mark in [beforeRestoreMarker, "automatic", "before-updates"] {
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent(mark))
+        }
+    }
+
+    /// Marks the points AVM takes just before going back to another
+    /// (2026-11-05), so only those are tidied away.
+    static let beforeRestoreMarker = "before-restore"
+
+    static func markBeforeRestore(_ point: RestorePoint, vmDirectory dir: URL) {
+        let folder = dir.appendingPathComponent(folderName).appendingPathComponent(point.tag)
+        FileManager.default.createFile(atPath: folder.appendingPathComponent(beforeRestoreMarker).path, contents: nil)
+    }
+
+    /// Keeps the two newest "before going back" points, and never the one
+    /// just restored: going back twice in a row can still be undone, and
+    /// they don't pile up. The machine must be stopped.
+    static func pruneBeforeRestore(vmDirectory dir: URL, keeping restored: RestorePoint) async {
+        guard let all = try? await list(vmDirectory: dir) else { return }
+        let marked = all.filter {
+            FileManager.default.fileExists(atPath: dir.appendingPathComponent(folderName).appendingPathComponent($0.tag)
+                .appendingPathComponent(beforeRestoreMarker).path)
+        }
+        for old in marked.dropFirst(2) where old.tag != restored.tag {
+            try? await delete(old, vmDirectory: dir)
+        }
+    }
+
+    /// Waits for a QEMU that was just stopped to let go of the disk
+    /// (2026-11-05): restoring needs it to itself, and the process can take a
+    /// moment to exit after the machine reads as stopped.
+    static func waitUntilDiskIsFree(vmDirectory dir: URL, seconds: Int = 30) async -> Bool {
+        for _ in 0..<(seconds * 2) {
+            if (try? await qemuImg(["info", disk(dir).path])) != nil { return true }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        return false
     }
 
     private static func disk(_ dir: URL) -> URL {

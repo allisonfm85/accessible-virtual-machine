@@ -431,15 +431,21 @@ than the one signed in at the machine's screen.
 ## Restore points
 
 A restore point saves a virtual machine as it is, so you can put it back
-later: before a big Windows update, or before trying Insider builds. Shut
-the machine down, open its Settings, and choose Save a Restore Point. To
-go back, choose Restore beside the one you want; AVM asks first, because
-everything since then is lost. A restore point keeps the disk, the
-firmware settings and the TPM, so BitLocker and Windows Hello still match
-afterwards. Each one takes more disk space as Windows changes after it,
-so delete the ones you no longer need. AVM saves one called **Fresh
-install** by itself, the first time a machine starts after Windows is set
-up, so a clean Windows is always minutes away.
+later: before a big Windows update, or before trying Insider builds. They're
+in the machine's Settings, under Startup and Recovery. Choose Save a Restore
+Point; a Windows or Linux machine can be running, and its restore point then
+keeps open apps too. To go back, choose Restore beside the one you want. AVM
+asks first, because everything since then is lost, and it first saves the
+machine as it is now, as "Before going back to …", so a restore can be undone
+(untick the box to skip it). AVM keeps the two newest of those. A running
+machine is turned off, put back, and started again. Rename gives a restore
+point a name you'll recognize.
+
+A restore point keeps the disk, the firmware settings and the TPM, so
+BitLocker and Windows Hello still match afterwards. Each one takes more disk
+space as Windows changes after it, so delete the ones you no longer need. AVM
+saves one called **Fresh install** by itself, the first time a machine starts
+after Windows is set up, so a clean Windows is always minutes away.
 
 **Reinstall Windows**, also in Settings, erases Windows on a stopped
 machine and installs it again at the next Start, from the same installer

@@ -163,6 +163,8 @@ add "windows machine check"             windows  "--test-machine-check"
 add "debian screen reader setup"        debian   "--test-sr-setup"
 add "windows screen reader setup"       windows  "--test-sr-setup"
 add "debian backup"                     debian   "--test-backup"
+add "debian restore undo"               debian   "--test-restore-undo"
+add "windows restore undo"              windows  "--test-restore-undo"
 add "screen reader downloads"          downloads "--test-screen-readers"
 
 wanted() {

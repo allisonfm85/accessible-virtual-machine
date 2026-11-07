@@ -1178,6 +1178,21 @@ enum QuitCoordinator {
             }
             AVMLog.write("AVM: Quit — chosen while \(activity).")
         }
+        // A restore point being put back (2026-11-05 audit). Cancel is the default.
+        if let machine = RestorePoints.restoring {
+            let alert = NSAlert()
+            alert.messageText = "AVM is putting \(machine) back to a restore point. Quit anyway?"
+            alert.informativeText = "Quitting part way can leave \(machine)'s disk back but not its firmware settings and TPM, and Windows may then ask for its BitLocker recovery key. It takes a minute or less."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Quit Anyway")
+            guard ask(alert) == .alertSecondButtonReturn else {
+                AVMLog.write("AVM: Quit — cancelled while a restore point was put back.")
+                stopCancelled("AVM goes on putting \(machine) back.")
+                UpdateAnnouncer.relaunchingForUpdate = false; return .terminateCancel
+            }
+            AVMLog.write("AVM: Quit — chosen while a restore point was put back.")
+        }
         // A macOS machine runs inside AVM itself (2026-10-26): quitting
         // ends it at once, so ask.
         if MacGuestRunner.shared.runningID != nil {

@@ -137,7 +137,7 @@ enum SaveResumeTestJob {
                 || arguments.contains("--test-printers") || arguments.contains("--test-camera") || arguments.contains("--test-3d") || arguments.contains("--test-windows-3d") || arguments.contains("--test-repair") || arguments.contains("--test-finder-send") || arguments.contains("--test-tour") || arguments.contains("--test-machine-check") || arguments.contains("--test-sr-setup") || arguments.contains("--test-backup") || arguments.contains("--test-sound-ear") || arguments.contains("--test-stuck") || arguments.contains("--test-camera-save")
                 || arguments.contains("--test-screen-readers") || arguments.contains("--test-hid-bridge")
                 || arguments.contains("--test-background") || arguments.contains("--test-monitors")
-                || arguments.contains("--test-agent-shutdown") || arguments.contains("--test-remote-desktop")
+                || arguments.contains("--test-agent-shutdown") || arguments.contains("--test-remote-desktop") || arguments.contains("--test-restore-undo")
                 || arguments.contains("--test-hid-bridge-fuzz") || arguments.contains("--test-crash-save")
                 || arguments.contains("--test-guest-watch") else { return }
         func value(_ name: String) -> String? {
@@ -206,6 +206,9 @@ enum SaveResumeTestJob {
             let folderURL = URL(fileURLWithPath: folder, isDirectory: true)
             if arguments.contains("--test-install-apps") {
                 await finish(await installApps(folderURL))
+            }
+            if arguments.contains("--test-restore-undo") {
+                await finish(await restoreUndo(folderURL, guest))
             }
             if arguments.contains("--test-machine-drives") {
                 await finish(await machineDrives(folderURL, guest))
@@ -2050,6 +2053,137 @@ enum SaveResumeTestJob {
             check("the restore point is still there, marked with open apps", points.contains { $0.tag == point.tag && $0.withMemory })
             try? await RestorePoints.delete(point, vmDirectory: folder)
         }
+        return ok
+    }
+
+    /// Going back to a restore point can be undone (2026-11-05), as
+    /// Settings does it: the machine as it is now kept first, with its
+    /// memory while it runs, then turned off and put back. Only the two
+    /// newest of those kept points stay. Also renaming, and deleting while it
+    /// runs. The machine is put back as it was at the end.
+    private static func restoreUndo(_ folder: URL, _ guest: GuestOS) async -> Bool {
+        let config = configuration(folder: folder, guest: guest)
+        let windows = guest == .windows
+        func path(_ name: String) -> String { windows ? "C:\\avm-undo-\(name).txt" : "/var/tmp/avm-undo-\(name)" }
+        func write(_ agent: String, _ name: String) async {
+            _ = windows
+                ? await exec(agent, program: "cmd.exe", args: ["/c", "echo avm>\(path(name))"])
+                : await exec(agent, program: "/bin/sh", args: ["-c", "touch \(path(name)); sync"])
+        }
+        func points() async -> [RestorePoint] { (try? await RestorePoints.list(vmDirectory: folder)) ?? [] }
+        func kept() async -> [RestorePoint] {
+            await points().filter {
+                FileManager.default.fileExists(atPath: folder.appendingPathComponent(RestorePoints.folderName)
+                    .appendingPathComponent($0.tag).appendingPathComponent(RestorePoints.beforeRestoreMarker).path)
+            }
+        }
+        func running() async -> (VMManager, String)? {
+            let manager = VMManager()
+            guard await start(manager, config), let agent = manager.guestAgentSocketPath, await waitForAgent(agent, seconds: 300) else {
+                check("the machine started and answers", false); await shutDown(manager); return nil
+            }
+            return (manager, agent)
+        }
+        /// Settings' steps after the kept point: off, wait for the disk, back.
+        func putBack(_ manager: VMManager, _ point: RestorePoint) async -> Bool {
+            manager.forceStopVM()
+            for _ in 0..<120 where manager.state != .stopped { try? await Task.sleep(for: .milliseconds(500)) }
+            check("it turned off", manager.state == .stopped)
+            check("QEMU let go of the disk", await RestorePoints.waitUntilDiskIsFree(vmDirectory: folder))
+            do {
+                try await RestorePoints.restore(point, vmDirectory: folder, currentSecureBoot: config.usesSecureBoot)
+            } catch {
+                check("it was put back (\(error.localizedDescription))", false); return false
+            }
+            await RestorePoints.pruneBeforeRestore(vmDirectory: folder, keeping: point)
+            return true
+        }
+
+        print("== A point of the machine as it is, to put back at the end")
+        guard let original = try? await RestorePoints.create(vmDirectory: folder, label: "Undo test start", secureBoot: config.usesSecureBoot, diskBus: config.diskBus ?? "nvme") else {
+            check("the starting point was made", false); return false
+        }
+        defer { print("   (the starting point is \(original.tag))") }
+
+        print("== A point while it runs, then a file after it")
+        guard var (manager, agent) = await running() else { return false }
+        await write(agent, "a")
+        guard let pointA = try? await manager.createRunningRestorePoint(label: "Undo test A") else {
+            check("point A was made", false); await shutDown(manager); return false
+        }
+        await write(agent, "b")
+        let hasA = await fileExists(agent, path("a"), guest: guest), hasB = await fileExists(agent, path("b"), guest: guest)
+        check("both files are there", hasA && hasB)
+
+        print("== Renaming it while it runs")
+        do {
+            try RestorePoints.rename(pointA, to: "Undo test A, renamed", vmDirectory: folder)
+            check("its new name is listed", await points().contains { $0.tag == pointA.tag && $0.label == "Undo test A, renamed" })
+        } catch {
+            check("it was renamed (\(error.localizedDescription))", false)
+        }
+
+        print("== Back to A while it runs, keeping it as it is first")
+        guard let kept1 = try? await RestorePoints.keepBeforeRestore(to: pointA, configuration: config, vmDirectory: folder, running: manager) else {
+            check("the machine as it was was kept", false); await shutDown(manager); return false
+        }
+        check("the kept point has its memory", kept1.withMemory)
+        check("the kept point is named for what it was before", kept1.label.hasPrefix("Before going back to Undo test A"))
+        guard await putBack(manager, pointA) else { return false }
+        guard let next = await running() else { return false }
+        (manager, agent) = next
+        check("the file from before A is there", await fileExists(agent, path("a"), guest: guest))
+        check("the file from after A is gone", !(await fileExists(agent, path("b"), guest: guest)))
+
+        print("== Undoing it: back to the kept point")
+        guard let kept2 = try? await RestorePoints.keepBeforeRestore(to: kept1, configuration: config, vmDirectory: folder, running: manager) else {
+            check("the machine as it was was kept again", false); await shutDown(manager); return false
+        }
+        guard await putBack(manager, kept1) else { return false }
+        guard let next2 = await running() else { return false }
+        (manager, agent) = next2
+        check("the file from after A is back", await fileExists(agent, path("b"), guest: guest))
+
+        print("== A third time: only the two newest kept points stay")
+        guard let kept3 = try? await RestorePoints.keepBeforeRestore(to: pointA, configuration: config, vmDirectory: folder, running: manager) else {
+            check("the machine as it was was kept a third time", false); await shutDown(manager); return false
+        }
+        guard await putBack(manager, pointA) else { return false }
+        let left = await kept().map(\.tag)
+        print("   kept points: \(left.count)")
+        check("two kept points are left", left.count == 2)
+        check("the oldest went, and the two newest stayed", !left.contains(kept1.tag) && left.contains(kept2.tag) && left.contains(kept3.tag))
+
+        print("== Deleting one while it runs")
+        guard let next3 = await running() else { return false }
+        manager = next3.0
+        do {
+            try await manager.deleteRunningRestorePoint(kept2, runtimeDir: folder)
+            check("it's gone from the list", !(await points().contains { $0.tag == kept2.tag }))
+        } catch {
+            check("it was deleted (\(error.localizedDescription))", false)
+        }
+        await shutDown(manager)
+
+        print("== Keeping a stopped machine before going back")
+        if let stoppedKept = try? await RestorePoints.keepBeforeRestore(to: original, configuration: config, vmDirectory: folder, running: nil) {
+            check("a stopped machine's kept point has no memory", !stoppedKept.withMemory)
+            check("it's marked as kept", await kept().contains { $0.tag == stoppedKept.tag })
+        } else {
+            check("the stopped machine was kept", false)
+        }
+
+        print("== Putting the machine back as it was")
+        do {
+            try await RestorePoints.restore(original, vmDirectory: folder, currentSecureBoot: config.usesSecureBoot)
+            check("it's back as it was", true)
+        } catch {
+            check("it's back as it was (\(error.localizedDescription))", false)
+        }
+        for point in await points() where point.label.hasPrefix("Undo test") || point.label.hasPrefix("Before going back to") {
+            try? await RestorePoints.delete(point, vmDirectory: folder)
+        }
+        check("the test's restore points are gone", !(await points().contains { $0.label.hasPrefix("Undo test") || $0.label.hasPrefix("Before going back to") }))
         return ok
     }
 

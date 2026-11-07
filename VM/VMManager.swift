@@ -1744,6 +1744,12 @@ final class VMManager: ObservableObject {
         }
     }
 
+    /// The QEMU a force stop sent SIGTERM (2026-11-05, second audit), so a
+    /// restore that follows can wait for the process itself: where the disk
+    /// has no file locking (some shares), qemu-img couldn't tell it was still
+    /// flushing.
+    private(set) var forceStoppedProcess: Process?
+
     func forceStopVM() {
         // A Force Stop while AVM restarts Ubuntu after its install is the
         // user's choice: the restart stands down (restartAfterInstall).
@@ -1762,6 +1768,7 @@ final class VMManager: ObservableObject {
         // detached task escalates to SIGKILL if the process survives 2s.
         let doomed = qemuProcess
         qemuProcess = nil
+        forceStoppedProcess = doomed
         doomed?.terminate()
         if let proc = doomed {
             let pid = proc.processIdentifier
@@ -4539,7 +4546,15 @@ extension VMManager {
             try await runQMPJob("snapshot-save", id: "avm-point",
                                 arguments: ["tag": tag, "vmstate": node, "devices": try await snapshotDevices(node)])
         } catch {
-            RestorePoints.removeFolder(vmDirectory: runtimeDir, tag: tag)
+            // Only if QEMU didn't finish it (2026-11-05, second audit): a QEMU
+            // force-stopped just after writing the snapshot left one with no
+            // label, firmware or TPM copy, which a restore then half-applied.
+            let disk = URL(fileURLWithPath: configuration.diskImagePath)
+            if await QEMUSavedState.snapshotTags(disk: disk)?.contains(tag) == true {
+                avmLog("createRunningRestorePoint: \(tag) landed although the job failed (\(error.localizedDescription)); its folder stays")
+            } else {
+                RestorePoints.removeFolder(vmDirectory: runtimeDir, tag: tag)
+            }
             throw error
         }
         avmLog("createRunningRestorePoint: \(tag) taken with memory")

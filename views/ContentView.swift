@@ -1435,7 +1435,7 @@ func chooseFileToSend(_ session: VMSession) {
 /// Asks for a name, then takes a restore point of the running machine,
 /// memory and all (VMManager.createRunningRestorePoint). Spoken.
 @MainActor
-func askRestorePointName(_ session: VMSession) {
+func askRestorePointName(_ session: VMSession, then: (@MainActor () async -> Void)? = nil, cancelled: (@MainActor () -> Void)? = nil) {
     let alert = NSAlert()
     alert.messageText = "Save a restore point for \(VMStore.shared?.configurations.first { $0.id == session.configuration.id }?.name ?? session.configuration.name)?"
     alert.informativeText = "It keeps open apps too, and \(session.configuration.guestOS.displayName) keeps running. Give it a name you'll recognize, such as Before the October update."
@@ -1446,10 +1446,13 @@ func askRestorePointName(_ session: VMSession) {
     alert.addButton(withTitle: "Save")
     alert.addButton(withTitle: "Cancel")
     alert.window.initialFirstResponder = field
-    guard alert.runModal() == .alertFirstButtonReturn else { return }
+    guard alert.runModal() == .alertFirstButtonReturn else { cancelled?(); return }
     let typed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
     let name = typed.isEmpty ? "Restore point from \(Date().formatted(date: .long, time: .shortened))" : typed
-    Task { await session.saveRunningRestorePoint(label: name) }
+    Task {
+        await session.saveRunningRestorePoint(label: name)
+        await then?()
+    }
 }
 
 // MARK: - Force Stop confirmation (2026-10-25)
