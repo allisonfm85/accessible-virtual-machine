@@ -382,17 +382,20 @@ avm_usb_stream *avm_usb_stream_attach(uint16_t vendor_id,
     s->context = context;
     snprintf(s->socket_path, sizeof(s->socket_path), "%s", socket_path);
 
-    h = open_at(vendor_id, product_id, bus_number, device_address,
-                s->name, sizeof(s->name), s->speed, sizeof(s->speed),
-                step, step_len, detail, detail_len);
-    if (h == NULL) {
+    /* The socket's peer is checked before the device is opened (2026-11-05,
+     * second audit): the other way round, a request that failed the check
+     * had opened the device for a moment. */
+    s->fd = connect_unix(socket_path, socket_owner, socket_peer_pid, step, step_len, detail, detail_len);
+    if (s->fd < 0) {
         free(s);
         return NULL;
     }
 
-    s->fd = connect_unix(socket_path, socket_owner, socket_peer_pid, step, step_len, detail, detail_len);
-    if (s->fd < 0) {
-        libusb_close(h);
+    h = open_at(vendor_id, product_id, bus_number, device_address,
+                s->name, sizeof(s->name), s->speed, sizeof(s->speed),
+                step, step_len, detail, detail_len);
+    if (h == NULL) {
+        close(s->fd);
         free(s);
         return NULL;
     }
