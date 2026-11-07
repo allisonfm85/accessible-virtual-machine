@@ -493,8 +493,13 @@ final class VMStore: ObservableObject {
     /// is missing only because the drive is, and "no directory on disk"
     /// would otherwise remove the entry and strand the files on the drive,
     /// invisible to AVM, which is issue #5 again.
+    /// The Trash refused (2026-11-05, second audit): a share or some exFAT
+    /// mounts have none, and the machine couldn't be deleted from AVM at all.
+    /// The caller asks again, then calls with `permanently`.
+    struct NoTrashError: LocalizedError { let errorDescription: String? }
+
     @discardableResult
-    func deleteMovingFilesToTrash(_ configuration: VMConfiguration) throws -> UInt64 {
+    func deleteMovingFilesToTrash(_ configuration: VMConfiguration, permanently: Bool = false) throws -> UInt64 {
         if configuration.storageIsMissing {
             AVMLog.write("AVM: VMStore — delete of '\(configuration.name)' refused: its storage folder is missing (drive not connected?). Entry kept.")
             throw NSError(
@@ -516,9 +521,16 @@ final class VMStore: ObservableObject {
         let bytes = vmDirectorySizeBytes(for: configuration) ?? 0
 
         do {
-            try fileManager.trashItem(at: url, resultingItemURL: nil)
+            if permanently {
+                try fileManager.removeItem(at: url)
+            } else {
+                try fileManager.trashItem(at: url, resultingItemURL: nil)
+            }
         } catch {
-            AVMLog.write("AVM: VMStore — FAILED to move VM directory to Trash for '\(configuration.name)': \(error.localizedDescription). Entry kept.")
+            AVMLog.write("AVM: VMStore — FAILED to \(permanently ? "delete" : "move to Trash") VM directory for '\(configuration.name)': \(error.localizedDescription). Entry kept.")
+            if !permanently, fileManager.fileExists(atPath: url.path) {
+                throw NoTrashError(errorDescription: "The drive holding \(configuration.name) has no Trash, so its files can't be set aside. \(error.localizedDescription)")
+            }
             throw error
         }
 

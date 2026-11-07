@@ -845,6 +845,24 @@ private struct DashboardContent: View {
                         tone: .success
                     )
                 }
+            } catch let noTrash as VMStore.NoTrashError {
+                // A second question, then for good (2026-11-05, second audit).
+                let again = NSAlert()
+                again.messageText = "Delete \(config.name) permanently?"
+                again.informativeText = "\(noTrash.localizedDescription) Deleting it permanently can't be undone."
+                again.alertStyle = .critical
+                again.addButton(withTitle: "Cancel")
+                again.addButton(withTitle: "Delete Permanently")
+                guard again.runModal() == .alertSecondButtonReturn else {
+                    Announcer.shared.announce("\(config.name) was not deleted.", tone: .info)
+                    return
+                }
+                do {
+                    let freed = try vmStore.deleteMovingFilesToTrash(config, permanently: true)
+                    Announcer.shared.announce("\(config.name) deleted permanently. \(spokenSize(freed)) freed.", tone: .success)
+                } catch {
+                    Announcer.shared.announce("Deleting \(config.name) failed. The machine was not deleted. \(error.localizedDescription)", tone: .failure)
+                }
             } catch {
                 Announcer.shared.announce(
                     "Deleting \(config.name) failed. The machine was not deleted and its files are untouched. \(error.localizedDescription)",
