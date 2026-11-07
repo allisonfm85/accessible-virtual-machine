@@ -384,7 +384,15 @@ final class WindowsKeyboard {
     func releaseHeldKeys(before machine: VMManager) async {
         guard target === machine else { return }
         releaseAllKeys()
-        await lastSend?.value
+        // At most 10 s (2026-11-05, second audit): with QEMU wedged, a held
+        // key's chain of 5 s sends kept a Save from even failing for minutes.
+        guard let chain = lastSend else { return }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await chain.value }
+            group.addTask { try? await Task.sleep(for: .seconds(10)) }
+            await group.next()
+            group.cancelAll()
+        }
     }
 
     private static func reason(_ error: USBHelperError) -> String {
