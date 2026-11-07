@@ -734,6 +734,14 @@ final class VMManager: ObservableObject {
         }
         // At every start, so machines made before this are private too.
         try VMConfiguration.makePrivate(machineFolder: dir)
+        // The drive's UUID, for machines made before it was recorded
+        // (2026-11-05, second audit; VMConfiguration.storageVolumeUUID).
+        if configuration.isStoredElsewhere, configuration.storageVolumeUUID == nil,
+           let uuid = VMConfiguration.volumeUUID(of: dir),
+           var saved = VMStore.shared?.configurations.first(where: { $0.id == configuration.id }) {
+            saved.storageVolumeUUID = uuid
+            VMStore.shared?.save(saved)
+        }
         avmLog("prepareRuntimeDirectory: \(dir.path)")
         return dir
     }

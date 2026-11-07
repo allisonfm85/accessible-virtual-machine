@@ -923,6 +923,7 @@ struct SetupView: View {
             guestOSName: isUbuntu ? linuxGuestOS.rawValue : nil,
             windowsEditionName: isUbuntu ? nil : windowsEdition.rawValue,
             storageFolderPath: storagePath,
+            storageVolumeUUID: storageFolder.flatMap(VMConfiguration.volumeUUID),
             // Secure Boot for every new Windows VM (2026-10-25): with the
             // TPM AVM already gives it, Windows sees a PC that meets its
             // requirements, Insider builds included.

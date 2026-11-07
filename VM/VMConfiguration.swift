@@ -94,6 +94,12 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// Application Support layout, exactly as before. Read the folder
     /// through directoryURL(), never directly.
     var storageFolderPath: String?
+    /// The drive storageFolderPath is on (2026-11-05, second audit), so a
+    /// drive that mounts under another name ("Backup 1" after a stale mount
+    /// folder) is still found: the path is rebuilt from the volume with this
+    /// UUID. nil for the Mac's own disk, and for machines made before this;
+    /// recorded at the next start.
+    var storageVolumeUUID: String?
 
     // MARK: - Secure Boot (2026-10-25, roadmap item 8)
 
@@ -289,6 +295,7 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         guestOSName: String? = nil,
         windowsEditionName: String? = nil,
         storageFolderPath: String? = nil,
+        storageVolumeUUID: String? = nil,
         secureBoot: Bool? = nil,
         shareClipboard: Bool? = nil,
         windowsScreenReaderNames: [String]? = nil
@@ -306,6 +313,7 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         self.guestOSName = guestOSName
         self.windowsEditionName = windowsEditionName
         self.storageFolderPath = storageFolderPath
+        self.storageVolumeUUID = storageVolumeUUID
         self.secureBoot = secureBoot
         self.shareClipboard = shareClipboard
         self.windowsScreenReaderNames = windowsScreenReaderNames
@@ -373,7 +381,7 @@ extension VMConfiguration {
     /// folder; never derived from diskImagePath (see VMStore).
     func directoryURL() throws -> URL {
         if let path = storageFolderPath {
-            return URL(fileURLWithPath: path, isDirectory: true)
+            return URL(fileURLWithPath: Self.resolvedStoragePath(path, volumeUUID: storageVolumeUUID), isDirectory: true)
         }
         return try Self.defaultVMsContainer().appendingPathComponent(id.uuidString)
     }
@@ -409,7 +417,32 @@ extension VMConfiguration {
     var storageIsMissing: Bool {
         guard let path = storageFolderPath else { return false }
         var isDirectory: ObjCBool = false
-        return !(FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue)
+        let resolved = Self.resolvedStoragePath(path, volumeUUID: storageVolumeUUID)
+        return !(FileManager.default.fileExists(atPath: resolved, isDirectory: &isDirectory) && isDirectory.boolValue)
+    }
+
+    /// The UUID of the volume holding `url`, for storageVolumeUUID.
+    nonisolated static func volumeUUID(of url: URL) -> String? {
+        try? url.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
+    }
+
+    /// `path` as saved, or, when it isn't there and names a drive under
+    /// /Volumes, the same place on whichever mounted volume has `volumeUUID`
+    /// (2026-11-05, second audit). Before, a drive mounted as "Backup 1"
+    /// stranded its machines with "isn't connected" while it was.
+    nonisolated static func resolvedStoragePath(_ path: String, volumeUUID: String?) -> String {
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue { return path }
+        guard let volumeUUID else { return path }
+        let parts = URL(fileURLWithPath: path).pathComponents
+        guard parts.count > 2, parts[1] == "Volumes" else { return path }
+        let rest = parts.dropFirst(3)
+        for volume in (try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: "/Volumes"), includingPropertiesForKeys: [.volumeUUIDStringKey])) ?? [] {
+            guard self.volumeUUID(of: volume) == volumeUUID else { continue }
+            let candidate = rest.reduce(volume) { $0.appendingPathComponent($1) }.path
+            if FileManager.default.fileExists(atPath: candidate, isDirectory: &isDirectory), isDirectory.boolValue { return candidate }
+        }
+        return path
     }
 
     /// The name of the drive holding the VM, for speech: "Backup Drive".
@@ -429,7 +462,7 @@ extension VMConfiguration {
         if let drive = storageDriveName {
             return "\(name) is stored on the drive \(drive), which isn't connected. Next: connect \(drive), then try again."
         }
-        return "AVM can't find the folder that holds \(name), at \(storageFolderPath ?? "its saved location"). Next: if it's on an external drive, connect the drive, then try again."
+        return "AVM can't find the folder that holds \(name), at \(storageFolderPath ?? "its saved location"). Next: if it's on an external drive, connect the drive, then try again. If the drive is connected under another name, such as its name and a 1, eject it, then connect it again."
     }
 }
 
