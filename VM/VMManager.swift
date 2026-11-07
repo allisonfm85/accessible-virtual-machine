@@ -1390,6 +1390,18 @@ final class VMManager: ObservableObject {
         // skip the media build, do not attach install media, and do not start
         // the boot keypress task, so this start cannot re-enter Setup and let
         // the answer file wipe the installed disk.
+        // One disk (2026-11-05, second audit): QEMU boots diskImagePath while
+        // restore points, growth and the installed check use the folder's
+        // disk.qcow2. Two different files that both exist is a machine AVM
+        // can't reason about, so it says so rather than guess.
+        if !configuration.diskImagePath.isEmpty {
+            let booted = URL(fileURLWithPath: configuration.diskImagePath).resolvingSymlinksInPath().standardizedFileURL.path
+            let folderDisk = runtimeDir.appendingPathComponent("disk.qcow2").resolvingSymlinksInPath().standardizedFileURL.path
+            if booted.caseInsensitiveCompare(folderDisk) != .orderedSame,
+               FileManager.default.fileExists(atPath: booted), FileManager.default.fileExists(atPath: folderDisk) {
+                throw AVMError.refused("\(configuration.name)'s settings name a disk, \(booted), that isn't the one in its folder, \(folderDisk), so AVM won't start it. Next: report the problem from the Help menu.")
+            }
+        }
         if diskIsOffloaded(runtimeDir: runtimeDir) {
             throw AVMError.refused("\(configuration.name)'s disk has been moved off this Mac by iCloud or another file provider, so AVM won't start it: starting would treat it as a new machine. Next: in Finder, download \(runtimeDir.path), then start it again, and keep machines out of folders iCloud syncs.")
         }
