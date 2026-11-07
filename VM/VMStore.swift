@@ -514,6 +514,11 @@ nonisolated struct RestorePoint: Identifiable, Hashable, Sendable {
     /// the virtio disk since can't boot a point from before the move, so
     /// a restore puts the bus back too (SettingsView).
     var diskBus: String? = nil
+    /// No folder beside it (2026-11-05, second audit): the snapshot is on the
+    /// disk, but its label, firmware settings and TPM copy aren't. Listed so
+    /// it can be deleted, never restored: restoring it kept the current TPM,
+    /// and Windows asked for its BitLocker recovery key.
+    var incomplete = false
     var id: String { tag }
 }
 
@@ -559,23 +564,40 @@ nonisolated enum RestorePoints {
             let memory = (snap["vm-state-size"] as? Double ?? 0) > 0
             let bus = (try? String(contentsOf: folder.appendingPathComponent("disk-bus"), encoding: .utf8))?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            return RestorePoint(tag: tag, label: (label?.isEmpty == false ? label! : "Restore point"),
-                                date: Date(timeIntervalSince1970: seconds), secureBoot: secure, withMemory: memory,
-                                diskBus: bus?.isEmpty == false ? bus : nil)
+            // A folder still marked pending is one whose snapshot was never
+            // taken (AVM quit between): not a point at all.
+            if FileManager.default.fileExists(atPath: folder.appendingPathComponent(pendingMarker).path) { return nil }
+            let complete = FileManager.default.fileExists(atPath: folder.appendingPathComponent("label.txt").path)
+            var point = RestorePoint(tag: tag, label: complete ? (label?.isEmpty == false ? label! : "Restore point") : "Incomplete restore point",
+                                     date: Date(timeIntervalSince1970: seconds), secureBoot: secure, withMemory: memory,
+                                     diskBus: bus?.isEmpty == false ? bus : nil)
+            point.incomplete = !complete
+            return point
         }
         .sorted { $0.date > $1.date }
     }
 
+    /// In a point's folder until its snapshot is taken (2026-11-05, second audit).
+    static let pendingMarker = "pending"
+
     static func create(vmDirectory dir: URL, label: String, secureBoot: Bool, diskBus: String? = nil) async throws -> RestorePoint {
         let tag = newTag()
-        _ = try await qemuImg(["snapshot", "-c", tag, disk(dir).path])
+        // The folder first, as the running path does (2026-11-05, second audit):
+        // a quit between the snapshot and the folder left a point with no
+        // Secure Boot mark, and Restore then told the user to turn Secure Boot
+        // off, which booted plain firmware with no TPM copy.
+        try writeFolder(vmDirectory: dir, tag: tag, label: label, secureBoot: secureBoot, diskBus: diskBus)
+        let pending = dir.appendingPathComponent(folderName).appendingPathComponent(tag).appendingPathComponent(pendingMarker)
+        FileManager.default.createFile(atPath: pending.path, contents: nil)
         do {
+            _ = try await qemuImg(["snapshot", "-c", tag, disk(dir).path])
             if let second = secondDrive(dir) { _ = try await qemuImg(["snapshot", "-c", tag, second.path]) }
-            try writeFolder(vmDirectory: dir, tag: tag, label: label, secureBoot: secureBoot, diskBus: diskBus)
+            try? FileManager.default.removeItem(at: pending)
         } catch {
             // Half a restore point is worse than none: take the snapshot back.
             _ = try? await qemuImg(["snapshot", "-d", tag, disk(dir).path])
             if let second = secondDrive(dir) { _ = try? await qemuImg(["snapshot", "-d", tag, second.path]) }
+            removeFolder(vmDirectory: dir, tag: tag)
             throw error
         }
         AVMLog.write("AVM: RestorePoints — created \(tag).")
@@ -637,6 +659,9 @@ nonisolated enum RestorePoints {
     /// saved session there, not before checks that could still say no.
     static func restore(_ point: RestorePoint, vmDirectory dir: URL, currentSecureBoot: Bool,
                         beforeRollback: () async -> Void = {}) async throws {
+        guard !point.incomplete else {
+            throw RestorePointError.tool("This restore point is incomplete: its firmware settings and TPM weren't saved with it, so restoring it would leave Windows asking for its BitLocker recovery key. Next: delete it.")
+        }
         guard point.secureBoot == currentSecureBoot else {
             throw RestorePointError.secureBootMismatch(madeWithSecureBoot: point.secureBoot)
         }
@@ -733,6 +758,7 @@ nonisolated enum RestorePoints {
     /// changes, so it works while the machine runs too.
     static func rename(_ point: RestorePoint, to label: String, vmDirectory dir: URL) throws {
         guard isOwnTag(point.tag) else { throw RestorePointError.tool("The restore point's name isn't one AVM made.") }
+        guard !point.incomplete else { throw RestorePointError.tool("An incomplete restore point can't be renamed, only deleted.") }
         let folder = dir.appendingPathComponent(folderName).appendingPathComponent(point.tag)
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

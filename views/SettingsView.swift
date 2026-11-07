@@ -690,6 +690,7 @@ struct SettingsView: View {
                         Spacer()
                         Button("Restore") { restoreTo(point) }
                             .accessibilityLabel("Restore \(point.label)")
+                            .disabled(restorePointsBusy || point.incomplete)
                             .accessibilityHint((point.withMemory ? "Puts the virtual machine back as it was then, open apps and all; its next Start carries on from there." : "Puts the virtual machine back as it was then.") + (runningSession != nil ? " It's turned off first and started again after." : "") + " Asks first.")
                             .disabled(restorePointsBusy)
                         Button("Rename…") { renameRestorePoint(point) }
