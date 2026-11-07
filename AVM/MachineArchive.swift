@@ -36,8 +36,8 @@
 // COPYING: an APFS clone (clonefile) when the destination is on the same
 // volume, which is instant and costs no space; otherwise a copy that skips
 // holes and all-zero blocks, so a sparse raw macOS disk stays sparse on
-// APFS and HFS+. On exFAT or FAT, which have no sparse files, the copy is
-// the disk's full size, and the free-space check counts it that way.
+// APFS. On HFS+, exFAT or FAT, which have no sparse files, the copy is the
+// disk's full size, and the free-space check counts it that way.
 
 import Foundation
 
@@ -644,7 +644,10 @@ nonisolated enum MachineFileCopier {
             return 64 * 1_048_576
         }
         switch fileSystemName(destinationFolder) {
-        case "apfs", "hfs": return plan.allocatedBytes
+        // Not HFS+ (2026-11-05, second audit): it has no sparse files, so a
+        // machine's disk takes its full size there, and a backup that passed
+        // this check filled the drive.
+        case "apfs": return plan.allocatedBytes
         default: return plan.logicalBytes
         }
     }
