@@ -2587,7 +2587,10 @@ final class VMManager: ObservableObject {
                 : "nvme,drive=disk0,serial=avmdisk0,bootindex=1"
             args += [
                 "-drive",
-                "if=none,id=disk0,file=\(Self.qemuOptionValue(configuration.diskImagePath)),format=qcow2,cache=writeback,discard=unmap,detect-zeroes=unmap",
+                // Paused on any disk error, not only a full disk (2026-11-05,
+                // second audit): a pulled drive gave the guest errors while
+                // qcow2's own tables were half-written. The disk watch says why.
+                "if=none,id=disk0,file=\(Self.qemuOptionValue(configuration.diskImagePath)),format=qcow2,cache=writeback,discard=unmap,detect-zeroes=unmap,werror=stop,rerror=stop",
                 "-device", disk
             ]
         }
@@ -5142,10 +5145,17 @@ extension VMManager {
                 if self.state == .running,
                    let status = try? await self.sendQMPCommand("query-status", arguments: nil) as? [String: Any],
                    status["status"] as? String == "io-error" {
-                    avmLog("diskWatch: QEMU paused the machine with an I/O error (its disk's volume is full)")
                     self.state = .paused
-                    Announcer.shared.announce(drive.map { "\(machine) has paused: the drive \($0) is full. Next: free some space on \($0), then choose Resume in \(machine)'s row." }
-                        ?? "\(machine) has paused: your Mac's disk is full. Next: free some space on your Mac, then choose Resume in \(machine)'s row.", tone: .failure)
+                    // A drive that's gone, or a disk that's full (2026-11-05,
+                    // second audit: QEMU now pauses on every disk error).
+                    let gone = self.activeConfiguration?.storageIsMissing == true
+                    avmLog("diskWatch: QEMU paused the machine with an I/O error (\(gone ? "its drive is disconnected" : "its disk's volume is full"))")
+                    if gone, let drive {
+                        Announcer.shared.announce("\(machine) has paused: the drive \(drive) was disconnected. Next: connect \(drive) again, then choose Resume in \(machine)'s row. If \(machine) won't start later, choose Check the Disk in its Settings.", tone: .failure)
+                    } else {
+                        Announcer.shared.announce(drive.map { "\(machine) has paused: the drive \($0) is full. Next: free some space on \($0), then choose Resume in \(machine)'s row." }
+                            ?? "\(machine) has paused: your Mac's disk is full. Next: free some space on your Mac, then choose Resume in \(machine)'s row.", tone: .failure)
+                    }
                 }
 
                 // Each minute until it first answers, for the dashboard.

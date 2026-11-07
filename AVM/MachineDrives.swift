@@ -71,7 +71,7 @@ extension VMManager {
         guard configuration.secondDriveGB != nil, let folder = try? configuration.directoryURL(),
               let file = RestorePoints.secondDrive(folder) else { return [] }
         let device = configuration.usesVirtioDisk ? "virtio-blk-pci,drive=disk1,serial=avmdisk1" : "nvme,drive=disk1,serial=avmdisk1"
-        return ["-drive", "if=none,id=disk1,file=\(Self.qemuOptionValue(file.path)),format=qcow2,cache=writeback,discard=unmap,detect-zeroes=unmap",
+        return ["-drive", "if=none,id=disk1,file=\(Self.qemuOptionValue(file.path)),format=qcow2,cache=writeback,discard=unmap,detect-zeroes=unmap,werror=stop,rerror=stop",
                 "-device", device]
     }
 
