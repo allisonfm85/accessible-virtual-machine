@@ -1613,6 +1613,20 @@ struct SettingsView: View {
         cpuCount = saved.cpuCount
         ramSizeGB = saved.ramSizeGB
         diskSizeGB = saved.diskSizeGB
+        // The disk's real size (2026-11-05, second audit): grown but not
+        // recorded (a quit between), it couldn't be grown again and Windows
+        // never got the space.
+        if !isRunning, let dir = try? vmStore.vmDirectoryURL(for: saved) {
+            Task { @MainActor in
+                if let real = try? await RestorePoints.diskSizeGB(vmDirectory: dir), real > saved.diskSizeGB {
+                    var updated = self.saved
+                    updated.diskSizeGB = real
+                    if updated.guestOS == .windows { updated.extendDriveC = true }
+                    vmStore.save(updated)
+                    diskSizeGB = real
+                }
+            }
+        }
         usbMode = saved.effectiveUSBMode
         rememberedDevices = saved.usbRememberedDevices ?? []
         rememberedDevicesAtOpen = rememberedDevices
