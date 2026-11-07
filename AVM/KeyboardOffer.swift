@@ -40,6 +40,14 @@ enum KeyboardOffer {
                 return (id, entry["name"] as? String ?? "Keyboard")
             }
             guard let keyboard = keyboards.first(where: { !declined.contains("\(configuration.id.uuidString)|\($0.id)") }) else { return }
+            // Not with the keyboard in the machine (2026-11-05 audit): the
+            // question came up unheard, and a PIN and Return at Windows'
+            // sign-in answered it. Asked once the keyboard is back on the Mac.
+            while FocusLockManager.shared?.isLocked == true, machine.state == .running {
+                try? await Task.sleep(for: .seconds(2))
+            }
+            guard machine.state == .running, WindowsKeyboard.shared.keyboardID == nil,
+                  VMStore.shared?.configurations.first(where: { $0.id == configuration.id })?.windowsKeyboardID == nil else { return }
             guard NSApp.isActive, NSApp.modalWindow == nil,
                   !NSApp.windows.contains(where: { $0.attachedSheet != nil }) else {
                 AVMLog.write("AVM: KeyboardOffer — \(keyboard.name) could go to \(configuration.name), but AVM isn't in front; asking at a later start.")
@@ -53,10 +61,11 @@ enum KeyboardOffer {
         let alert = NSAlert()
         alert.messageText = "Use \(keyboard.name) for \(configuration.name)?"
         alert.informativeText = "A second keyboard is connected. As \(configuration.name)'s keyboard for Windows, it types only into Windows while \(configuration.name) runs, whichever app is in front, and your Mac's keyboard stays with your Mac and VoiceOver. You can change this in \(configuration.name)'s Settings, under Devices."
-        alert.addButton(withTitle: "Use for Windows")
+        // Not Now first, so Return doesn't hand a keyboard to Windows (2026-11-05 audit).
         alert.addButton(withTitle: "Not Now")
+        alert.addButton(withTitle: "Use for Windows")
         let answer = alert.runModal()
-        guard answer == .alertFirstButtonReturn else {
+        guard answer == .alertSecondButtonReturn else {
             var declined = UserDefaults.standard.stringArray(forKey: declinedKey) ?? []
             declined.append("\(configuration.id.uuidString)|\(keyboard.id)")
             UserDefaults.standard.set(declined, forKey: declinedKey)
