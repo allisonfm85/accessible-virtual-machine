@@ -361,6 +361,11 @@ final class USBHelperClient: NSObject, ObservableObject {
         alert.addButton(withTitle: "Open Login Items")
         alert.addButton(withTitle: "Not Now")
         NSApp.activate(ignoringOtherApps: true)
+        // Said when it can come up unheard (2026-11-05 audit): as a machine
+        // starts, with the keyboard in it and VoiceOver off.
+        if FocusLockManager.shared?.isLocked == true, !NSWorkspace.shared.isVoiceOverEnabled {
+            Announcer.shared.announce("\(alert.messageText). Return chooses Open Login Items; to hear the choices, turn VoiceOver on with Command F5." , tone: .info)
+        }
         if alert.runModal() == .alertFirstButtonReturn {
             log("approval dialog: Open Login Items")
             openLoginItems()

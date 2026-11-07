@@ -69,6 +69,11 @@ enum InputMonitoring {
         alert.addButton(withTitle: "Open Input Monitoring")
         alert.addButton(withTitle: "Not Now")
         NSApp.activate(ignoringOtherApps: true)
+        // Said when it can come up unheard (2026-11-05 audit): as a machine
+        // starts, with the keyboard in it and VoiceOver off.
+        if FocusLockManager.shared?.isLocked == true, !NSWorkspace.shared.isVoiceOverEnabled {
+            Announcer.shared.announce("\(alert.messageText). Return chooses Open Input Monitoring; to hear the choices, turn VoiceOver on with Command F5." , tone: .info)
+        }
         let open = alert.runModal() == .alertFirstButtonReturn
         guard open else {
             notNowCount += 1
