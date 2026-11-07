@@ -136,6 +136,18 @@ final class WindowsAutoDownloader: NSObject, ObservableObject {
         Announcer.shared.announce(message, tone: .failure)
     }
 
+    /// wimlib-imagex info's images: "Index: N" then "Name: …" lines.
+    static func images(in info: String) -> [(index: Int, name: String)] {
+        var result: [(Int, String)] = []
+        var index: Int?
+        for raw in info.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("Index:") { index = Int(line.dropFirst(6).trimmingCharacters(in: .whitespaces)) }
+            else if line.hasPrefix("Name:"), let i = index { result.append((i, line.dropFirst(5).trimmingCharacters(in: .whitespaces))); index = nil }
+        }
+        return result
+    }
+
     private func cleanUp() {
         if let work { try? FileManager.default.removeItem(at: work) }
         work = nil
@@ -285,18 +297,28 @@ final class WindowsAutoDownloader: NSObject, ObservableObject {
             phase = .building(words)
             Announcer.shared.announce(words, tone: .info)
         }
-        try step("Making the Windows installer: unpacking Windows Setup.")
-        try await Self.run(wimlib, ["apply", esd.path, "1", tree.path])
-        try step("Making the Windows installer: its startup image.")
-        try await Self.run(wimlib, ["export", esd.path, "2", sources.appendingPathComponent("boot.wim").path, "--compress=LZX"])
-        try await Self.run(wimlib, ["export", esd.path, "3", sources.appendingPathComponent("boot.wim").path, "--boot"])
-        // The editions: every image after the three of Setup.
+        // The images by name, not by place (2026-11-05, second audit): a
+        // reordered download would have put an edition in as the boot image.
         let info = try await Self.run(wimlib, ["info", esd.path])
-        let count = info.split(separator: "\n").first { $0.hasPrefix("Image Count:") }
-            .flatMap { Int($0.split(separator: ":").last?.trimmingCharacters(in: .whitespaces) ?? "") } ?? 3
-        guard count > 3 else { throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "The download has no editions of Windows in it."]) }
-        for index in 4...count {
-            try step("Making the Windows installer: edition \(index - 3) of \(count - 3). This takes a few minutes.")
+        let images = Self.images(in: info)
+        func image(_ test: (String) -> Bool, _ what: String) throws -> Int {
+            guard let found = images.first(where: { test($0.name.lowercased()) }) else {
+                throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "The download isn't laid out as AVM expects: it has no \(what). Download Windows from Microsoft's page instead."])
+            }
+            return found.index
+        }
+        let setupMedia = try image({ $0.contains("setup media") }, "Windows Setup media image")
+        let pe = try image({ $0.contains("windows pe") }, "Windows PE image")
+        let setup = try image({ $0.contains("windows setup") && !$0.contains("media") }, "Windows Setup image")
+        let editions = images.map(\.index).filter { ![setupMedia, pe, setup].contains($0) }
+        guard !editions.isEmpty else { throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "The download has no editions of Windows in it."]) }
+        try step("Making the Windows installer: unpacking Windows Setup.")
+        try await Self.run(wimlib, ["apply", esd.path, "\(setupMedia)", tree.path])
+        try step("Making the Windows installer: its startup image.")
+        try await Self.run(wimlib, ["export", esd.path, "\(pe)", sources.appendingPathComponent("boot.wim").path, "--compress=LZX"])
+        try await Self.run(wimlib, ["export", esd.path, "\(setup)", sources.appendingPathComponent("boot.wim").path, "--boot"])
+        for (n, index) in editions.enumerated() {
+            try step("Making the Windows installer: edition \(n + 1) of \(editions.count). This takes a few minutes.")
             try await Self.run(wimlib, ["export", esd.path, "\(index)", sources.appendingPathComponent("install.wim").path, "--compress=LZX"])
         }
         try step("Making the Windows installer: the disc image.")
