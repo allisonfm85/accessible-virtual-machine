@@ -213,11 +213,19 @@ final class WindowsAutoDownloader: NSObject, ObservableObject {
         var offers: [Offer] = []
         for case let file as XMLElement in files {
             func value(_ name: String) -> String { file.elements(forName: name).first?.stringValue ?? "" }
+            // Checked before they name files or a server (2026-11-05, second
+            // audit): the file name is a name, the language code letters and
+            // dashes, the download from Microsoft.
+            let code = value("LanguageCode").lowercased()
+            let fileName = (value("FileName") as NSString).lastPathComponent
             guard value("Architecture").uppercased() == "ARM64", value("Edition") == "Professional",
-                  let url = URL(string: value("FilePath")), !value("Sha1").isEmpty else { continue }
-            offers.append(Offer(fileName: value("FileName"), url: url, sha1: value("Sha1").lowercased(),
+                  let url = URL(string: value("FilePath")), url.scheme == "https" || url.scheme == "http",
+                  url.host?.lowercased().hasSuffix(".microsoft.com") == true,
+                  !value("Sha1").isEmpty, !fileName.isEmpty, fileName != ".." , fileName.hasSuffix(".esd"),
+                  code.range(of: "^[a-z]{2,3}(-[a-z0-9]{2,8})*$", options: .regularExpression) != nil else { continue }
+            offers.append(Offer(fileName: fileName, url: url, sha1: value("Sha1").lowercased(),
                                 size: Int64(value("Size")) ?? 0, language: value("Language"),
-                                languageCode: value("LanguageCode").lowercased()))
+                                languageCode: code))
         }
         let base = language.split(separator: "-").first.map(String.init) ?? language
         return offers.first { $0.languageCode == language }
