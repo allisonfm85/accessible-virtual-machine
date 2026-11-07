@@ -4526,7 +4526,10 @@ extension VMManager {
         args["job-id"] = id
         // The answer can wait for the whole save or load (see sendQMPCommand).
         _ = try await sendQMPCommand(command, arguments: args, timeout: TimeInterval(limit.components.seconds))
-        let clock = ContinuousClock()
+        // A clock that stops while the Mac sleeps (2026-11-05, second audit):
+        // SleepCoordinator pauses the guest then, and a continuous clock ran the
+        // deadline out, so a resize or install that worked was called a failure.
+        let clock = SuspendingClock()
         let deadline = clock.now + limit
         while true {
             try await Task.sleep(for: .milliseconds(200))
@@ -4882,7 +4885,10 @@ extension VMManager {
     }
 
     func waitForGuestAgent(limit: Duration) async -> Bool {
-        let clock = ContinuousClock()
+        // A clock that stops while the Mac sleeps (2026-11-05, second audit):
+        // SleepCoordinator pauses the guest then, and a continuous clock ran the
+        // deadline out, so a resize or install that worked was called a failure.
+        let clock = SuspendingClock()
         let deadline = clock.now + limit
         while clock.now < deadline {
             guard state == .running || state == .paused || state == .starting else { return false }
@@ -4936,7 +4942,10 @@ extension VMManager {
         guard let pid = (started as? [String: Any])?["pid"] as? Int else {
             throw AVMError.qmpCommandFailed("the guest didn't start \(program)")
         }
-        let clock = ContinuousClock()
+        // A clock that stops while the Mac sleeps (2026-11-05, second audit):
+        // SleepCoordinator pauses the guest then, and a continuous clock ran the
+        // deadline out, so a resize or install that worked was called a failure.
+        let clock = SuspendingClock()
         let deadline = clock.now + limit
         while clock.now < deadline {
             try await Task.sleep(for: .seconds(1))
