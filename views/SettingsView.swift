@@ -1604,6 +1604,9 @@ struct SettingsView: View {
 
     // MARK: - Load Current Settings
 
+    /// A leftover second drive's size, adopted over the one chosen (above).
+    @State private var secondDriveSizeAdopted: Int?
+
     private func loadCurrentSettings() {
         let saved = self.saved
         vmName = saved.name
@@ -1815,8 +1818,16 @@ struct SettingsView: View {
                 do {
                     let file = try vmStore.vmDirectoryURL(for: configuration).appendingPathComponent(VMConfiguration.secondDriveFileName)
                     // A file left by a save that never finished has nothing on it.
+                    // Its size is the one recorded (2026-11-05, second audit): a
+                    // 20 GB leftover recorded as 50 was never found in Windows.
                     if !FileManager.default.fileExists(atPath: file.path) {
                         try await VMManager().createDiskImage(at: file.path, sizeGB: newSecondDrive)
+                    } else if let existing = try? await RestorePoints.diskSizeGB(of: file), existing > 0, existing != newSecondDrive {
+                        if existing < newSecondDrive {
+                            try await VMManager().growDiskImage(at: file.path, toGB: newSecondDrive)
+                        } else {
+                            secondDriveSizeAdopted = existing
+                        }
                     }
                 } catch {
                     let message = "The second drive could not be made. Nothing else was saved. \(error.localizedDescription)"
@@ -1854,7 +1865,7 @@ struct SettingsView: View {
                 }
             }
             if let newSecondDrive {
-                updated.secondDriveGB = newSecondDrive
+                updated.secondDriveGB = secondDriveSizeAdopted ?? newSecondDrive
                 updated.secondDriveNeedsFormat = true
             }
             updated.shareClipboard = shareClipboard ? nil : false
