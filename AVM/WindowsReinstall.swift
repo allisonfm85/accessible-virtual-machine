@@ -52,7 +52,13 @@ enum WindowsReinstall {
 
     /// Prepares the machine; the next Start installs Windows. The VM must
     /// be stopped (Settings only offers this then).
+    /// Machines whose reinstall is being prepared (2026-11-05, second audit):
+    /// a Start meanwhile opened the old disk as it was swapped.
+    static var preparing: Set<UUID> = []
+
     static func prepare(_ configuration: VMConfiguration, password: String?) async throws {
+        preparing.insert(configuration.id)
+        defer { preparing.remove(configuration.id) }
         let fm = FileManager.default
         guard let iso = configuration.installISOPath, !iso.isEmpty, fm.fileExists(atPath: iso) else {
             throw WindowsReinstallError.installerMissing(configuration.installISOPath ?? "")

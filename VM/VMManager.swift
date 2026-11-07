@@ -1277,6 +1277,10 @@ final class VMManager: ObservableObject {
 
     func startVM(configuration: VMConfiguration) async throws {
         avmLog("startVM: called for \(configuration.name)")
+        // Not while Reinstall Windows swaps its disk (2026-11-05, second audit).
+        if WindowsReinstall.preparing.contains(configuration.id) {
+            throw AVMError.refused("\(configuration.name) is being prepared to reinstall Windows. Next: wait for AVM to say it's ready, then start it.")
+        }
 
         guard case .stopped = state else {
             avmLog("startVM: not stopped, aborting")
