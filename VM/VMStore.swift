@@ -212,6 +212,45 @@ final class VMStore: ObservableObject {
         AVMLog.write("AVM: VMStore — Reclaim moved orphan \(orphan.uuidString) to Trash (\(orphan.sizeBytes) bytes).")
     }
 
+    /// Puts back the newest configurations-unreadable-*.json copy AVM kept
+    /// (2026-11-05, second audit), after asking, and reads it again. Only the
+    /// list is replaced; machines' files aren't touched.
+    func restoreListFromCopy() {
+        guard let url = try? storeURL else { return }
+        let folder = url.deletingLastPathComponent()
+        let copies = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [])
+            .filter { $0.hasPrefix("configurations-unreadable-") && $0.hasSuffix(".json") }.sorted()
+        guard let newest = copies.last else {
+            Announcer.shared.announce("AVM has no kept copy of your machine list to restore.", tone: .info)
+            return
+        }
+        let copy = folder.appendingPathComponent(newest)
+        let readable = Self.readableEntries(in: try? Data(contentsOf: copy))
+        let count = readable?.machines.count ?? 0
+        let alert = NSAlert()
+        alert.messageText = "Restore the machine list from \(newest)?"
+        alert.informativeText = count > 0
+            ? "AVM can read \(count == 1 ? "one machine" : "\(count) machines") in that copy. Your current list, with \(configurations.count == 1 ? "one machine" : "\(configurations.count) machines"), is set aside first. Machines' files aren't touched."
+            : "AVM can't read any machine in that copy, so restoring it would give an empty list. The copy is kept for a report."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Cancel")
+        if count > 0 { alert.addButton(withTitle: "Restore the List") }
+        guard alert.runModal() == .alertSecondButtonReturn, count > 0 else { return }
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        try? FileManager.default.copyItem(at: url, to: folder.appendingPathComponent("configurations-before-restore-\(stamp).json"))
+        do {
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: copy, backupItemName: nil, options: [.usingNewMetadataOnly])
+        } catch {
+            Announcer.shared.announce("The list wasn't restored. Reason: \(error.localizedDescription)", tone: .failure)
+            return
+        }
+        loadFailed = false
+        unreadableEntries = readable?.kept ?? []
+        configurations = loadAll()
+        AVMLog.write("AVM: VMStore — the machine list was restored from \(newest); \(configurations.count) machine(s).")
+        Announcer.shared.announce("The machine list is restored: \(configurations.count == 1 ? "one machine" : "\(configurations.count) machines"). The list you had is kept as configurations-before-restore-\(stamp).json.", tone: .success)
+    }
+
     // MARK: - Init
 
     init() {

@@ -667,6 +667,12 @@ struct AVMApp: App {
                 Button("What's New in AVM") {
                     ReleaseNotes.showRecent()
                 }
+                // The machine list from its kept copy (2026-11-05, second audit):
+                // an unreadable configurations.json was copied aside and the
+                // next save replaced it, with nothing in AVM to bring it back.
+                Button("Restore the Machine List from a Copy…") {
+                    VMStore.shared?.restoreListFromCopy()
+                }
                 // Report a Problem… (2026-10-26, ProblemReporter.swift).
                 Button("Report a Problem…") {
                     ProblemReporter.reportAProblem()
