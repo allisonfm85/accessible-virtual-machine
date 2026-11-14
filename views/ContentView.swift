@@ -560,7 +560,17 @@ private struct DashboardContent: View {
                         }
                         .accessibilityHint("Gracefully shuts down \(guest)")
                         .keyboardShortcut(".", modifiers: .command)
+                    }
 
+                    // Force Stop stays available while the guest is stopping
+                    // (issue #264, 2026-11-14). It used to disappear with Stop,
+                    // yet stopGracefully's two-minute reminder says "use Force
+                    // Stop", and the catch above keeps the session "so Force
+                    // Stop stays available". A guest that ignores the shutdown
+                    // request (seen twice, both times after Windows had sat
+                    // idle at the lock screen) left the user with no way to
+                    // stop it but quitting AVM, which is how #264 began.
+                    if session.vmState == .running || session.vmState == .paused || session.vmState == .stopping {
                         Button("Force Stop") {
                             session.forceStop()
                             activeSession = nil
