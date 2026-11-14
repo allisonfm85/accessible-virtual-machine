@@ -365,8 +365,9 @@ struct AVMApp: App {
 ///   caps, no screen-reader modifier, and nothing connecting the symptom to
 ///   AVM. A blind user would experience their whole machine as broken.
 ///
-/// SCOPE IS DELIBERATELY MINIMAL. This delegate does exactly two things, both
-/// Caps Lock. It does NOT wire up the two orphaned cleanup() methods, even
+/// SCOPE IS DELIBERATELY MINIMAL. This delegate did exactly two things, both
+/// Caps Lock, until issue #264 gave it a second job (RUNNING VMs AT QUIT,
+/// below). It does NOT wire up the two orphaned cleanup() methods, even
 /// though this is now the natural place for them — that is a separate change
 /// with separate risk (presentation options, hotkey teardown, USB device
 /// release), and one variable per run. Those remain a known loose end.
@@ -396,6 +397,22 @@ struct AVMApp: App {
 /// worse than not promoting. Lines that can fire during termination stay on
 /// NSLog; the launch line stays with its partner for symmetry. This is the
 /// same rule that shaped CapsLockRemapper.restore()'s context-split sink.
+///
+/// RUNNING VMs AT QUIT (issue #264, 2026-11-14): the delegate now does a
+/// second job. Quitting used to leave QEMU running with nothing to show or
+/// stop it, because the only teardown was VMManager.deinit, which never runs
+/// at quit.
+///   - applicationShouldTerminate asks, when a VM is running, starting or
+///     shutting down: shut down and quit, force off and quit, or cancel. It
+///     never returns .terminateLater. While that reply is pending, main-actor
+///     Tasks don't run, so a shutdown could never finish (tested; the full
+///     reasoning is in RunningVMGuard.swift). A shutdown cancels the quit,
+///     and AVM quits itself once the VM has stopped.
+///   - applicationWillTerminate, after Caps Lock (which must never be
+///     skipped), stops any QEMU or swtpm this AVM started that is still
+///     running. It is synchronous and logs with NSLog under the rule above.
+///     It can block for about five seconds per process that ignores SIGTERM,
+///     and normally finds nothing.
 final class AVMAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {

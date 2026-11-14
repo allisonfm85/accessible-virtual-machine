@@ -118,11 +118,11 @@ nonisolated enum VMProcessScanner {
     static func requestShutdown(of process: VMProcess) -> Bool {
         for path in process.qmpSocketPaths {
             if sendPowerdown(socketPath: path) {
-                AVMLog.write("VMProcessScanner: system_powerdown delivered to QEMU pid \(process.pid) for \(process.vmID.uuidString) through \(path)")
+                scannerLog("VMProcessScanner: system_powerdown delivered to QEMU pid \(process.pid) for \(process.vmID.uuidString) through \(path)")
                 return true
             }
         }
-        AVMLog.write("VMProcessScanner: could not deliver system_powerdown to QEMU pid \(process.pid) for \(process.vmID.uuidString) (\(process.qmpSocketPaths.count) socket(s) tried)")
+        scannerLog("VMProcessScanner: could not deliver system_powerdown to QEMU pid \(process.pid) for \(process.vmID.uuidString) (\(process.qmpSocketPaths.count) socket(s) tried)")
         return false
     }
 
@@ -135,7 +135,7 @@ nonisolated enum VMProcessScanner {
     /// SIGTERM first because QEMU handles it by closing its disk images
     /// cleanly. To the guest it is still a power cut.
     @discardableResult
-    static func forceStop(_ processes: [VMProcess], grace: TimeInterval = 3, log: (String) -> Void = { AVMLog.write($0) }) -> Bool {
+    static func forceStop(_ processes: [VMProcess], grace: TimeInterval = 3, log: (String) -> Void = VMProcessScanner.scannerLog) -> Bool {
         // QEMU before swtpm: QEMU talks to swtpm until the moment it exits.
         let ordered = processes.filter { $0.kind == .qemu } + processes.filter { $0.kind == .swtpm }
         var allGone = true
@@ -165,6 +165,15 @@ nonisolated enum VMProcessScanner {
             usleep(100_000)
         }
         return true
+    }
+
+    /// The diagnostic log, from any thread. AVMLog is main-actor under this
+    /// project's default isolation, and this code runs off the main
+    /// actor, so each line hops there. Order is kept (main-actor work runs
+    /// in order). Not for applicationWillTerminate, where a hop may never
+    /// run: terminateLeftoverVMProcesses passes NSLog instead.
+    static func scannerLog(_ message: String) {
+        Task { @MainActor in AVMLog.write(message) }
     }
 
     // MARK: - Spoken memory size

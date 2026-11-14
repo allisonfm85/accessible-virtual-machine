@@ -224,6 +224,9 @@ struct ContentView: View {
     /// DashboardContent.startVM). Duplicated here because the menu-driven
     /// start needs access to this view's activeSession @State.
     private func startVM(config: VMConfiguration) {
+        // ISSUE #264: a QEMU for this VM still running from before would be
+        // killed by startVM's reaper without a word. Ask first.
+        if RunningVMGuard.shared.blocksStart(config) { return }
         errorMessage = nil
         let session = VMSession(configuration: config)
         activeSession = session
@@ -668,9 +671,8 @@ private struct DashboardContent: View {
         // while it ran) has no session, so it passed, and its live files
         // went to the Trash. Look at the processes themselves. VMStore
         // checks again at the moment of the move.
-        if VMProcessScanner.isQEMURunning(for: config.id) {
-            AVMLog.write("AVM: Delete of '\(config.name)' — its QEMU is running outside this session; offering to stop it first.")
-            RunningVMGuard.shared.offerToStopBeforeDelete(config)
+        if RunningVMGuard.shared.blocksDelete(config) {
+            AVMLog.write("AVM: Delete of '\(config.name)' — its QEMU is running outside this session; not deleting now.")
             return
         }
 
@@ -731,6 +733,9 @@ private struct DashboardContent: View {
     }
 
     private func startVM(config: VMConfiguration) {
+        // ISSUE #264: a QEMU for this VM still running from before would be
+        // killed by startVM's reaper without a word. Ask first.
+        if RunningVMGuard.shared.blocksStart(config) { return }
         errorMessage = nil
         let session = VMSession(configuration: config)
         activeSession = session
