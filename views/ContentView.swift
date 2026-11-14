@@ -100,6 +100,13 @@ struct ContentView: View {
         // type FocusLockManager found" crashes in nested views.
         .environmentObject(vmStore)
         .environmentObject(focusLock)
+        // ISSUE #264 (2026-11-14): once per launch, look for virtual
+        // machines left running from before and offer to shut them down.
+        // Here rather than in the app delegate because the alerts need the
+        // window and the names need vmStore. RunningVMGuard runs it once.
+        .onAppear {
+            RunningVMGuard.shared.checkForLeftoverVMsAtLaunch(store: vmStore)
+        }
         // Start Virtual Machine from the menu (Cmd-Shift-S). Honest scope:
         // starts the VM only when exactly ONE is configured and nothing is
         // running. Zero or multiple configurations: beep + explanatory status
@@ -653,6 +660,17 @@ private struct DashboardContent: View {
                 "Cannot delete \(config.name) while it is running. Stop the virtual machine first.",
                 tone: .failure
             )
+            return
+        }
+
+        // ISSUE #264 (2026-11-14): the guard above only knows this
+        // session. A QEMU left running from before (AVM quit or crashed
+        // while it ran) has no session, so it passed, and its live files
+        // went to the Trash. Look at the processes themselves. VMStore
+        // checks again at the moment of the move.
+        if VMProcessScanner.isQEMURunning(for: config.id) {
+            AVMLog.write("AVM: Delete of '\(config.name)' — its QEMU is running outside this session; offering to stop it first.")
+            RunningVMGuard.shared.offerToStopBeforeDelete(config)
             return
         }
 

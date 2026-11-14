@@ -159,6 +159,9 @@ final class VMStore: ObservableObject {
             includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey]
         ) else { return [] }
 
+        // VMs whose QEMU is running (issue #264), read once for the scan.
+        let runningVMs = Set(VMProcessScanner.scan().filter { $0.kind == .qemu }.map(\.vmID))
+
         var orphans: [OrphanedVMDirectory] = []
         for entry in entries {
             let values = try? entry.resourceValues(
@@ -171,6 +174,15 @@ final class VMStore: ObservableObject {
             // parse as a UUID is not ours to touch.
             guard let uuid = UUID(uuidString: name) else { continue }
             guard !registered.contains(uuid.uuidString.uppercased()) else { continue }
+            // ISSUE #264 (2026-11-14): a folder whose VM is still running
+            // (a QEMU left behind by an AVM that quit or crashed, its entry
+            // deleted by an older AVM) is in use, not left over. Leaving it
+            // out keeps Reclaim from trashing a live disk. The launch check
+            // offers to stop that VM; after that, Reclaim finds it.
+            guard !runningVMs.contains(uuid) else {
+                AVMLog.write("AVM: VMStore — Reclaim scan skipped \(name): its virtual machine is still running.")
+                continue
+            }
 
             orphans.append(OrphanedVMDirectory(
                 uuidString: name,
@@ -199,6 +211,11 @@ final class VMStore: ObservableObject {
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "This folder now belongs to a virtual machine in your list and was not moved."]
             )
+        }
+
+        if let uuid = UUID(uuidString: orphan.uuidString), VMProcessScanner.isQEMURunning(for: uuid) {
+            AVMLog.write("AVM: VMStore — Reclaim REFUSED for \(orphan.uuidString): its virtual machine is running.")
+            throw Self.stillRunningError("This folder's virtual machine is running, so it was not moved. Next: quit and reopen AVM, and choose to shut it down.")
         }
 
         let url = try vmsContainerURL.appendingPathComponent(orphan.uuidString)
@@ -297,6 +314,15 @@ final class VMStore: ObservableObject {
             return 0
         }
 
+        // ISSUE #264 (2026-11-14): never move a running VM's files. The
+        // dashboard checks first and offers to stop it; this is the check
+        // at the moment of the move, for every caller. Entry kept, same as
+        // any other failure here.
+        if VMProcessScanner.isQEMURunning(for: configuration.id) {
+            AVMLog.write("AVM: VMStore — delete of '\(configuration.name)' REFUSED: its QEMU is running. Entry kept.")
+            throw Self.stillRunningError("\(configuration.name) is still running.")
+        }
+
         let bytes = vmDirectorySizeBytes(for: configuration) ?? 0
 
         do {
@@ -309,5 +335,15 @@ final class VMStore: ObservableObject {
         AVMLog.write("AVM: VMStore — moved VM directory to Trash for '\(configuration.name)' (\(bytes) bytes).")
         delete(configuration)
         return bytes
+    }
+
+    /// The error for a refused move of a running VM's folder. Its text is
+    /// spoken as the reason in the caller's failure announcement.
+    private static func stillRunningError(_ reason: String) -> NSError {
+        NSError(
+            domain: "AVM.VMStore",
+            code: 264,
+            userInfo: [NSLocalizedDescriptionKey: reason]
+        )
     }
 }

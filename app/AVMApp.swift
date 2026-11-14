@@ -405,10 +405,25 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// A running VM is shut down or turned off before AVM quits, or the
+    /// quit is cancelled (issue #264, 2026-11-14). Before this, quitting
+    /// left QEMU running with nothing to show or stop it. The decision and
+    /// the reasons it never returns .terminateLater are in
+    /// RunningVMGuard.swift.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            RunningVMGuard.shared.applicationShouldTerminate()
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         NSLog("AVM: AppDelegate — applicationWillTerminate; restoring Caps Lock if applied.")
         MainActor.assumeIsolated {
             CapsLockRemapper.shared.restoreForTermination()
         }
+        // After Caps Lock, which must never be skipped: this can wait a few
+        // seconds for a QEMU that is slow to exit. Issue #264: the safety
+        // net for any VM process this AVM started that is still running.
+        RunningVMGuard.terminateLeftoverVMProcesses()
     }
 }
