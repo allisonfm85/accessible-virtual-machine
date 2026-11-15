@@ -63,6 +63,18 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
     /// it through guestOS, never directly.
     var guestOSName: String?
 
+    // MARK: - Firmware (Secure Boot and TPM, issues 16 and 17, 2026-11-15)
+
+    /// Which UEFI firmware this VM boots. nil is the original firmware:
+    /// QEMU's plain edk2-aarch64-code.fd, which has no Secure Boot and no
+    /// TPM drivers, so Windows saw Secure Boot as unsupported and the TPM
+    /// as failing to start (code 10). 2 is the Secure Boot firmware
+    /// (edk2-aarch64-secure-code.fd with AVM's avm-secure-vars.fd
+    /// template), which also starts the TPM. Plain Int, optional, for the
+    /// same reason as usbMode. VMManager sets it; read it through
+    /// usesSecureBootFirmware, never directly.
+    var firmwareGeneration: Int?
+
     // MARK: - Defaults
 
     init(
@@ -76,7 +88,8 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         sharedFolderPath: String? = nil,
         usbMode: String? = nil,
         usbRememberedDevices: [RememberedUSBDevice]? = nil,
-        guestOSName: String? = nil
+        guestOSName: String? = nil,
+        firmwareGeneration: Int? = nil
     ) {
         self.id = id
         self.name = name
@@ -89,6 +102,21 @@ struct VMConfiguration: Identifiable, Codable, Hashable {
         self.usbMode = usbMode
         self.usbRememberedDevices = usbRememberedDevices
         self.guestOSName = guestOSName
+        self.firmwareGeneration = firmwareGeneration
+    }
+}
+
+// MARK: - Firmware
+
+extension VMConfiguration {
+    /// The firmware generation with Secure Boot and a started TPM.
+    static let secureBootFirmwareGeneration = 2
+
+    /// true when this VM boots the Secure Boot firmware. Any generation of
+    /// 2 or higher counts, so a later generation still boots Secure Boot
+    /// firmware rather than dropping back to the original.
+    var usesSecureBootFirmware: Bool {
+        (firmwareGeneration ?? 0) >= Self.secureBootFirmwareGeneration
     }
 }
 

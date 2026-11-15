@@ -26,11 +26,18 @@
 //     single-head experiments.
 //   - serialized QMP access    (keypress task + screendump were desyncing the socket)
 //   - NVRAM from edk2-arm-vars.fd padded to 64MB (the code .fd is firmware, not vars)
+//   - FIRMWARE GENERATION 2 (issues 16 and 17, 2026-11-15): Windows VMs boot
+//     edk2-aarch64-secure-code.fd with AVM's avm-secure-vars.fd template —
+//     Secure Boot on, and the TPM 2.0 drivers that start the TPM (the plain
+//     code .fd has neither). Paired with the TPM PPI patches in AVM's QEMU
+//     build (Tools/qemu). See switchToSecureBootFirmwareIfReady.
 //   - machine `virt` (no highmem), cpu `host`  (match UTM)
 //   - UNIQUE HARDWARE IDENTITY per VM (-uuid + -smbios serial): REQUIRED — see
 //     the identity block in buildQEMUArguments for the Autopilot story.
-//   - firmware/ROM (edk2-aarch64-code.fd, edk2-arm-vars.fd, vgabios-ramfb.bin) now
-//     staged from the sysroot by the Run Script, so a CLEAN build no longer wipes them.
+//   - firmware/ROM (edk2-aarch64-code.fd, edk2-aarch64-secure-code.fd,
+//     edk2-arm-vars.fd, vgabios-ramfb.bin) now staged from the sysroot by the
+//     Run Script, so a CLEAN build no longer wipes them. avm-secure-vars.fd is
+//     project-relative (Resources/), staged by the same script.
 //
 // MOUSE MODE INVESTIGATION (issue #4 — mechanism narrowed 2026-08-09 by three
 // controlled QMP readings on the diagnostic socket; DO NOT relitigate):
@@ -413,6 +420,21 @@ final class VMManager: ObservableObject {
     private var activeConfiguration: VMConfiguration?
 
     // MARK: - Binary Discovery
+
+    /// The Mac's chip name, like "Apple M5", read once from sysctl. Windows
+    /// shows it as the processor (issue 17). "Apple Silicon" if unreadable.
+    nonisolated static let hostChipName: String = {
+        var size = 0
+        guard sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0) == 0, size > 1 else {
+            return "Apple Silicon"
+        }
+        var buffer = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("machdep.cpu.brand_string", &buffer, &size, nil, 0) == 0 else {
+            return "Apple Silicon"
+        }
+        let name = String(cString: buffer).trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? "Apple Silicon" : name
+    }()
 
     private func bundledBinaryURL(named name: String) -> URL? {
         guard let resourcePath = Bundle.main.resourcePath else {
@@ -881,6 +903,15 @@ final class VMManager: ObservableObject {
                 state = .error(error.localizedDescription)
                 throw error
             }
+        }
+
+        // FIRMWARE GENERATION 2: after the media work (a fresh media build
+        // removes a stale nvram.fd), before QEMU's arguments are built.
+        var configuration = configuration
+        if configuration.guestOS == .windows && !configuration.usesSecureBootFirmware {
+            configuration = switchToSecureBootFirmwareIfReady(
+                configuration, runtimeDir: runtimeDir, installComplete: installComplete)
+            activeConfiguration = configuration
         }
 
         let socketDir = URL(fileURLWithPath: "/tmp/avm/\(configuration.id.uuidString)")
@@ -1602,19 +1633,36 @@ final class VMManager: ObservableObject {
         args += ["-uuid", vmUUID]
         args += ["-smbios", "type=1,manufacturer=AVM,product=AVM Virtual Machine,serial=\(vmUUID)"]
 
+        // FIRMWARE AND PROCESSOR NAMES (issue 17, decided 2026-11-15). Without
+        // these Windows showed BIOS "EFI Development Kit II / OVMF" version
+        // "0.0.0" and processor "virt-10.0". Honest values: the BIOS version
+        // is the firmware generation, not AVM's version, so Windows doesn't
+        // see a firmware change every release; the processor is the Mac's
+        // own chip.
+        let secureFirmware = configuration.guestOS == .windows && configuration.usesSecureBootFirmware
+        args += ["-smbios", "type=0,vendor=AVM,version=\(secureFirmware ? VMConfiguration.secureBootFirmwareGeneration : 1),uefi=on"]
+        args += ["-smbios", "type=4,manufacturer=Apple,version=\(Self.hostChipName.replacingOccurrences(of: ",", with: ",,"))"]
+
         args += ["-smp", "\(max(1, configuration.cpuCount))"]
         args += ["-m", "\(configuration.ramSizeGB * 1024)M"]
 
-        if let firmware = bundledBinaryURL(named: "edk2-aarch64-code.fd") {
+        // Firmware generation 2 boots the Secure Boot firmware with AVM's
+        // template; everything else keeps the original pair. Note: the
+        // sysroot's edk2-arm-vars.fd is stored qcow2-compressed, so its padded
+        // copy is not a valid variable store and the firmware formats it fresh
+        // on first boot. Harmless, and why avm-secure-vars.fd is stored raw.
+        let firmwareName = secureFirmware ? "edk2-aarch64-secure-code.fd" : "edk2-aarch64-code.fd"
+        let varsName = secureFirmware ? "avm-secure-vars.fd" : "edk2-arm-vars.fd"
+        if let firmware = bundledBinaryURL(named: firmwareName) {
             let nvramPath = runtimeDir.appendingPathComponent("nvram.fd").path
+            avmLog("buildQEMUArguments: firmware \(firmwareName)")
 
-            // Build the writable NVRAM from the PROPER vars template (edk2-arm-vars.fd,
-            // note "arm", shared across arm/aarch64 per the 60-edk2-aarch64.json
-            // firmware descriptor), padded to the 64MB pflash size. The code .fd is
-            // the firmware executable, NOT a variable store.
+            // Build the writable NVRAM from the vars template, padded to the
+            // 64MB pflash size. The code .fd is the firmware executable, NOT a
+            // variable store.
             if !FileManager.default.fileExists(atPath: nvramPath) {
                 let pflashSize = 67108864 // 64 MiB, the aarch64 virt pflash size
-                if let varsTemplate = bundledBinaryURL(named: "edk2-arm-vars.fd"),
+                if let varsTemplate = bundledBinaryURL(named: varsName),
                    let templateData = try? Data(contentsOf: URL(fileURLWithPath: varsTemplate.path)) {
                     var nvramData = templateData
                     if nvramData.count < pflashSize {
@@ -1622,15 +1670,15 @@ final class VMManager: ObservableObject {
                     }
                     do {
                         try nvramData.write(to: URL(fileURLWithPath: nvramPath))
-                        avmLog("buildQEMUArguments: created padded NVRAM (\(nvramData.count) bytes) from edk2-arm-vars.fd")
+                        avmLog("buildQEMUArguments: created padded NVRAM (\(nvramData.count) bytes) from \(varsName)")
                     } catch {
                         avmLog("buildQEMUArguments: FAILED to write NVRAM: \(error)")
                     }
                 } else {
                     let blank = Data(count: pflashSize)
                     try? blank.write(to: URL(fileURLWithPath: nvramPath))
-                    avmLog("buildQEMUArguments: WARNING — edk2-arm-vars.fd not bundled; wrote blank 64MB NVRAM")
-                    appendConsole("AVM: WARNING — edk2-arm-vars.fd missing; using blank NVRAM.\n")
+                    avmLog("buildQEMUArguments: WARNING — \(varsName) not bundled; wrote blank 64MB NVRAM")
+                    appendConsole("AVM: WARNING — \(varsName) missing; using blank NVRAM.\n")
                 }
             }
 
@@ -1639,7 +1687,7 @@ final class VMManager: ObservableObject {
                 "-drive", "if=pflash,format=raw,file=\(nvramPath)"
             ]
         } else {
-            appendConsole("AVM: WARNING — edk2-aarch64-code.fd not found in bundle.\n")
+            appendConsole("AVM: WARNING — \(firmwareName) not found in bundle.\n")
         }
 
         // USB controller + INPUT DEVICES. usb-kbd is REQUIRED: without it the
@@ -1867,6 +1915,81 @@ final class VMManager: ObservableObject {
         args += ["-monitor", "none"]
 
         return args
+    }
+
+    /// FIRMWARE GENERATION 2 (issues 16 and 17, decided 2026-11-15).
+    ///
+    /// Moves a Windows VM from the original firmware to the Secure Boot
+    /// firmware, exactly once. Proven on the validation VM 2026-11-15:
+    /// Confirm-SecureBootUEFI True, Get-Tpm ready, no Event 15 (with the
+    /// TPM PPI patches in AVM's QEMU).
+    ///
+    /// - Install finished: nvram.fd is renamed nvram.fd.pre-secureboot (an
+    ///   existing backup is never overwritten; the stale nvram.fd is removed
+    ///   instead), buildQEMUArguments makes a new one from the template, and
+    ///   AVM says once that the firmware was updated. Windows boots through
+    ///   the firmware's fallback path (\EFI\BOOT\BOOTAA64.EFI), which Setup
+    ///   writes, so the lost boot entry doesn't matter.
+    /// - No nvram.fd yet (a new VM, or a fresh media build): switches
+    ///   silently. Setup runs on the new firmware from its first boot.
+    /// - Mid-install (nvram.fd exists, no install-complete marker): stays on
+    ///   the original firmware, because changing firmware between Setup's
+    ///   restarts could break the install. Switches at the first start after
+    ///   Setup finishes.
+    ///
+    /// Windows only; Ubuntu keeps the original firmware (decided 2026-11-15).
+    /// Nothing changes if either firmware file is missing from the bundle.
+    private func switchToSecureBootFirmwareIfReady(
+        _ configuration: VMConfiguration, runtimeDir: URL, installComplete: Bool
+    ) -> VMConfiguration {
+        guard bundledBinaryURL(named: "edk2-aarch64-secure-code.fd") != nil,
+              bundledBinaryURL(named: "avm-secure-vars.fd") != nil else {
+            avmLog("firmware: Secure Boot firmware or template missing from the bundle — staying on the original firmware")
+            return configuration
+        }
+        let fm = FileManager.default
+        let nvram = runtimeDir.appendingPathComponent("nvram.fd")
+        let hasNVRAM = fm.fileExists(atPath: nvram.path)
+        if hasNVRAM && !installComplete {
+            avmLog("firmware: Windows Setup not finished — staying on the original firmware until it is")
+            return configuration
+        }
+        if hasNVRAM {
+            let backup = runtimeDir.appendingPathComponent("nvram.fd.pre-secureboot")
+            do {
+                if fm.fileExists(atPath: backup.path) {
+                    try fm.removeItem(at: nvram)
+                    avmLog("firmware: backup nvram.fd.pre-secureboot already exists — kept it, removed nvram.fd")
+                } else {
+                    try fm.moveItem(at: nvram, to: backup)
+                    avmLog("firmware: original nvram.fd kept as nvram.fd.pre-secureboot")
+                }
+            } catch {
+                avmLog("firmware: could not set nvram.fd aside (\(error.localizedDescription)) — staying on the original firmware")
+                return configuration
+            }
+        }
+        var updated = configuration
+        updated.firmwareGeneration = VMConfiguration.secureBootFirmwareGeneration
+        // Save into the store's CURRENT copy, so a setting changed while AVM
+        // was running (a remembered USB device, say) is not overwritten.
+        if let store = VMStore.shared,
+           var saved = store.configurations.first(where: { $0.id == configuration.id }) {
+            saved.firmwareGeneration = updated.firmwareGeneration
+            store.save(saved)
+            avmLog("firmware: \(configuration.name) switched to firmware generation \(VMConfiguration.secureBootFirmwareGeneration)")
+        } else {
+            avmLog("firmware: WARNING — could not save firmware generation for \(configuration.name); the switch will repeat next start")
+        }
+        if hasNVRAM {
+            // Once per VM. Documented in the release notes and tester guide
+            // so people know to expect it (Allison, 2026-11-15).
+            Announcer.shared.announce(
+                "AVM updated the firmware for \(configuration.name) to add Secure Boot and a working TPM. You'll only hear this once.",
+                tone: .info
+            )
+        }
+        return updated
     }
 
     private func buildTPMArguments(socketPath: String) -> [String] {

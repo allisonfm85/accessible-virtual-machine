@@ -1,0 +1,346 @@
+diff --git a/hw/acpi/tpm.c b/hw/acpi/tpm.c
+index cdc022753..e70377598 100644
+--- a/hw/acpi/tpm.c
++++ b/hw/acpi/tpm.c
+@@ -20,12 +20,12 @@
+ #include "qapi/error.h"
+ #include "hw/acpi/tpm.h"
+ 
+-void tpm_build_ppi_acpi(TPMIf *tpm, Aml *dev)
++void tpm_build_ppi_acpi(TPMIf *tpm, Aml *dev, hwaddr ppi_base)
+ {
+     Aml *method, *field, *ifctx, *ifctx2, *ifctx3, *func_mask,
+         *not_implemented, *pak, *tpm2, *tpm3, *pprm, *pprq, *zero, *one;
+ 
+-    if (!object_property_get_bool(OBJECT(tpm), "ppi", &error_abort)) {
++    if (!tpm_ppi_enabled(tpm)) {
+         return;
+     }
+ 
+@@ -40,7 +40,7 @@ void tpm_build_ppi_acpi(TPMIf *tpm, Aml *dev)
+      */
+     aml_append(dev,
+                aml_operation_region("TPP2", AML_SYSTEM_MEMORY,
+-                                    aml_int(TPM_PPI_ADDR_BASE + 0x100),
++                                    aml_int(ppi_base + 0x100),
+                                     0x5A));
+     field = aml_field("TPP2", AML_ANY_ACC, AML_NOLOCK, AML_PRESERVE);
+     aml_append(field, aml_named_field("PPIN", 8));
+@@ -56,7 +56,7 @@ void tpm_build_ppi_acpi(TPMIf *tpm, Aml *dev)
+     aml_append(dev,
+                aml_operation_region(
+                    "TPP3", AML_SYSTEM_MEMORY,
+-                   aml_int(TPM_PPI_ADDR_BASE +
++                   aml_int(ppi_base +
+                            0x15a /* movv, docs/specs/tpm.rst */),
+                            0x1));
+     field = aml_field("TPP3", AML_BYTE_ACC, AML_NOLOCK, AML_PRESERVE);
+@@ -78,7 +78,7 @@ void tpm_build_ppi_acpi(TPMIf *tpm, Aml *dev)
+ 
+         aml_append(method,
+             aml_operation_region("TPP1", AML_SYSTEM_MEMORY,
+-                aml_add(aml_int(TPM_PPI_ADDR_BASE), op, NULL), 0x1));
++                aml_add(aml_int(ppi_base), op, NULL), 0x1));
+         field = aml_field("TPP1", AML_BYTE_ACC, AML_NOLOCK, AML_PRESERVE);
+         aml_append(field, aml_named_field("TPPF", 8));
+         aml_append(method, field);
+diff --git a/hw/arm/virt-acpi-build.c b/hw/arm/virt-acpi-build.c
+index 3ac8f8e17..403275001 100644
+--- a/hw/arm/virt-acpi-build.c
++++ b/hw/arm/virt-acpi-build.c
+@@ -191,7 +191,8 @@ static void acpi_dsdt_add_tpm(Aml *scope, VirtMachineState *vms)
+     Aml *dev = aml_device("TPM0");
+     aml_append(dev, aml_name_decl("_HID", aml_string("MSFT0101")));
+     aml_append(dev, aml_name_decl("_STR", aml_string("TPM 2.0 Device")));
+-    aml_append(dev, aml_name_decl("_UID", aml_int(0)));
++    aml_append(dev, aml_name_decl("_UID", aml_int(1)));
++    aml_append(dev, aml_name_decl("_STA", aml_int(0xF)));
+ 
+     Aml *crs = aml_resource_template();
+     aml_append(crs,
+@@ -199,6 +200,12 @@ static void acpi_dsdt_add_tpm(Aml *scope, VirtMachineState *vms)
+                                   (uint32_t)memory_region_size(sbdev_mr),
+                                   AML_READ_WRITE));
+     aml_append(dev, aml_name_decl("_CRS", crs));
++
++    hwaddr ppi_base = platform_bus_get_mmio_addr(pbus, sbdev, 1);
++    if (ppi_base != -1) {
++        ppi_base += pbus_base;
++        tpm_build_ppi_acpi(TPM_IF(sbdev), dev, ppi_base);
++    }
+     aml_append(scope, dev);
+ }
+ #endif
+diff --git a/hw/i386/acpi-build.c b/hw/i386/acpi-build.c
+index 3fffa4a33..0d167175e 100644
+--- a/hw/i386/acpi-build.c
++++ b/hw/i386/acpi-build.c
+@@ -1736,7 +1736,7 @@ build_dsdt(GArray *table_data, BIOSLinker *linker,
+         aml_append(dev, aml_name_decl("_STA", aml_int(0xf)));
+         aml_append(dev, aml_name_decl("_UID", aml_int(1)));
+ 
+-        tpm_build_ppi_acpi(tpm, dev);
++        tpm_build_ppi_acpi(tpm, dev, TPM_PPI_ADDR_BASE);
+ 
+         aml_append(sb_scope, dev);
+     }
+@@ -2731,7 +2731,7 @@ void acpi_setup(void)
+                     tables.tcpalog->data, acpi_data_len(tables.tcpalog));
+ 
+     tpm = tpm_find();
+-    if (tpm && object_property_get_bool(OBJECT(tpm), "ppi", &error_abort)) {
++    if (tpm_ppi_enabled(tpm)) {
+         tpm_config = (FwCfgTPMConfig) {
+             .tpmppi_address = cpu_to_le32(TPM_PPI_ADDR_BASE),
+             .tpm_version = tpm_get_version(tpm),
+diff --git a/hw/tpm/tpm_tis.h b/hw/tpm/tpm_tis.h
+index 184632ff6..6ac980405 100644
+--- a/hw/tpm/tpm_tis.h
++++ b/hw/tpm/tpm_tis.h
+@@ -75,15 +75,15 @@ typedef struct TPMState {
+ 
+     size_t be_buffer_size;
+ 
+-    bool ppi_enabled;
+     TPMPPI ppi;
++    bool ppi_enabled;
+ } TPMState;
+ 
+ extern const VMStateDescription vmstate_locty;
+ extern const MemoryRegionOps tpm_tis_memory_ops;
+ 
+ int tpm_tis_pre_save(TPMState *s);
+-void tpm_tis_reset(TPMState *s);
++void tpm_tis_reset(TPMState *s, bool ppi_enabled);
+ enum TPMVersion tpm_tis_get_tpm_version(TPMState *s);
+ void tpm_tis_request_completed(TPMState *s, int ret);
+ uint32_t tpm_tis_read_data(TPMState *s, hwaddr addr, unsigned size);
+diff --git a/hw/tpm/tpm_tis_common.c b/hw/tpm/tpm_tis_common.c
+index cdd0df113..bbed8726a 100644
+--- a/hw/tpm/tpm_tis_common.c
++++ b/hw/tpm/tpm_tis_common.c
+@@ -813,7 +813,7 @@ enum TPMVersion tpm_tis_get_tpm_version(TPMState *s)
+  * This function is called when the machine starts, resets or due to
+  * S3 resume.
+  */
+-void tpm_tis_reset(TPMState *s)
++void tpm_tis_reset(TPMState *s, bool ppi_enabled)
+ {
+     int c;
+ 
+@@ -821,7 +821,7 @@ void tpm_tis_reset(TPMState *s)
+     s->be_buffer_size = MIN(tpm_backend_get_buffer_size(s->be_driver),
+                             TPM_TIS_BUFFER_MAX);
+ 
+-    if (s->ppi_enabled) {
++    if (ppi_enabled) {
+         tpm_ppi_reset(&s->ppi);
+     }
+     tpm_backend_reset(s->be_driver);
+diff --git a/hw/tpm/tpm_tis_i2c.c b/hw/tpm/tpm_tis_i2c.c
+index 504328e3b..875944c5d 100644
+--- a/hw/tpm/tpm_tis_i2c.c
++++ b/hw/tpm/tpm_tis_i2c.c
+@@ -527,7 +527,7 @@ static void tpm_tis_i2c_reset(DeviceState *dev)
+     i2cst->csum_enable = 0;
+     i2cst->loc_sel = 0x00;
+ 
+-    return tpm_tis_reset(s);
++    return tpm_tis_reset(s, false);
+ }
+ 
+ static void tpm_tis_i2c_class_init(ObjectClass *klass, void *data)
+diff --git a/hw/tpm/tpm_tis_isa.c b/hw/tpm/tpm_tis_isa.c
+index 876cb02cb..989997b14 100644
+--- a/hw/tpm/tpm_tis_isa.c
++++ b/hw/tpm/tpm_tis_isa.c
+@@ -88,13 +88,12 @@ static void tpm_tis_isa_reset(DeviceState *dev)
+     TPMStateISA *isadev = TPM_TIS_ISA(dev);
+     TPMState *s = &isadev->state;
+ 
+-    return tpm_tis_reset(s);
++    return tpm_tis_reset(s, true);
+ }
+ 
+ static const Property tpm_tis_isa_properties[] = {
+     DEFINE_PROP_UINT32("irq", TPMStateISA, state.irq_num, TPM_TIS_IRQ),
+     DEFINE_PROP_TPMBE("tpmdev", TPMStateISA, state.be_driver),
+-    DEFINE_PROP_BOOL("ppi", TPMStateISA, state.ppi_enabled, true),
+ };
+ 
+ static void tpm_tis_isa_initfn(Object *obj)
+@@ -132,10 +131,8 @@ static void tpm_tis_isa_realizefn(DeviceState *dev, Error **errp)
+     memory_region_add_subregion(isa_address_space(ISA_DEVICE(dev)),
+                                 TPM_TIS_ADDR_BASE, &s->mmio);
+ 
+-    if (s->ppi_enabled) {
+-        tpm_ppi_init(&s->ppi, isa_address_space(ISA_DEVICE(dev)),
+-                     TPM_PPI_ADDR_BASE, OBJECT(dev));
+-    }
++    tpm_ppi_init(&s->ppi, isa_address_space(ISA_DEVICE(dev)),
++                 TPM_PPI_ADDR_BASE, OBJECT(dev));
+ }
+ 
+ static void build_tpm_tis_isa_aml(AcpiDevAmlIf *adev, Aml *scope)
+@@ -162,7 +159,7 @@ static void build_tpm_tis_isa_aml(AcpiDevAmlIf *adev, Aml *scope)
+      */
+     /* aml_append(crs, aml_irq_no_flags(isadev->state.irq_num)); */
+     aml_append(dev, aml_name_decl("_CRS", crs));
+-    tpm_build_ppi_acpi(ti, dev);
++    tpm_build_ppi_acpi(ti, dev, TPM_PPI_ADDR_BASE);
+     aml_append(scope, dev);
+ }
+ 
+@@ -175,6 +172,7 @@ static void tpm_tis_isa_class_init(ObjectClass *klass, void *data)
+     device_class_set_props(dc, tpm_tis_isa_properties);
+     dc->vmsd  = &vmstate_tpm_tis_isa;
+     tc->model = TPM_MODEL_TPM_TIS;
++    tc->ppi_enabled = true;
+     dc->realize = tpm_tis_isa_realizefn;
+     device_class_set_legacy_reset(dc, tpm_tis_isa_reset);
+     tc->request_completed = tpm_tis_isa_request_completed;
+diff --git a/hw/tpm/tpm_tis_sysbus.c b/hw/tpm/tpm_tis_sysbus.c
+index 4f187690a..8ea667a3c 100644
+--- a/hw/tpm/tpm_tis_sysbus.c
++++ b/hw/tpm/tpm_tis_sysbus.c
+@@ -30,6 +30,7 @@
+ #include "hw/sysbus.h"
+ #include "tpm_tis.h"
+ #include "qom/object.h"
++#include "qemu/memalign.h"
+ 
+ struct TPMStateSysBus {
+     /*< private >*/
+@@ -87,12 +88,13 @@ static void tpm_tis_sysbus_reset(DeviceState *dev)
+     TPMStateSysBus *sbdev = TPM_TIS_SYSBUS(dev);
+     TPMState *s = &sbdev->state;
+ 
+-    return tpm_tis_reset(s);
++    return tpm_tis_reset(s, false);
+ }
+ 
+ static const Property tpm_tis_sysbus_properties[] = {
+     DEFINE_PROP_UINT32("irq", TPMStateSysBus, state.irq_num, TPM_TIS_IRQ),
+     DEFINE_PROP_TPMBE("tpmdev", TPMStateSysBus, state.be_driver),
++    DEFINE_PROP_BOOL("ppi", TPMStateSysBus, state.ppi_enabled, true),
+ };
+ 
+ static void tpm_tis_sysbus_initfn(Object *obj)
+@@ -100,11 +102,6 @@ static void tpm_tis_sysbus_initfn(Object *obj)
+     TPMStateSysBus *sbdev = TPM_TIS_SYSBUS(obj);
+     TPMState *s = &sbdev->state;
+ 
+-    memory_region_init_io(&s->mmio, obj, &tpm_tis_memory_ops,
+-                          s, "tpm-tis-mmio",
+-                          TPM_TIS_NUM_LOCALITIES << TPM_TIS_LOCALITY_SHIFT);
+-
+-    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
+     sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
+ }
+ 
+@@ -112,6 +109,7 @@ static void tpm_tis_sysbus_realizefn(DeviceState *dev, Error **errp)
+ {
+     TPMStateSysBus *sbdev = TPM_TIS_SYSBUS(dev);
+     TPMState *s = &sbdev->state;
++    const size_t host_page_size = qemu_real_host_page_size();
+ 
+     if (!tpm_find()) {
+         error_setg(errp, "at most one TPM device is permitted");
+@@ -122,6 +120,20 @@ static void tpm_tis_sysbus_realizefn(DeviceState *dev, Error **errp)
+         error_setg(errp, "'tpmdev' property is required");
+         return;
+     }
++
++    memory_region_init_io(&s->mmio, OBJECT(dev), &tpm_tis_memory_ops,
++                          s, "tpm-tis-mmio",
++                          TPM_TIS_NUM_LOCALITIES << TPM_TIS_LOCALITY_SHIFT);
++    sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->mmio);
++
++    if (s->ppi_enabled) {
++        s->ppi.buf = qemu_memalign(host_page_size,
++                                   ROUND_UP(TPM_PPI_ADDR_SIZE, host_page_size));
++        memory_region_init_ram_device_ptr(&s->ppi.ram, OBJECT(dev), "tpm-ppi",
++                                          TPM_PPI_ADDR_SIZE, s->ppi.buf);
++        sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->ppi.ram);
++        vmstate_register_ram(&s->ppi.ram, dev);
++    }
+ }
+ 
+ static void tpm_tis_sysbus_class_init(ObjectClass *klass, void *data)
+@@ -132,6 +144,7 @@ static void tpm_tis_sysbus_class_init(ObjectClass *klass, void *data)
+     device_class_set_props(dc, tpm_tis_sysbus_properties);
+     dc->vmsd  = &vmstate_tpm_tis_sysbus;
+     tc->model = TPM_MODEL_TPM_TIS;
++    tc->ppi_enabled = true;
+     dc->realize = tpm_tis_sysbus_realizefn;
+     device_class_set_legacy_reset(dc, tpm_tis_sysbus_reset);
+     tc->request_completed = tpm_tis_sysbus_request_completed;
+@@ -139,11 +152,20 @@ static void tpm_tis_sysbus_class_init(ObjectClass *klass, void *data)
+     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
+ }
+ 
++static void tpm_tis_sysbus_finalize(Object *obj)
++{
++    TPMStateSysBus *sbdev = TPM_TIS_SYSBUS(obj);
++    TPMState *s = &sbdev->state;
++
++    qemu_vfree(s->ppi.buf);
++}
++
+ static const TypeInfo tpm_tis_sysbus_info = {
+     .name = TYPE_TPM_TIS_SYSBUS,
+     .parent = TYPE_DYNAMIC_SYS_BUS_DEVICE,
+     .instance_size = sizeof(TPMStateSysBus),
+     .instance_init = tpm_tis_sysbus_initfn,
++    .instance_finalize = tpm_tis_sysbus_finalize,
+     .class_init  = tpm_tis_sysbus_class_init,
+     .interfaces = (InterfaceInfo[]) {
+         { TYPE_TPM_IF },
+diff --git a/include/hw/acpi/tpm.h b/include/hw/acpi/tpm.h
+index 9d0fe6f2f..798f77592 100644
+--- a/include/hw/acpi/tpm.h
++++ b/include/hw/acpi/tpm.h
+@@ -20,6 +20,7 @@
+ #include "hw/registerfields.h"
+ #include "hw/acpi/aml-build.h"
+ #include "system/tpm.h"
++#include "exec/hwaddr.h"
+ 
+ #ifdef CONFIG_TPM
+ 
+@@ -250,7 +251,7 @@ REG32(CRB_DATA_BUFFER, 0x80)
+  */
+ #define TPM_I2C_INT_ENABLE_MASK   0x0
+ 
+-void tpm_build_ppi_acpi(TPMIf *tpm, Aml *dev);
++void tpm_build_ppi_acpi(TPMIf *tpm, Aml *dev, hwaddr ppi_base);
+ 
+ #endif /* CONFIG_TPM */
+ 
+diff --git a/include/system/tpm.h b/include/system/tpm.h
+index 1ee568b3b..874068d19 100644
+--- a/include/system/tpm.h
++++ b/include/system/tpm.h
+@@ -42,6 +42,7 @@ struct TPMIfClass {
+     enum TpmModel model;
+     void (*request_completed)(TPMIf *obj, int ret);
+     enum TPMVersion (*get_version)(TPMIf *obj);
++    bool ppi_enabled;
+ };
+ 
+ #define TYPE_TPM_TIS_ISA            "tpm-tis"
+@@ -78,6 +79,14 @@ static inline TPMVersion tpm_get_version(TPMIf *ti)
+     return TPM_IF_GET_CLASS(ti)->get_version(ti);
+ }
+ 
++static inline bool tpm_ppi_enabled(TPMIf *ti)
++{
++    if (!ti) {
++        return false;
++    }
++    return TPM_IF_GET_CLASS(ti)->ppi_enabled;
++}
++
+ #else /* CONFIG_TPM */
+ 
+ #define tpm_init()  (0)
