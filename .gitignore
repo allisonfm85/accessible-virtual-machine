@@ -7,6 +7,9 @@ DerivedData/
 # Binary blobs staged from the UTM sysroot (see README for provenance)
 Frameworks/
 *.fd
+# ...except AVM's own Secure Boot settings template, which is not from the
+# sysroot (firmware generation 2, issues 16 and 17; see Tools/qemu/README.md)
+!Resources/avm-secure-vars.fd
 *.rom
 # macOS noise
 .DS_Store

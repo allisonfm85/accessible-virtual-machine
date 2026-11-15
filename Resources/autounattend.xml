@@ -19,28 +19,22 @@
         </ProductKey>
       </UserData>
       <RunSynchronous>
+        <!-- No TPM or Secure Boot bypass (removed 2026-11-15, issues 16 and
+             17): new Windows VMs boot firmware generation 2, with Secure Boot
+             on and a working TPM, so Setup's own checks pass. The CPU bypass
+             stays: Windows doesn't list Apple chips as supported processors. -->
         <RunSynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <Description>Bypass TPM check</Description>
-          <Path>reg add HKLM\SYSTEM\Setup\LabConfig /v BypassTPMCheck /t REG_DWORD /d 1 /f</Path>
-        </RunSynchronousCommand>
-        <RunSynchronousCommand wcm:action="add">
-          <Order>2</Order>
-          <Description>Bypass Secure Boot check</Description>
-          <Path>reg add HKLM\SYSTEM\Setup\LabConfig /v BypassSecureBootCheck /t REG_DWORD /d 1 /f</Path>
-        </RunSynchronousCommand>
-        <RunSynchronousCommand wcm:action="add">
-          <Order>3</Order>
           <Description>Bypass RAM check</Description>
           <Path>reg add HKLM\SYSTEM\Setup\LabConfig /v BypassRAMCheck /t REG_DWORD /d 1 /f</Path>
         </RunSynchronousCommand>
         <RunSynchronousCommand wcm:action="add">
-          <Order>4</Order>
+          <Order>2</Order>
           <Description>Bypass CPU check</Description>
           <Path>reg add HKLM\SYSTEM\Setup\LabConfig /v BypassCPUCheck /t REG_DWORD /d 1 /f</Path>
         </RunSynchronousCommand>
         <RunSynchronousCommand wcm:action="add">
-          <Order>5</Order>
+          <Order>3</Order>
           <Description>Bypass Storage check</Description>
           <Path>reg add HKLM\SYSTEM\Setup\LabConfig /v BypassStorageCheck /t REG_DWORD /d 1 /f</Path>
         </RunSynchronousCommand>
@@ -147,6 +141,17 @@
           <Order>3</Order>
           <Description>AVM: install SPICE vdagent from UNATTEND volume</Description>
           <Path>cmd /c for %d in (C D E F G H I J K L) do @if exist %d:\VDAGENT.MSI msiexec /i %d:\VDAGENT.MSI /qn /norestart /L*v %d:\VDAGENT.LOG</Path>
+        </RunSynchronousCommand>
+        <!-- AVM: NO AUTOMATIC DEVICE ENCRYPTION (decided 2026-11-15). With a
+             working TPM, Windows can encrypt the drive by itself after a
+             Microsoft account sign-in. A later firmware change would then
+             stop at a BitLocker recovery screen before Windows loads, with
+             no speech. This blocks only the automatic kind; people can still
+             turn BitLocker on knowingly. Microsoft-documented value. -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>4</Order>
+          <Description>AVM: prevent automatic device encryption</Description>
+          <Path>reg add HKLM\SYSTEM\CurrentControlSet\Control\BitLocker /v PreventDeviceEncryption /t REG_DWORD /d 1 /f</Path>
         </RunSynchronousCommand>
       </RunSynchronous>
     </component>
