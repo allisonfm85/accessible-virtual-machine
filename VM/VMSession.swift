@@ -143,8 +143,15 @@ final class VMSession: ObservableObject {
             }
             if !reminded, Date().timeIntervalSince(started) >= reminderAfter {
                 reminded = true
-                AVMLog.write("VMSession: stopGracefully: still shutting down after \(Int(reminderAfter)) seconds; reminded the user, still waiting")
-                Announcer.shared.announce("\(configuration.guestOS.displayName) is still shutting down. You can keep waiting, or use Force Stop.", tone: .info)
+                // Issue #264: if AVM is waiting to quit for this shutdown,
+                // RunningVMGuard gives the reminder, with how to quit now.
+                // Two reminders back to back would talk over each other.
+                if RunningVMGuard.shared.isWaitingToQuit {
+                    AVMLog.write("VMSession: stopGracefully: still shutting down after \(Int(reminderAfter)) seconds; AVM is waiting to quit, so its reminder is the one spoken")
+                } else {
+                    AVMLog.write("VMSession: stopGracefully: still shutting down after \(Int(reminderAfter)) seconds; reminded the user, still waiting")
+                    Announcer.shared.announce("\(configuration.guestOS.displayName) is still shutting down. You can keep waiting, or use Force Stop.", tone: .info)
+                }
             }
             try? await Task.sleep(for: .milliseconds(500))
         }

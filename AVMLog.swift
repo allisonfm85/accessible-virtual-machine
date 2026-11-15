@@ -189,6 +189,14 @@ final class AVMLog: @unchecked Sendable {
         try? NSRegularExpression(pattern: "/Users/[^/\\s\"'\\\\]+", options: [])
     }()
 
+    /// Waits until every line written so far is on disk. For a decision
+    /// made just before AVM quits (RunningVMGuard), whose line would
+    /// otherwise still be queued when the process exits. Not for use inside
+    /// applicationWillTerminate, which keeps to NSLog (see AVMAppDelegate).
+    static func flush() {
+        shared.queue.sync {}
+    }
+
     // MARK: - Internals (all on `queue`)
 
     private func enqueue(_ message: String, category: String?) {

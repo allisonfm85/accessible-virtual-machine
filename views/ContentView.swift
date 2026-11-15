@@ -100,6 +100,13 @@ struct ContentView: View {
         // type FocusLockManager found" crashes in nested views.
         .environmentObject(vmStore)
         .environmentObject(focusLock)
+        // ISSUE #264 (2026-11-14): once per launch, look for virtual
+        // machines left running from before and offer to shut them down.
+        // Here rather than in the app delegate because the alerts need the
+        // window and the names need vmStore. RunningVMGuard runs it once.
+        .onAppear {
+            RunningVMGuard.shared.checkForLeftoverVMsAtLaunch(store: vmStore)
+        }
         // Start Virtual Machine from the menu (Cmd-Shift-S). Honest scope:
         // starts the VM only when exactly ONE is configured and nothing is
         // running. Zero or multiple configurations: beep + explanatory status
@@ -217,6 +224,9 @@ struct ContentView: View {
     /// DashboardContent.startVM). Duplicated here because the menu-driven
     /// start needs access to this view's activeSession @State.
     private func startVM(config: VMConfiguration) {
+        // ISSUE #264: a QEMU for this VM still running from before would be
+        // killed by startVM's reaper without a word. Ask first.
+        if RunningVMGuard.shared.blocksStart(config) { return }
         errorMessage = nil
         let session = VMSession(configuration: config)
         activeSession = session
@@ -550,7 +560,17 @@ private struct DashboardContent: View {
                         }
                         .accessibilityHint("Gracefully shuts down \(guest)")
                         .keyboardShortcut(".", modifiers: .command)
+                    }
 
+                    // Force Stop stays available while the guest is stopping
+                    // (issue #264, 2026-11-14). It used to disappear with Stop,
+                    // yet stopGracefully's two-minute reminder says "use Force
+                    // Stop", and the catch above keeps the session "so Force
+                    // Stop stays available". A guest that ignores the shutdown
+                    // request (seen twice, both times after Windows had sat
+                    // idle at the lock screen) left the user with no way to
+                    // stop it but quitting AVM, which is how #264 began.
+                    if session.vmState == .running || session.vmState == .paused || session.vmState == .stopping {
                         Button("Force Stop") {
                             session.forceStop()
                             activeSession = nil
@@ -656,6 +676,16 @@ private struct DashboardContent: View {
             return
         }
 
+        // ISSUE #264 (2026-11-14): the guard above only knows this
+        // session. A QEMU left running from before (AVM quit or crashed
+        // while it ran) has no session, so it passed, and its live files
+        // went to the Trash. Look at the processes themselves. VMStore
+        // checks again at the moment of the move.
+        if RunningVMGuard.shared.blocksDelete(config) {
+            AVMLog.write("AVM: Delete of '\(config.name)' — its QEMU is running outside this session; not deleting now.")
+            return
+        }
+
         let sizeBytes = vmStore.vmDirectorySizeBytes(for: config)
 
         let alert = NSAlert()
@@ -713,6 +743,9 @@ private struct DashboardContent: View {
     }
 
     private func startVM(config: VMConfiguration) {
+        // ISSUE #264: a QEMU for this VM still running from before would be
+        // killed by startVM's reaper without a word. Ask first.
+        if RunningVMGuard.shared.blocksStart(config) { return }
         errorMessage = nil
         let session = VMSession(configuration: config)
         activeSession = session
