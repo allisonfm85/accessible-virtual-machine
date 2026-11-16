@@ -174,7 +174,7 @@ Set them once before your first install.
 4. **Two keyboard access shortcuts: OFF.** In System Settings, go to
    Keyboard, then Keyboard Shortcuts. In the sidebar table, choose
    Keyboard Shortcuts again. Turn off "Turn keyboard access on or off."
-   Then turn off "Move access to status menus."
+   Then turn off "Move focus to status menus."
 
    Here's why. With the first one on, Control-F1 turns your Mac's
    Keyboard navigation setting on or off. You won't hear that it
