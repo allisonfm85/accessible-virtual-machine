@@ -171,9 +171,10 @@ Set them once before your first install.
 3. **The Show Desktop shortcut: OFF.** In the same Keyboard Shortcuts
    window, under Mission Control, turn off "Show Desktop." Otherwise the
    Mac takes F11, which your Windows screen reader needs.
-4. **Two keyboard focus shortcuts: OFF.** In the same Keyboard Shortcuts
-   window, choose Keyboard in the list. Turn off "Turn keyboard access on
-   or off." Then turn off "Move focus to status menus."
+4. **Two keyboard access shortcuts: OFF.** In System Settings, go to
+   Keyboard, then Keyboard Shortcuts. In the sidebar table, choose
+   Keyboard Shortcuts again. Turn off "Turn keyboard access on or off."
+   Then turn off "Move access to status menus."
 
    Here's why. With the first one on, Control-F1 turns your Mac's
    Keyboard navigation setting on or off. You won't hear that it
