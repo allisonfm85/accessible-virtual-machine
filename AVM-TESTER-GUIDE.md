@@ -172,12 +172,16 @@ Set them once before your first install.
    window, under Mission Control, turn off "Show Desktop." Otherwise the
    Mac takes F11, which your Windows screen reader needs.
 4. **Two keyboard focus shortcuts: OFF.** In the same Keyboard Shortcuts
-   window, choose Keyboard, and turn off "Turn keyboard access on or off"
-   and "Move focus to status menus." Otherwise Control-F1 quietly changes
-   your Mac's Keyboard navigation setting, and Control-F8 moves your Mac's
-   focus to the menu bar, so your keys stop reaching Windows until you
-   press Escape. In Windows, Control-F1 hides or shows the ribbon in
-   Office.
+   window, choose Keyboard in the list. Turn off "Turn keyboard access on
+   or off." Then turn off "Move focus to status menus."
+
+   Here's why. With the first one on, Control-F1 turns your Mac's
+   Keyboard navigation setting on or off. You won't hear that it
+   happened. In Windows, Control-F1 hides or shows the ribbon in Office.
+
+   With the second one on, Control-F8 moves your Mac's focus to the menu
+   bar. Your keys then stop reaching Windows. Press Escape to get them
+   back.
 
 **Here's the general rule, and it's worth remembering past these four:**
 if Windows never reacts to a key, no matter how many times you press it,
