@@ -82,7 +82,27 @@ ecosystem on Windows. It holds a protected place in this list: it
 begins once the auto-updater ships, and no other item — however
 urgent it seems — moves its start.
 
-## 7. GPU acceleration in the guest
+## 7. Copy and paste between Windows and the Mac
+
+Today AVM doesn't share the clipboard. Text copied in Windows never
+reaches the Mac, and text copied on the Mac never reaches Windows.
+That matters more for blind users than for most people. Copying an
+error message or a command is often the easiest way to move text,
+and retyping it by ear is slow and easy to get wrong. For now, a
+shared file in a cloud folder works as a stopgap.
+
+The pieces are already there. Every VM AVM installs gets the SPICE
+agent, which is what carries clipboard text, and the library AVM uses
+to talk to the VM supports it. AVM only needs to connect it to the
+Mac clipboard.
+
+One decision comes first, and it's about privacy. Sharing both ways
+means Windows can read whatever is on the Mac clipboard, including
+passwords copied from a password manager. The choices are both ways,
+Windows to the Mac only, or a setting for each VM. Whatever the
+answer, AVM will say clearly what's shared.
+
+## 8. GPU acceleration in the guest
 
 Reported by a tester (issue #7): games and other 3D applications in
 the guest fall back to Windows' built-in software renderer, which
@@ -93,7 +113,7 @@ guest is substantial work with genuine unknowns, so no version or
 date is promised — but its place in the order is settled: it begins
 after USB passthrough ships.
 
-## 8. Windows Insider program enrollment — rescoped: Secure Boot
+## 9. Windows Insider program enrollment — rescoped: Secure Boot
 
 The scoping pass produced a definitive answer, and it changed what
 this item is. Enrollment itself works — the VM's TPM satisfies the
@@ -108,7 +128,7 @@ VM capable; whether to enroll a VM in preview builds remains each
 tester's own choice, and the tester guide will state the channel
 tradeoffs plainly.
 
-## 9. ISO download assistant
+## 10. ISO download assistant
 
 A future version of AVM may fetch and verify the Windows ISO
 directly, so the manual download step disappears. This is larger
@@ -120,7 +140,7 @@ Microsoft's download page (thanks to a contributed rewrite) covers
 the need well for now, so this stays deliberately behind the items
 above it.
 
-## 10. Additional guest operating systems
+## 11. Additional guest operating systems
 
 Requested by a tester: support for guests beyond Windows 11 ARM64 —
 other versions and editions of Windows, Linux distributions, and
