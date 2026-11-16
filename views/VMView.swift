@@ -1023,7 +1023,17 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
             // window — restore immediately; the lock's own resign handling
             // (FocusLockManager's debounced announcement) is unchanged.
             self.restorePointer(reason: "window resigned key")
+            self.flushHeldKeysOnFocusLoss(reason: "window resigned key")
         })
+        // HELD KEYS ON FOCUS LOSS (issue #268, 2026-11-15): while locked, a
+        // modifier's press reaches AVM through flagsChanged, but if something
+        // else takes the keyboard before its release (Ctrl+F8 moving focus
+        // to the menu bar, measured by kellylford), the release never comes
+        // and Windows keeps Control or Shift held until Return to Mac. So the
+        // window resigning key (above) runs the same flush the unlock runs,
+        // without unlocking. Tested: Ctrl+F8 resigns key, the flush ran, and
+        // Control did not stick. App-deactivation and menu-tracking hooks were
+        // tried alongside it and never fired, so they were removed.
         keyStatusObservers.append(center.addObserver(
             forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
         ) { [weak self] note in
@@ -1211,6 +1221,16 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
             }
             inputToFlush.releaseKeys()
         }
+    }
+
+    /// HELD KEYS ON FOCUS LOSS (issue #268): something else took the keyboard
+    /// while it was in Windows. Release everything Windows thinks is held,
+    /// exactly as the unlock does, without unlocking. Only while locked:
+    /// outside the lock nothing is forwarded, so nothing can be held.
+    private func flushHeldKeysOnFocusLoss(reason: String) {
+        guard isLocked else { return }
+        AVMLog.write("VMView: keyboard left Windows while locked (\(reason)); releasing held keys", category: "Focus")
+        flushGuestKeysOnSpiceContext(reason: reason)
     }
 
     /// Force-release every non-modifier key we believe is still pressed in the
