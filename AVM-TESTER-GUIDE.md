@@ -520,7 +520,7 @@ Announcements you may hear, and what they mean:
   away. You will usually *not* hear this one, because by then VoiceOver is
   normally back on, and this cue stays quiet while VoiceOver is running.
 - **"AVM updated the firmware for" your machine's name, "to add Secure
-  Boot and a working TPM. You'll only hear this once."** This plays once
+  Boot and a working TPM. You'll only hear this once."** This speaks once
   for each Windows machine installed before AVM 0.1.4, the first time
   you start it. It's normal. See section 14.
 - **A Basso alarm with recovery guidance** means AVM's watchdog believes
