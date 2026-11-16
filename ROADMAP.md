@@ -1,88 +1,19 @@
 # AVM Roadmap
 
-This is the working roadmap for AVM (Accessible Virtual Machine).
-This is a living document — order and content will change as tester
-feedback comes in.
+This is the working roadmap for AVM (Accessible Virtual Machine). It's a
+living document. The order and content will change as tester feedback
+comes in.
 
-**How this list is ordered:** quickest first. Items that can be
-implemented and shipped soonest come before larger ones, because
-frequent releases keep the project moving and get improvements into
-testers' hands sooner. Two caveats. First, effort estimates are
-provisional until an item gets a proper scoping pass, so items may
-move as we learn more. Second, USB passthrough holds a protected
-place in the order: it is the feature blind musicians are waiting
-for, and it will not be indefinitely displaced by smaller items —
-its start is tied to a named item below, regardless of what else
-comes up.
+**How this list is ordered:** roughly in the order I expect to work on
+things. Smaller items that help a lot can jump ahead, because frequent
+releases get improvements to testers sooner. Effort estimates stay
+provisional until an item gets a proper scoping pass, so items may move
+as I learn more.
 
 Have a request or want to influence priorities? Open an issue:
 https://github.com/allisonfm85/accessible-virtual-machine/issues
 
-## 1. Guest display scaling and mouse input — in progress
-
-Field-reported by a tester: the guest display rendered very small
-inside the AVM window, and the mouse did not work in the guest
-(issues #3 and #4). The display problem is diagnosed and fixed on
-main. The mouse turned out not to be a bug but a missing feature —
-AVM had no mouse support at all — and it is being built now. Both
-land together in the next release.
-
-## 2. Deleting a VM should be able to delete its files
-
-Reported by a tester (issue #5): deleting a VM removes it from AVM
-but leaves its folder and disk image on the host, and those files
-are tens of gigabytes each. The fix will make removal explicit and
-spoken: a confirmation with a clear choice between removing just
-the entry or the entry and its files. Because this is a destructive
-operation on user data, it gets a deliberate design pass rather
-than a quick patch.
-
-## 3. Virtual machines on external drives
-
-Requested by a tester: the ability to store virtual machines on an
-external drive instead of the internal disk. Windows VMs are large
-(80 GB recommended), and not everyone has that to spare internally.
-The design work here is less about the storage itself and more about
-what AVM announces when the drive is not attached — a missing drive
-must produce a spoken, specific, actionable message, never a silent
-failure.
-
-## 4. Automatic updates for AVM
-
-An auto-updater, so testers stop needing to download new builds by
-hand. The update experience itself must pass the same accessibility
-bar as the rest of AVM: every stage spoken, fully operable with
-VoiceOver, no silent failures.
-
-## 5. Audio latency
-
-Testers report that audio latency in the guest is acceptable but
-could be better. Parallels sets the benchmark here, and AVM should
-meet or beat it. Latency matters more in AVM than in a typical VM
-product because a screen reader's responsiveness *is* the interface:
-every extra millisecond between a keystroke and JAWS, NVDA, or
-Narrator speaking is felt on every single interaction.
-
-This item is split in two. Measurement comes first and starts early:
-quantifying keystroke-to-speech latency in AVM and in Parallels on
-the same hardware, so there is a baseline number. The fix is scoped
-only after the numbers exist — it may be buffer tuning, or it may be
-deeper pipeline work, and the measurements will tell us which.
-
-## 6. USB passthrough — protected slot
-
-Currently, USB keyboards work through event forwarding, and headsets
-work for audio output. But devices that need a direct connection to
-Windows — audio interfaces, MIDI controllers, thumb drives — require
-true USB passthrough.
-
-This is the top feature request from blind musicians who need their
-audio interfaces and MIDI controllers working in the REAPER/OSARA
-ecosystem on Windows. It holds a protected place in this list: it
-begins once the auto-updater ships, and no other item — however
-urgent it seems — moves its start.
-
-## 7. Copy and paste between Windows and the Mac
+## 1. Copy and paste between Windows and the Mac
 
 Today AVM doesn't share the clipboard. Text copied in Windows never
 reaches the Mac, and text copied on the Mac never reaches Windows.
@@ -102,55 +33,93 @@ passwords copied from a password manager. The choices are both ways,
 Windows to the Mac only, or a setting for each VM. Whatever the
 answer, AVM will say clearly what's shared.
 
-## 8. GPU acceleration in the guest
+## 2. GPU acceleration in the guest
 
-Reported by a tester (issue #7): games and other 3D applications in
-the guest fall back to Windows' built-in software renderer, which
-crashes some titles and makes others stutter. This is the same root
-cause as the display-scaling issue: AVM deliberately bundles no
-guest display driver. Getting real graphics acceleration into the
-guest is substantial work with genuine unknowns, so no version or
-date is promised — but its place in the order is settled: it begins
-after USB passthrough ships.
+Reported by a tester (issue 7): games and other 3D applications in the
+guest fall back to Windows' built-in software renderer, which crashes
+some titles and makes others stutter. The cause is that AVM bundles no
+guest display driver. Getting real graphics acceleration into the guest
+is substantial work with real unknowns, so no version or date is
+promised.
 
-## 9. Windows Insider program enrollment — rescoped: Secure Boot
+## 3. Importing virtual machines from other apps
 
-The scoping pass produced a definitive answer, and it changed what
-this item is. Enrollment itself works — the VM's TPM satisfies the
-Insider program's enrollment screen. But when a preview build
-actually arrives through Windows Update, its compatibility check
-refuses to install it because the VM's firmware has no Secure Boot
-support at all. So this item is no longer documentation work; it is
-firmware work: building AVM's UEFI firmware with Secure Boot
-capability, installing the Microsoft certificates it needs, and
-providing a safe migration path for existing VMs. AVM will make the
-VM capable; whether to enroll a VM in preview builds remains each
-tester's own choice, and the tester guide will state the channel
-tradeoffs plainly.
+Many blind Mac users already have a Windows VM in another app. AVM should
+be able to bring it over instead of making them install Windows again.
+UTM comes first, because it uses the same virtualization engine as AVM.
+VMware Fusion and Parallels follow. Each import needs to be spoken from
+start to finish, and it must never change or delete the original.
 
-## 10. ISO download assistant
+## 4. Virtual machines on external drives
 
-A future version of AVM may fetch and verify the Windows ISO
-directly, so the manual download step disappears. This is larger
-than it sounds: the underlying tooling would need to be bundled and
-signed, the sources involved are fragile in ways that become a
-support burden, and a 30–90 minute download must produce real spoken
-progress throughout. The tester guide's improved walkthrough of
-Microsoft's download page (thanks to a contributed rewrite) covers
-the need well for now, so this stays deliberately behind the items
-above it.
+Requested by a tester: the ability to store virtual machines on an
+external drive instead of the internal disk. Windows VMs are large
+(80 GB recommended), and not everyone has that to spare internally.
+The design work is less about the storage itself and more about what
+AVM says when the drive isn't attached. A missing drive must produce a
+spoken, specific, actionable message, never a silent failure.
 
-## 11. Additional guest operating systems
+## 5. Audio latency
 
-Requested by a tester: support for guests beyond Windows 11 ARM64 —
-other versions and editions of Windows, Linux distributions, and
-other versions of macOS. Each guest OS brings its own accessibility
-story (which screen reader runs during install, and how), so these
-will be evaluated individually with the same standard AVM applies to
+Testers report that audio latency in the guest is acceptable but could
+be better. Parallels sets the benchmark here, and AVM should meet or beat
+it. Latency matters more in AVM than in a typical VM product because a
+screen reader's responsiveness is the interface. Every extra millisecond
+between a keystroke and JAWS, NVDA, or Narrator speaking is felt on every
+single interaction.
+
+Measurement comes first: keystroke-to-speech latency in AVM and in
+Parallels on the same hardware, so there's a baseline number. The fix is
+scoped only after the numbers exist. It may be buffer tuning, or it may be
+deeper work, and the measurements will tell which.
+
+## 6. Shared folders
+
+A folder on the Mac that Windows can open, so files move without a cloud
+service in between (issue 19). AVM once had a shared folder setting that
+never worked, and it was removed in 0.1.3. The real feature needs a
+driver inside Windows and a clear, spoken way to choose the folder.
+
+## 7. USB drives
+
+USB passthrough works for braille displays, microphones, headsets,
+keyboards and mice. Thumb drives and other USB storage don't reach
+Windows yet, because macOS 27 blocks the way AVM captures them. I'm
+working with Apple on a supported path. AVM tells you when you plug one
+in.
+
+## 8. ISO download assistant
+
+A future version of AVM may fetch and verify the Windows ISO directly,
+so the manual download step disappears. This is larger than it sounds.
+The tooling would need to be bundled and signed, the sources involved
+are fragile in ways that become a support burden, and a 30 to 90 minute
+download must produce real spoken progress throughout. The tester
+guide's walkthrough of Microsoft's download page covers the need well
+for now.
+
+## 9. More guest operating systems
+
+Requested by a tester: guests beyond Windows 11 ARM64, such as other
+Linux distributions and other versions of macOS. Each guest brings its
+own accessibility story (which screen reader runs during install, and
+how), so each is evaluated with the same standard AVM applies to
 Windows: a blind user must be able to complete the entire install
-without sighted assistance.
+without sighted help.
 
-**Ubuntu Desktop for ARM (26.04 and later) is the first.** It installs
-with no questions from the user's own ISO, and Orca is on at the login
-screen and on the desktop, with Caps Lock as the Orca key (tester
-guide, section 16).
+## Shipped
+
+- **Display scaling and mouse input** (0.1.1, issues 3 and 4). The
+  guest display fills the window, and the Windows pointer follows the
+  Mac trackpad or mouse exactly.
+- **Automatic updates** (0.1.2). AVM checks for updates and installs
+  them, with every stage spoken.
+- **Deleting a VM's files** (issue 5). Deleting a VM can move its files
+  to the Trash, and AVM never deletes a VM that's still running.
+- **USB passthrough** (0.1.3), except for USB drives (item 7 above).
+- **Ubuntu Desktop for ARM** (0.1.3), the first guest beyond Windows.
+  It installs with no questions, and Orca speaks from the first boot.
+- **Secure Boot and a working TPM** (0.1.4, issues 16 and 17). Windows
+  Update no longer blocks updates over its hardware checks. This also
+  replaces the old Windows Insider item: the Insider program needed
+  Secure Boot too, and whether to join it stays each tester's choice.
