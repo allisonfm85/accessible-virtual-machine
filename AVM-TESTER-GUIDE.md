@@ -152,9 +152,9 @@ the AVM menu. Everything is a normal dialog and reads with VoiceOver.
 
 ---
 
-## 4. Before your first install: three Mac keyboard settings
+## 4. Before your first install: four Mac keyboard settings
 
-Windows needs keys that macOS normally keeps for itself. Three settings,
+Windows needs keys that macOS normally keeps for itself. Four settings,
 all in System Settings, make sure your keystrokes actually reach Windows.
 Set them once before your first install.
 
@@ -164,14 +164,22 @@ Set them once before your first install.
    keys, and this setting hands them over cleanly.
 2. **Mission Control's Control-arrow shortcuts: OFF.** In System
    Settings, go to Keyboard, then Keyboard Shortcuts, then Mission
-   Control, and turn off the shortcuts for "Move left a space" and "Move
-   right a space." Otherwise the Mac grabs Control with the arrow keys,
-   which in Windows is how you move word by word through text.
+   Control, and turn off "Mission Control," "Application windows," "Move
+   left a space," and "Move right a space." Otherwise the Mac grabs
+   Control with the arrow keys, which in Windows is how you move word by
+   word and paragraph by paragraph through text.
 3. **The Show Desktop shortcut: OFF.** In the same Keyboard Shortcuts
    window, under Mission Control, turn off "Show Desktop." Otherwise the
    Mac takes F11, which your Windows screen reader needs.
+4. **Two keyboard focus shortcuts: OFF.** In the same Keyboard Shortcuts
+   window, choose Keyboard, and turn off "Turn keyboard access on or off"
+   and "Move focus to status menus." Otherwise Control-F1 quietly changes
+   your Mac's Keyboard navigation setting, and Control-F8 moves your Mac's
+   focus to the menu bar, so your keys stop reaching Windows until you
+   press Escape. In Windows, Control-F1 hides or shows the ribbon in
+   Office.
 
-**Here's the general rule, and it's worth remembering past these three:**
+**Here's the general rule, and it's worth remembering past these four:**
 if Windows never reacts to a key, no matter how many times you press it,
 the Mac probably took it first. Check System Settings, Keyboard, Keyboard
 Shortcuts for a shortcut using that key, and turn it off.
