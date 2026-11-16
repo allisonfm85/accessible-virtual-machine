@@ -1935,8 +1935,11 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         AVMLog.write("VMView: SPICE agent connected, features \(features.rawValue)", category: "USBHotPlug")
         // USB 2c: the agent is a service inside Windows, so its first
         // connect means Windows has booted. Only the first one counts.
+        // INSTALL WATCHDOG, AFTER THE MARKER (2026-11-15): the same signal
+        // ends the install watchdog's watch.
         Task { @MainActor in
             USBPlugPrompt.shared.windowsIsUp(because: "the SPICE agent connected")
+            VMManager.shared?.windowsAgentConnected()
         }
     }
     func spiceAgentDisconnected(_ connection: CSConnection) {
