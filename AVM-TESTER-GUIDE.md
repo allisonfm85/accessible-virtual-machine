@@ -449,6 +449,10 @@ guess. Use the dashboard's Start button in that case.
 - **Command** acts as the **Windows key**.
 - **Caps Lock** is your screen reader key. See section 9.
 - **Control-Escape** opens Start, a useful alternative route.
+- **Control combinations reach Windows as they are.** Control-Tab and
+  Control-Shift-Tab move between tabs, Control-F4 closes a document or
+  tab, Control-F6 moves between windows, and Control-Shift-Escape opens
+  Task Manager.
 - **Function-Delete** is **forward delete**.
 - **Shift-Delete** is **permanent delete**. It deletes without going to
   the Recycle Bin.
@@ -515,8 +519,12 @@ Announcements you may hear, and what they mean:
 - **"Keyboard back in Windows."** The window that took the keyboard went
   away. You will usually *not* hear this one, because by then VoiceOver is
   normally back on, and this cue stays quiet while VoiceOver is running.
+- **"AVM updated the firmware for" your machine's name, "to add Secure
+  Boot and a working TPM. You'll only hear this once."** This speaks once
+  for each Windows machine installed before AVM 0.1.4, the first time
+  you start it. It's normal. See section 14.
 - **A Basso alarm with recovery guidance** means AVM's watchdog believes
-  the virtual machine is stuck during installation. See section 13.
+  Windows Setup is stuck. See "A known upstream problem" in section 13.
 
 ---
 
@@ -588,6 +596,27 @@ phone camera app that reads text out loud (Seeing AI and similar) pointed
 at the screen will tell you what is there. Report what you find. A
 machine stranded in recovery is something I want to know about.
 
+### A silent screen asking for a BitLocker recovery key
+
+Starting with AVM 0.1.4, Windows machines have a working TPM. Windows can
+use it to encrypt drive C by itself, without asking. This is called
+device encryption, and it uses BitLocker. New machines installed with AVM
+0.1.4 or later have it turned off. A machine installed with an earlier
+AVM may turn it on by itself after its firmware update, if you sign in to
+Windows with a Microsoft account. That's fine. Nothing changes for you
+day to day.
+
+If Windows ever stops at a BitLocker recovery screen, it's silent. No
+screen reader runs there. A phone app that reads text out loud will tell
+you what's on the screen. The screen asks for a 48-digit recovery key.
+Windows saved that key to your Microsoft account. To find it, sign in at
+account.microsoft.com, choose Devices, then Recovery keys. Type the key
+with the number row, then press Return.
+
+AVM is built so this shouldn't happen. Once a machine has the new
+firmware, AVM never changes the settings BitLocker depends on. So if you
+ever reach this screen, please report it with a diagnostic log.
+
 ### The Windows window looks black but Windows is clearly running
 
 If sound works and Windows responds to keys, but a sighted person would
@@ -629,11 +658,32 @@ Three things to know:
 
 ### A known upstream problem
 
-Once in a while a virtual machine can hang at firmware startup after one
-of Windows Setup's own restarts. No display, no progress, no sound. This
-is a confirmed bug in the underlying virtualization firmware, not in AVM,
-and it is not fixed upstream yet. It is uncommon and unpredictable. If you
-hit it, Command-Shift-R is the recovery attempt, and please report it.
+Once in a while a virtual machine can hang at firmware startup during
+Windows Setup. It can happen on the installer's first boot or at any of
+Setup's own restarts. There's no display, no progress, and no sound.
+This is a confirmed bug in the underlying virtualization firmware, not
+in AVM, and it isn't fixed upstream yet. It's unpredictable.
+
+AVM's watchdog watches for it from the moment the install starts until
+Windows is really up. If it decides Setup is stuck, you hear Basso and
+one of these:
+
+> Windows Setup appears to be stuck while restarting. To recover, use
+> Force Stop, then start the virtual machine again. Setup will pick up
+> where it left off.
+
+> The Windows installation appears to be stuck. To recover, use Force
+> Stop, then start the virtual machine again. Setup will start over from
+> the beginning.
+
+Use the Force Stop button on the dashboard, not Stop. A hung firmware
+can't answer Stop. Then start the machine again. In testing, the next
+start has always gone straight through.
+
+If you ever hear either message, please save the diagnostic log and
+send it with your report, even if the restart worked. The log records
+what the watchdog saw every 20 seconds, so it shows how the hang
+happened.
 
 ---
 
@@ -647,6 +697,44 @@ reinstall over a working Windows.
 
 Remember the routine each time: turn VoiceOver off, then start. The
 keyboard is in Windows automatically.
+
+### The one-time firmware update in AVM 0.1.4
+
+AVM 0.1.4 gives Windows machines new firmware with Secure Boot and a
+working TPM. Without them, Windows Update refused some updates, saying
+the PC didn't meet the requirements (issues 16 and 17). Thanks to
+tayobethel-commits and mjanusauskas for reporting them.
+
+New machines get the new firmware from the start. A Windows machine
+installed with an earlier AVM switches the first time you start it after
+updating. AVM keeps a backup of the old firmware settings, then says:
+
+> AVM updated the firmware for (your machine's name) to add Secure Boot
+> and a working TPM. You'll only hear this once.
+
+Windows then starts normally. You hear it once for each machine, and
+never again. A machine still in the middle of installing switches the
+first time you start it after the install finishes. Ubuntu machines
+don't change.
+
+After the switch, Windows reports the processor as your Mac's chip, and
+the BIOS as AVM. One side effect: Windows may turn on device
+encryption by itself. See "A silent screen asking for a BitLocker
+recovery key" in section 13.
+
+### Quitting AVM while Windows is running
+
+If you quit AVM while a machine is running, AVM asks first. Shut Down
+and Quit is the default button. It shuts Windows down properly, and AVM
+quits by itself when Windows is off. Force Off and Quit is like holding
+down a computer's power button, so anything unsaved in Windows is lost.
+Cancel keeps AVM open.
+
+If a machine was left running anyway, for example after AVM crashed, AVM
+finds it the next time it opens and asks whether to shut it down. AVM
+also won't start or delete a machine that's still running in the
+background. It asks you to shut it down first. Thanks to kellylford for
+this work.
 
 ### Adding mouse support to a machine installed before version 0.1.1
 
@@ -706,12 +794,15 @@ files can be deleted afterward.
 - **Out-of-box setup is stock Windows.** AVM does not script your account
   creation. You go through Microsoft's own setup with Narrator.
 - **No ISO downloader.** You supply the Windows image yourself.
+- **No copy and paste between Windows and the Mac.** Text copied on one
+  side doesn't reach the other yet. It's on the roadmap. For now, a text
+  file in a shared cloud folder, like OneDrive, works.
 
-USB passthrough is here, except for USB drives. Next is firmware work:
-stopping Windows Update from blocking updates over the TPM and processor
-checks (issues 16 and 17), and Secure Boot. After that comes graphics
-acceleration. If a USB device you need doesn't work in Windows, please
-report it, with its name and a diagnostic log.
+USB passthrough is here, except for USB drives. Secure Boot and a
+working TPM are here too, so Windows Update no longer blocks updates
+over its hardware checks. Next come copy and paste between Windows and
+the Mac, and graphics acceleration. If a USB device you need doesn't
+work in Windows, please report it, with its name and a diagnostic log.
 
 ---
 
@@ -884,6 +975,9 @@ issue form will prompt you for:
 - Roughly what time it happened, so it can be matched against the log.
 - Your Mac model and macOS version.
 - The diagnostic log folder, compressed and attached.
+
+If you ever hear AVM say Windows Setup appears to be stuck, please send
+the diagnostic log even if everything worked after a restart.
 
 Thank you for testing! Every problem you catch now is one that future
 users will never have to deal with.
