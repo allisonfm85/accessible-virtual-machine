@@ -125,8 +125,16 @@
 //   NOT in the guidance: its first wild data point (2026-08-15) FAILED to
 //   recover — system_reset reached firmware (fresh screen-clear sequences on
 //   serial) but no BdsDxe lines followed and the disk stayed flat 25 minutes;
-//   the wedge re-formed pre-BDS. Future wild wedges can retest manually. The marker
-//   appearing stands the watchdog down AND speaks the SETUP-UNDERWAY
+//   the wedge re-formed pre-BDS. Future wild wedges can retest manually.
+//   AFTER THE MARKER (2026-11-15, Handoff 63): on the secure firmware the
+//   hang also struck at a Setup restart AFTER the marker, when the watchdog
+//   had already stood down, and nothing spoke for half an hour. So the
+//   marker no longer stands the watchdog down. It keeps watching until
+//   Windows itself says it's up (the SPICE agent connects), and a flag file
+//   (setup-awaiting-windows) carries that watch across a Force Stop. The
+//   guidance names Force Stop (a hung firmware can't answer a normal Stop)
+//   and, after the marker, says Setup picks up where it left off. The marker
+//   appearing still speaks the SETUP-UNDERWAY
 //   MILESTONE (2026-07-24): the one mid-install moment we reliably detect,
 //   announced as a .success so a fresh install is not silence-as-success.
 //   Wording is forward-looking by design — it names what is happening,
@@ -410,10 +418,23 @@ final class VMManager: ObservableObject {
     private var bootKeypressTask: Task<Void, Never>?
 
     // INSTALL WATCHDOG (permanent feature — see header): detects the wedge
-    // signature (frozen frame + pegged vCPU + FLAT DISK + no marker) during an
-    // install and announces recovery guidance. View-independent Task, same
-    // pattern as the boot keypress task.
+    // signature (frozen frame + pegged vCPU + FLAT DISK) during an install,
+    // until Windows is up, and announces recovery guidance. View-independent
+    // Task, same pattern as the boot keypress task.
     private var installWatchdogTask: Task<Void, Never>?
+
+    // INSTALL WATCHDOG, AFTER THE MARKER (2026-11-15): true once the SPICE
+    // agent, a service inside Windows, has connected in this run. That's
+    // Windows' own word that it booted, so the watchdog stands down. Set by
+    // windowsAgentConnected(), reset by every startVM.
+    private var windowsAgentConnectedThisRun = false
+
+    /// Flag file in the VM's folder: Setup is past the marker but Windows
+    /// hasn't come up yet. Written when the watchdog sees the marker appear,
+    /// removed when the SPICE agent connects. A start that finds it runs the
+    /// watchdog again, so a Force Stop out of a hang doesn't end the watch.
+    /// VMs installed before this change never have it.
+    private static let setupAwaitingWindowsName = "setup-awaiting-windows"
 
     // MARK: Private — configuration reference
 
@@ -618,8 +639,8 @@ final class VMManager: ObservableObject {
     /// image that mdir cannot read has never been observed; failures are logged
     /// loudly so an unexpected one is visible.
     ///
-    /// Also used by the INSTALL WATCHDOG as its stand-down signal (marker
-    /// appearing mid-run means the danger zone is past).
+    /// Also used by the INSTALL WATCHDOG to speak the Setup-underway milestone
+    /// and switch to its after-marker guidance (it no longer stands down here).
     private func checkInstallCompleteMarker(configuration: VMConfiguration, runtimeDir: URL) -> Bool {
         // No install ISO configured -> this VM never had the hazard; nothing to check.
         guard let iso = configuration.installISOPath, !iso.isEmpty else { return false }
@@ -879,6 +900,8 @@ final class VMManager: ObservableObject {
         let installComplete = checkInstallCompleteMarker(configuration: configuration, runtimeDir: runtimeDir)
         // USB 2c: start-time devices wait for setup to finish (2026-10-18).
         installCompleteAtStart = installComplete
+        // INSTALL WATCHDOG, AFTER THE MARKER: Windows hasn't spoken up yet this run.
+        windowsAgentConnectedThisRun = false
 
         if installComplete {
             avmLog("startVM: install-complete marker PRESENT — skipping media build/attach and boot keypress")
@@ -978,6 +1001,14 @@ final class VMManager: ObservableObject {
         // prompt is the other half of the reinstall hazard.
         if installComplete {
             avmLog("startVM: boot keypress task NOT started (install-complete marker present)")
+            // INSTALL WATCHDOG, AFTER THE MARKER: Setup got past the marker on
+            // an earlier run, but Windows never came up (for example, a Force
+            // Stop out of a hang). Keep watching this start too.
+            let awaiting = runtimeDir.appendingPathComponent(Self.setupAwaitingWindowsName).path
+            if configuration.guestOS == .windows, FileManager.default.fileExists(atPath: awaiting) {
+                avmLog("startVM: Setup is past the marker but Windows hasn't come up yet — install watchdog runs (after-marker phase)")
+                startInstallWatchdog(configuration: configuration, runtimeDir: runtimeDir, markerAlreadyPresent: true)
+            }
         } else {
             if configuration.guestOS == .ubuntu {
                 // Neither applies to Ubuntu. Its boot menu starts on its own
@@ -997,7 +1028,7 @@ final class VMManager: ObservableObject {
             } else {
                 startBootKeypressTask()
                 // INSTALL WATCHDOG: an install is in flight — watch for the wedge
-                // signature until the marker appears or the VM stops.
+                // signature until Windows is up or the VM stops.
                 startInstallWatchdog(configuration: configuration, runtimeDir: runtimeDir)
             }
         }
@@ -1166,9 +1197,14 @@ final class VMManager: ObservableObject {
     /// announcing a reset during a healthy repair pass is how a guest gets
     /// bricked into WinRE.
     ///
-    /// Stand-down conditions: the marker appears (specialize ran — the danger
-    /// zone is past), the VM leaves .running, or the task is cancelled.
-    /// SETUP-UNDERWAY MILESTONE (2026-07-24): the marker stand-down also
+    /// Stand-down conditions: Windows is up (the SPICE agent connected), the
+    /// VM leaves .running, or the task is cancelled. AFTER THE MARKER
+    /// (2026-11-15): the marker used to stand the watchdog down, but the hang
+    /// struck at a later Setup restart on the secure firmware. Now the marker
+    /// only writes the setup-awaiting-windows flag file and switches the
+    /// guidance to "pick up where it left off". markerAlreadyPresent is true
+    /// for a start that found that flag file.
+    /// SETUP-UNDERWAY MILESTONE (2026-07-24): the marker appearing also
     /// ANNOUNCES (.success) — the one mid-install moment we reliably detect,
     /// so a fresh install is not silence-as-success. The wording is
     /// forward-looking: names what is happening, pre-explains the reboots,
@@ -1185,7 +1221,7 @@ final class VMManager: ObservableObject {
     /// text), idle the CPU, or write the disk; the observed wedge held its
     /// full signature 30+ min. An unreadable disk sample fails toward silence
     /// (streak reset), same rule as the frame and CPU probes.
-    private func startInstallWatchdog(configuration: VMConfiguration, runtimeDir: URL) {
+    private func startInstallWatchdog(configuration: VMConfiguration, runtimeDir: URL, markerAlreadyPresent: Bool = false) {
         stopInstallWatchdog()
         installWatchdogTask = Task { [weak self] in
             let sampleNanoseconds: UInt64 = 20_000_000_000  // 20s
@@ -1195,8 +1231,9 @@ final class VMManager: ObservableObject {
             var previousDiskSize: UInt64? = nil
             var consecutiveWedgeSamples = 0
             var announcedThisRun = false
+            var markerSeen = markerAlreadyPresent
 
-            avmLog("installWatchdog: started (20s samples; \(requiredConsecutive) consecutive frozen-frame + >=90% CPU + flat-disk samples = wedge)")
+            avmLog("installWatchdog: started (20s samples; \(requiredConsecutive) consecutive frozen-frame + >=90% CPU + flat-disk samples = wedge; marker already present: \(markerAlreadyPresent))")
 
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: sampleNanoseconds)
@@ -1212,15 +1249,33 @@ final class VMManager: ObservableObject {
                     return
                 }
 
-                // Stand down the moment the marker appears: specialize has run,
-                // Windows is on the disk, the wedge window is behind us.
-                // SETUP-UNDERWAY MILESTONE: this is also the one mid-install
-                // moment we reliably detect, so announce it (see doc comment).
-                let markerPresent = await MainActor.run {
-                    self.checkInstallCompleteMarker(configuration: configuration, runtimeDir: runtimeDir)
+                // Stand down once Windows is up: the SPICE agent connected, so
+                // the firmware got Windows booted (windowsAgentConnected()
+                // also removes the flag file).
+                let windowsUp = await MainActor.run { self.windowsAgentConnectedThisRun }
+                if windowsUp {
+                    avmLog("installWatchdog: Windows is up (SPICE agent connected) — standing down")
+                    return
+                }
+
+                // The marker appearing: specialize has run and Windows is on the
+                // disk. The watchdog keeps watching (AFTER THE MARKER), writes the
+                // flag file so a later start keeps watching too, and speaks the
+                // SETUP-UNDERWAY MILESTONE, the one mid-install moment we
+                // reliably detect (see doc comment).
+                var markerPresent = false
+                if !markerSeen {
+                    markerPresent = await MainActor.run {
+                        self.checkInstallCompleteMarker(configuration: configuration, runtimeDir: runtimeDir)
+                    }
                 }
                 if markerPresent {
-                    avmLog("installWatchdog: install-complete marker PRESENT — standing down; announcing Setup-underway milestone")
+                    markerSeen = true
+                    avmLog("installWatchdog: install-complete marker PRESENT — still watching until Windows is up; announcing Setup-underway milestone")
+                    let awaiting = runtimeDir.appendingPathComponent(VMManager.setupAwaitingWindowsName)
+                    if !FileManager.default.createFile(atPath: awaiting.path, contents: Data()) {
+                        avmLog("installWatchdog: WARNING — could not write \(awaiting.lastPathComponent); a start after a Force Stop won't be watched")
+                    }
                     await MainActor.run {
                         self.appendConsole("AVM: Windows Setup is underway and will restart the virtual machine a few times. This takes a while. Windows will not speak on its own — when Setup is done, enter Windows and press Control Command Return to turn on Narrator.\n")
                         Announcer.shared.announce(
@@ -1228,7 +1283,6 @@ final class VMManager: ObservableObject {
                             tone: .success
                         )
                     }
-                    return
                 }
 
                 // Sample the frame, the CPU, and the disk.
@@ -1288,13 +1342,18 @@ final class VMManager: ObservableObject {
 
                 if consecutiveWedgeSamples >= requiredConsecutive && !announcedThisRun {
                     announcedThisRun = true
-                    avmLog("installWatchdog: WEDGE DETECTED — announcing recovery guidance")
+                    avmLog("installWatchdog: WEDGE DETECTED (after marker: \(markerSeen)) — announcing recovery guidance")
+                    // Force Stop, not Stop: a hung firmware can't answer the
+                    // normal shutdown request (Stop sat in "stopping", Handoff
+                    // 62). After the marker, Windows is on the disk and the
+                    // reinstall guard keeps it, so Setup resumes (proven
+                    // 2026-11-15).
+                    let spoken = markerSeen
+                        ? "Windows Setup appears to be stuck while restarting. To recover, use Force Stop, then start the virtual machine again. Setup will pick up where it left off."
+                        : "The Windows installation appears to be stuck. To recover, use Force Stop, then start the virtual machine again. Setup will start over from the beginning."
                     await MainActor.run {
-                        self.appendConsole("AVM: The Windows installation appears to be stuck (screen frozen with high CPU for about 3 minutes). To recover: stop the virtual machine, then start it again — Setup will start over from the beginning.\n")
-                        Announcer.shared.announce(
-                            "The Windows installation appears to be stuck. To recover, stop the virtual machine, then start it again. Setup will start over from the beginning.",
-                            tone: .failure
-                        )
+                        self.appendConsole("AVM: \(spoken) (Screen frozen with high CPU for about 3 minutes.)\n")
+                        Announcer.shared.announce(spoken, tone: .failure)
                     }
                     // Keep sampling (log-only) so the debug log records whether
                     // the wedge persists or the guest recovers on its own.
@@ -1402,6 +1461,25 @@ final class VMManager: ObservableObject {
     private func stopInstallWatchdog() {
         installWatchdogTask?.cancel()
         installWatchdogTask = nil
+    }
+
+    /// The SPICE agent connected: Windows is up. VMView calls this from
+    /// spiceAgentConnected. Ends the install watchdog's watch (it checks
+    /// windowsAgentConnectedThisRun each tick) and removes the
+    /// setup-awaiting-windows flag file, so later starts aren't watched.
+    /// Only the first connect in a run does anything.
+    func windowsAgentConnected() {
+        guard !windowsAgentConnectedThisRun else { return }
+        windowsAgentConnectedThisRun = true
+        guard let runtimeDir = vmRuntimeDir else { return }
+        let awaiting = runtimeDir.appendingPathComponent(Self.setupAwaitingWindowsName)
+        guard FileManager.default.fileExists(atPath: awaiting.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: awaiting)
+            avmLog("windowsAgentConnected: Windows is up; removed \(awaiting.lastPathComponent)")
+        } catch {
+            avmLog("windowsAgentConnected: WARNING — could not remove \(awaiting.lastPathComponent): \(error)")
+        }
     }
 
     /// Watchdog frame sample: QMP screendump to watchdog-screen.ppm (its own
