@@ -740,9 +740,45 @@ final class SPICEKeyCaptureView: MTKView {
         // HELD Caps Lock, so JAWS and NVDA laptop-layout commands such as
         // Caps Lock+T stopped working. When the courier was measured on
         // 2026-07-26 it arrived through keyDown. Returning false for events
-        // without Command hands them back to AppKit, which then delivers them
+        // with neither Command nor Control (Control is handled just below)
+        // hands them back to AppKit, which then delivers them
         // to keyDown, where held keys stay held and the F19 repeat filter
         // applies. Real Command combinations are unchanged.
+        // CONTROL COMBOS ARE HELD KEYS (2026-11-15, macOS 27.2.1, MEASURED):
+        // AppKit offers every Control key combination here before keyDown.
+        // Returning false hands the event back to the window, which treats
+        // some of them as its own keyboard commands and never sends them on
+        // to keyDown. A test app that hosts a capture view the way this file
+        // does (SwiftUI ZStack, NSViewRepresentable, overlay buttons), with
+        // keys posted at the HID event tap, showed:
+        //   - Ctrl+Tab and Ctrl+Shift+Tab: the window ran its key-view loop.
+        //     First responder moved to SwiftUI's KeyViewProxy, and neither a
+        //     keyDown nor a keyUp arrived. In AVM, FocusLockManager then
+        //     reclaims focus silently, so the key simply vanished. Windows
+        //     never saw Ctrl+Tab (tabs in browsers, Office, dialogs).
+        //   - Ctrl+F6 and Ctrl+Escape: keyUp arrived, keyDown never did.
+        // AVM 0.1.3 with a Windows guest, keys posted at the HID event tap,
+        // showed the same for Ctrl+Shift+Tab, Ctrl+Shift+Escape and
+        // Ctrl+Shift+F6 (release only), and Ctrl+F2, F3 and F4 never reached
+        // the guest at all: macOS's keyboard-navigation shortcuts took them.
+        // Handling the combination here as an ordinary keyDown fixes all of
+        // them. With this change a low-level keyboard hook in Windows saw a
+        // single press and release, wrapped in the modifiers, for every
+        // Control, Control-Shift, Alt and Shift combination tested,
+        // Ctrl+F2 through F7 included. Ctrl+F1, Ctrl+F8 and Control with the
+        // arrow keys are still taken by macOS before AVM sees them; this
+        // method cannot change that. handleKey sends the press and tracks it, and the matching
+        // keyUp still arrives through keyUp (measured for every combination
+        // above), so the key is held and released like any other. Repeats
+        // also come through this path, and handleKey's repeat guards apply
+        // to them as they do in keyDown. Control-Command combinations keep
+        // the Command path below. Control-Option combinations are VoiceOver's
+        // and never reach AVM while VoiceOver is running.
+        if event.modifierFlags.contains(.control),
+           !event.modifierFlags.contains(.command) {
+            coordinator.handleKey(event: event, pressed: true)
+            return true
+        }
         guard event.modifierFlags.contains(.command) else { return false }
         // Command combos (e.g. Ctrl+Cmd+Return for Narrator) are delivered here,
         // NOT to keyDown — and AppKit never delivers a matching keyUp while
