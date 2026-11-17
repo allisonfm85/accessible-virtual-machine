@@ -37,11 +37,21 @@ qemu-10.0.2.tar.xz release, and the build folder is
    interfaces it needs (`PGTask_t` and others), so it no longer compiles.
    AVM never uses it. In the build folder, with the sysroot's pkg-config
    settings from Handoff 3, run `./pyvenv/bin/meson configure -Dpvg=disabled`.
-4. Run `ninja qemu-system-aarch64`.
-5. Check the build: `./qemu-system-aarch64 -device tpm-tis-device,help` must
-   list `ppi=<bool>` with the default `on`.
-6. Copy the binary over `sysroot/bin/qemu-system-aarch64`, keeping the old
+4. Switch off four optional libraries:
+   `./pyvenv/bin/meson configure -Dcapstone=disabled -Dgnutls=disabled -Dpng=disabled -Dlibssh=disabled`.
+   AVM uses none of them. Left on "auto", meson finds Homebrew's copies on the
+   build Mac and links QEMU to them. That's what broke 0.1.4 (issue 275): QEMU
+   couldn't start on any Mac without Homebrew. Always configure with the
+   sysroot's pkg-config settings, so nothing is found outside the sysroot.
+5. Run `ninja qemu-system-aarch64`.
+6. Check the build: `./qemu-system-aarch64 -device tpm-tis-device,help` must
+   list `ppi=<bool>` with the default `on`, and
+   `otool -L qemu-system-aarch64 | grep -cE '/opt/homebrew|/usr/local'` must
+   print 0. Every other library must come from the sysroot or `/usr/lib`.
+7. Copy the binary over `sysroot/bin/qemu-system-aarch64`, keeping the old
    one as a backup. AVM's Run Script picks it up from there on the next build.
+   The Run Script's last step fails the build if anything bundled still links
+   Homebrew or `/usr/local`.
 
 ## Firmware, for reference
 
