@@ -420,6 +420,15 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated {
             CapsLockRemapper.shared.recoverAtLaunch()
         }
+        // Claim USB Accessory test (Handoff 66): Debug builds register for
+        // devices the user grants to AVM in Virtual Machine Accessories.
+        #if DEBUG
+        if #available(macOS 27.0, *) {
+            MainActor.assumeIsolated {
+                AccessoryGrantListener.start()
+            }
+        }
+        #endif
     }
 
     /// A running VM is shut down or turned off before AVM quits, or the
