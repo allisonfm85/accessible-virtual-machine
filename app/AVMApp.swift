@@ -246,6 +246,20 @@ struct AVMApp: App {
                 Button("USB Helper: Unregister") {
                     USBHelperClient.shared.unregister()
                 }
+                // Claim USB Accessory test (Handoff 68): listen for one
+                // device at a time, and stop. Nothing listens at launch.
+                if #available(macOS 27.0, *) {
+                    Divider()
+                    Button("Grant Test: Listen for a USB Device") {
+                        AccessoryGrantTest.chooseDeviceToListen()
+                    }
+                    Button("Grant Test: Stop Listening") {
+                        AccessoryGrantTest.chooseDeviceToStop()
+                    }
+                    Button("Grant Test: Status") {
+                        AccessoryGrantTest.speakStatus()
+                    }
+                }
             }
             #endif
             CommandMenu("Virtual Machine") {
@@ -420,15 +434,6 @@ final class AVMAppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated {
             CapsLockRemapper.shared.recoverAtLaunch()
         }
-        // Claim USB Accessory test (Handoff 66): Debug builds register for
-        // devices the user grants to AVM in Virtual Machine Accessories.
-        #if DEBUG
-        if #available(macOS 27.0, *) {
-            MainActor.assumeIsolated {
-                AccessoryGrantListener.start()
-            }
-        }
-        #endif
     }
 
     /// A running VM is shut down or turned off before AVM quits, or the
