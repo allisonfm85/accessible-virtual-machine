@@ -246,6 +246,20 @@ struct AVMApp: App {
                 Button("USB Helper: Unregister") {
                     USBHelperClient.shared.unregister()
                 }
+                // Claim USB Accessory test (Handoff 68): listen for one
+                // device at a time, and stop. Nothing listens at launch.
+                if #available(macOS 27.0, *) {
+                    Divider()
+                    Button("Grant Test: Listen for a USB Device") {
+                        AccessoryGrantTest.chooseDeviceToListen()
+                    }
+                    Button("Grant Test: Stop Listening") {
+                        AccessoryGrantTest.chooseDeviceToStop()
+                    }
+                    Button("Grant Test: Status") {
+                        AccessoryGrantTest.speakStatus()
+                    }
+                }
             }
             #endif
             CommandMenu("Virtual Machine") {

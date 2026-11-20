@@ -33,14 +33,11 @@ let log = OSLog(subsystem: AVMUSBHelperNames.machServiceName, category: "helper"
 /// chatty, and a root process should not narrate USB traffic into the
 /// unified log by default.
 let verboseStreamLogging = false
-/// Who may talk to this helper. Debug builds of AVM are signed by the
-/// development team; shipped builds by the Developer ID team. A
-/// release helper never trusts the development team.
-#if DEBUG
-let clientTeamID = "4NZJSBJ32X"
-#else
+/// Who may talk to this helper. Every build of AVM, Debug and Release,
+/// is signed by the paid team (2026-11-17). Debug builds moved to it
+/// from 4NZJSBJ32X so they can carry the Claim USB Accessory
+/// entitlement, which needs the paid team's provisioning profile.
 let clientTeamID = "W7VP84KBHP"
-#endif
 let clientRequirement = "anchor apple generic"
     + " and identifier \"\(AVMUSBHelperNames.clientBundleIdentifier)\""
     + " and certificate leaf[subject.OU] = \"\(clientTeamID)\""
