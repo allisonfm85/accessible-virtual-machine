@@ -33,6 +33,9 @@
 		0A1B2C3D2F60000100000100 /* UbuntuInstallPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D2F60000100000000 /* UbuntuInstallPipeline.swift */; };
 		0A1B2C3D2F60026400000101 /* VMProcessScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D2F60026400000001 /* VMProcessScanner.swift */; };
 		0A1B2C3D2F60026400000102 /* RunningVMGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D2F60026400000002 /* RunningVMGuard.swift */; };
+		0A7E57000000000000000008 /* VMConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 064BD7112FD50A5F008025D4 /* VMConfiguration.swift */; };
+		0A7E5700000000000000000D /* AVMLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06AC5E053017015D0058C437 /* AVMLog.swift */; };
+		0A7E57000000000000000009 /* SHA512Crypt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D2F60000100000001 /* SHA512Crypt.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -97,6 +100,7 @@
 		0A1B2C3D2F60026400000001 /* VMProcessScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMProcessScanner.swift; sourceTree = "<group>"; };
 		0A1B2C3D2F60026400000002 /* RunningVMGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunningVMGuard.swift; sourceTree = "<group>"; };
 		06F4CAF5304F3A3F0033A29C /* AVMUSBHelper */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = AVMUSBHelper; sourceTree = BUILT_PRODUCTS_DIR; };
+		0A7E57000000000000000002 /* AVMTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AVMTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -107,11 +111,34 @@
 			);
 			target = 068FB6F02FD4D73200BF254D /* AVM */;
 		};
+		0A7E57000000000000000004 /* Exceptions for "AVM" folder in "AVMTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				SocketDirectory.swift,
+				StreamSocket.swift,
+				USBBrailleDeviceTable.swift,
+				USBDeviceClassifier.swift,
+				USBDeviceEnumerator.swift,
+				USBPlugDecision.swift,
+			);
+			target = 0A7E57000000000000000001 /* AVMTests */;
+		};
+		0A7E57000000000000000005 /* Exceptions for "AVMUSBHelper" folder in "AVMTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				AVMUSBHelperProtocol.swift,
+				streamfd.c,
+			);
+			target = 0A7E57000000000000000001 /* AVMTests */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		068FB6F32FD4D73200BF254D /* AVM */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				0A7E57000000000000000004 /* Exceptions for "AVM" folder in "AVMTests" target */,
+			);
 			path = AVM;
 			sourceTree = "<group>";
 		};
@@ -119,8 +146,14 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				06327C22304F42D100FABB8D /* Exceptions for "AVMUSBHelper" folder in "AVM" target */,
+				0A7E57000000000000000005 /* Exceptions for "AVMUSBHelper" folder in "AVMTests" target */,
 			);
 			path = AVMUSBHelper;
+			sourceTree = "<group>";
+		};
+		0A7E57000000000000000003 /* AVMTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = AVMTests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -136,6 +169,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		06F4CAF2304F3A3F0033A29C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		0A7E57000000000000000007 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -220,6 +260,7 @@
 				0679D7B22FD4EFD10058D960 /* VM */,
 				068FB6F32FD4D73200BF254D /* AVM */,
 				06F4CAF6304F3A3F0033A29C /* AVMUSBHelper */,
+				0A7E57000000000000000003 /* AVMTests */,
 				06600AF62FDF515400266F23 /* Frameworks */,
 				068FB6F22FD4D73200BF254D /* Products */,
 				0627886E2FE3AFCB00536554 /* AVM-Bridging-Header.h */,
@@ -231,6 +272,7 @@
 			children = (
 				068FB6F12FD4D73200BF254D /* AVM.app */,
 				06F4CAF5304F3A3F0033A29C /* AVMUSBHelper */,
+				0A7E57000000000000000002 /* AVMTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -288,6 +330,27 @@
 			productReference = 06F4CAF5304F3A3F0033A29C /* AVMUSBHelper */;
 			productType = "com.apple.product-type.tool";
 		};
+		0A7E57000000000000000001 /* AVMTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0A7E5700000000000000000A /* Build configuration list for PBXNativeTarget "AVMTests" */;
+			buildPhases = (
+				0A7E57000000000000000006 /* Sources */,
+				0A7E57000000000000000007 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				0A7E57000000000000000003 /* AVMTests */,
+			);
+			name = AVMTests;
+			packageProductDependencies = (
+			);
+			productName = AVMTests;
+			productReference = 0A7E57000000000000000002 /* AVMTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -304,6 +367,9 @@
 					};
 					06F4CAF4304F3A3F0033A29C = {
 						CreatedOnToolsVersion = 26.6;
+					};
+					0A7E57000000000000000001 = {
+						CreatedOnToolsVersion = 27.2;
 					};
 				};
 			};
@@ -327,6 +393,7 @@
 			targets = (
 				068FB6F02FD4D73200BF254D /* AVM */,
 				06F4CAF4304F3A3F0033A29C /* AVMUSBHelper */,
+				0A7E57000000000000000001 /* AVMTests */,
 			);
 		};
 /* End PBXProject section */
@@ -415,6 +482,16 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		0A7E57000000000000000006 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0A7E57000000000000000008 /* VMConfiguration.swift in Sources */,
+				0A7E57000000000000000009 /* SHA512Crypt.swift in Sources */,
+				0A7E5700000000000000000D /* AVMLog.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -868,6 +945,42 @@
 			};
 			name = Release;
 		};
+		0A7E5700000000000000000B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.alllisonmeloy.AVMTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_OBJC_BRIDGING_HEADER = "AVMTests/AVMTests-Bridging-Header.h";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		0A7E5700000000000000000C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.alllisonmeloy.AVMTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_OBJC_BRIDGING_HEADER = "AVMTests/AVMTests-Bridging-Header.h";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -894,6 +1007,15 @@
 			buildConfigurations = (
 				06F4CAF9304F3A3F0033A29C /* Debug */,
 				06F4CAFA304F3A3F0033A29C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		0A7E5700000000000000000A /* Build configuration list for PBXNativeTarget "AVMTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0A7E5700000000000000000B /* Debug */,
+				0A7E5700000000000000000C /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

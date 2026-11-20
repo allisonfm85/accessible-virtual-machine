@@ -27,7 +27,7 @@ import os.log
 // MARK: - Identity
 /// Bumped whenever the helper's behavior changes so AVM can tell a
 /// stale helper from a current one.
-let helperBuildVersion = "0.2.0-stream"
+let helperBuildVersion = AVMUSBHelperNames.protocolVersion
 let log = OSLog(subsystem: AVMUSBHelperNames.machServiceName, category: "helper")
 /// usbredir debug logging for every stream. Off in normal use: it is
 /// chatty, and a root process should not narrate USB traffic into the
@@ -99,7 +99,7 @@ let idle = IdleWatch()
 /// stream behind it, and which AVM connection asked for it.
 final class DeviceEntry {
     let device: AVMUSBDeviceIdentity
-    let socketPath: String
+    let streamLabel: String
     /// Serial queue that runs this device's pump. One per device so a
     /// blocked pump never stalls another device or the registry.
     let queue: DispatchQueue
@@ -112,9 +112,9 @@ final class DeviceEntry {
     /// A detach waiting for the pump to finish.
     var detachReply: ((Bool, String?) -> Void)?
     var detachTimeout: DispatchWorkItem?
-    init(device: AVMUSBDeviceIdentity, socketPath: String, connection: NSXPCConnection?) {
+    init(device: AVMUSBDeviceIdentity, streamLabel: String, connection: NSXPCConnection?) {
         self.device = device
-        self.socketPath = socketPath
+        self.streamLabel = streamLabel
         self.connection = connection
         self.queue = DispatchQueue(label: "device." + device.vidPidString)
     }
@@ -125,12 +125,17 @@ final class DeviceRegistry {
     private var entries: [AVMUSBDeviceIdentity: DeviceEntry] = [:]
     private var runtimeStarted = false
     // MARK: Attach
+    /// Takes ownership of `streamFD`, a descriptor the helper dup'd from
+    /// the FileHandle AVM sent: it is closed on every path, by the C
+    /// stream or here.
     func attach(_ device: AVMUSBDeviceIdentity,
-                streamSocketPath: String,
+                streamFD: Int32,
+                streamLabel: String,
                 connection: NSXPCConnection?,
                 reply: @escaping (Bool, String?, String?) -> Void) {
         queue.async {
             if let existing = self.entries[device] {
+                close(streamFD)
                 os_log("attach refused: %{public}@ is already held (state %{public}d)",
                        log: log, type: .default, device.description, existing.state.rawValue)
                 reply(false, "already attached",
@@ -144,21 +149,23 @@ final class DeviceRegistry {
                     let s = String(cString: step)
                     let d = String(cString: detail)
                     os_log("USB runtime failed to start at %{public}@: %{public}@", log: log, type: .error, s, d)
+                    close(streamFD)
                     reply(false, s, d)
                     return
                 }
                 self.runtimeStarted = true
                 os_log("USB runtime started", log: log, type: .default)
             }
-            let entry = DeviceEntry(device: device, socketPath: streamSocketPath, connection: connection)
+            let entry = DeviceEntry(device: device, streamLabel: streamLabel, connection: connection)
             let context = Unmanaged.passUnretained(entry).toOpaque()
             var step = [CChar](repeating: 0, count: 128)
             var detail = [CChar](repeating: 0, count: 512)
             os_log("attaching %{public}@ to %{public}@", log: log, type: .default,
-                   device.description, streamSocketPath)
+                   device.description, streamLabel)
+            // The C stream owns streamFD from here, success or failure.
             let stream = avm_usb_stream_attach(device.vendorID, device.productID,
                                                device.busNumber, device.deviceAddress,
-                                               streamSocketPath,
+                                               streamFD, streamLabel,
                                                verboseStreamLogging ? 1 : 0,
                                                streamEventCallback, context,
                                                &step, step.count, &detail, detail.count)
@@ -221,7 +228,7 @@ final class DeviceRegistry {
     func status(reply: @escaping ([AVMUSBDeviceStatus]) -> Void) {
         queue.async {
             let rows = self.entries.values.map {
-                AVMUSBDeviceStatus(device: $0.device, state: $0.state, streamSocketPath: $0.socketPath)
+                AVMUSBDeviceStatus(device: $0.device, state: $0.state, streamSocketPath: $0.streamLabel)
             }
             reply(rows)
         }
@@ -318,11 +325,22 @@ final class HelperService: NSObject, AVMUSBHelperProtocol {
     /// callbacks can reach the right AVM.
     weak var connection: NSXPCConnection?
     func attach(_ device: AVMUSBDeviceIdentity,
-                streamSocketPath: String,
+                stream: FileHandle,
+                streamLabel: String,
                 reply: @escaping (Bool, String?, String?) -> Void) {
         os_log("attach requested for %{public}@ to %{public}@", log: log, type: .default,
-               device.description, streamSocketPath)
-        registry.attach(device, streamSocketPath: streamSocketPath, connection: connection, reply: reply)
+               device.description, streamLabel)
+        // Our own copy of the descriptor: the FileHandle closes its one
+        // when XPC lets go of it. Nothing here touches a path.
+        let fd = dup(stream.fileDescriptor)
+        guard fd >= 0 else {
+            let reason = String(cString: strerror(errno))
+            os_log("attach of %{public}@ failed at socket: dup: %{public}@", log: log, type: .error,
+                   device.description, reason)
+            reply(false, "socket", "the helper could not take the stream socket (\(reason))")
+            return
+        }
+        registry.attach(device, streamFD: fd, streamLabel: streamLabel, connection: connection, reply: reply)
     }
     func detach(_ device: AVMUSBDeviceIdentity,
                 reply: @escaping (Bool, String?) -> Void) {

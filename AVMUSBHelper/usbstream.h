@@ -68,17 +68,27 @@ int avm_usb_runtime_start(char *step, size_t step_len,
                           char *detail, size_t detail_len);
 void avm_usb_runtime_stop(void);
 
-/* Open the device at bus/address, check it is vendor:product, connect to
- * the unix socket QEMU listens on, and hand the device to usbredirhost
- * (which claims every interface and sends the hello + device_connect).
+/* Check that stream_fd is a connected unix stream socket, open the device
+ * at bus/address, check it is vendor:product, and hand the device to
+ * usbredirhost over stream_fd (which claims every interface and sends the
+ * hello + device_connect).
+ *
+ * stream_fd is a socket AVM already connected to QEMU's usbredir chardev,
+ * received over XPC. The helper never connects by path: it runs as root,
+ * and a path can be swapped or symlinked by another account. The stream
+ * takes ownership of stream_fd in every case, success or failure; the
+ * caller must not close it. label names the stream in messages only.
+ *
  * Returns the stream, or NULL with step/detail filled. On NULL nothing
- * is left claimed. verbose nonzero selects usbredir debug logging.
- * The device is attached on return; run the pump next. */
+ * is left claimed and stream_fd is closed. verbose nonzero selects
+ * usbredir debug logging. The device is attached on return; run the
+ * pump next. */
 avm_usb_stream *avm_usb_stream_attach(uint16_t vendor_id,
                                       uint16_t product_id,
                                       uint8_t bus_number,
                                       uint8_t device_address,
-                                      const char *socket_path,
+                                      int stream_fd,
+                                      const char *label,
                                       int verbose,
                                       avm_usb_event_fn callback,
                                       void *context,
