@@ -33,6 +33,17 @@ nonisolated public enum AVMUSBHelperNames {
 
     /// The bundle identifier of the app that is allowed to talk to the helper.
     public static let clientBundleIdentifier = "com.alllisonmeloy.AVM"
+
+    /// The helper's build version, which is also the version of this
+    /// contract. AVM checks it before every attach, so an older helper
+    /// still loaded by launchd after an update is caught and named
+    /// instead of failing as an unexplained XPC error. Bump it whenever
+    /// this file's calls change.
+    ///
+    /// 0.3.0-fd: attach takes the stream as an open socket (FileHandle)
+    /// instead of a path. The root helper never resolves a path AVM
+    /// sends it.
+    public static let protocolVersion = "0.3.0-fd"
 }
 
 // MARK: - Device identity
@@ -153,6 +164,8 @@ nonisolated public final class AVMUSBDeviceStatus: NSObject, NSSecureCoding {
 
     @objc public let device: AVMUSBDeviceIdentity
     @objc public let state: AVMUSBDeviceState
+    /// Where the stream goes, as AVM named it at attach (the QEMU socket
+    /// path). A label for logs only: the helper never opens it.
     @objc public let streamSocketPath: String
 
     @objc public init(device: AVMUSBDeviceIdentity,
@@ -186,12 +199,19 @@ nonisolated public final class AVMUSBDeviceStatus: NSObject, NSSecureCoding {
 
 @objc(AVMUSBHelperProtocol)
 nonisolated public protocol AVMUSBHelperProtocol {
-    /// Claim a device and stream it to the QEMU usbredir socket at
-    /// streamSocketPath. QEMU listens; the helper dials.
+    /// Claim a device and stream it over `stream`, a unix socket AVM has
+    /// already connected to QEMU's usbredir chardev. QEMU listens; AVM
+    /// dials, as the user, and hands the connected socket over. The
+    /// helper runs as root and must never resolve a path it was sent:
+    /// a path under /tmp can be swapped or symlinked by another account.
+    /// `streamLabel` names the stream in logs and status only.
+    /// The helper takes its own copy of the descriptor; AVM closes its
+    /// copy once the reply arrives.
     /// Reply: success, failing step (nil on success), detail.
     /// Attach calls stack. Each device is an independent claim.
     func attach(_ device: AVMUSBDeviceIdentity,
-                streamSocketPath: String,
+                stream: FileHandle,
+                streamLabel: String,
                 reply: @escaping (Bool, String?, String?) -> Void)
 
     /// Release one device. Reply: success, detail.

@@ -86,6 +86,9 @@ nonisolated enum USBHelperError: Error, CustomStringConvertible {
     case helperUnavailable(String)
     /// The helper answered and said no. Step names where, detail why.
     case helper(step: String, detail: String)
+    /// The helper that answered speaks another contract version: an
+    /// older helper still loaded by launchd after an update.
+    case helperOutdated(found: String)
 
     var description: String {
         switch self {
@@ -93,6 +96,7 @@ nonisolated enum USBHelperError: Error, CustomStringConvertible {
         case .xpc(let s): return s
         case .helperUnavailable(let s): return "helper unavailable: \(s)"
         case .helper(let step, let detail): return "\(step): \(detail)"
+        case .helperOutdated(let found): return "helper version mismatch: \(found)"
         }
     }
 
@@ -390,20 +394,47 @@ final class USBHelperClient: NSObject, ObservableObject {
     /// usbredir socket at `socketPath`. QEMU must already be listening
     /// there (the caller adds the chardev over QMP first).
     ///
+    /// AVM connects to the socket itself, as the user, and hands the
+    /// connected socket to the helper. The root helper never opens a
+    /// path (contract 0.3.0-fd). Once connected, the socket file is
+    /// removed: QEMU keeps the connection, and nobody else can dial in.
+    ///
     /// A success reply means the claim started, not that it finished:
     /// the outcome arrives as a stateChanged event and is spoken there.
     /// A failure reply is spoken here, once, with its step.
     func attach(_ device: AVMUSBDeviceIdentity,
-                socketPath: String,
-                retrying: Bool = false) async -> Result<Void, USBHelperError> {
+                socketPath: String) async -> Result<Void, USBHelperError> {
         guard ensureRegistered() else {
             return .failure(.notEnabled(status))
         }
         announcedAttachFailures.remove(device)
         reached.remove(device)
+
+        let stream: FileHandle
+        switch StreamSocket.connect(path: socketPath) {
+        case .success(let handle):
+            stream = handle
+        case .failure(let failure):
+            log("attach: could not connect to \(socketPath) for \(device.description): \(failure.detail)")
+            announceAttachFailure(device, step: "stream socket")
+            return .failure(.helper(step: "stream socket", detail: failure.detail))
+        }
+        if unlink(socketPath) != 0 {
+            log("attach: could not remove \(socketPath) after connecting: \(String(cString: strerror(errno)))")
+        }
+        // Our copy of the socket. XPC sends the helper its own; ours is
+        // closed when this function returns, whatever happened.
+        defer { try? stream.close() }
+        return await sendAttach(device, stream: stream, label: socketPath, retrying: false)
+    }
+
+    private func sendAttach(_ device: AVMUSBDeviceIdentity,
+                            stream: FileHandle,
+                            label: String,
+                            retrying: Bool) async -> Result<Void, USBHelperError> {
         pendingDevices.insert(device)
         let c = connect()
-        log("attach: \(device.description) -> \(socketPath)")
+        log("attach: \(device.description) -> \(label)")
 
         // 1e: a still-working line if nothing has resolved in ~2 s.
         let stillWorking = Task { @MainActor [weak self] in
@@ -414,20 +445,23 @@ final class USBHelperClient: NSObject, ObservableObject {
             }
         }
 
-        let result: Result<Void, USBHelperError> = await withCheckedContinuation { cont in
-            let proxy = c.remoteObjectProxyWithErrorHandler { error in
-                cont.resume(returning: .failure(USBHelperError.fromXPC(error)))
-            } as? AVMUSBHelperProtocol
-            guard let proxy else {
-                cont.resume(returning: .failure(.xpc("could not build the helper proxy")))
-                return
-            }
-            proxy.attach(device, streamSocketPath: socketPath) { ok, step, detail in
-                if ok {
-                    cont.resume(returning: .success(()))
-                } else {
-                    cont.resume(returning: .failure(.helper(step: step ?? "unknown step",
-                                                            detail: detail ?? "")))
+        var result = await checkHelperVersion(on: c)
+        if case .success = result {
+            result = await withCheckedContinuation { cont in
+                let proxy = c.remoteObjectProxyWithErrorHandler { error in
+                    cont.resume(returning: .failure(USBHelperError.fromXPC(error)))
+                } as? AVMUSBHelperProtocol
+                guard let proxy else {
+                    cont.resume(returning: .failure(.xpc("could not build the helper proxy")))
+                    return
+                }
+                proxy.attach(device, stream: stream, streamLabel: label) { ok, step, detail in
+                    if ok {
+                        cont.resume(returning: .success(()))
+                    } else {
+                        cont.resume(returning: .failure(.helper(step: step ?? "unknown step",
+                                                                detail: detail ?? "")))
+                    }
                 }
             }
         }
@@ -441,10 +475,12 @@ final class USBHelperClient: NSObject, ObservableObject {
             log("attach: helper refused \(device.description): \(error)")
             disconnectIfIdle()
             if case .helperUnavailable = error, retrying == false, recoverLostRegistration() {
-                return await attach(device, socketPath: socketPath, retrying: true)
+                return await sendAttach(device, stream: stream, label: label, retrying: true)
             }
             if isQuiet(device) {
                 log("attach: failure not spoken; the send gate is handling \(device.description)")
+            } else if case .helperOutdated(let found) = error {
+                announce("Could not attach \(device.displayName). Step: checking the USB helper. Reason: the helper still running is from another version of AVM (\(found)). Next: wait one minute so it can exit, then attach \(device.displayName) again.", tone: .failure)
             } else if case .helper(let step, _) = error {
                 announceAttachFailure(device, step: step)
             } else {
@@ -452,6 +488,36 @@ final class USBHelperClient: NSObject, ObservableObject {
             }
         }
         return result
+    }
+
+    /// Asks the helper its version on `c` and compares it with the
+    /// contract this AVM was built with. After an update, launchd can
+    /// still have the previous helper loaded; it would not understand
+    /// the attach call and the failure would be an unexplained XPC error.
+    private func checkHelperVersion(on c: NSXPCConnection) async -> Result<Void, USBHelperError> {
+        let answer: Result<String, USBHelperError> = await withCheckedContinuation { cont in
+            let proxy = c.remoteObjectProxyWithErrorHandler { error in
+                cont.resume(returning: .failure(USBHelperError.fromXPC(error)))
+            } as? AVMUSBHelperProtocol
+            guard let proxy else {
+                cont.resume(returning: .failure(.xpc("could not build the helper proxy")))
+                return
+            }
+            proxy.helperVersion { version in
+                cont.resume(returning: .success(version))
+            }
+        }
+        switch answer {
+        case .failure(let error):
+            return .failure(error)
+        case .success(let version):
+            let expected = AVMUSBHelperNames.machServiceName + " " + AVMUSBHelperNames.protocolVersion
+            guard version == expected else {
+                log("helper version mismatch: found \(version), expected \(expected)")
+                return .failure(.helperOutdated(found: version))
+            }
+            return .success(())
+        }
     }
 
     /// Ask the helper to release `device`. The helper answers after its

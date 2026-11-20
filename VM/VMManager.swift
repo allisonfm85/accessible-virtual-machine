@@ -937,8 +937,17 @@ final class VMManager: ObservableObject {
             activeConfiguration = configuration
         }
 
-        let socketDir = URL(fileURLWithPath: "/tmp/avm/\(configuration.id.uuidString)")
-        try FileManager.default.createDirectory(at: socketDir, withIntermediateDirectories: true)
+        let socketDir: URL
+        do {
+            // Private, checked folder: see SocketDirectory.swift.
+            socketDir = try SocketDirectory.prepare(for: configuration.id) { avmLog($0) }
+        } catch {
+            let msg = error.localizedDescription
+            avmLog("startVM: socket directory refused: \(msg)")
+            state = .error(msg)
+            Announcer.shared.announce(msg, tone: .failure)
+            throw error
+        }
         vmSocketDir = socketDir
 
         let spicePath = socketDir.appendingPathComponent("spice.sock").path

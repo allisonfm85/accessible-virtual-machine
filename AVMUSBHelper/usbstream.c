@@ -16,6 +16,7 @@
  * writes when the stream still has a host and a live socket.
  */
 #include "usbstream.h"
+#include "streamfd.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -112,7 +113,7 @@ struct avm_usb_stream {
     struct usbredirhost *host;
     char name[128];
     char speed[64];
-    char socket_path[256];
+    char label[256];
     volatile int quit;
     volatile int socket_dead;
     avm_usb_event_fn callback;
@@ -273,47 +274,12 @@ static libusb_device_handle *open_at(uint16_t vid, uint16_t pid,
     return h;
 }
 
-static int connect_unix(const char *path, char *step, size_t step_len,
-                        char *detail, size_t detail_len)
-{
-    struct sockaddr_un sa;
-    int fd, one = 1, fl;
-    char text[512];
-
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) {
-        fill(step, step_len, "socket");
-        fill(detail, detail_len, strerror(errno));
-        return -1;
-    }
-    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
-    memset(&sa, 0, sizeof(sa));
-    sa.sun_family = AF_UNIX;
-    if (strlen(path) >= sizeof(sa.sun_path)) {
-        fill(step, step_len, "socket");
-        fill(detail, detail_len, "stream socket path is too long for a unix socket");
-        close(fd);
-        return -1;
-    }
-    strncpy(sa.sun_path, path, sizeof(sa.sun_path) - 1);
-    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
-        snprintf(text, sizeof(text), "%s: %s (is QEMU listening there?)",
-                 path, strerror(errno));
-        fill(step, step_len, "connect");
-        fill(detail, detail_len, text);
-        close(fd);
-        return -1;
-    }
-    fl = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
-    return fd;
-}
-
 avm_usb_stream *avm_usb_stream_attach(uint16_t vendor_id,
                                       uint16_t product_id,
                                       uint8_t bus_number,
                                       uint8_t device_address,
-                                      const char *socket_path,
+                                      int stream_fd,
+                                      const char *label,
                                       int verbose,
                                       avm_usb_event_fn callback,
                                       void *context,
@@ -325,38 +291,36 @@ avm_usb_stream *avm_usb_stream_attach(uint16_t vendor_id,
     struct usbredirhost *host;
     char text[256];
 
+    /* From here on this function owns stream_fd: every failure closes it. */
     if (g_started == 0) {
         fill(step, step_len, "runtime");
         fill(detail, detail_len, "USB runtime not started");
+        if (stream_fd >= 0)
+            close(stream_fd);
         return NULL;
     }
-    if (socket_path == NULL || socket_path[0] == 0) {
-        fill(step, step_len, "socket");
-        fill(detail, detail_len, "no stream socket path given");
+    if (avm_usb_prepare_stream_fd(stream_fd, step, step_len, detail, detail_len) != 0) {
+        if (stream_fd >= 0)
+            close(stream_fd);
         return NULL;
     }
     s = calloc(1, sizeof(*s));
     if (s == NULL) {
         fill(step, step_len, "allocate");
         fill(detail, detail_len, "out of memory");
+        close(stream_fd);
         return NULL;
     }
-    s->fd = -1;
+    s->fd = stream_fd;
     s->callback = callback;
     s->context = context;
-    snprintf(s->socket_path, sizeof(s->socket_path), "%s", socket_path);
+    snprintf(s->label, sizeof(s->label), "%s", label != NULL ? label : "");
 
     h = open_at(vendor_id, product_id, bus_number, device_address,
                 s->name, sizeof(s->name), s->speed, sizeof(s->speed),
                 step, step_len, detail, detail_len);
     if (h == NULL) {
-        free(s);
-        return NULL;
-    }
-
-    s->fd = connect_unix(socket_path, step, step_len, detail, detail_len);
-    if (s->fd < 0) {
-        libusb_close(h);
+        close(s->fd);
         free(s);
         return NULL;
     }
