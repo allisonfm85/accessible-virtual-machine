@@ -19,10 +19,13 @@
 //      whose matching criteria name only that device's vendor and product
 //      IDs. If the device was granted before, macOS should hand it over
 //      at once. If not, the user grants it in Virtual Machine Accessories.
-//    - Debug > Grant Test: Stop Listening unregisters that one listener.
-//      Apple's unregister call takes the listener object, so each device
-//      needs its own listener. The question is whether macOS then gives
-//      back only that device, without AVM quitting.
+//    - Debug > Grant Test: Stop Listening gives one device back.
+//      Handoff 68 found that macOS keeps every granted device with AVM
+//      while any listener is registered; unregistering one listener alone
+//      gives nothing back. So Stop Listening now unregisters every
+//      listener, waits until macOS confirms, then registers again for the
+//      devices that should stay. The log times how long each of those
+//      takes to come back, which is the gap a device in Windows would see.
 //    - Debug > Grant Test: Status speaks what AVM is listening for and
 //      which of those devices AVM has now.
 //  Nothing listens at launch. Nothing is remembered between launches yet.
@@ -80,6 +83,9 @@ enum AccessoryGrantTest {
         alert.addButton(withTitle: "Listen")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = popup
+        // Handoff 68: the Stop dialog once ended up hidden behind AVM's
+        // window, leaving the menu dimmed. Floating keeps it in front.
+        alert.window.level = .floating
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         let device = choices[popup.indexOfSelectedItem]
@@ -113,9 +119,43 @@ enum AccessoryGrantTest {
         alert.addButton(withTitle: "Stop Listening")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = popup
+        alert.window.level = .floating
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        active[popup.indexOfSelectedItem].stop()
+        stopAndRestartOthers(active[popup.indexOfSelectedItem])
+    }
+
+    /// When the restart began, for timing how fast the kept devices return.
+    static var restartBegan: Date?
+
+    /// Unregisters every listener, then registers again for every device
+    /// except the one being given back.
+    static func stopAndRestartOthers(_ target: AccessoryGrantListener) {
+        let all = Array(listeners.values)
+        let keep = all.filter { $0 !== target }
+        let targetName = target.name
+        restartBegan = Date()
+        log("giving back \(target.key): unregistering all \(all.count) listeners, then registering \(keep.count) again")
+        let group = DispatchGroup()
+        for listener in all {
+            group.enter()
+            listener.unregister { group.leave() }
+        }
+        group.notify(queue: .main) {
+            MainActor.assumeIsolated {
+                let ms = Int(Date().timeIntervalSince(restartBegan ?? Date()) * 1000)
+                log("all listeners unregistered after \(ms) ms")
+                listeners.removeAll()
+                Announcer.shared.announce("AVM stopped listening for \(targetName).", tone: .info)
+                for old in keep {
+                    let fresh = AccessoryGrantListener(vendorID: old.vendorID,
+                                                       productID: old.productID,
+                                                       name: old.name)
+                    listeners[fresh.key] = fresh
+                    fresh.start()
+                }
+            }
+        }
     }
 
     /// Called by a listener once macOS confirms it's unregistered.
@@ -199,16 +239,14 @@ nonisolated final class AccessoryGrantListener: NSObject, AAUSBAccessoryListener
     }
 
     @MainActor
-    func stop() {
-        let name = self.name
+    func unregister(completion: @escaping @Sendable () -> Void) {
         let key = self.key
         AccessoryGrantTest.log("unregistering \(key)")
         AAUSBAccessoryManager.shared.unregisterListener(self) {
             Task { @MainActor in
                 self.granted.removeAll()
-                AccessoryGrantTest.forget(key)
                 AccessoryGrantTest.log("unregistered \(key)")
-                Announcer.shared.announce("AVM stopped listening for \(name).", tone: .info)
+                completion()
             }
         }
     }
@@ -222,7 +260,11 @@ nonisolated final class AccessoryGrantListener: NSObject, AAUSBAccessoryListener
         let key = self.key
         Task { @MainActor in
             self.granted[id] = usbAccessory
-            AccessoryGrantTest.log("granted to AVM (listener \(key)): \(line)")
+            var timing = ""
+            if let began = AccessoryGrantTest.restartBegan {
+                timing = " (\(Int(Date().timeIntervalSince(began) * 1000)) ms after the restart began)"
+            }
+            AccessoryGrantTest.log("granted to AVM (listener \(key)): \(line)\(timing)")
             Announcer.shared.announce("AVM received \(name).", tone: .info)
         }
     }
@@ -233,7 +275,11 @@ nonisolated final class AccessoryGrantListener: NSObject, AAUSBAccessoryListener
         let name = self.name
         Task { @MainActor in
             self.granted[id] = nil
-            AccessoryGrantTest.log("taken back or unplugged (listener \(key)): registry \(id)")
+            var timing = ""
+            if let began = AccessoryGrantTest.restartBegan {
+                timing = " (\(Int(Date().timeIntervalSince(began) * 1000)) ms after the restart began)"
+            }
+            AccessoryGrantTest.log("taken back or unplugged (listener \(key)): registry \(id)\(timing)")
             Announcer.shared.announce("\(name) left AVM.", tone: .info)
         }
     }
