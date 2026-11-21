@@ -298,6 +298,23 @@ final class USBRedirectController: ObservableObject {
         }
     }
 
+    // MARK: Which USB path is in charge
+
+    /// False when the old USB path (hot-plug watcher, plug-in alerts,
+    /// sends at Windows start, Attach and Detach USB Device, root helper)
+    /// must stay out of the way. Handoff 68: on macOS 27 the Claim USB
+    /// Accessory test owns USB, and both paths fighting over one device
+    /// (a bounce set off a root-helper send and a Login Items prompt) made
+    /// results hard to read. Debug builds only, until the new path is
+    /// designed; macOS 13 to 26 always keep the old path, because they have
+    /// no Virtual Machine Accessories menu.
+    static var legacyPathActive: Bool {
+        #if DEBUG
+        if #available(macOS 27.0, *) { return false }
+        #endif
+        return true
+    }
+
     // MARK: USB drives
 
     /// Set to false once Apple lets AVM capture USB storage. See the

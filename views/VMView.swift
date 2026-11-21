@@ -1994,7 +1994,9 @@ final class SPICECoordinator: NSObject, CSConnectionDelegate {
         // INSTALL WATCHDOG, AFTER THE MARKER (2026-11-15): the same signal
         // ends the install watchdog's watch.
         Task { @MainActor in
-            USBPlugPrompt.shared.windowsIsUp(because: "the SPICE agent connected")
+            if USBRedirectController.legacyPathActive {
+                USBPlugPrompt.shared.windowsIsUp(because: "the SPICE agent connected")
+            }
             VMManager.shared?.windowsAgentConnected()
         }
     }

@@ -347,7 +347,9 @@ final class VMManager: ObservableObject {
         AVMLog.write("VMManager: state is now \(state)", category: "USBHotPlug")
         switch state {
         case .running:
-            if let id = activeConfiguration?.id {
+            if !USBRedirectController.legacyPathActive {
+                AVMLog.write("VMManager: old USB path off on macOS 27 (Debug); USB watcher not started", category: "USBHotPlug")
+            } else if let id = activeConfiguration?.id {
                 USBHotPlugWatcher.shared.start(vmID: id)
                 // Sends any device held while Windows was paused.
                 USBPlugPrompt.shared.vmRunning()

@@ -299,15 +299,19 @@ struct AVMApp: App {
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
 
-                Divider()
+                // Hidden while the old USB path is off (macOS 27 Debug
+                // builds, Handoff 68).
+                if USBRedirectController.legacyPathActive {
+                    Divider()
 
-                Button("Attach USB Device…") {
-                    AVMLog.write("AVM: Attach USB Device menu — posting request to ContentView.", category: "USBHelper")
-                    NotificationCenter.default.post(name: .avmAttachUSBFromMenu, object: nil)
-                }
-                Button("Detach USB Device…") {
-                    AVMLog.write("AVM: Detach USB Device menu — posting request to ContentView.", category: "USBHelper")
-                    NotificationCenter.default.post(name: .avmDetachUSBFromMenu, object: nil)
+                    Button("Attach USB Device…") {
+                        AVMLog.write("AVM: Attach USB Device menu — posting request to ContentView.", category: "USBHelper")
+                        NotificationCenter.default.post(name: .avmAttachUSBFromMenu, object: nil)
+                    }
+                    Button("Detach USB Device…") {
+                        AVMLog.write("AVM: Detach USB Device menu — posting request to ContentView.", category: "USBHelper")
+                        NotificationCenter.default.post(name: .avmDetachUSBFromMenu, object: nil)
+                    }
                 }
 
                 Divider()
