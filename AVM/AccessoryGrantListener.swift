@@ -34,12 +34,21 @@
 //  device. The test asks QEMU to take a granted device with usb-host,
 //  over the diagnostic QMP socket.
 //
+//  Handoff 69 found that a QEMU already running can't open a device
+//  granted after it started. The child tool test (Debug > Grant Test:
+//  Start Child Tool and friends) checks the hand-off from thread 851767:
+//  AVM sends a running child the bytes of the grant's XPC
+//  representation, and the child rebuilds and opens it. The child is
+//  ~/Developer/AVM-dist/aatest, built from aatest-src/aatest.m. AVM
+//  writes everything it prints to the log, prefixed "child:".
+//
 
 #if DEBUG
 import AccessoryAccess
 import AppKit
 import Foundation
 import IOKit
+import XPC
 
 /// The Debug menu's three Grant Test items. Holds one listener per device.
 @available(macOS 27.0, *)
@@ -185,6 +194,140 @@ enum AccessoryGrantTest {
     }
 }
 
+// MARK: - Child tool (Handoff 69)
+
+@available(macOS 27.0, *)
+extension AccessoryGrantTest {
+
+    private static var child: Process?
+    private static var childInput: FileHandle?
+
+    static var childToolPath: String {
+        NSString(string: "~/Developer/AVM-dist/aatest").expandingTildeInPath
+    }
+
+    /// Starts the child tool, the way AVM starts QEMU.
+    static func startChildTool() {
+        if let running = child, running.isRunning {
+            Announcer.shared.announce("The child tool is already running.", tone: .info)
+            return
+        }
+        let path = childToolPath
+        guard FileManager.default.isExecutableFile(atPath: path) else {
+            log("child tool not found at \(path)")
+            Announcer.shared.announce("The child tool isn't built yet.", tone: .failure)
+            return
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        let input = Pipe()
+        let output = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = output
+        output.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            let lines = text.split(separator: "\n").map(String.init)
+            Task { @MainActor in
+                for line in lines { childSaid(line) }
+            }
+        }
+        process.terminationHandler = { ended in
+            let status = ended.terminationStatus
+            Task { @MainActor in
+                log("child tool ended, status \(status)")
+                child = nil
+                childInput = nil
+                Announcer.shared.announce("The child tool stopped.", tone: .info)
+            }
+        }
+        do {
+            try process.run()
+        } catch {
+            log("child tool failed to start: \(error)")
+            Announcer.shared.announce("The child tool didn't start. Reason: \(error.localizedDescription)", tone: .failure)
+            return
+        }
+        child = process
+        childInput = input.fileHandleForWriting
+        log("child tool started, pid \(process.processIdentifier)")
+        Announcer.shared.announce("Child tool started.", tone: .info)
+    }
+
+    /// Logs one line from the child and speaks the results that matter.
+    static func childSaid(_ line: String) {
+        log("child: \(line)")
+        if line.hasPrefix("grant:") {
+            Announcer.shared.announce("Child tool: " + String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces), tone: .info)
+        } else if line.contains("USBDeviceOpenSeize") {
+            let opened = line.contains("(opened)")
+            Announcer.shared.announce(opened ? "Child tool opened the device." : "Child tool could not open the device.", tone: opened ? .success : .failure)
+        }
+    }
+
+    @discardableResult
+    private static func sendToChild(_ line: String) -> Bool {
+        guard let handle = childInput, child?.isRunning == true else {
+            Announcer.shared.announce("Start the child tool first.", tone: .failure)
+            return false
+        }
+        do {
+            try handle.write(contentsOf: Data((line + "\n").utf8))
+            return true
+        } catch {
+            log("could not write to the child tool: \(error)")
+            Announcer.shared.announce("AVM couldn't talk to the child tool.", tone: .failure)
+            return false
+        }
+    }
+
+    /// Asks the child to open every device AVM listens for, the libusb way.
+    static func probeInChild() {
+        let active = listeners.values.sorted { $0.key < $1.key }
+        guard !active.isEmpty else {
+            Announcer.shared.announce("AVM isn't listening for any USB devices.", tone: .info)
+            return
+        }
+        for listener in active {
+            guard sendToChild("probe " + String(format: "%04x %04x", listener.vendorID, listener.productID)) else { return }
+            log("asked the child tool to probe \(listener.key)")
+        }
+    }
+
+    /// Sends the child the XPC representation of every device AVM has.
+    static func sendGrantsToChild() {
+        var sent = 0
+        for listener in listeners.values.sorted(by: { $0.key < $1.key }) {
+            for accessory in listener.currentAccessories() {
+                let xpc = accessory.createXPCRepresentation()
+                guard xpc_get_type(xpc) == XPC_TYPE_DATA, let bytes = xpc_data_get_bytes_ptr(xpc) else {
+                    log("the grant for registry \(accessory.registryID) isn't an XPC data object")
+                    continue
+                }
+                let data = Data(bytes: bytes, count: xpc_data_get_length(xpc))
+                guard sendToChild("grant " + data.base64EncodedString()) else { return }
+                log("sent the child tool the grant for registry \(accessory.registryID) (\(data.count) bytes)")
+                sent += 1
+            }
+        }
+        if sent == 0 {
+            Announcer.shared.announce("AVM has no granted devices to send.", tone: .info)
+        }
+    }
+
+    /// Closes the child's stdin; the child exits on its own.
+    static func stopChildTool() {
+        guard child?.isRunning == true else {
+            Announcer.shared.announce("The child tool isn't running.", tone: .info)
+            return
+        }
+        try? childInput?.close()
+        childInput = nil
+        log("asked the child tool to stop")
+    }
+}
+
 /// Listens for one device, by vendor and product ID.
 @available(macOS 27.0, *)
 nonisolated final class AccessoryGrantListener: NSObject, AAUSBAccessoryListener, @unchecked Sendable {
@@ -198,6 +341,9 @@ nonisolated final class AccessoryGrantListener: NSObject, AAUSBAccessoryListener
     private var granted: [UInt64: AAUSBAccessory] = [:]
 
     @MainActor var hasDevice: Bool { !granted.isEmpty }
+
+    /// The devices macOS has granted through this listener.
+    @MainActor func currentAccessories() -> [AAUSBAccessory] { Array(granted.values) }
 
     init(vendorID: UInt16, productID: UInt16, name: String) {
         self.vendorID = vendorID

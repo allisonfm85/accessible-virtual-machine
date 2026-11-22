@@ -259,6 +259,19 @@ struct AVMApp: App {
                     Button("Grant Test: Status") {
                         AccessoryGrantTest.speakStatus()
                     }
+                    // Handoff 69: can a running child use a later grant?
+                    Button("Grant Test: Start Child Tool") {
+                        AccessoryGrantTest.startChildTool()
+                    }
+                    Button("Grant Test: Child Tool Probe") {
+                        AccessoryGrantTest.probeInChild()
+                    }
+                    Button("Grant Test: Send Grants to Child Tool") {
+                        AccessoryGrantTest.sendGrantsToChild()
+                    }
+                    Button("Grant Test: Stop Child Tool") {
+                        AccessoryGrantTest.stopChildTool()
+                    }
                 }
             }
             #endif
