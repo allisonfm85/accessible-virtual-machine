@@ -1,0 +1,92 @@
+--- a/libusb/os/darwin_usb.c
++++ b/libusb/os/darwin_usb.c
+@@ -1582,6 +1582,8 @@
+ 
+   return LIBUSB_SUCCESS;
+ }
++
++static int darwin_reload_device (struct libusb_device_handle *dev_handle);
+ 
+ static int darwin_open (struct libusb_device_handle *dev_handle) {
+   struct darwin_device_handle_priv *priv = usbi_get_device_handle_priv(dev_handle);
+@@ -1593,34 +1595,56 @@
+       usbi_err(HANDLE_CTX(dev_handle), "device interface is NULL, cannot open");
+       return LIBUSB_ERROR_NO_DEVICE;
+     }
+-    /* try to open the device */
+-    kresult = (*dpriv->device)->USBDeviceOpenSeize (dpriv->device);
+-    if (kresult != kIOReturnSuccess) {
+-      usbi_warn (HANDLE_CTX (dev_handle), "USBDeviceOpen: %s", darwin_error_str(kresult));
++    /* AVM patch (Handoff 69): the cached device interface can go stale
++       while the IOService, its sessionID and its registry entry stay the
++       same. On macOS 27, when AccessoryAccess gives a device to an app,
++       accessoryaccessd takes exclusive ownership, and user clients made
++       before that stop working. A process that listed the device earlier
++       (a running QEMU) then can't open it. If opening fails, make a fresh
++       interface from the same service and try once more. */
++    for (int attempt = 0 ; ; attempt++) {
++      /* try to open the device */
++      kresult = (*dpriv->device)->USBDeviceOpenSeize (dpriv->device);
++      if (kresult != kIOReturnSuccess) {
++        usbi_warn (HANDLE_CTX (dev_handle), "USBDeviceOpen: %s (0x%08x)", darwin_error_str(kresult), (unsigned) kresult);
++
++        if (kIOReturnExclusiveAccess != kresult) {
++          if (0 == attempt && LIBUSB_SUCCESS == darwin_reload_device (dev_handle) && dpriv->device) {
++            usbi_warn (HANDLE_CTX (dev_handle), "reloaded the device interface; trying the open again");
++            continue;
++          }
++          return darwin_to_libusb (kresult);
++        }
+ 
+-      if (kIOReturnExclusiveAccess != kresult) {
+-        return darwin_to_libusb (kresult);
+-      }
++        /* it is possible to perform some actions on a device that is not open so do not return an error */
++        priv->is_open = false;
++      } else {
++        priv->is_open = true;
++      }
++
++      /* create async event source */
++      kresult = (*dpriv->device)->CreateDeviceAsyncEventSource (dpriv->device,
++                                                                &priv->cfSource);
++      if (kresult != kIOReturnSuccess) {
++        usbi_err (HANDLE_CTX (dev_handle), "CreateDeviceAsyncEventSource: %s (0x%08x)", darwin_error_str(kresult), (unsigned) kresult);
+ 
+-      /* it is possible to perform some actions on a device that is not open so do not return an error */
+-      priv->is_open = false;
+-    } else {
+-      priv->is_open = true;
+-    }
+-
+-    /* create async event source */
+-    kresult = (*dpriv->device)->CreateDeviceAsyncEventSource (dpriv->device,
+-                                                                                &priv->cfSource);
+-    if (kresult != kIOReturnSuccess) {
+-      usbi_err (HANDLE_CTX (dev_handle), "CreateDeviceAsyncEventSource: %s", darwin_error_str(kresult));
+-
+-      if (priv->is_open) {
+-        (*dpriv->device)->USBDeviceClose (dpriv->device);
+-      }
++        if (priv->is_open) {
++          (*dpriv->device)->USBDeviceClose (dpriv->device);
++        }
+ 
+-      priv->is_open = false;
++        priv->is_open = false;
+ 
+-      return darwin_to_libusb (kresult);
++        if (0 == attempt && LIBUSB_SUCCESS == darwin_reload_device (dev_handle) && dpriv->device) {
++          usbi_warn (HANDLE_CTX (dev_handle), "reloaded the device interface; trying the open again");
++          continue;
++        }
++        return darwin_to_libusb (kresult);
++      }
++
++      if (attempt > 0) {
++        usbi_warn (HANDLE_CTX (dev_handle), "opened after reloading the device interface");
++      }
++      break;
+     }
+ 
+     CFRetain (libusb_darwin_acfl);
