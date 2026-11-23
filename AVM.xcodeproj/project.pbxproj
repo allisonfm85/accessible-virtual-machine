@@ -561,7 +561,7 @@
 				CODE_SIGN_ENTITLEMENTS = AVM/AVM-Debug.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = W7VP84KBHP;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -579,7 +579,7 @@
 					"@executable_path/../Frameworks\n@executable_path/../MacOS\n@executable_path",
 				);
 				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)/AVM";
-				MARKETING_VERSION = 0.1.5;
+				MARKETING_VERSION = 0.1.6;
 				OTHER_LDFLAGS = (
 					"-framework",
 					"glib-2.0.0",
@@ -693,7 +693,7 @@
 				CODE_SIGN_ENTITLEMENTS = AVM/AVM.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = W7VP84KBHP;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -711,7 +711,7 @@
 					"@executable_path/../Frameworks\n@executable_path/../MacOS\n@executable_path",
 				);
 				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)/AVM";
-				MARKETING_VERSION = 0.1.5;
+				MARKETING_VERSION = 0.1.6;
 				OTHER_LDFLAGS = (
 					"-framework",
 					"glib-2.0.0",
